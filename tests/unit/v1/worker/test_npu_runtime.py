@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+import threading
 from collections import deque
 from contextlib import nullcontext
 from types import ModuleType, SimpleNamespace
@@ -25,6 +26,7 @@ from afd_plugin.connectors import (
 
 class _RecordingConnector:
     world_rank = 0
+    uses_dp_metadata_control_plane = True
 
     def __init__(self):
         self.dp_metadata_updates = []
@@ -53,6 +55,17 @@ class _RecordingConnector:
     ):
         self.sent_dp_metadata_lists.append(
             (dp_metadata_list, is_graph_capturing, is_warmup),
+        )
+
+
+class _AsyncRecordingConnector(_RecordingConnector):
+    uses_dp_metadata_control_plane = False
+    ffn_step_trigger = "connector"
+
+    def __init__(self, *, use_stub_cam_ops=True):
+        super().__init__()
+        self.afd_config = SimpleNamespace(
+            extra_config={"use_stub_cam_ops": use_stub_cam_ops},
         )
 
 
@@ -124,13 +137,19 @@ def _parallel_config(**overrides):
     return SimpleNamespace(**values)
 
 
-def _vllm_config(*, role="attention", extra_config=None, **parallel_overrides):
+def _vllm_config(
+    *,
+    role="attention",
+    connector="camp2pconnector",
+    extra_config=None,
+    **parallel_overrides,
+):
     return SimpleNamespace(
         additional_config={
             "afd": {
                 "enabled": True,
                 "role": role,
-                "connector": "camp2pconnector",
+                "connector": connector,
                 "extra_config": extra_config or {},
             },
         },
@@ -193,6 +212,35 @@ def test_npu_attention_runner_builds_and_mirrors_metadata():
     assert metadata.afd_tokens_lens == [1]
     assert len(runner.afd_connector.dp_metadata_updates) == 1
     assert len(runner.afd_connector.sent_dp_metadata_lists) == 1
+
+
+def test_npu_attention_async_connector_skips_dp_metadata_control_plane():
+    runner = _new_attention_runner()
+    runner.vllm_config = _vllm_config(
+        role="attention",
+        connector="afdasyncconnector",
+        async_dp=True,
+        data_parallel_size=2,
+    )
+    runner.afd_connector = _AsyncRecordingConnector()
+    runner._is_warmup = False
+    runner._afd_is_graph_capturing = False
+    runner._afd_pending_metadata = None
+    runner._afd_transaction_counter = 0
+    forward_context = SimpleNamespace(
+        additional_kwargs={},
+        dp_metadata=None,
+        ubatch_slices=None,
+        batch_descriptor=SimpleNamespace(num_tokens=3),
+    )
+
+    runner._install_afd_metadata_on_forward_context(forward_context)
+
+    metadata = forward_context.additional_kwargs["afd_metadata"]
+    assert forward_context.afd_metadata is metadata
+    assert metadata.afd_tokens_lens == [3]
+    assert runner.afd_connector.dp_metadata_updates == []
+    assert runner.afd_connector.sent_dp_metadata_lists == []
 
 
 def test_npu_attention_runner_builds_dp_fallback():
@@ -691,6 +739,53 @@ def test_npu_ffn_worker_loop_error_is_propagated(caplog):
     assert "AFD NPU FFN worker loop failed" in caplog.text
 
 
+def test_npu_ffn_worker_uses_connector_driven_loop_for_async_connector():
+    worker = _new_ffn_worker()
+    event = threading.Event()
+    calls = []
+
+    def execute_connector_driven_step():
+        calls.append("step")
+        event.set()
+
+    worker._ffn_shutdown_event = event
+    worker.device = SimpleNamespace(type="cpu")
+    worker.model_runner = SimpleNamespace(
+        connector=_AsyncRecordingConnector(use_stub_cam_ops=False),
+        execute_connector_driven_step=execute_connector_driven_step,
+    )
+
+    worker._run_ffn_server_loop()
+
+    assert calls == ["step"]
+
+
+def test_npu_ffn_worker_idles_stub_connector_driven_loop(monkeypatch):
+    worker = _new_ffn_worker()
+    ffn_worker_module = sys.modules["afd_plugin.v1.worker.ascend.ffn_worker"]
+    event = threading.Event()
+    calls = []
+
+    def execute_connector_driven_step():
+        calls.append("step")
+
+    def sleep(seconds):
+        calls.append(("sleep", seconds))
+        event.set()
+
+    monkeypatch.setattr(ffn_worker_module.time, "sleep", sleep)
+    worker._ffn_shutdown_event = event
+    worker.device = SimpleNamespace(type="cpu")
+    worker.model_runner = SimpleNamespace(
+        connector=_AsyncRecordingConnector(),
+        execute_connector_driven_step=execute_connector_driven_step,
+    )
+
+    worker._run_ffn_server_loop()
+
+    assert calls == [("sleep", 0.01)]
+
+
 def test_npu_feature_validation_rejects_unsupported_switches():
     for extra_config, message in [
         ({"compute_gate_on_attention": True}, "compute_gate_on_attention"),
@@ -727,6 +822,64 @@ def test_npu_feature_validation_allows_two_ubatches_only():
     config = _vllm_config()
     config.model_config.enforce_eager = False
     fail_if_unsupported_npu_afd_features(config)
+
+
+def test_npu_async_feature_validation_requires_async_dp_and_eager():
+    with pytest.raises(RuntimeError, match="requires async_dp"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(connector="afdasyncconnector", async_dp=False),
+        )
+
+    config = _vllm_config(connector="afdasyncconnector", async_dp=True)
+    config.model_config.enforce_eager = False
+    with pytest.raises(RuntimeError, match="only eager"):
+        fail_if_unsupported_npu_afd_features(config)
+
+
+def test_npu_async_feature_validation_rejects_ubatching_and_multistream():
+    with pytest.raises(RuntimeError, match="ubatching"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(
+                connector="afdasyncconnector",
+                async_dp=True,
+                use_ubatching=True,
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="multistream"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(
+                connector="afdasyncconnector",
+                async_dp=True,
+                extra_config={"multistream_info": {"ffn_enable": "true"}},
+            ),
+        )
+
+
+def test_npu_async_feature_validation_allows_quant_zero_or_one():
+    fail_if_unsupported_npu_afd_features(
+        _vllm_config(
+            connector="afdasyncconnector",
+            async_dp=True,
+            extra_config={"quant_mode": 1},
+        ),
+    )
+    fail_if_unsupported_npu_afd_features(
+        _vllm_config(
+            connector="afdasyncconnector",
+            async_dp=True,
+            extra_config={"dynamicQuant": "1"},
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="quant_mode"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(
+                connector="afdasyncconnector",
+                async_dp=True,
+                extra_config={"dynamicQuant": 2},
+            ),
+        )
 
 
 def test_npu_ubatch_allows_mc2_comm_when_thresholds_are_met(monkeypatch):

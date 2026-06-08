@@ -68,6 +68,11 @@ AFDConnectorFactory.register_connector(
     "afd_plugin.connectors.npu.camp2p",
     "CAMP2PAFDConnector",
 )
+AFDConnectorFactory.register_connector(
+    "afdasyncconnector",
+    "afd_plugin.connectors.npu.async_cam",
+    "AFDAsyncConnector",
+)
 
 
 __all__ = ["AFDConnectorFactory"]

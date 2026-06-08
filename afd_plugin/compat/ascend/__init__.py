@@ -11,6 +11,11 @@ from afd_plugin.compat.ascend.ops import (
     get_afd_cust_opapi_path,
     has_afd_ascend_ops,
 )
+from afd_plugin.compat.ascend.cam_stub_ops import (
+    ensure_cam_ops_available,
+    is_cam_stub_ops_enabled,
+    register_cam_stub_ops,
+)
 from afd_plugin.compat.ascend.runtime import (
     apply_afd_ascend_patches_if_needed,
     ascend_forward_context,
@@ -31,6 +36,7 @@ __all__ = [
     "AFD_CUST_OPAPI_ENV",
     "ensure_ascend_runtime_available",
     "ensure_afd_ascend_ops_loaded",
+    "ensure_cam_ops_available",
     "ensure_vllm_config_has_afd_proxy",
     "fail_if_unsupported_npu_afd_features",
     "fix_all2all_backend_for_afd",
@@ -40,4 +46,6 @@ __all__ = [
     "init_ascend_workspace_for_afd",
     "mirror_afd_metadata_on_forward_context",
     "npu_afd_num_ubatches",
+    "is_cam_stub_ops_enabled",
+    "register_cam_stub_ops",
 ]

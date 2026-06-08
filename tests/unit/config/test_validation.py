@@ -8,6 +8,7 @@ from afd_plugin.validation import (
     ATTENTION_WORKER_FQCN,
     FFN_WORKER_FQCN,
     NPU_ATTENTION_WORKER_FQCN,
+    NPU_FFN_WORKER_FQCN,
     assert_compatible_afd_stack,
 )
 
@@ -97,3 +98,48 @@ def test_stack_validation_accepts_npu_worker_override():
     )
 
     assert config.connector == "camp2pconnector"
+
+
+def test_async_connector_requires_npu_attention_worker():
+    vllm_config = _vllm_like_config(
+        afd={
+            "enabled": True,
+            "role": "attention",
+            "connector": "afdasyncconnector",
+        },
+        worker_cls=ATTENTION_WORKER_FQCN,
+    )
+
+    with pytest.raises(ValueError, match="requires Ascend NPU worker"):
+        assert_compatible_afd_stack(
+            vllm_config,
+            caller="test",
+            expected_role="attention",
+        )
+
+    vllm_config.parallel_config.worker_cls = NPU_ATTENTION_WORKER_FQCN
+    config = assert_compatible_afd_stack(
+        vllm_config,
+        caller="test",
+        expected_role="attention",
+    )
+    assert config.connector == "afdasyncconnector"
+
+
+def test_async_connector_requires_npu_ffn_worker():
+    vllm_config = _vllm_like_config(
+        afd={
+            "enabled": True,
+            "role": "ffn",
+            "connector": "afdasyncconnector",
+        },
+        worker_cls=NPU_FFN_WORKER_FQCN,
+    )
+
+    config = assert_compatible_afd_stack(
+        vllm_config,
+        caller="test",
+        expected_role="ffn",
+    )
+
+    assert config.connector == "afdasyncconnector"

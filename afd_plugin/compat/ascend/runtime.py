@@ -53,6 +53,9 @@ def fail_if_unsupported_npu_afd_features(vllm_config: object) -> None:
 
     afd_config = parse_afd_config(vllm_config)
     extra = afd_config.extra_config or {}
+    if afd_config.connector == "afdasyncconnector":
+        _fail_if_unsupported_npu_afd_async_features(vllm_config, afd_config)
+        return
 
     if _truthy(extra.get("compute_gate_on_attention")):
         raise RuntimeError(
@@ -88,7 +91,47 @@ def fail_if_unsupported_npu_afd_features(vllm_config: object) -> None:
         )
 
     if not bool(vllm_config.model_config.enforce_eager):
-        _ = vllm_config.compilation_config.cudagraph_mode.name
+        _npu_aclgraph_mode_name(vllm_config)
+
+
+def _fail_if_unsupported_npu_afd_async_features(
+    vllm_config: object,
+    afd_config: AFDConfig,
+) -> None:
+    extra = afd_config.extra_config or {}
+    parallel_config = vllm_config.parallel_config
+    if not bool(parallel_config.async_dp):
+        raise RuntimeError("AFDAsyncConnector requires async_dp")
+    if not bool(vllm_config.model_config.enforce_eager):
+        raise RuntimeError(
+            "AFDAsyncConnector supports only eager Attention/FFN execution",
+        )
+    if bool(parallel_config.use_ubatching):
+        raise RuntimeError("AFDAsyncConnector does not support ubatching/DBO")
+    if _truthy(extra.get("is_multistream")):
+        raise RuntimeError("AFDAsyncConnector does not support multistream")
+    if _truthy(extra.get("is_attn_multistream")):
+        raise RuntimeError("AFDAsyncConnector does not support attention multistream")
+    if _truthy(extra.get("is_ffn_multistream")):
+        raise RuntimeError("AFDAsyncConnector does not support FFN multistream")
+
+    multistream_info = extra.get("multistream_info")
+    if isinstance(multistream_info, Mapping):
+        for key in ("enable", "enabled", "attn_enable", "ffn_enable"):
+            if _truthy(multistream_info.get(key)):
+                raise RuntimeError(
+                    "AFDAsyncConnector does not support multistream_info enabled",
+                )
+
+    quant_mode = extra.get("dynamicQuant", extra.get("quant_mode", 0))
+    if quant_mode not in (None, "", 0, "0", 1, "1"):
+        raise RuntimeError(
+            "AFDAsyncConnector currently supports only quant_mode/dynamicQuant 0 or 1",
+        )
+
+
+def _npu_aclgraph_mode_name(vllm_config: object) -> str:
+    return vllm_config.compilation_config.cudagraph_mode.name
 
 
 def mirror_afd_metadata_on_forward_context(

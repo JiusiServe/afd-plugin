@@ -1009,6 +1009,10 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             forward_context,
             self._afd_pending_metadata,
         )
+        if not bool(
+            getattr(self.afd_connector, "uses_dp_metadata_control_plane", True),
+        ):
+            return
         if bool(getattr(self, "_afd_suppress_metadata_send", False)):
             return
         dp_metadata = forward_context.dp_metadata
@@ -1157,6 +1161,50 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 getattr(moe_comm_type, "name", str(moe_comm_type)),
             )
             return should_ubatch, num_tokens_padded, None, cudagraph_mode
+
+        if not bool(
+            getattr(self.afd_connector, "uses_dp_metadata_control_plane", True),
+        ):
+            num_tokens_after_padding = torch.tensor(
+                [num_tokens_padded] * self.dp_size,
+                device="cpu",
+                dtype=torch.int32,
+            )
+            moe_comm_type = select_moe_comm_method(
+                num_tokens_padded,
+                self.vllm_config,
+                is_draft_model,
+            )
+            should_ubatch = check_enable_ubatch(
+                num_tokens_unpadded,
+                num_tokens_padded,
+                uniform_decode=uniform_decode,
+                vllm_config=self.vllm_config,
+                moe_comm_type=moe_comm_type,
+            )
+            logger.warning(
+                "AFD NPU ubatch DP sync; async connector uses local metadata "
+                "should_ubatch=%s dp_size=%s dp_rank=%s "
+                "num_tokens_unpadded=%s num_tokens_padded=%s uniform_decode=%s "
+                "allow_dp_padding=%s cudagraph_mode=%s is_draft_model=%s "
+                "moe_comm_type=%s",
+                should_ubatch,
+                self.dp_size,
+                self.dp_rank,
+                num_tokens_unpadded,
+                num_tokens_padded,
+                uniform_decode,
+                allow_dp_padding,
+                cudagraph_mode,
+                is_draft_model,
+                getattr(moe_comm_type, "name", str(moe_comm_type)),
+            )
+            return (
+                should_ubatch,
+                num_tokens_padded,
+                num_tokens_after_padding,
+                cudagraph_mode,
+            )
 
         parallel_config = self.vllm_config.parallel_config
         can_skip_dp_sync = should_skip_allreduce_across_dp_group(

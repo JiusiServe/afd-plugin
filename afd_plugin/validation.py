@@ -56,6 +56,14 @@ def expected_worker_qualname(role: str) -> str:
     raise ValueError(f"unknown AFD role {role!r}")
 
 
+def expected_npu_worker_qualname(role: str) -> str:
+    if role == "attention":
+        return NPU_ATTENTION_WORKER_FQCN
+    if role == "ffn":
+        return NPU_FFN_WORKER_FQCN
+    raise ValueError(f"unknown AFD role {role!r}")
+
+
 def assert_compatible_afd_stack(
     vllm_config: object,
     *,
@@ -78,6 +86,11 @@ def assert_compatible_afd_stack(
         raise ValueError(f"AFD is not enabled in additional_config['afd']{_ctx()}")
 
     parallel_config = vllm_config.parallel_config
+    async_expected_worker = (
+        expected_npu_worker_qualname(config.role)
+        if config.connector == "afdasyncconnector"
+        else None
+    )
 
     worker_cls_raw = parallel_config.worker_cls
     if not isinstance(worker_cls_raw, str):
@@ -86,22 +99,31 @@ def assert_compatible_afd_stack(
             f"(got type {type(worker_cls_raw).__name__}){_ctx()}",
         )
     if worker_cls_raw.strip() == "auto":
-        expected_worker = expected_worker_qualname_override or expected_worker_qualname(
-            config.role
+        expected_worker = (
+            async_expected_worker
+            or expected_worker_qualname_override
+            or expected_worker_qualname(config.role)
         )
         raise ValueError(
             "parallel_config.worker_cls is still 'auto'; pass --worker-cls "
             f"{expected_worker}{_ctx()}",
         )
 
-    expected_qualname = expected_worker_qualname_override or expected_worker_qualname(
-        config.role
+    expected_qualname = (
+        async_expected_worker
+        or expected_worker_qualname_override
+        or expected_worker_qualname(config.role)
     )
     worker_fqcn = normalize_qualname(worker_cls_raw.strip())
     expected_fqcn = normalize_qualname(expected_qualname)
     if worker_fqcn != expected_fqcn:
+        prefix = (
+            "AFDAsyncConnector requires Ascend NPU worker class: "
+            if async_expected_worker is not None
+            else "invalid worker class for AFD runtime stack: "
+        )
         raise ValueError(
-            "invalid worker class for AFD runtime stack: "
+            prefix +
             f"got={worker_fqcn!r} expected={expected_qualname!r}; "
             f"pass --worker-cls {expected_qualname}{_ctx()}",
         )
@@ -120,6 +142,7 @@ __all__ = [
     "NPU_FFN_WORKER_FQCN",
     "UBATCH_WRAPPER_FQCN",
     "assert_compatible_afd_stack",
+    "expected_npu_worker_qualname",
     "expected_worker_qualname",
     "normalize_qualname",
     "resolve_class_from_qualname",

@@ -16,6 +16,7 @@ SUPPORTED_AFD_ROLES: Final[tuple[str, ...]] = ("attention", "ffn")
 SUPPORTED_AFD_CONNECTORS: Final[tuple[str, ...]] = (
     "p2pconnector",
     "camp2pconnector",
+    "afdasyncconnector",
 )
 
 _ALIASES: Final[dict[str, str]] = {
