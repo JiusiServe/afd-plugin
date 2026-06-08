@@ -19,6 +19,7 @@ from afd_plugin.compat.ascend import (
 from afd_plugin.compat.ascend import runtime as ascend_runtime
 from afd_plugin.connectors import (
     AFDConnectorMetadata,
+    AFDFFNOutput,
     AFDMetadata,
     AFDRecvOutput,
 )
@@ -112,6 +113,15 @@ class _FakeFFNConnector:
 class _FakeModel:
     def compute_ffn_output(self, hidden_states, layer_idx, **kwargs):
         return f"npu-ffn({hidden_states}, layer={layer_idx})"
+
+
+class _FakeStructuredFFNModel:
+    def compute_ffn_output(self, hidden_states, layer_idx, **kwargs):
+        del kwargs
+        return AFDFFNOutput(
+            routed_output=f"routed({hidden_states}, layer={layer_idx})",
+            shared_output=f"shared({hidden_states}, layer={layer_idx})",
+        )
 
 
 class _FakeDPMetadata:
@@ -520,6 +530,54 @@ def test_npu_ffn_runner_executes_eager_ffn_step():
     assert runner.connector.metadata_updates == [
         (metadata, AFDRecvOutput(hidden_states="hidden", metadata=metadata)),
     ]
+
+
+def test_npu_ffn_runner_sends_structured_shared_output():
+    runner = _new_ffn_runner()
+    runner.vllm_config = _vllm_config(role="ffn")
+    runner.connector = _FakeFFNConnector()
+    runner.model = _FakeStructuredFFNModel()
+    runner.num_layers = 1
+    runner.max_num_tokens = 1
+    runner.use_aclgraph = False
+    runner._acl_graphs = {}
+    metadata = AFDConnectorMetadata.create_attention_metadata(
+        layer_idx=0,
+        stage_idx=0,
+        seq_len=1,
+    )
+    runner.connector.attn_outputs.append(("hidden", metadata))
+
+    runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
+
+    assert runner.connector.ffn_outputs == [
+        (
+            "routed(hidden, layer=0)",
+            metadata,
+            {
+                "ubatch_idx": 0,
+                "expand_x_shared": "shared(hidden, layer=0)",
+            },
+        ),
+    ]
+
+
+def test_npu_ffn_runner_filters_dense_layers_when_gate_runs_on_attention():
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.ascend.ffn_model_runner import _ffn_layer_indices
+
+    runner = _new_ffn_runner()
+    runner.num_layers = 5
+    runner.afd_config = SimpleNamespace(compute_gate_on_attention=True)
+    runner.model_config = SimpleNamespace(
+        hf_config=SimpleNamespace(
+            n_routed_experts=8,
+            first_k_dense_replace=2,
+            moe_layer_freq=2,
+        ),
+    )
+
+    assert _ffn_layer_indices(runner) == [2, 4]
 
 
 class _FakeGraph:

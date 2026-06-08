@@ -28,6 +28,7 @@ from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
     AFDConnectorFactory,
     AFDConnectorMetadata,
+    AFDFFNOutput,
     AFDMetadata,
     AFDRecvOutput,
 )
@@ -231,7 +232,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             num_tokens_across_dp=dp_num_tokens_across_dp,
             aclgraph_runtime_mode=aclgraph_runtime_mode,
         ) as forward_context:
-            for layer_idx in range(max(int(self.num_layers or 0), 1)):
+            for layer_idx in _ffn_layer_indices(self):
                 for stage_idx in stage_ids:
                     recv_output = self._recv_attn_output(stage_idx, layer_idx)
                     hidden_states, metadata, payload = _normalize_recv_output(
@@ -267,10 +268,11 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                         x_active_mask=payload.x_active_mask,
                         cam_p2p_ep_name=payload.cam_p2p_ep_name or "",
                     )
-                    self.connector.send_ffn_output(
+                    _send_ffn_output(
+                        self.connector,
                         rank_ffn_output,
                         metadata,
-                        ubatch_idx=stage_idx,
+                        stage_idx=stage_idx,
                     )
         return rank_ffn_output
 
@@ -300,7 +302,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             num_tokens=num_tokens,
             num_tokens_across_dp=num_tokens_across_dp,
         ) as forward_context:
-            for layer_idx in range(max(int(self.num_layers or 0), 1)):
+            for layer_idx in _ffn_layer_indices(self):
                 recv_output = self._recv_attn_output(stage_idx, layer_idx)
                 hidden_states, metadata, payload = _normalize_recv_output(
                     recv_output,
@@ -335,10 +337,11 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     x_active_mask=payload.x_active_mask,
                     cam_p2p_ep_name=payload.cam_p2p_ep_name or "",
                 )
-                self.connector.send_ffn_output(
+                _send_ffn_output(
+                    self.connector,
                     rank_ffn_output,
                     metadata,
-                    ubatch_idx=stage_idx,
+                    stage_idx=stage_idx,
                 )
         return rank_ffn_output
 
@@ -522,6 +525,63 @@ def _normalize_recv_output(
         )
         recv_output.metadata = metadata
     return hidden_states, metadata, recv_output
+
+def _send_ffn_output(
+    connector: Any,
+    ffn_output: Any,
+    metadata: AFDConnectorMetadata,
+    *,
+    stage_idx: int,
+) -> None:
+    if not isinstance(ffn_output, AFDFFNOutput):
+        connector.send_ffn_output(
+            ffn_output,
+            metadata,
+            ubatch_idx=stage_idx,
+        )
+        return
+
+    kwargs: dict[str, Any] = {"ubatch_idx": stage_idx}
+    if ffn_output.shared_output is not None:
+        kwargs["expand_x_shared"] = ffn_output.shared_output
+    connector.send_ffn_output(
+        ffn_output.routed_output,
+        metadata,
+        **kwargs,
+    )
+
+
+def _resolve_num_hidden_layers(model_config: object) -> int:
+    return int(model_config.hf_config.num_hidden_layers)
+
+
+def _ffn_layer_indices(runner: AFDNPUFFNModelRunner) -> range | list[int]:
+    num_layers = max(int(runner.num_layers or 0), 1)
+    afd_config = getattr(runner, "afd_config", None)
+    if afd_config is None or not bool(afd_config.compute_gate_on_attention):
+        return range(num_layers)
+    hf_config = runner.model_config.hf_config
+    return [
+        layer_idx
+        for layer_idx in range(num_layers)
+        if _is_moe_layer(hf_config, layer_idx)
+    ]
+
+
+def _is_moe_layer(hf_config: object, layer_idx: int) -> bool:
+    moe_layer_freq = getattr(hf_config, "moe_layer_freq", 1)
+    return (
+        hf_config.n_routed_experts is not None
+        and layer_idx >= hf_config.first_k_dense_replace
+        and layer_idx % moe_layer_freq == 0
+    )
+
+
+def _first_dp_token_counts(dp_metadata_list: dict[int, Any]) -> Any:
+    if not dp_metadata_list:
+        return None
+    first_key = sorted(int(key) for key in dp_metadata_list)[0]
+    return dp_metadata_list[first_key].num_tokens_across_dp_cpu
 
 
 def _ffn_token_counts_across_ranks(

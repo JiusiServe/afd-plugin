@@ -54,6 +54,21 @@ def test_parse_vllm_like_config_object():
     assert config.is_attention_server
 
 
+def test_compute_gate_on_attention_can_come_from_extra_config():
+    config = parse_afd_config(
+        {
+            "afd": {
+                "enabled": True,
+                "role": "ffn",
+                "extra_config": {"compute_gate_on_attention": "true"},
+            },
+        },
+        expected_role="ffn",
+    )
+
+    assert config.compute_gate_on_attention is True
+
+
 def test_original_afd_field_aliases_are_supported():
     config = afd_config_from_mapping(
         {

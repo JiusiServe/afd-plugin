@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -123,8 +124,15 @@ def _afd_config(*, role: str, rank: int = 0, use_stub: bool = True):
         afd_server_rank=rank,
         num_attention_servers=4,
         num_ffn_servers=2,
-        extra_config={"use_stub_cam_ops": use_stub, "use_stub_topk": True},
+        extra_config={"use_stub_cam_ops": use_stub},
     )
+
+
+def _topk_payload(batch_size: int, topk: int = 2):
+    return {
+        "topk_ids": _FakeTensor((batch_size, topk), dtype="int32"),
+        "topk_weights": _FakeTensor((batch_size, topk), dtype="fp32"),
+    }
 
 
 def test_config_accepts_async_connector_name():
@@ -199,7 +207,11 @@ def test_async_connector_calls_cam_stub_shaped_ops(monkeypatch):
     )
 
     connector.configure_metadata(metadata, batch_size=3)
-    output = connector.send_attn_output(hidden_states, metadata)
+    output = connector.send_attn_output(
+        hidden_states,
+        metadata,
+        **_topk_payload(3),
+    )
     combined = connector.recv_ffn_output(
         ref_tensor=hidden_states,
         ubatch_idx=0,
@@ -231,8 +243,42 @@ def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
 
     assert recv_output.hidden_states.shape == (4, 16)
     assert recv_output.topk_ids.shape == (4, 2)
+    assert recv_output.group_list is recv_output.ep_recv_counts
     assert fake_torch.ops.cam.calls[0][0] == "dispatch_recv"
     assert fake_torch.ops.cam.calls[1][0] == "combine_send"
+
+
+def test_async_select_experts_maps_legacy_global_num_experts(monkeypatch):
+    calls = []
+    fake_package = ModuleType("vllm_ascend")
+    fake_ops = ModuleType("vllm_ascend.ops")
+    fake_fused_moe = ModuleType("vllm_ascend.ops.fused_moe")
+    fake_selector = ModuleType("vllm_ascend.ops.fused_moe.experts_selector")
+
+    def select_experts(*, num_experts=-1, **kwargs):
+        calls.append((num_experts, kwargs))
+        return "weights", "ids"
+
+    fake_selector.select_experts = select_experts
+    monkeypatch.setitem(sys.modules, "vllm_ascend", fake_package)
+    monkeypatch.setitem(sys.modules, "vllm_ascend.ops", fake_ops)
+    monkeypatch.setitem(sys.modules, "vllm_ascend.ops.fused_moe", fake_fused_moe)
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_ascend.ops.fused_moe.experts_selector",
+        fake_selector,
+    )
+    connector = AFDAsyncConnector(
+        0,
+        0,
+        _vllm_config(),
+        _afd_config(role="attention"),
+    )
+
+    result = connector.select_experts(router_logits="logits", global_num_experts=8)
+
+    assert result == ("weights", "ids")
+    assert calls == [(8, {"router_logits": "logits"})]
 
 
 def test_async_connector_stub_mode_bypasses_cam_ops(monkeypatch):
@@ -255,7 +301,11 @@ def test_async_connector_stub_mode_bypasses_cam_ops(monkeypatch):
     )
     attn_connector.configure_metadata(metadata, batch_size=3)
 
-    output = attn_connector.send_attn_output(hidden_states, metadata)
+    output = attn_connector.send_attn_output(
+        hidden_states,
+        metadata,
+        **_topk_payload(3),
+    )
     combined = attn_connector.recv_ffn_output(
         ref_tensor=hidden_states,
         ubatch_idx=0,
@@ -272,4 +322,5 @@ def test_async_connector_stub_mode_bypasses_cam_ops(monkeypatch):
     assert combined is hidden_states
     assert recv_output.hidden_states.shape == (4, 16)
     assert recv_output.topk_ids.shape == (4, 2)
+    assert recv_output.group_list is recv_output.ep_recv_counts
     assert fake_torch.ops.cam.calls == []

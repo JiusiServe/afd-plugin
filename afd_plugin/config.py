@@ -167,6 +167,19 @@ def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, object]:
     ):
         raise TypeError("extra_config must be a dict")
 
+    if "compute_gate_on_attention" in normalized:
+        normalized["compute_gate_on_attention"] = _coerce_bool(
+            normalized["compute_gate_on_attention"],
+            field_name="compute_gate_on_attention",
+        )
+    elif "extra_config" in normalized:
+        extra_config = normalized["extra_config"]
+        if "compute_gate_on_attention" in extra_config:
+            normalized["compute_gate_on_attention"] = _coerce_bool(
+                extra_config["compute_gate_on_attention"],
+                field_name="extra_config.compute_gate_on_attention",
+            )
+
     return normalized
 
 

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import TypeAlias
 
@@ -163,6 +164,18 @@ class AFDAsyncConnector(AFDConnectorBase):
             "AFDAsyncConnector does not use the DP metadata control plane",
         )
 
+    def select_experts(self, **kwargs: object) -> tuple[Tensor, Tensor]:
+        from vllm_ascend.ops.fused_moe.experts_selector import select_experts
+
+        if "global_num_experts" in kwargs:
+            signature = inspect.signature(select_experts)
+            if (
+                "global_num_experts" not in signature.parameters
+                and "num_experts" in signature.parameters
+            ):
+                kwargs["num_experts"] = kwargs.pop("global_num_experts")
+        return select_experts(**kwargs)
+
     def configure_metadata(
         self,
         metadata: AFDConnectorMetadata,
@@ -198,6 +211,8 @@ class AFDAsyncConnector(AFDConnectorBase):
         data.topk_weights = recv_output.topk_weights
         data.expand_idx = recv_output.expand_idx
         data.expert_token_nums = recv_output.ep_recv_counts
+        if data.expert_token_nums is None:
+            data.expert_token_nums = recv_output.group_list
         data.atten_batch_size = recv_output.atten_batch_size
         data.x_active_mask = recv_output.x_active_mask
 
@@ -217,14 +232,10 @@ class AFDAsyncConnector(AFDConnectorBase):
         topk_ids = kwargs.get("topk_ids")
         topk_weights = kwargs.get("topk_weights")
         if topk_ids is None or topk_weights is None:
-            generated_topk_ids, generated_topk_weights = self._build_topk_payload(
-                hidden_states,
-                data,
+            raise RuntimeError(
+                "AFDAsyncConnector send_attn_output requires "
+                "topk_ids/topk_weights",
             )
-            if topk_ids is None:
-                topk_ids = generated_topk_ids
-            if topk_weights is None:
-                topk_weights = generated_topk_weights
         _validate_topk_payload(
             topk_ids,
             topk_weights,
@@ -363,6 +374,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         return AFDRecvOutput(
             hidden_states=hidden_states,
             metadata=metadata,
+            group_list=expert_token_nums,
             topk_ids=topk_ids,
             topk_weights=topk_weights,
             x_active_mask=x_active_mask,
@@ -464,33 +476,6 @@ class AFDAsyncConnector(AFDConnectorBase):
             self._pending_attention_payloads.pop(int(stage_idx), None)
         return payload
 
-    def _build_topk_payload(
-        self,
-        hidden_states: Tensor,
-        data: AFDAsyncConnectorData,
-    ) -> tuple[Tensor, Tensor]:
-        extra_config = self.afd_config.extra_config or {}
-        if not _truthy(extra_config.get("use_stub_topk")):
-            raise RuntimeError(
-                "AFDAsyncConnector requires topk_ids/topk_weights unless "
-                "use_stub_topk=true",
-            )
-        expert_ids = torch.arange(
-            data.topk,
-            dtype=torch.int32,
-            device=hidden_states.device,
-        )
-        expert_ids = expert_ids.remainder(max(1, self.num_routed_experts))
-        topk_ids = expert_ids.unsqueeze(0).expand(data.batch_size, data.topk)
-        topk_ids = topk_ids.contiguous()
-        topk_weights = torch.full(
-            (data.batch_size, data.topk),
-            1.0 / float(data.topk),
-            dtype=torch.float32,
-            device=hidden_states.device,
-        )
-        return topk_ids, topk_weights
-
     def _make_stub_recv_output(
         self,
         metadata: AFDConnectorMetadata,
@@ -543,6 +528,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         return AFDRecvOutput(
             hidden_states=hidden_states,
             metadata=metadata,
+            group_list=expert_token_nums,
             topk_ids=topk_ids,
             topk_weights=topk_weights,
             x_active_mask=x_active_mask,
@@ -625,12 +611,6 @@ def _validate_topk_payload(
             f"({batch_size}, {topk}), "
             f"got {getattr(topk_weights, 'shape', None)!r}",
         )
-
-
-def _truthy(value: object) -> bool:
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
 
 
 __all__ = [

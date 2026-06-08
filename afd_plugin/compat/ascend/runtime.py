@@ -57,7 +57,9 @@ def fail_if_unsupported_npu_afd_features(vllm_config: object) -> None:
         _fail_if_unsupported_npu_afd_async_features(vllm_config, afd_config)
         return
 
-    if _truthy(extra.get("compute_gate_on_attention")):
+    if afd_config.compute_gate_on_attention or _truthy(
+        extra.get("compute_gate_on_attention"),
+    ):
         raise RuntimeError(
             "AFD NPU runtime does not support compute_gate_on_attention=true yet",
         )
@@ -314,7 +316,10 @@ class _AscendAFDConfigProxy:
 
     @property
     def compute_gate_on_attention(self) -> bool:
-        return bool(self._config.extra_config.get("compute_gate_on_attention", False))
+        return bool(
+            self._config.compute_gate_on_attention
+            or self._config.extra_config.get("compute_gate_on_attention", False),
+        )
 
     @property
     def quant_mode(self) -> int:

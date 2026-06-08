@@ -214,6 +214,14 @@ class AFDRecvOutput:
 
 
 @dataclass(slots=True)
+class AFDFFNOutput:
+    """Unified FFN -> Attention payload for separated routed/shared outputs."""
+
+    routed_output: Any
+    shared_output: Any = None
+
+
+@dataclass(slots=True)
 class AFDMetadata:
     """Forward-context metadata visible to plugin-owned model wrappers."""
 
@@ -239,6 +247,7 @@ class AFDMetadata:
 __all__ = [
     "AFDConnectorMetadata",
     "AFDDPMetadata",
+    "AFDFFNOutput",
     "AFDMetadata",
     "AFDRecvOutput",
     "AFDSingleDPMetadata",

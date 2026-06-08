@@ -63,23 +63,21 @@ else:
 {
   "afd": {
     "enabled": true,
-    "role": "attention",
-    "connector": "afdasyncconnector",
-    "extra_config": {
-      "use_stub_cam_ops": true,
-      "use_stub_topk": true,
-      "stub_cam_max_tokens": 262144
-    }
-  }
-}
-```
+	    "role": "attention",
+	    "connector": "afdasyncconnector",
+	    "extra_config": {
+	      "use_stub_cam_ops": true,
+	      "stub_cam_max_tokens": 262144
+	    }
+	  }
+	}
+	```
 
-`use_stub_cam_ops` 和 `use_stub_topk` 是两个独立开关：
+	`use_stub_cam_ops` 只控制 CAM 四算子是否使用 stub。Attention 侧仍必须传入真实
+	`topk_ids` / `topk_weights`，例如通过 `compute_gate_on_attention=true` 在
+	Attention 侧计算 gate。
 
-- `use_stub_cam_ops` 控制 CAM 四算子是否使用 stub；
-- `use_stub_topk` 控制 Attention 侧是否生成 deterministic stub top-k。
-
-真实 NPU smoke、性能或精度验证必须关闭这两个 stub 开关。
+真实 NPU smoke、性能或精度验证必须关闭 `use_stub_cam_ops`。
 
 ## 注册方式
 
@@ -393,20 +391,19 @@ output:
 
 推荐第一版返回 zero tensor。这样不会暗示 stub 有真实 combine 语义。
 
-## 与 Stub Top-k 的关系
+## 与 Top-k 的关系
 
-`cam_dispatch_send` 和 `cam_combine_recv` 都需要 top-k 输入。由于当前真实 top-k
-仍在 FFN/MoE 侧计算，`AFDAsyncConnector` 第一版会在 Attention 侧生成
-deterministic stub top-k：
+`cam_dispatch_send` 和 `cam_combine_recv` 都需要 top-k 输入。`AFDAsyncConnector`
+不再生成 stub top-k；Attention 侧必须传入真实 top-k，例如：
 
 ```text
 topk_ids:
   int32, [batchSize, topk]
-  每行相同或按 token round-robin
+  每个 token 选中的 expert ids
 
 topk_weights:
   float32, [batchSize, topk]
-  每个 top-k 权重为 1 / topk
+  每个 token 对应的 expert weights
 ```
 
 CAM stub op 只检查这些 tensor 是否符合接口，不根据它们做真实路由。
