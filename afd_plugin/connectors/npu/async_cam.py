@@ -5,7 +5,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TypeAlias
+
+import torch
+from torch import Tensor
 
 from afd_plugin.compat.ascend.cam_stub_ops import (
     ensure_cam_ops_available,
@@ -14,11 +17,6 @@ from afd_plugin.compat.ascend.cam_stub_ops import (
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import AFDConnectorMetadata, AFDRecvOutput
-
-if TYPE_CHECKING:
-    from torch import Tensor
-else:
-    Tensor = object
 
 DPMetadataMap: TypeAlias = dict[int, object]
 
@@ -121,8 +119,6 @@ class AFDAsyncConnector(AFDConnectorBase):
     def init_afd_connector(self) -> None:
         if self._initialized:
             return
-
-        import torch
 
         ensure_cam_ops_available(self.afd_config)
         device = f"npu:{self.local_rank}"
@@ -229,8 +225,6 @@ class AFDAsyncConnector(AFDConnectorBase):
                 topk_ids = generated_topk_ids
             if topk_weights is None:
                 topk_weights = generated_topk_weights
-        import torch
-
         _validate_topk_payload(
             topk_ids,
             topk_weights,
@@ -286,8 +280,6 @@ class AFDAsyncConnector(AFDConnectorBase):
                 layer_idx=int(kwargs.get("layer_idx", 0) or 0),
             )
         data = self._metadata_data_or_default(metadata)
-        import torch
-
         _validate_topk_payload(
             topk_ids,
             topk_weights,
@@ -336,8 +328,6 @@ class AFDAsyncConnector(AFDConnectorBase):
         placeholder = kwargs.get("placeholder", self._placeholder)
         if self.use_stub_cam_ops:
             return self._make_stub_recv_output(metadata, data, placeholder)
-        import torch
-
         outputs = torch.ops.cam.cam_dispatch_recv(
             placeholder,
             self.comm_args,
@@ -389,8 +379,6 @@ class AFDAsyncConnector(AFDConnectorBase):
     ) -> None:
         self._require_initialized()
         data = _ensure_connector_data(metadata)
-        import torch
-
         expand_x_shared = kwargs.get("expand_x_shared")
         if expand_x_shared is None:
             expand_x_shared = ffn_output
@@ -487,8 +475,6 @@ class AFDAsyncConnector(AFDConnectorBase):
                 "AFDAsyncConnector requires topk_ids/topk_weights unless "
                 "use_stub_topk=true",
             )
-        import torch
-
         expert_ids = torch.arange(
             data.topk,
             dtype=torch.int32,
@@ -513,8 +499,6 @@ class AFDAsyncConnector(AFDConnectorBase):
     ) -> AFDRecvOutput:
         if placeholder is None:
             raise RuntimeError("AFDAsyncConnector stub recv requires a placeholder")
-        import torch
-
         hidden_states = placeholder.new_zeros((data.batch_size, data.hidden_size))
         expert_ids = torch.arange(
             data.topk,

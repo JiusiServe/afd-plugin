@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import sys
 from types import SimpleNamespace
 
 import pytest
 
 from afd_plugin.config import AFDConfig, afd_config_from_mapping
 from afd_plugin.connectors import AFDConnectorFactory, AFDConnectorMetadata
-from afd_plugin.connectors.npu.async_cam import (
+
+pytest.importorskip("torch")
+from afd_plugin.connectors.npu import async_cam as async_cam_module  # noqa: E402
+from afd_plugin.connectors.npu.async_cam import (  # noqa: E402
     AFDAsyncConnector,
     AFDAsyncConnectorData,
     build_async_topology,
@@ -179,7 +181,7 @@ def test_async_connector_disables_dp_metadata_control_plane():
 
 def test_async_connector_calls_cam_stub_shaped_ops(monkeypatch):
     fake_torch = _FakeTorch()
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(async_cam_module, "torch", fake_torch)
     connector = AFDAsyncConnector(
         0,
         0,
@@ -213,7 +215,7 @@ def test_async_connector_calls_cam_stub_shaped_ops(monkeypatch):
 
 def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
     fake_torch = _FakeTorch()
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(async_cam_module, "torch", fake_torch)
     connector = AFDAsyncConnector(
         0,
         0,
@@ -235,7 +237,7 @@ def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
 
 def test_async_connector_stub_mode_bypasses_cam_ops(monkeypatch):
     fake_torch = _FakeTorch()
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(async_cam_module, "torch", fake_torch)
     attn_connector = AFDAsyncConnector(
         0,
         0,
