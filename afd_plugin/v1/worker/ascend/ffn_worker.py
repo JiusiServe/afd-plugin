@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any
+import time
+from typing import Any
 
 import torch
 from vllm_ascend.worker.worker import NPUWorker
@@ -111,9 +112,16 @@ class AFDNPUFFNWorker(NPUWorker):
         if event is None:
             return
 
-        if self.device.type == "npu":
-            torch.npu.set_device(self.device)
+        _set_npu_device_if_possible(self.device)
         while not event.is_set():
+            if self.model_runner.connector.ffn_step_trigger == "connector":
+                if _connector_uses_stub_cam_ops(self.model_runner.connector):
+                    time.sleep(0.01)
+                    continue
+                self.model_runner.execute_connector_driven_step()
+                _synchronize_npu_if_possible(self.device)
+                continue
+
             try:
                 payload = self.model_runner.connector.recv_dp_metadata_list(
                     timeout_ms=100,
@@ -129,8 +137,7 @@ class AFDNPUFFNWorker(NPUWorker):
                 is_graph_capturing=is_attn_graph_capturing,
                 is_warmup=is_warmup,
             )
-            if self.device.type == "npu":
-                torch.npu.synchronize()
+            _synchronize_npu_if_possible(self.device)
 
     def raise_ffn_loop_error_if_any(self) -> None:
         error = self._ffn_loop_error
@@ -155,6 +162,25 @@ class AFDNPUFFNWorker(NPUWorker):
     def shutdown(self) -> None:
         self.stop_ffn_server_loop()
         super().shutdown()
+
+def _set_npu_device_if_possible(device: object) -> None:
+    if device.type != "npu":
+        return
+    torch.npu.set_device(device)
+
+
+def _synchronize_npu_if_possible(device: object) -> None:
+    if device.type != "npu":
+        return
+    torch.npu.synchronize()
+
+
+def _connector_uses_stub_cam_ops(connector: object) -> bool:
+    extra_config = connector.afd_config.extra_config or {}
+    value = extra_config.get("use_stub_cam_ops")
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 __all__ = ["AFDNPUFFNWorker"]
