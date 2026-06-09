@@ -35,6 +35,9 @@ class AFDAsyncConnectorData:
     topk_weights: Tensor | None = None
     expand_idx: Tensor | None = None
     expert_token_nums: Tensor | None = None
+    expert_token_nums_shared: Tensor | None = None
+    dynamic_scales: Tensor | None = None
+    dynamic_scales_shared: Tensor | None = None
     atten_batch_size: Tensor | None = None
     x_active_mask: Tensor | None = None
     expand_x_shared: Tensor | None = None
@@ -90,6 +93,13 @@ class AFDAsyncConnector(AFDConnectorBase):
             afd_config.extra_config.get("quant_mode", 0),
         )
         self.dynamic_quant = 1 if int(dynamic_quant or 0) == 1 else 0
+        self.group_name = str(
+            afd_config.extra_config.get(
+                "groupName",
+                afd_config.extra_config.get("group_name", ""),
+            )
+            or "",
+        )
         self.max_seq_len = max(
             1,
             int(vllm_config.scheduler_config.max_num_batched_tokens),
@@ -125,7 +135,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         device = f"npu:{self.local_rank}"
         self.comm_args = torch.empty((1,), dtype=torch.int64, device=device)
         self._placeholder = torch.empty(
-            (self.max_seq_len, self.hidden_size),
+            (1,),
             dtype=torch.bfloat16,
             device=device,
         )
@@ -213,7 +223,9 @@ class AFDAsyncConnector(AFDConnectorBase):
         data.expert_token_nums = recv_output.ep_recv_counts
         if data.expert_token_nums is None:
             data.expert_token_nums = recv_output.group_list
+        data.dynamic_scales = recv_output.dynamic_scales
         data.atten_batch_size = recv_output.atten_batch_size
+        data.token_nums_rankid_layeridx = recv_output.atten_batch_size
         data.x_active_mask = recv_output.x_active_mask
 
     def send_attn_output(
@@ -247,7 +259,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         self._queue_attention_payload(metadata, topk_ids, topk_weights)
         if self.use_stub_cam_ops:
             return hidden_states
-        return torch.ops.cam.cam_dispatch_send(
+        return torch.ops.umdk_cam_op_lib.async_dispatch_send(
             hidden_states,
             topk_ids,
             self.comm_args,
@@ -264,6 +276,7 @@ class AFDAsyncConnector(AFDConnectorBase):
             data.layer_idx,
             self.tp_size,
             self.dynamic_quant,
+            self.group_name,
         )
 
     def recv_ffn_output(self, handle: object = None, **kwargs: object) -> Tensor:
@@ -299,13 +312,13 @@ class AFDAsyncConnector(AFDConnectorBase):
         )
         if self.use_stub_cam_ops:
             return ref_tensor
-        return torch.ops.cam.cam_combine_recv(
-            ref_tensor,
+        placeholder = ref_tensor.new_empty((1,))
+        return torch.ops.umdk_cam_op_lib.async_combine_recv(
+            placeholder,
             topk_ids,
             topk_weights,
             self.comm_args,
             self.comm_id,
-            self.max_seq_len,
             data.batch_size,
             data.hidden_size,
             data.topk,
@@ -314,9 +327,7 @@ class AFDAsyncConnector(AFDConnectorBase):
             self.expert_per_rank,
             self.world_rank,
             self.topology.world_size,
-            data.layer_idx,
-            self.tp_size,
-            self.dynamic_quant,
+            self.group_name,
         )
 
     def recv_attn_output(
@@ -339,11 +350,10 @@ class AFDAsyncConnector(AFDConnectorBase):
         placeholder = kwargs.get("placeholder", self._placeholder)
         if self.use_stub_cam_ops:
             return self._make_stub_recv_output(metadata, data, placeholder)
-        outputs = torch.ops.cam.cam_dispatch_recv(
+        outputs = torch.ops.umdk_cam_op_lib.async_dispatch_recv(
             placeholder,
             self.comm_args,
             self.comm_id,
-            self.max_seq_len,
             data.batch_size,
             data.hidden_size,
             data.topk,
@@ -352,34 +362,32 @@ class AFDAsyncConnector(AFDConnectorBase):
             self.expert_per_rank,
             self.world_rank,
             self.topology.world_size,
-            data.layer_idx,
             self.tp_size,
             self.dynamic_quant,
+            self.group_name,
         )
         (
             hidden_states,
-            topk_ids,
-            topk_weights,
-            expand_idx,
+            expand_x_shared,
+            dynamic_scales,
+            dynamic_scales_shared,
+            token_nums_rankid_layeridx,
             expert_token_nums,
-            atten_batch_size,
-            x_active_mask,
+            expert_token_nums_shared,
         ) = outputs
-        data.topk_ids = topk_ids
-        data.topk_weights = topk_weights
-        data.expand_idx = expand_idx
+        data.expand_x_shared = expand_x_shared
+        data.dynamic_scales = dynamic_scales
+        data.dynamic_scales_shared = dynamic_scales_shared
+        data.token_nums_rankid_layeridx = token_nums_rankid_layeridx
         data.expert_token_nums = expert_token_nums
-        data.atten_batch_size = atten_batch_size
-        data.x_active_mask = x_active_mask
+        data.expert_token_nums_shared = expert_token_nums_shared
+        data.atten_batch_size = token_nums_rankid_layeridx
         return AFDRecvOutput(
             hidden_states=hidden_states,
             metadata=metadata,
             group_list=expert_token_nums,
-            topk_ids=topk_ids,
-            topk_weights=topk_weights,
-            x_active_mask=x_active_mask,
-            atten_batch_size=atten_batch_size,
-            expand_idx=expand_idx,
+            dynamic_scales=dynamic_scales,
+            atten_batch_size=token_nums_rankid_layeridx,
             ep_recv_counts=expert_token_nums,
         )
 
@@ -397,15 +405,20 @@ class AFDAsyncConnector(AFDConnectorBase):
         expert_token_nums = data.expert_token_nums
         if expert_token_nums is None:
             expert_token_nums = kwargs["expert_token_nums"]
+        token_nums_rankid_layeridx = data.token_nums_rankid_layeridx
+        if token_nums_rankid_layeridx is None:
+            token_nums_rankid_layeridx = kwargs.get(
+                "token_nums_rankid_layeridx",
+                expert_token_nums,
+            )
         if self.use_stub_cam_ops:
             return
-        torch.ops.cam.cam_combine_send(
+        torch.ops.umdk_cam_op_lib.async_combine_send(
             ffn_output,
             expand_x_shared,
             self.comm_args,
-            expert_token_nums,
+            token_nums_rankid_layeridx,
             self.comm_id,
-            self.max_seq_len,
             data.batch_size,
             data.hidden_size,
             data.topk,
@@ -414,9 +427,8 @@ class AFDAsyncConnector(AFDConnectorBase):
             self.expert_per_rank,
             self.world_rank,
             self.topology.world_size,
-            data.layer_idx,
             self.tp_size,
-            self.dynamic_quant,
+            self.group_name,
         )
 
     def _metadata_data_or_default(

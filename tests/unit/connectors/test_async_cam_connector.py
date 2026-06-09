@@ -26,6 +26,9 @@ class _FakeTensor:
     def new_zeros(self, shape):
         return _FakeTensor(shape, dtype=self.dtype, device=self.device)
 
+    def new_empty(self, shape):
+        return _FakeTensor(shape, dtype=self.dtype, device=self.device)
+
     def remainder(self, value):
         del value
         return self
@@ -46,35 +49,34 @@ class _FakeCamOps:
     def __init__(self):
         self.calls = []
 
-    def cam_dispatch_send(self, *args):
+    def async_dispatch_send(self, *args):
         self.calls.append(("dispatch_send", args))
         return args[0]
 
-    def cam_dispatch_recv(self, *args):
+    def async_dispatch_recv(self, *args):
         self.calls.append(("dispatch_recv", args))
-        batch_size = args[4]
-        hidden_size = args[5]
-        topk = args[6]
-        expert_rank_size = args[7]
-        attention_rank_size = args[8]
+        batch_size = args[3]
+        hidden_size = args[4]
+        expert_per_rank = args[8]
+        tp_size = args[11]
         return (
             _FakeTensor((batch_size, hidden_size)),
-            _FakeTensor((batch_size, topk), dtype="int32"),
-            _FakeTensor((batch_size, topk), dtype="fp32"),
-            _FakeTensor((batch_size * topk,), dtype="int32"),
-            _FakeTensor((expert_rank_size,), dtype="int32"),
-            _FakeTensor((attention_rank_size,), dtype="int32"),
-            _FakeTensor((batch_size,), dtype="int32"),
+            _FakeTensor((max(1, batch_size // 2), hidden_size)),
+            _FakeTensor((batch_size,), dtype="fp32"),
+            _FakeTensor((max(1, batch_size // 2),), dtype="fp32"),
+            _FakeTensor((5 + tp_size * (2 + expert_per_rank),), dtype="int64"),
+            _FakeTensor((expert_per_rank,), dtype="int64"),
+            _FakeTensor((1,), dtype="int64"),
         )
 
-    def cam_combine_send(self, *args):
+    def async_combine_send(self, *args):
         self.calls.append(("combine_send", args))
         return args[0]
 
-    def cam_combine_recv(self, *args):
+    def async_combine_recv(self, *args):
         self.calls.append(("combine_recv", args))
-        batch_size = args[6]
-        hidden_size = args[7]
+        batch_size = args[5]
+        hidden_size = args[6]
         return _FakeTensor((batch_size, hidden_size))
 
 
@@ -82,7 +84,7 @@ class _FakeTorch:
     def __init__(self):
         self.float32 = "fp32"
         self.int32 = "int32"
-        self.ops = SimpleNamespace(cam=_FakeCamOps())
+        self.ops = SimpleNamespace(umdk_cam_op_lib=_FakeCamOps())
 
     def arange(self, stop, *, dtype, device):
         return _FakeTensor((stop,), dtype=dtype, device=device)
@@ -219,9 +221,10 @@ def test_async_connector_calls_cam_stub_shaped_ops(monkeypatch):
 
     assert output is hidden_states
     assert combined.shape == (3, 16)
-    assert fake_torch.ops.cam.calls[0][0] == "dispatch_send"
-    assert fake_torch.ops.cam.calls[1][0] == "combine_recv"
-    assert fake_torch.ops.cam.calls[0][1][5:11] == (3, 16, 2, 2, 4, 4)
+    assert fake_torch.ops.umdk_cam_op_lib.calls[0][0] == "dispatch_send"
+    assert fake_torch.ops.umdk_cam_op_lib.calls[1][0] == "combine_recv"
+    assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][5:11] == (3, 16, 2, 2, 4, 4)
+    assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][5:11] == (3, 16, 2, 2, 4, 4)
     assert isinstance(metadata.connector_data, AFDAsyncConnectorData)
 
 
@@ -242,10 +245,12 @@ def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
     connector.send_ffn_output(recv_output.hidden_states, recv_output.metadata)
 
     assert recv_output.hidden_states.shape == (4, 16)
-    assert recv_output.topk_ids.shape == (4, 2)
+    assert recv_output.topk_ids is None
+    assert recv_output.dynamic_scales.shape == (4,)
     assert recv_output.group_list is recv_output.ep_recv_counts
-    assert fake_torch.ops.cam.calls[0][0] == "dispatch_recv"
-    assert fake_torch.ops.cam.calls[1][0] == "combine_send"
+    assert fake_torch.ops.umdk_cam_op_lib.calls[0][0] == "dispatch_recv"
+    assert fake_torch.ops.umdk_cam_op_lib.calls[1][0] == "combine_send"
+    assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][3] is recv_output.atten_batch_size
 
 
 def test_async_select_experts_maps_legacy_global_num_experts(monkeypatch):
@@ -323,4 +328,4 @@ def test_async_connector_stub_mode_bypasses_cam_ops(monkeypatch):
     assert recv_output.hidden_states.shape == (4, 16)
     assert recv_output.topk_ids.shape == (4, 2)
     assert recv_output.group_list is recv_output.ep_recv_counts
-    assert fake_torch.ops.cam.calls == []
+    assert fake_torch.ops.umdk_cam_op_lib.calls == []

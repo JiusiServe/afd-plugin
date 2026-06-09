@@ -320,11 +320,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     )
                     _set_moe_layer_index(forward_context, layer_idx)
 
-                if metadata.recv_handle_list is not None:
-                    for work in metadata.recv_handle_list:
-                        work.wait()
-                    metadata.recv_handle_list = None
-
                 rank_ffn_output = self._run_ffn_computation(
                     hidden_states=hidden_states,
                     layer_idx=layer_idx,

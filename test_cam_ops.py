@@ -41,6 +41,8 @@ import logging
 import torchair
 import torchair as tng
 
+import torch.distributed as dist
+
 from torchair.configs.compiler_config import CompilerConfig
 
 host1_mgt_ip = "172.20.149.65"
@@ -60,6 +62,7 @@ quant_mode_list = [1]
 MULIT_STREAM = False
 GMM_Check = False
 IS_graph = False
+group_name = ""
 
 
 
@@ -78,7 +81,7 @@ class ATTN_Module(torch.nn.Module):
                 recv_tensor = input_dict[random_nums_attn[i]]["expand_x_out_dtype"]
             com_out=None
 
-            torch.ops.cam.cam_dispatch_send(
+            torch.ops.umdk_cam_op_lib.async_dispatch_send(
                 input_dict[random_nums_attn[i]]["x_tensor"], input_dict[random_nums_attn[i]]["expert_ids_tensor"], comm_args,comm_id,
                 32768,
                 input_dict[random_nums_attn[i]]["batch_size"],
@@ -87,20 +90,18 @@ class ATTN_Module(torch.nn.Module):
                 moe_rank_num,
                 attn_rank_num,
                 expert_num_per_rank,
-                rank,world_size,input_dict[random_nums_attn[i]]["layer_idx"], tp_size, input_dict[random_nums_attn[i]]["quant_mode"])
+                rank,world_size,input_dict[random_nums_attn[i]]["layer_idx"], tp_size, input_dict[random_nums_attn[i]]["quant_mode"],group_name)
 
-            com_out = torch.ops.cam.cam_combine_recv(
+            com_out = torch.ops.umdk_cam_op_lib.async_combine_recv(
                 recv_tensor, input_dict[random_nums_attn[i]]["expert_ids_tensor"], input_dict[random_nums_attn[i]]["expert_scales"], 
-                comm_args,
-                comm_id,
+                comm_args,comm_id,
                 input_dict[random_nums_attn[i]]["batch_size"],
                 hidden_size,
                 topk,
                 moe_rank_num,
                 attn_rank_num,
                 expert_num_per_rank,
-                rank,
-                world_size)
+                rank,world_size,group_name)
             com_out_list.append(com_out)
         return com_out_list
     
@@ -124,7 +125,7 @@ class Moe_Model(torch.nn.Module):
             recv_tensor = input_dict[random_nums_attn[i//(attn_rank_num//tp_size)]]["expand_x_out_dtype"]
             quant_mode = input_dict[random_nums_attn[i//(attn_rank_num//tp_size)]]["quant_mode"]
 
-            dis_out=torch.ops.cam.cam_dispatch_recv(
+            dis_out=torch.ops.umdk_cam_op_lib.async_dispatch_recv(
                     recv_tensor, comm_args, comm_id,
                     32768,
                     hidden_size,
@@ -133,7 +134,7 @@ class Moe_Model(torch.nn.Module):
                     attn_rank_num,
                     expert_num_per_rank,
                     rank,world_size,tp_size,
-                    quant_mode
+                    quant_mode,group_name
                 )
         
             (expandXOut, expandXOut_shared, dynamicScalesOut, dynamicScalesOut_shared, TokenNums_Rankid_Layeridx, Expert_tokens, Expert_tokens_shared)=dis_out
@@ -154,7 +155,7 @@ class Moe_Model(torch.nn.Module):
                 if quant_mode == 0:
                     expandXOut, dynamicScalesOut = torch_npu.npu_dynamic_quant(expandXOut)
                 gmGroupList = Expert_tokens
-                result = torch.ops.cam.gmm_deq_swiglu_quant_gmm_deq_multi_layer(
+                result = torch.ops.umdk_cam_op_lib.gmm_deq_swiglu_quant_gmm_deq_multi_layer(
                             expandXOut, 
                             weight_ptr_dict["weight1_ptr_tensor"],
                             weight_ptr_dict["scale1_ptr_tensor"],
@@ -168,7 +169,7 @@ class Moe_Model(torch.nn.Module):
                 log.info(f"TokenNums_Rankid_Layeridx: {TokenNums_Rankid_Layeridx}")
                 log.info(f"Expert_tokens: {Expert_tokens}")
 
-            torch.ops.cam.cam_combine_send(
+            torch.ops.umdk_cam_op_lib.async_combine_send(
                     result,
                     result_shared,
                     comm_args, 
@@ -181,7 +182,7 @@ class Moe_Model(torch.nn.Module):
                     attn_rank_num,
                     expert_num_per_rank,
                     rank,
-                    world_size,tp_size
+                    world_size,tp_size,group_name
                 )
 
     def forward_single_stream(self,input_dict, random_nums_attn, weight_ptr_dict, comm_args, comm_id, bs_max, hidden_size, topk, moe_rank_num, attn_rank_num, expert_num_per_rank, rank, world_size, tp_size):
@@ -192,7 +193,7 @@ class Moe_Model(torch.nn.Module):
                 tng.scope.npu_wait_tensor(comm_args,buffer[(i-bufLen)%bufLen])
             recv_tensor = input_dict[random_nums_attn[i//(attn_rank_num//tp_size)]]["expand_x_out_dtype"]
             quant_mode = input_dict[random_nums_attn[i//(attn_rank_num//tp_size)]]["quant_mode"]
-            dis_out=torch.ops.cam.cam_dispatch_recv(
+            dis_out=torch.ops.umdk_cam_op_lib.async_dispatch_recv(
                     recv_tensor, comm_args, comm_id,
                     bs_max,
                     hidden_size,
@@ -201,7 +202,7 @@ class Moe_Model(torch.nn.Module):
                     attn_rank_num,
                     expert_num_per_rank,
                     rank,world_size,tp_size,
-                    quant_mode
+                    quant_mode,group_name
                 )
         
             (expandXOut, expandXOut_shared, dynamicScalesOut, dynamicScalesOut_shared, TokenNums_Rankid_Layeridx, Expert_tokens, Expert_tokens_shared)=dis_out
@@ -218,7 +219,7 @@ class Moe_Model(torch.nn.Module):
                     expandXOut, dynamicScalesOut = torch_npu.npu_dynamic_quant(expandXOut)
                 gmGroupList = Expert_tokens
 
-                result = torch.ops.cam.gmm_deq_swiglu_quant_gmm_deq_multi_layer(
+                result = torch.ops.umdk_cam_op_lib.gmm_deq_swiglu_quant_gmm_deq_multi_layer(
                            expandXOut, 
                             weight_ptr_dict["weight1_ptr_tensor"],
                             weight_ptr_dict["scale1_ptr_tensor"],
@@ -228,7 +229,7 @@ class Moe_Model(torch.nn.Module):
                             weight_ptr_dict["scale2_ptr_tensor"],
                             TokenNums_Rankid_Layeridx
                         )
-            com_out=torch.ops.cam.cam_combine_send(
+            com_out=torch.ops.umdk_cam_op_lib.async_combine_send(
                     result,
                     comm_args, 
                     TokenNums_Rankid_Layeridx,
@@ -240,7 +241,7 @@ class Moe_Model(torch.nn.Module):
                     attn_rank_num,
                     expert_num_per_rank,
                     rank,
-                    world_size,tp_size
+                    world_size,tp_size,group_name
                 )
 
             buffer[i%bufLen]=com_out
@@ -267,7 +268,7 @@ class Moe_Model(torch.nn.Module):
                         tng.scope.npu_wait_tensor(comm_args,buffer[(i-bufLen)%bufLen])
                     if i >=1:
                         tng.scope.npu_wait_tensor(comm_args,dis_out_buff)
-                    dis_out=torch.ops.cam.cam_dispatch_recv(
+                    dis_out=torch.ops.umdk_cam_op_lib.async_dispatch_recv(
                         recv_tensor, comm_args, comm_id,
                         bs_max,
                         hidden_size,
@@ -276,7 +277,7 @@ class Moe_Model(torch.nn.Module):
                         attn_rank_num,
                         expert_num_per_rank,
                         rank,world_size,tp_size,
-                        quant_mode
+                        quant_mode,group_name
                     )
 
                     dis_out_buff=dis_out[0]
@@ -295,7 +296,7 @@ class Moe_Model(torch.nn.Module):
                         if quant_mode == 0:
                             expandXOut, dynamicScalesOut = torch_npu.npu_dynamic_quant(expandXOut)
                         gmGroupList = Expert_tokens
-                        result = torch.ops.cam.gmm_deq_swiglu_quant_gmm_deq_multi_layer(
+                        result = torch.ops.umdk_cam_op_lib.gmm_deq_swiglu_quant_gmm_deq_multi_layer(
                                     expandXOut, 
                                     weight_ptr_dict["weight1_ptr_tensor"],
                                     weight_ptr_dict["scale1_ptr_tensor"],
@@ -308,7 +309,7 @@ class Moe_Model(torch.nn.Module):
 
             with tng.scope.npu_stream_switch("combine_send"):
                 with tng.scope.limit_core_num(COMBINE_AIC_PART, COMBINE_AIV_PART):
-                    com_out=torch.ops.cam.cam_combine_send(
+                    com_out=torch.ops.umdk_cam_op_lib.async_combine_send(
                         result,
                         comm_args, 
                         TokenNums_Rankid_Layeridx,
@@ -320,7 +321,7 @@ class Moe_Model(torch.nn.Module):
                         attn_rank_num,
                         expert_num_per_rank,
                         rank,
-                        world_size,tp_size
+                        world_size,tp_size,group_name
                     )
                     buffer[i%bufLen]=com_out
 
@@ -485,7 +486,8 @@ class RunModel(object):
         return tensor_list, ptr_list
 
     def create_cam_comm(self):
-        self.comm_args = cam.create_comm_moe(self.comm_id, self.g_rank_id, self.g_rank_size, self.batchsize_max, self.hidden_size, self.topk, self.expert_rank_size, f"{host1_mgt_ip}:27007", True).to("npu")
+        # self.comm_args = cam.create_comm_moe(self.comm_id, self.g_rank_id, self.g_rank_size, self.batchsize_max, self.hidden_size, self.topk, self.expert_rank_size, f"{host1_mgt_ip}:27007", True).to("npu")
+        return
         
     def enable_model(self):
         if self.g_rank_id < self.attention_rank_size:
@@ -643,7 +645,7 @@ class RunModel(object):
             gmPermuteWeightOne,gmPermuteScaleOne,gmWeightTwo,gmScaleTwo=expert_weight_list[i]["weight1"], expert_weight_list[i]["scale1"], expert_weight_list[i]["weight2"], expert_weight_list[i]["scale2"]
 
             hidden_states_int8, dynamicScalesOut = torch_npu.npu_dynamic_quant(hidden_states)
-            res=torch.ops.cam.gmm_deq_swiglu_quant_gmm_deq(
+            res=torch.ops.umdk_cam_op_lib.gmm_deq_swiglu_quant_gmm_deq(
                     hidden_states_int8, 
                     gmPermuteWeightOne,
                     gmPermuteScaleOne,
@@ -766,6 +768,10 @@ if __name__ == "__main__":
     rank = int(os.environ["RANK"])
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
+
+    ranks_list = list(np.arange(0, world_size))
+    group = dist.new_group(backend="hccl", ranks=ranks_list)
+    group_name = group._get_backend(torch.device("npu")).get_hccl_comm_name(rank)
 
     actor = RunModel(local_rank, rank, 16, world_size)
     actor.run_test()
