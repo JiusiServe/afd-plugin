@@ -7,8 +7,8 @@ import urllib.error
 
 import pytest
 
-from tests.e2e.gpu.deepseek_v2_lite import runner
-from tests.e2e.gpu.deepseek_v2_lite.runner import build_vllm_command
+from tests.e2e import runner
+from tests.e2e.runner import build_vllm_command
 
 
 def _args() -> argparse.Namespace:
@@ -36,6 +36,8 @@ def _args() -> argparse.Namespace:
         common_vllm_arg=["--trust-remote-code"],
         attention_vllm_arg=[],
         ffn_vllm_arg=[],
+        tp_size=1,
+        device_backend="gpu",
     )
 
 

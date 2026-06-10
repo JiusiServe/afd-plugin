@@ -28,7 +28,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def main() -> int:
@@ -284,7 +284,7 @@ def build_vllm_command(
         "afd": {
             "enabled": True,
             "role": role,
-            "connector": "p2pconnector",
+            "connector": "camp2pconnector" if is_npu else "p2pconnector",
             "host": args.afd_host,
             "port": args.afd_port,
             "num_attention_servers": args.num_attention_servers,
@@ -406,7 +406,7 @@ def build_env(visible_devices: str, args: argparse.Namespace) -> dict[str, str]:
         env["ASCEND_RT_VISIBLE_DEVICES"] = visible_devices
     else:
         env["CUDA_VISIBLE_DEVICES"] = visible_devices
-    env["VLLM_PLUGINS"] = "afd"
+    env["VLLM_PLUGINS"] = "ascend,afd" if args.device_backend == "npu" else "afd"
     env["PYTHONUNBUFFERED"] = "1"
     env.pop("AFD_PLUGIN_EARLY_ENGINE_PATCH", None)
     current_pythonpath = env.get("PYTHONPATH")

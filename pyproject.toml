@@ -64,6 +64,10 @@ addopts = "-q"
 markers = [
     "vllm_runtime: tests requiring an importable vLLM runtime dependency.",
     "gpu: GPU-gated AFD integration tests.",
+    "npu: NPU-gated AFD integration tests.",
+    "e2e: full end-to-end tests requiring model weights and hardware.",
+    "eval: accuracy/evaluation tests requiring datasets.",
+    "slow: tests that take more than 120 seconds.",
 ]
 
 [tool.ruff]

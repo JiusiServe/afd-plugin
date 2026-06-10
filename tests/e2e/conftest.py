@@ -1,0 +1,331 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+"""Shared E2E test infrastructure – server lifecycle, launch helpers, port utils."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import threading
+import time
+import urllib.error
+import urllib.request
+from typing import Any
+
+from tests.e2e.runner import (
+    build_env,
+    build_vllm_command,
+    served_model_name,
+    start_process,
+    stream_output,
+    terminate_processes,
+)
+
+# ---------------------------------------------------------------------------
+# Helper: lightweight namespace to mimic runner's argparse result
+# ---------------------------------------------------------------------------
+
+
+def _make_args(
+    *,
+    model: str,
+    vllm_bin: str = "vllm",
+    num_attention_servers: int = 1,
+    num_ffn_servers: int = 1,
+    api_host: str = "127.0.0.1",
+    api_port_base: int = 8000,
+    afd_host: str = "127.0.0.1",
+    afd_port: int = 1239,
+    startup_timeout: float = 900,
+    ffn_start_delay: float = 8,
+    served_model_name_prefix: str = "deepseek-v2-lite-afd",
+    enforce_eager: bool = True,
+    cuda_graph_full_decode_only: bool = False,
+    cudagraph_capture_size: int = 64,
+    enable_dbo: bool = False,
+    common_vllm_args: list[str] | None = None,
+    attention_vllm_args: list[str] | None = None,
+    ffn_vllm_args: list[str] | None = None,
+    use_decode_bench_connector: bool = False,
+    dbo_decode_token_threshold: int = 1,
+    dbo_prefill_token_threshold: int | None = None,
+    tp_size: int = 1,
+    device_backend: str = "gpu",
+) -> dict[str, Any]:
+    """Build a dict mimicking the runner's argparse Namespace."""
+    return {
+        "model": model,
+        "vllm_bin": vllm_bin,
+        "num_attention_servers": num_attention_servers,
+        "num_ffn_servers": num_ffn_servers,
+        "api_host": api_host,
+        "api_port_base": api_port_base,
+        "afd_host": afd_host,
+        "afd_port": afd_port,
+        "startup_timeout": startup_timeout,
+        "ffn_start_delay": ffn_start_delay,
+        "served_model_name_prefix": served_model_name_prefix,
+        "cuda_graph_full_decode_only": cuda_graph_full_decode_only,
+        "cudagraph_capture_size": cudagraph_capture_size,
+        "enable_dbo": enable_dbo,
+        "dbo_decode_token_threshold": dbo_decode_token_threshold,
+        "dbo_prefill_token_threshold": dbo_prefill_token_threshold,
+        "use_decode_bench_connector": use_decode_bench_connector,
+        "common_vllm_arg": common_vllm_args or [],
+        "attention_vllm_arg": attention_vllm_args or [],
+        "ffn_vllm_arg": ffn_vllm_args or [],
+        "prompt": "",
+        "max_tokens": 16,
+        "temperature": 0.0,
+        "num_requests": None,
+        "request_concurrency": None,
+        "tp_size": tp_size,
+        "device_backend": device_backend,
+    }
+
+
+class _ArgsNs:
+    """Simple object-from-dict namespace for runner functions."""
+
+    def __init__(self, d: dict[str, Any]) -> None:
+        self.__dict__.update(d)
+
+
+# ---------------------------------------------------------------------------
+# Unified AFD server management
+# ---------------------------------------------------------------------------
+
+
+class AFDServer:
+    """Manages a running pair of AFD attention + FFN servers (GPU or NPU)."""
+
+    def __init__(
+        self,
+        base_url: str,
+        attention_port: int,
+        served_model: str,
+        processes: list[subprocess.Popen[str]],
+        log_threads: list[threading.Thread],
+        logs: dict[str, list[str]],
+    ) -> None:
+        self.base_url = base_url
+        self.attention_port = attention_port
+        self.served_model = served_model
+        self._processes = processes
+        self._log_threads = log_threads
+        self._logs = logs
+
+    @property
+    def logs(self) -> dict[str, list[str]]:
+        return self._logs
+
+    def request_completion(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 16,
+        temperature: float = 0.0,
+        stream: bool = False,
+        logprobs: int | None = None,
+    ) -> dict[str, Any]:
+        """Send a /v1/completions request and return the parsed JSON body."""
+        url = f"{self.base_url}/v1/completions"
+        payload: dict[str, Any] = {
+            "model": self.served_model,
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": stream,
+        }
+        if logprobs is not None:
+            payload["logprobs"] = logprobs
+
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace") or "<empty>"
+            raise RuntimeError(
+                f"HTTP {exc.code} {exc.reason}: {body}",
+            ) from exc
+
+    def shutdown(self) -> None:
+        terminate_processes(self._processes)
+        for thread in self._log_threads:
+            thread.join(timeout=2)
+
+
+# ---------------------------------------------------------------------------
+# Process helpers
+# ---------------------------------------------------------------------------
+
+
+def _ensure_alive(process: subprocess.Popen[str], message: str) -> None:
+    rc = process.poll()
+    if rc is not None:
+        raise RuntimeError(f"{message} (returncode={rc})")
+
+
+# ---------------------------------------------------------------------------
+# Unified AFD server launcher
+# ---------------------------------------------------------------------------
+
+
+def _launch_afd_server(
+    model: str,
+    *,
+    backend: str,
+    vllm_bin: str = "vllm",
+    attention_devices: list[str] | None = None,
+    ffn_devices: list[str] | None = None,
+    api_port_base: int = 8000,
+    afd_port: int = 1239,
+    startup_timeout: float = 900,
+    enforce_eager: bool = True,
+    cuda_graph_full_decode_only: bool = False,
+    cudagraph_capture_size: int = 64,
+    enable_dbo: bool = False,
+    common_vllm_args: list[str] | None = None,
+    served_model_name_prefix: str = "deepseek-v2-lite-afd",
+    ffn_start_delay: float = 8,
+) -> AFDServer:
+    """Start AFD servers and return an AFDServer once the API is ready.
+
+    Parameters
+    ----------
+    backend:
+        ``"gpu"`` uses CUDA workers with ``p2pconnector``.
+        ``"npu"`` uses Ascend workers with ``camp2pconnector``.
+    attention_devices:
+        Device IDs for the attention worker (e.g. ``["0"]``).
+    ffn_devices:
+        Device IDs for the FFN worker (e.g. ``["1"]``).
+    """
+    attention_devices = attention_devices or ["0"]
+    ffn_devices = ffn_devices or ["1"]
+
+    is_npu = backend == "npu"
+
+    # NPU AFD: give the FFN server ~30s to fully bring up its
+    # camp2pconnector / HCCL rendezvous before the Attention server connects.
+    # The 8s default launches Attention against a half-initialized FFN: /v1/models
+    # comes up, but the attention<->FFN handshake is wedged and decode deadlocks
+    # ~20 tokens into the first request. 30s is what the passing 1A1F model tests
+    # (tests/e2e/models/.../test_e2e_npu.py -> runner.py --ffn-start-delay) use.
+    if is_npu:
+        ffn_start_delay = max(ffn_start_delay, 30.0)
+
+    args = _ArgsNs(
+        _make_args(
+            model=model,
+            vllm_bin=vllm_bin,
+            num_attention_servers=len(attention_devices),
+            num_ffn_servers=len(ffn_devices),
+            api_port_base=api_port_base,
+            afd_port=afd_port,
+            startup_timeout=startup_timeout,
+            enforce_eager=enforce_eager,
+            cuda_graph_full_decode_only=cuda_graph_full_decode_only,
+            cudagraph_capture_size=cudagraph_capture_size,
+            enable_dbo=enable_dbo,
+            common_vllm_args=common_vllm_args,
+            served_model_name_prefix=served_model_name_prefix,
+            ffn_start_delay=ffn_start_delay,
+            device_backend=backend,
+        ),
+    )
+
+    # NPU uses camp2pconnector; GPU uses p2pconnector.
+    # Patch the connector in the AFD config after building the command.
+    processes: list[subprocess.Popen[str]] = []
+    log_threads: list[threading.Thread] = []
+    logs: dict[str, list[str]] = {"ffn": [], "attention": []}
+
+    try:
+        # --- FFN ---
+        ffn_cmd = build_vllm_command(args, role="ffn")
+        if is_npu:
+            ffn_cmd = _patch_connector(ffn_cmd, "camp2pconnector")
+        ffn_devices_str = ",".join(ffn_devices)
+        device_label = (
+            f"ASCEND_RT_VISIBLE_DEVICES={ffn_devices_str}"
+            if is_npu
+            else f"CUDA_VISIBLE_DEVICES={ffn_devices_str}"
+        )
+        print(f"\n[conftest] Starting FFN ({device_label})")
+        ffn_proc = start_process("ffn", ffn_cmd, build_env(ffn_devices_str, args))
+        processes.append(ffn_proc)
+        log_threads.append(stream_output("ffn", ffn_proc, logs["ffn"]))
+
+        time.sleep(args.ffn_start_delay)
+        _ensure_alive(ffn_proc, "FFN process exited during startup")
+
+        # --- Attention ---
+        attn_cmd = build_vllm_command(args, role="attention")
+        if is_npu:
+            attn_cmd = _patch_connector(attn_cmd, "camp2pconnector")
+        attn_devices_str = ",".join(attention_devices)
+        device_label = (
+            f"ASCEND_RT_VISIBLE_DEVICES={attn_devices_str}"
+            if is_npu
+            else f"CUDA_VISIBLE_DEVICES={attn_devices_str}"
+        )
+        print(f"[conftest] Starting ATTN ({device_label})")
+        attn_proc = start_process(
+            "attention",
+            attn_cmd,
+            build_env(attn_devices_str, args),
+        )
+        processes.append(attn_proc)
+        log_threads.append(stream_output("attention", attn_proc, logs["attention"]))
+
+        _ensure_alive(attn_proc, "Attention process exited during startup")
+
+        # --- Wait for API ---
+        deadline = time.monotonic() + startup_timeout
+        api_url = f"http://{args.api_host}:{api_port_base}/v1/models"
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(api_url, timeout=5) as resp:
+                    if resp.status == 200:
+                        print(f"[conftest] API ready at {api_url}")
+                        break
+            except (OSError, urllib.error.URLError):
+                pass
+            time.sleep(2)
+        else:
+            raise TimeoutError(
+                f"API not ready at {api_url} after {startup_timeout}s",
+            )
+
+        return AFDServer(
+            base_url=f"http://{args.api_host}:{api_port_base}",
+            attention_port=api_port_base,
+            served_model=served_model_name(args, "attention"),
+            processes=processes,
+            log_threads=log_threads,
+            logs=logs,
+        )
+    except BaseException:
+        terminate_processes(processes)
+        for thread in log_threads:
+            thread.join(timeout=2)
+        raise
+
+
+def _patch_connector(command: list[str], connector: str) -> list[str]:
+    """Replace the connector value in --additional-config JSON."""
+    result = list(command)
+    for i, token in enumerate(result):
+        if token == "--additional-config" and i + 1 < len(result):
+            config = json.loads(result[i + 1])
+            config["afd"]["connector"] = connector
+            result[i + 1] = json.dumps(config, separators=(",", ":"))
+            break
+    return result

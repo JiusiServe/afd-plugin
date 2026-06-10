@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""NPU E2E correctness test: DeepSeekV2-Lite with TP=2 ACL graph.
+"""NPU E2E correctness tests: DeepSeekV2-Lite with TP=2 (eager + ACL graph).
+
+Each test runs a 2A2F topology with tensor-parallel size 2 (DP=1) and asserts
+the runner-produced completion contains the expected text.
 
 Skipped unless AFD_NPU_E2E_MODEL is set to a local model path.
 Requires 4 NPUs (2 attention + 2 FFN).
@@ -16,7 +19,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-RUNNER = REPO_ROOT / "tests" / "e2e" / "gpu" / "deepseek_v2_lite" / "runner.py"
+RUNNER = REPO_ROOT / "tests" / "e2e" / "runner.py"
 
 
 def _npu_list() -> list[str]:
@@ -30,19 +33,24 @@ def _npu_list() -> list[str]:
 def _model_path() -> str:
     model = os.environ.get("AFD_NPU_E2E_MODEL")
     if not model:
-        pytest.skip("set AFD_NPU_E2E_MODEL to run TP=2 ACL graph E2E tests")
+        pytest.skip("set AFD_NPU_E2E_MODEL to run TP=2 NPU E2E tests")
     return model
 
 
-@pytest.mark.gpu
-def test_deepseek_v2_tp2_acl_graph_e2e():
-    """TP=2, DP=1, ACL graph FULL_DECODE_ONLY correctness test on Ascend NPU."""
+def _run_tp2(*, graph: bool) -> None:
     npus = _npu_list()
     if len(npus) < 4:
         pytest.skip(f"requires 4 NPUs; got {len(npus)}")
 
     model = _model_path()
     capture_size = os.environ.get("AFD_NPU_E2E_CAPTURE_SIZE", "8")
+
+    if graph:
+        api_port = os.environ.get("AFD_NPU_E2E_TP2_GRAPH_API_PORT", "18016")
+        afd_port = os.environ.get("AFD_NPU_E2E_TP2_GRAPH_AFD_PORT", "6256")
+    else:
+        api_port = os.environ.get("AFD_NPU_E2E_TP2_EAGER_API_PORT", "18006")
+        afd_port = os.environ.get("AFD_NPU_E2E_TP2_EAGER_AFD_PORT", "6246")
 
     command = [
         sys.executable,
@@ -60,16 +68,13 @@ def test_deepseek_v2_tp2_acl_graph_e2e():
         "--ffn-gpus",
         ",".join(npus[2:4]),
         "--api-port-base",
-        os.environ.get("AFD_NPU_E2E_API_PORT", "18006"),
+        api_port,
         "--afd-port",
-        os.environ.get("AFD_NPU_E2E_AFD_PORT", "6246"),
+        afd_port,
         "--tp-size",
         "2",
         "--device-backend",
         "npu",
-        "--cuda-graph-full-decode-only",
-        "--cudagraph-capture-size",
-        capture_size,
         "--max-tokens",
         "7",
         "--prompt",
@@ -82,4 +87,22 @@ def test_deepseek_v2_tp2_acl_graph_e2e():
         "--expect-text",
         "city of neighborhoods, and each one",
     ]
+    if graph:
+        command.extend(
+            ["--cuda-graph-full-decode-only", "--cudagraph-capture-size", capture_size],
+        )
+
     subprocess.run(command, cwd=REPO_ROOT, check=True)
+
+
+@pytest.mark.npu
+def test_deepseek_v2_tp2_eager_e2e():
+    """TP=2, DP=1 eager E2E correctness test on Ascend NPU."""
+    _run_tp2(graph=False)
+
+
+@pytest.mark.npu
+@pytest.mark.slow
+def test_deepseek_v2_tp2_graph_e2e():
+    """TP=2, DP=1 ACL graph FULL_DECODE_ONLY E2E correctness test on Ascend NPU."""
+    _run_tp2(graph=True)
