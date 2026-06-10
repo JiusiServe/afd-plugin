@@ -176,14 +176,13 @@ afdasyncconnector
     "connector": "afdasyncconnector",
     "num_attention_servers": 8,
     "num_ffn_servers": 8,
-	    "extra_config": {
-	      "max_seq_len": 32768,
-	      "expert_per_rank": 32,
-	      "tp_size": 8,
-	      "quant_mode": 1
-	    }
-	  }
-	}
+    "extra_config": {
+      "expert_per_rank": 32,
+      "tp_size": 8,
+      "quant_mode": 1
+    }
+  }
+}
 ```
 
 FFN role 同样使用 `connector: "afdasyncconnector"`，`role` 改为 `"ffn"`。
@@ -318,6 +317,8 @@ output = torch.ops.umdk_cam_op_lib.async_combine_recv(
 
 `async_combine_recv` 的输出 shape / dtype 应与 dispatch send 的 `hidden_states`
 一致。
+
+当前插件固定传 `comm_id=0`，不从 `extra_config` 读取。
 
 ### FFN / MoE 侧
 
@@ -656,7 +657,7 @@ comm_args = cam.create_comm_moe(
 - 从该 process group 获取 HCCL comm name，并作为 CAM 算子入参
   `group_name`；
 - 构造 `comm_args`；
-- 保存 `comm_id`；
+- 使用固定 `comm_id=0`；
 - 保存 topology 参数；
 - runtime 模块层可以直接导入真实依赖，顶层插件入口仍保持 CPU-safe。
 
@@ -664,8 +665,6 @@ comm_args = cam.create_comm_moe(
 
 ```text
 cam_init_endpoint
-comm_id
-max_seq_len
 topk
 expert_per_rank
 tp_size

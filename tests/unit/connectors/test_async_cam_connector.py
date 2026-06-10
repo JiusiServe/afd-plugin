@@ -14,6 +14,7 @@ from afd_plugin.connectors.npu.async_cam import (  # noqa: E402
     AFD_ASYNC_CAM_GROUP_NAME,
     AFDAsyncConnector,
     AFDAsyncConnectorData,
+    CAM_COMM_ID,
     build_async_topology,
 )
 
@@ -96,7 +97,7 @@ def _vllm_config():
     )
 
 
-def _afd_config(*, role: str, rank: int = 0):
+def _afd_config(*, role: str, rank: int = 0, extra_config=None):
     return AFDConfig(
         enabled=True,
         connector="afdasyncconnector",
@@ -104,7 +105,7 @@ def _afd_config(*, role: str, rank: int = 0):
         afd_server_rank=rank,
         num_attention_servers=4,
         num_ffn_servers=2,
-        extra_config={},
+        extra_config={} if extra_config is None else dict(extra_config),
     )
 
 
@@ -219,7 +220,7 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
         0,
         0,
         _vllm_config(),
-        _afd_config(role="attention"),
+        _afd_config(role="attention", extra_config={"comm_id": 99}),
     )
     connector._initialized = True
     connector.comm_args = _FakeTensor((1,), dtype="int64")
@@ -246,6 +247,8 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
     assert combined.shape == (3, 16)
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][0] == "dispatch_send"
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][0] == "combine_recv"
+    assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][3] == CAM_COMM_ID
+    assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][4] == CAM_COMM_ID
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][5:11] == (3, 16, 2, 2, 4, 4)
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][5:11] == (3, 16, 2, 2, 4, 4)
     assert isinstance(metadata.connector_data, AFDAsyncConnectorData)

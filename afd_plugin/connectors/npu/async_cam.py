@@ -20,6 +20,7 @@ from afd_plugin.distributed import init_afd_process_group
 
 DPMetadataMap: TypeAlias = dict[int, object]
 AFD_ASYNC_CAM_GROUP_NAME = "afd_async_cam"
+CAM_COMM_ID = 0
 
 
 @dataclass(slots=True)
@@ -104,7 +105,7 @@ class AFDAsyncConnector(AFDConnectorBase):
             1,
             int(vllm_config.scheduler_config.max_num_batched_tokens),
         )
-        self.comm_id = int(afd_config.extra_config.get("comm_id", 0) or 0)
+        self.comm_id = CAM_COMM_ID
         self.tp_size = max(1, int(parallel_config.tensor_parallel_size))
         self.cam_pg: Any | None = None
         self.topology = build_async_topology(
@@ -580,5 +581,6 @@ __all__ = [
     "AFDAsyncConnector",
     "AFDAsyncConnectorData",
     "AFDAsyncTopology",
+    "CAM_COMM_ID",
     "build_async_topology",
 ]
