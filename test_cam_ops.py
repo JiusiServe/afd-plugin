@@ -35,17 +35,17 @@ import random
 import math
 import torch
 import torch_npu
-import cam
-import cam_graph
 import logging
 import torchair
 import torchair as tng
 
 import torch.distributed as dist
 
-from torchair.configs.compiler_config import CompilerConfig
+import umdk_cam_op_lib
 
-host1_mgt_ip = "172.20.149.65"
+import numpy as np
+
+host1_mgt_ip = "127.0.0.1"
 ascend_rt_visible_devices = "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
 
 logging.basicConfig(level=logging.INFO)
@@ -58,11 +58,40 @@ outer_cycle_cnt = 50
 verify_result_cnt = 10
 weight_cnt = 2
 data_type_list = [torch.float16, torch.bfloat16]
-quant_mode_list = [1]
+quant_mode_list = [0]
 MULIT_STREAM = False
 GMM_Check = False
 IS_graph = False
 group_name = ""
+_debug_logged_keys = set()
+
+
+def _describe_value(value):
+    if torch.is_tensor(value):
+        return (
+            f"{type(value).__name__}("
+            f"dtype={value.dtype}, shape={tuple(value.shape)}, "
+            f"device={value.device}, stride={value.stride()}, "
+            f"contiguous={value.is_contiguous()})"
+        )
+    return f"{type(value).__name__}({value!r})"
+
+
+def _log_op_inputs_once(op_name, log_rank, **kwargs):
+    key = (op_name, log_rank)
+    if key in _debug_logged_keys:
+        return
+    _debug_logged_keys.add(key)
+    parts = [f"{name}={_describe_value(value)}" for name, value in kwargs.items()]
+    log.info("[rank%s] %s inputs: %s", log_rank, op_name, "; ".join(parts))
+
+
+def _dequant_prefix(tensor, scales, token_count, dtype):
+    output = tensor.to(torch.float32)
+    output[:token_count] = (
+        output[:token_count] * scales[:token_count].unsqueeze(-1)
+    )
+    return output.to(dtype=dtype)
 
 
 
@@ -81,6 +110,27 @@ class ATTN_Module(torch.nn.Module):
                 recv_tensor = input_dict[random_nums_attn[i]]["expand_x_out_dtype"]
             com_out=None
 
+            _log_op_inputs_once(
+                "async_dispatch_send",
+                rank,
+                x_tensor=input_dict[random_nums_attn[i]]["x_tensor"],
+                expert_ids_tensor=input_dict[random_nums_attn[i]]["expert_ids_tensor"],
+                comm_args=comm_args,
+                comm_id=comm_id,
+                bs_max=32768,
+                batch_size=input_dict[random_nums_attn[i]]["batch_size"],
+                hidden_size=hidden_size,
+                topk=topk,
+                moe_rank_num=moe_rank_num,
+                attn_rank_num=attn_rank_num,
+                expert_num_per_rank=expert_num_per_rank,
+                rank=rank,
+                world_size=world_size,
+                layer_idx=input_dict[random_nums_attn[i]]["layer_idx"],
+                tp_size=tp_size,
+                quant_mode=input_dict[random_nums_attn[i]]["quant_mode"],
+                group_name=group_name,
+            )
             torch.ops.umdk_cam_op_lib.async_dispatch_send(
                 input_dict[random_nums_attn[i]]["x_tensor"], input_dict[random_nums_attn[i]]["expert_ids_tensor"], comm_args,comm_id,
                 32768,
@@ -92,6 +142,24 @@ class ATTN_Module(torch.nn.Module):
                 expert_num_per_rank,
                 rank,world_size,input_dict[random_nums_attn[i]]["layer_idx"], tp_size, input_dict[random_nums_attn[i]]["quant_mode"],group_name)
 
+            _log_op_inputs_once(
+                "async_combine_recv",
+                rank,
+                recv_tensor=recv_tensor,
+                expert_ids_tensor=input_dict[random_nums_attn[i]]["expert_ids_tensor"],
+                expert_scales=input_dict[random_nums_attn[i]]["expert_scales"],
+                comm_args=comm_args,
+                comm_id=comm_id,
+                batch_size=input_dict[random_nums_attn[i]]["batch_size"],
+                hidden_size=hidden_size,
+                topk=topk,
+                moe_rank_num=moe_rank_num,
+                attn_rank_num=attn_rank_num,
+                expert_num_per_rank=expert_num_per_rank,
+                rank=rank,
+                world_size=world_size,
+                group_name=group_name,
+            )
             com_out = torch.ops.umdk_cam_op_lib.async_combine_recv(
                 recv_tensor, input_dict[random_nums_attn[i]]["expert_ids_tensor"], input_dict[random_nums_attn[i]]["expert_scales"], 
                 comm_args,comm_id,
@@ -125,6 +193,24 @@ class Moe_Model(torch.nn.Module):
             recv_tensor = input_dict[random_nums_attn[i//(attn_rank_num//tp_size)]]["expand_x_out_dtype"]
             quant_mode = input_dict[random_nums_attn[i//(attn_rank_num//tp_size)]]["quant_mode"]
 
+            _log_op_inputs_once(
+                "async_dispatch_recv",
+                rank,
+                recv_tensor=recv_tensor,
+                comm_args=comm_args,
+                comm_id=comm_id,
+                bs_max=32768,
+                hidden_size=hidden_size,
+                topk=topk,
+                moe_rank_num=moe_rank_num,
+                attn_rank_num=attn_rank_num,
+                expert_num_per_rank=expert_num_per_rank,
+                rank=rank,
+                world_size=world_size,
+                tp_size=tp_size,
+                quant_mode=quant_mode,
+                group_name=group_name,
+            )
             dis_out=torch.ops.umdk_cam_op_lib.async_dispatch_recv(
                     recv_tensor, comm_args, comm_id,
                     32768,
@@ -140,15 +226,20 @@ class Moe_Model(torch.nn.Module):
             (expandXOut, expandXOut_shared, dynamicScalesOut, dynamicScalesOut_shared, TokenNums_Rankid_Layeridx, Expert_tokens, Expert_tokens_shared)=dis_out
             if GMM_Check == False:
                 TOTAL_Tokens = TokenNums_Rankid_Layeridx[0].item()
-                expandXOut_shared_Tokens = 31457
+                expandXOut_shared_Tokens = Expert_tokens_shared[0].item()
                 if quant_mode == 1:
-                    expandXOut=expandXOut.to(recv_tensor)
-                    expandXOut[:TOTAL_Tokens]=expandXOut[:TOTAL_Tokens]*(dynamicScalesOut[:TOTAL_Tokens].unsqueeze(-1))
-                    expandXOut=expandXOut.to(recv_tensor)
-
-                    expandXOut_shared=expandXOut_shared.to(recv_tensor)
-                    expandXOut_shared[:expandXOut_shared_Tokens]=expandXOut_shared[:expandXOut_shared_Tokens]*(dynamicScalesOut[:expandXOut_shared_Tokens].unsqueeze(-1))
-                    expandXOut_shared=expandXOut_shared.to(recv_tensor)
+                    expandXOut = _dequant_prefix(
+                        expandXOut,
+                        dynamicScalesOut,
+                        TOTAL_Tokens,
+                        recv_tensor.dtype,
+                    )
+                    expandXOut_shared = _dequant_prefix(
+                        expandXOut_shared,
+                        dynamicScalesOut_shared,
+                        expandXOut_shared_Tokens,
+                        recv_tensor.dtype,
+                    )
                 result=expandXOut
                 result_shared=expandXOut_shared
             else:
@@ -169,6 +260,25 @@ class Moe_Model(torch.nn.Module):
                 log.info(f"TokenNums_Rankid_Layeridx: {TokenNums_Rankid_Layeridx}")
                 log.info(f"Expert_tokens: {Expert_tokens}")
 
+            _log_op_inputs_once(
+                "async_combine_send",
+                rank,
+                result=result,
+                result_shared=result_shared,
+                comm_args=comm_args,
+                TokenNums_Rankid_Layeridx=TokenNums_Rankid_Layeridx,
+                comm_id=comm_id,
+                bs_max=bs_max,
+                hidden_size=hidden_size,
+                topk=topk,
+                moe_rank_num=moe_rank_num,
+                attn_rank_num=attn_rank_num,
+                expert_num_per_rank=expert_num_per_rank,
+                rank=rank,
+                world_size=world_size,
+                tp_size=tp_size,
+                group_name=group_name,
+            )
             torch.ops.umdk_cam_op_lib.async_combine_send(
                     result,
                     result_shared,
@@ -209,9 +319,12 @@ class Moe_Model(torch.nn.Module):
             TOTAL_Tokens = TokenNums_Rankid_Layeridx[0].item()            
             if GMM_Check == False:
                 if quant_mode == 1:
-                    expandXOut = torch.as_tensor(expandXOut, dtype=recv_tensor.dtype)
-                    expandXOut[:TOTAL_Tokens]=expandXOut[:TOTAL_Tokens]*(dynamicScalesOut[:TOTAL_Tokens].unsqueeze(-1))
-                    expandXOut = torch.as_tensor(expandXOut, dtype=recv_tensor.dtype)
+                    expandXOut = _dequant_prefix(
+                        expandXOut,
+                        dynamicScalesOut,
+                        TOTAL_Tokens,
+                        recv_tensor.dtype,
+                    )
                 result=expandXOut
 
             else:
@@ -287,9 +400,12 @@ class Moe_Model(torch.nn.Module):
                     TOTAL_Tokens = TokenNums_Rankid_Layeridx[0].item()                                                                                           
                     if GMM_Check == False:
                         if quant_mode == 1:
-                            expandXOut=torch.as_tensor(expandXOut, dtype=recv_tensor.dtype)
-                            expandXOut[:TOTAL_Tokens]=expandXOut[:TOTAL_Tokens]*(dynamicScalesOut[:TOTAL_Tokens].unsqueeze(-1))
-                            expandXOut=torch.as_tensor(expandXOut, dtype=recv_tensor.dtype)
+                            expandXOut = _dequant_prefix(
+                                expandXOut,
+                                dynamicScalesOut,
+                                TOTAL_Tokens,
+                                recv_tensor.dtype,
+                            )
                         result=expandXOut
 
                     else:
@@ -487,6 +603,7 @@ class RunModel(object):
 
     def create_cam_comm(self):
         # self.comm_args = cam.create_comm_moe(self.comm_id, self.g_rank_id, self.g_rank_size, self.batchsize_max, self.hidden_size, self.topk, self.expert_rank_size, f"{host1_mgt_ip}:27007", True).to("npu")
+        self.comm_args = torch.empty((1,), dtype=torch.float16, device=self.device)
         return
         
     def enable_model(self):
@@ -700,36 +817,37 @@ class RunModel(object):
         weight1_ptr_list, scale1_ptr_list, weight2_pt_list, scale2_ptr_list = [],[],[],[]
         final_weight1_ptr_list, final_scale1_ptr_list, final_weight2_pt_list, final_scale2_ptr_list = [],[],[],[]
         
-        for i in range(weight_cnt):
-            expert_weight_list, weight_ptr_list= self.generate_gmm_weight_random_tensor_list()
-            self.weight_dict[i] = {"expert_weight_list":expert_weight_list, "weight_ptr_list":weight_ptr_list}
-        for i in range(weight_cnt):
-            weight_ptr_list = self.weight_dict[i]["weight_ptr_list"]
+        if GMM_Check:
+            for i in range(weight_cnt):
+                expert_weight_list, weight_ptr_list= self.generate_gmm_weight_random_tensor_list()
+                self.weight_dict[i] = {"expert_weight_list":expert_weight_list, "weight_ptr_list":weight_ptr_list}
+            for i in range(weight_cnt):
+                weight_ptr_list = self.weight_dict[i]["weight_ptr_list"]
+                if self.g_rank_id >= self.attention_rank_size:
+                # 提取指定 rank_id 的 w1_random_tensor 的 data_ptr
+                    weight1_ptr = weight_ptr_list[self.g_rank_id-self.attention_rank_size]["weight1_ptr"]
+                    scale1_ptr = weight_ptr_list[self.g_rank_id-self.attention_rank_size]["scale1_ptr"]
+                    weight2_ptr = weight_ptr_list[self.g_rank_id-self.attention_rank_size]["weight2_ptr"]
+                    scale2_ptr = weight_ptr_list[self.g_rank_id-self.attention_rank_size]["scale2_ptr"]
+                    weight1_ptr_list.append(weight1_ptr)
+                    scale1_ptr_list.append(scale1_ptr)
+                    weight2_pt_list.append(weight2_ptr)
+                    scale2_ptr_list.append(scale2_ptr)
             if self.g_rank_id >= self.attention_rank_size:
-            # 提取指定 rank_id 的 w1_random_tensor 的 data_ptr
-                weight1_ptr = weight_ptr_list[self.g_rank_id-self.attention_rank_size]["weight1_ptr"]
-                scale1_ptr = weight_ptr_list[self.g_rank_id-self.attention_rank_size]["scale1_ptr"]
-                weight2_ptr = weight_ptr_list[self.g_rank_id-self.attention_rank_size]["weight2_ptr"]
-                scale2_ptr = weight_ptr_list[self.g_rank_id-self.attention_rank_size]["scale2_ptr"]
-                weight1_ptr_list.append(weight1_ptr)
-                scale1_ptr_list.append(scale1_ptr)
-                weight2_pt_list.append(weight2_ptr)
-                scale2_ptr_list.append(scale2_ptr)
-        if self.g_rank_id >= self.attention_rank_size:
-            for i in range(verify_result_cnt):
-                final_weight1_ptr_list.append(weight1_ptr_list[random_weight_index[i]])
-                final_scale1_ptr_list.append(scale1_ptr_list[random_weight_index[i]])
-                final_weight2_pt_list.append(weight2_pt_list[random_weight_index[i]])
-                final_scale2_ptr_list.append(scale2_ptr_list[random_weight_index[i]])
-            
+                for i in range(verify_result_cnt):
+                    final_weight1_ptr_list.append(weight1_ptr_list[random_weight_index[i]])
+                    final_scale1_ptr_list.append(scale1_ptr_list[random_weight_index[i]])
+                    final_weight2_pt_list.append(weight2_pt_list[random_weight_index[i]])
+                    final_scale2_ptr_list.append(scale2_ptr_list[random_weight_index[i]])
+                
 
-        # # 注意：data_ptr() 返回的是 Python int，可以安全转成 torch.int64
-            weight1_ptr_tensor = torch.tensor(final_weight1_ptr_list, dtype=torch.int64,device="npu").contiguous()
-            scale1_ptr_tensor = torch.tensor(final_scale1_ptr_list, dtype=torch.int64,device="npu").contiguous()
-            weight2_ptr_tensor = torch.tensor(final_weight2_pt_list, dtype=torch.int64,device="npu").contiguous()
-            scale2_ptr_tensor = torch.tensor(final_scale2_ptr_list, dtype=torch.int64,device="npu").contiguous()
+            # # 注意：data_ptr() 返回的是 Python int，可以安全转成 torch.int64
+                weight1_ptr_tensor = torch.tensor(final_weight1_ptr_list, dtype=torch.int64,device="npu").contiguous()
+                scale1_ptr_tensor = torch.tensor(final_scale1_ptr_list, dtype=torch.int64,device="npu").contiguous()
+                weight2_ptr_tensor = torch.tensor(final_weight2_pt_list, dtype=torch.int64,device="npu").contiguous()
+                scale2_ptr_tensor = torch.tensor(final_scale2_ptr_list, dtype=torch.int64,device="npu").contiguous()
 
-            self.weight_ptr_dict = {"weight1_ptr_tensor":weight1_ptr_tensor, "scale1_ptr_tensor":scale1_ptr_tensor, "weight2_ptr_tensor":weight2_ptr_tensor, "scale2_ptr_tensor": scale2_ptr_tensor}
+                self.weight_ptr_dict = {"weight1_ptr_tensor":weight1_ptr_tensor, "scale1_ptr_tensor":scale1_ptr_tensor, "weight2_ptr_tensor":weight2_ptr_tensor, "scale2_ptr_tensor": scale2_ptr_tensor}
 
 
         for i in range(verify_result_cnt): 
@@ -737,8 +855,9 @@ class RunModel(object):
             x_tensor = self.generate_expand_x_random_tensor(data_type, -100, 100)
             expert_ids_tensor = self.generate_expert_ids_random_tensor()
             expert_scales= self.generate_scales_random_tensor()
-            expert_weight_list = self.weight_dict[random_weight_index[i]]["expert_weight_list"]
-            if self.g_rank_id < self.attention_rank_size:
+            if GMM_Check:
+                expert_weight_list = self.weight_dict[random_weight_index[i]]["expert_weight_list"]
+            if GMM_Check and self.g_rank_id < self.attention_rank_size:
                 combine_simulate = self.generate_combine_verify(x_tensor, expert_ids_tensor, expert_scales, expert_weight_list, data_type)
             else:
                 combine_simulate = []
@@ -768,6 +887,15 @@ if __name__ == "__main__":
     rank = int(os.environ["RANK"])
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
+
+    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = ascend_rt_visible_devices
+    os.environ["LCCL_BUFFER_SIZE"] = "8192"
+    os.environ["HCCL_INTER_HCCS_DISABLE"] = "FALSE"
+    os.environ["LCAL_COMM_ID"] = f"{host1_mgt_ip}:27005"
+
+    torch.npu.set_device(torch.device("npu", local_rank))
+    if not dist.is_initialized():
+        dist.init_process_group(backend="hccl")
 
     ranks_list = list(np.arange(0, world_size))
     group = dist.new_group(backend="hccl", ranks=ranks_list)
