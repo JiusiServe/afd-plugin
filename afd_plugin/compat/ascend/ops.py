@@ -11,6 +11,11 @@ from pathlib import Path
 AFD_ASCEND_OPS_NAMESPACE = "afd_ascend"
 AFD_ASCEND_VENDOR_NAME = "afd-plugin"
 AFD_CUST_OPAPI_ENV = "AFD_CUST_OPAPI_LIB_PATH"
+CAM_OP_NAMESPACE = "umdk_cam_op_lib"
+CAM_DISPATCH_SEND = "async_dispatch_send"
+CAM_DISPATCH_RECV = "async_dispatch_recv"
+CAM_COMBINE_SEND = "async_combine_send"
+CAM_COMBINE_RECV = "async_combine_recv"
 
 
 def get_afd_cann_vendor_path() -> Path:
@@ -54,6 +59,14 @@ def _assert_afd_namespace_registered(torch: object) -> None:
     _ = torch.ops.afd_ascend.e2a
 
 
+def _assert_cam_namespace_registered(torch: object) -> None:
+    _dispatch_send = torch.ops.umdk_cam_op_lib.async_dispatch_send
+    _dispatch_recv = torch.ops.umdk_cam_op_lib.async_dispatch_recv
+    _combine_send = torch.ops.umdk_cam_op_lib.async_combine_send
+    _combine_recv = torch.ops.umdk_cam_op_lib.async_combine_recv
+    del _dispatch_send, _dispatch_recv, _combine_send, _combine_recv
+
+
 @lru_cache(maxsize=1)
 def ensure_afd_ascend_ops_loaded() -> None:
     """Import the compiled extension that registers ``torch.ops.afd_ascend``.
@@ -83,11 +96,41 @@ def has_afd_ascend_ops() -> bool:
     return True
 
 
+def ensure_cam_ops_available() -> None:
+    """Ensure the runtime exposes the real CAM async operator binaries."""
+
+    try:
+        import torch
+        import torch_npu  # noqa: F401
+        import umdk_cam_op_lib  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "AFDAsyncConnector requires torch, torch_npu, umdk_cam_op_lib, "
+            "and the real torch.ops.umdk_cam_op_lib CAM ops.",
+        ) from exc
+
+    try:
+        _assert_cam_namespace_registered(torch)
+    except AttributeError as exc:
+        raise RuntimeError(
+            "AFDAsyncConnector requires real torch.ops.umdk_cam_op_lib CAM ops "
+            "(async_dispatch_send, async_dispatch_recv, async_combine_send, "
+            "async_combine_recv). Install or load the CAM operator binaries "
+            "before initializing the connector.",
+        ) from exc
+
+
 __all__ = [
     "AFD_ASCEND_OPS_NAMESPACE",
     "AFD_ASCEND_VENDOR_NAME",
     "AFD_CUST_OPAPI_ENV",
+    "CAM_COMBINE_RECV",
+    "CAM_COMBINE_SEND",
+    "CAM_DISPATCH_RECV",
+    "CAM_DISPATCH_SEND",
+    "CAM_OP_NAMESPACE",
     "ensure_afd_ascend_ops_loaded",
+    "ensure_cam_ops_available",
     "get_afd_cann_vendor_path",
     "get_afd_cust_opapi_path",
     "has_afd_ascend_ops",

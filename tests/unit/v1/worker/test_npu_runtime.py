@@ -63,11 +63,8 @@ class _AsyncRecordingConnector(_RecordingConnector):
     uses_dp_metadata_control_plane = False
     ffn_step_trigger = "connector"
 
-    def __init__(self, *, use_stub_cam_ops=True):
+    def __init__(self):
         super().__init__()
-        self.afd_config = SimpleNamespace(
-            extra_config={"use_stub_cam_ops": use_stub_cam_ops},
-        )
 
 
 class _FakeFFNConnector:
@@ -809,39 +806,13 @@ def test_npu_ffn_worker_uses_connector_driven_loop_for_async_connector():
     worker._ffn_shutdown_event = event
     worker.device = SimpleNamespace(type="cpu")
     worker.model_runner = SimpleNamespace(
-        connector=_AsyncRecordingConnector(use_stub_cam_ops=False),
-        execute_connector_driven_step=execute_connector_driven_step,
-    )
-
-    worker._run_ffn_server_loop()
-
-    assert calls == ["step"]
-
-
-def test_npu_ffn_worker_idles_stub_connector_driven_loop(monkeypatch):
-    worker = _new_ffn_worker()
-    ffn_worker_module = sys.modules["afd_plugin.v1.worker.ascend.ffn_worker"]
-    event = threading.Event()
-    calls = []
-
-    def execute_connector_driven_step():
-        calls.append("step")
-
-    def sleep(seconds):
-        calls.append(("sleep", seconds))
-        event.set()
-
-    monkeypatch.setattr(ffn_worker_module.time, "sleep", sleep)
-    worker._ffn_shutdown_event = event
-    worker.device = SimpleNamespace(type="cpu")
-    worker.model_runner = SimpleNamespace(
         connector=_AsyncRecordingConnector(),
         execute_connector_driven_step=execute_connector_driven_step,
     )
 
     worker._run_ffn_server_loop()
 
-    assert calls == [("sleep", 0.01)]
+    assert calls == ["step"]
 
 
 def test_npu_feature_validation_rejects_unsupported_switches():

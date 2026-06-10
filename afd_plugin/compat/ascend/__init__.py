@@ -6,15 +6,16 @@ from afd_plugin.compat.ascend.ops import (
     AFD_ASCEND_OPS_NAMESPACE,
     AFD_ASCEND_VENDOR_NAME,
     AFD_CUST_OPAPI_ENV,
+    CAM_COMBINE_RECV,
+    CAM_COMBINE_SEND,
+    CAM_DISPATCH_RECV,
+    CAM_DISPATCH_SEND,
+    CAM_OP_NAMESPACE,
     ensure_afd_ascend_ops_loaded,
+    ensure_cam_ops_available,
     get_afd_cann_vendor_path,
     get_afd_cust_opapi_path,
     has_afd_ascend_ops,
-)
-from afd_plugin.compat.ascend.cam_stub_ops import (
-    ensure_cam_ops_available,
-    is_cam_stub_ops_enabled,
-    register_cam_stub_ops,
 )
 from afd_plugin.compat.ascend.runtime import (
     apply_afd_ascend_patches_if_needed,
@@ -34,6 +35,11 @@ __all__ = [
     "AFD_ASCEND_OPS_NAMESPACE",
     "AFD_ASCEND_VENDOR_NAME",
     "AFD_CUST_OPAPI_ENV",
+    "CAM_COMBINE_RECV",
+    "CAM_COMBINE_SEND",
+    "CAM_DISPATCH_RECV",
+    "CAM_DISPATCH_SEND",
+    "CAM_OP_NAMESPACE",
     "ensure_ascend_runtime_available",
     "ensure_afd_ascend_ops_loaded",
     "ensure_cam_ops_available",
@@ -46,6 +52,4 @@ __all__ = [
     "init_ascend_workspace_for_afd",
     "mirror_afd_metadata_on_forward_context",
     "npu_afd_num_ubatches",
-    "is_cam_stub_ops_enabled",
-    "register_cam_stub_ops",
 ]

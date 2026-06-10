@@ -6,20 +6,20 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
-from typing import TypeAlias
+from datetime import timedelta
+from typing import Any, TypeAlias
 
 import torch
 from torch import Tensor
 
-from afd_plugin.compat.ascend.cam_stub_ops import (
-    ensure_cam_ops_available,
-    is_cam_stub_ops_enabled,
-)
+from afd_plugin.compat.ascend.ops import ensure_cam_ops_available
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import AFDConnectorMetadata, AFDRecvOutput
+from afd_plugin.distributed import init_afd_process_group
 
 DPMetadataMap: TypeAlias = dict[int, object]
+AFD_ASYNC_CAM_GROUP_NAME = "afd_async_cam"
 
 
 @dataclass(slots=True)
@@ -106,7 +106,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         )
         self.comm_id = int(afd_config.extra_config.get("comm_id", 0) or 0)
         self.tp_size = max(1, int(parallel_config.tensor_parallel_size))
-        self.use_stub_cam_ops = is_cam_stub_ops_enabled(afd_config)
+        self.cam_pg: Any | None = None
         self.topology = build_async_topology(
             afd_config,
             self._role_rank,
@@ -131,7 +131,16 @@ class AFDAsyncConnector(AFDConnectorBase):
         if self._initialized:
             return
 
-        ensure_cam_ops_available(self.afd_config)
+        ensure_cam_ops_available()
+        self.cam_pg = init_afd_process_group(
+            backend="hccl",
+            init_method=f"tcp://{self.afd_config.host}:{self.afd_config.port}",
+            world_size=self.topology.world_size,
+            rank=self.world_rank,
+            group_name=AFD_ASYNC_CAM_GROUP_NAME,
+            timeout=timedelta(minutes=30),
+        )
+        self.group_name = _hccl_comm_name(self.cam_pg, self.world_rank)
         device = f"npu:{self.local_rank}"
         self.comm_args = torch.empty((1,), dtype=torch.int64, device=device)
         self._placeholder = torch.empty(
@@ -142,6 +151,11 @@ class AFDAsyncConnector(AFDConnectorBase):
         self._initialized = True
 
     def close(self) -> None:
+        if self.cam_pg is not None:
+            import torch.distributed as dist
+
+            dist.destroy_process_group(self.cam_pg)
+        self.cam_pg = None
         self.comm_args = None
         self._placeholder = None
         self._pending_attention_payloads.clear()
@@ -257,8 +271,6 @@ class AFDAsyncConnector(AFDConnectorBase):
         data.topk_ids = topk_ids
         data.topk_weights = topk_weights
         self._queue_attention_payload(metadata, topk_ids, topk_weights)
-        if self.use_stub_cam_ops:
-            return hidden_states
         return torch.ops.umdk_cam_op_lib.async_dispatch_send(
             hidden_states,
             topk_ids,
@@ -310,8 +322,6 @@ class AFDAsyncConnector(AFDConnectorBase):
             batch_size=data.batch_size,
             topk=data.topk,
         )
-        if self.use_stub_cam_ops:
-            return ref_tensor
         placeholder = ref_tensor.new_empty((1,))
         return torch.ops.umdk_cam_op_lib.async_combine_recv(
             placeholder,
@@ -348,8 +358,6 @@ class AFDAsyncConnector(AFDConnectorBase):
             )
         data = _ensure_connector_data(metadata)
         placeholder = kwargs.get("placeholder", self._placeholder)
-        if self.use_stub_cam_ops:
-            return self._make_stub_recv_output(metadata, data, placeholder)
         outputs = torch.ops.umdk_cam_op_lib.async_dispatch_recv(
             placeholder,
             self.comm_args,
@@ -411,8 +419,6 @@ class AFDAsyncConnector(AFDConnectorBase):
                 "token_nums_rankid_layeridx",
                 expert_token_nums,
             )
-        if self.use_stub_cam_ops:
-            return
         torch.ops.umdk_cam_op_lib.async_combine_send(
             ffn_output,
             expand_x_shared,
@@ -487,67 +493,6 @@ class AFDAsyncConnector(AFDConnectorBase):
         if not payloads:
             self._pending_attention_payloads.pop(int(stage_idx), None)
         return payload
-
-    def _make_stub_recv_output(
-        self,
-        metadata: AFDConnectorMetadata,
-        data: AFDAsyncConnectorData,
-        placeholder: object,
-    ) -> AFDRecvOutput:
-        if placeholder is None:
-            raise RuntimeError("AFDAsyncConnector stub recv requires a placeholder")
-        hidden_states = placeholder.new_zeros((data.batch_size, data.hidden_size))
-        expert_ids = torch.arange(
-            data.topk,
-            dtype=torch.int32,
-            device=hidden_states.device,
-        )
-        expert_ids = expert_ids.remainder(max(1, self.num_routed_experts))
-        topk_ids = expert_ids.unsqueeze(0).expand(data.batch_size, data.topk)
-        topk_ids = topk_ids.contiguous()
-        topk_weights = torch.full(
-            (data.batch_size, data.topk),
-            1.0 / float(data.topk),
-            dtype=torch.float32,
-            device=hidden_states.device,
-        )
-        expand_idx = torch.arange(
-            data.batch_size * data.topk,
-            dtype=torch.int32,
-            device=hidden_states.device,
-        )
-        expert_token_nums = torch.zeros(
-            (self.expert_rank_size,),
-            dtype=torch.int32,
-            device=hidden_states.device,
-        )
-        atten_batch_size = torch.zeros(
-            (self.attention_rank_size,),
-            dtype=torch.int32,
-            device=hidden_states.device,
-        )
-        x_active_mask = torch.ones(
-            (data.batch_size,),
-            dtype=torch.int32,
-            device=hidden_states.device,
-        )
-        data.topk_ids = topk_ids
-        data.topk_weights = topk_weights
-        data.expand_idx = expand_idx
-        data.expert_token_nums = expert_token_nums
-        data.atten_batch_size = atten_batch_size
-        data.x_active_mask = x_active_mask
-        return AFDRecvOutput(
-            hidden_states=hidden_states,
-            metadata=metadata,
-            group_list=expert_token_nums,
-            topk_ids=topk_ids,
-            topk_weights=topk_weights,
-            x_active_mask=x_active_mask,
-            atten_batch_size=atten_batch_size,
-            expand_idx=expand_idx,
-            ep_recv_counts=expert_token_nums,
-        )
 
 
 def build_async_topology(
@@ -625,7 +570,13 @@ def _validate_topk_payload(
         )
 
 
+def _hccl_comm_name(group: Any, rank: int) -> str:
+    backend = group._get_backend(torch.device("npu"))
+    return str(backend.get_hccl_comm_name(int(rank)))
+
+
 __all__ = [
+    "AFD_ASYNC_CAM_GROUP_NAME",
     "AFDAsyncConnector",
     "AFDAsyncConnectorData",
     "AFDAsyncTopology",

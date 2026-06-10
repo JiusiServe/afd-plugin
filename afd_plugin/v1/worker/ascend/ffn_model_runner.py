@@ -660,16 +660,7 @@ def _to_dp_level_token_counts(
     return num_tokens_across_dp[indices].contiguous()
 
 def _connector_driven_batch_size(connector: Any, fallback: int) -> int:
-    extra_config = connector.afd_config.extra_config or {}
-    if _truthy(extra_config.get("use_stub_cam_ops")):
-        return 1
     return max(1, int(getattr(connector, "max_seq_len", fallback) or fallback))
-
-
-def _truthy(value: object) -> bool:
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
 
 
 def _use_npu_aclgraph(vllm_config: object, runner: object) -> bool:
