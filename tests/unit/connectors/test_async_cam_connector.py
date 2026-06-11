@@ -279,7 +279,10 @@ def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
     assert recv_output.hidden_states.shape == (4, 16)
     assert recv_output.topk_ids is None
     assert recv_output.dynamic_scales.shape == (4,)
+    assert recv_output.expand_x_shared.shape == (2, 16)
+    assert recv_output.dynamic_scales_shared.shape == (2,)
     assert recv_output.group_list is recv_output.ep_recv_counts
+    assert recv_output.ep_recv_counts_shared.shape == (1,)
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][0] == "dispatch_recv"
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][0] == "combine_send"
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][3] is recv_output.atten_batch_size

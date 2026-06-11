@@ -85,8 +85,13 @@ class _FakeFFNConnector:
 
     def recv_attn_output(self, metadata=None, ubatch_idx=None):
         for item in tuple(self.attn_outputs):
-            if item[1].stage_idx == ubatch_idx:
+            item_metadata = (
+                item.metadata if isinstance(item, AFDRecvOutput) else item[1]
+            )
+            if item_metadata.stage_idx == ubatch_idx:
                 self.attn_outputs.remove(item)
+                if isinstance(item, AFDRecvOutput):
+                    return item
                 return AFDRecvOutput(hidden_states=item[0], metadata=item[1])
         raise IndexError(ubatch_idx)
 
@@ -109,6 +114,15 @@ class _FakeFFNConnector:
 
 class _FakeModel:
     def compute_ffn_output(self, hidden_states, layer_idx, **kwargs):
+        return f"npu-ffn({hidden_states}, layer={layer_idx})"
+
+
+class _RecordingFakeModel:
+    def __init__(self):
+        self.calls = []
+
+    def compute_ffn_output(self, hidden_states, layer_idx, **kwargs):
+        self.calls.append((hidden_states, layer_idx, kwargs))
         return f"npu-ffn({hidden_states}, layer={layer_idx})"
 
 
@@ -526,6 +540,53 @@ def test_npu_ffn_runner_executes_eager_ffn_step():
     ]
     assert runner.connector.metadata_updates == [
         (metadata, AFDRecvOutput(hidden_states="hidden", metadata=metadata)),
+    ]
+
+
+def test_npu_ffn_runner_passes_async_shared_payload_to_model():
+    runner = _new_ffn_runner()
+    runner.vllm_config = _vllm_config(role="ffn")
+    runner.connector = _FakeFFNConnector()
+    runner.model = _RecordingFakeModel()
+    runner.num_layers = 1
+    runner.max_num_tokens = 1
+    runner.use_aclgraph = False
+    runner._acl_graphs = {}
+    metadata = AFDConnectorMetadata.create_attention_metadata(
+        layer_idx=0,
+        stage_idx=0,
+        seq_len=1,
+    )
+    runner.connector.attn_outputs.append(
+        AFDRecvOutput(
+            hidden_states="hidden",
+            metadata=metadata,
+            group_list="groups",
+            dynamic_scales="scales",
+            expand_x_shared="shared-hidden",
+            dynamic_scales_shared="shared-scales",
+        ),
+    )
+
+    runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
+
+    assert runner.model.calls == [
+        (
+            "hidden",
+            0,
+            {
+                "group_list": "groups",
+                "dynamic_scales": "scales",
+                "expand_x_shared": "shared-hidden",
+                "dynamic_scales_shared": "shared-scales",
+                "topk_weights": None,
+                "topk_ids": None,
+                "router_logits": None,
+                "row_idx": None,
+                "x_active_mask": None,
+                "cam_p2p_ep_name": "",
+            },
+        ),
     ]
 
 

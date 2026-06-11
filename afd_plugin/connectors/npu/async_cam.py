@@ -247,6 +247,9 @@ class AFDAsyncConnector(AFDConnectorBase):
         if data.expert_token_nums is None:
             data.expert_token_nums = recv_output.group_list
         data.dynamic_scales = recv_output.dynamic_scales
+        data.dynamic_scales_shared = recv_output.dynamic_scales_shared
+        data.expand_x_shared = recv_output.expand_x_shared
+        data.expert_token_nums_shared = recv_output.ep_recv_counts_shared
         data.atten_batch_size = recv_output.atten_batch_size
         data.token_nums_rankid_layeridx = recv_output.atten_batch_size
         data.x_active_mask = recv_output.x_active_mask
@@ -458,8 +461,11 @@ class AFDAsyncConnector(AFDConnectorBase):
             metadata=metadata,
             group_list=expert_token_nums,
             dynamic_scales=dynamic_scales,
+            expand_x_shared=expand_x_shared,
+            dynamic_scales_shared=dynamic_scales_shared,
             atten_batch_size=token_nums_rankid_layeridx,
             ep_recv_counts=expert_token_nums,
+            ep_recv_counts_shared=expert_token_nums_shared,
         )
 
     def send_ffn_output(

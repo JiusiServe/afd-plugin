@@ -207,10 +207,13 @@ class AFDRecvOutput:
     row_idx: Any = None
     x_active_mask: Any = None
     dynamic_scales: Any = None
+    expand_x_shared: Any = None
+    dynamic_scales_shared: Any = None
     cam_p2p_ep_name: str | None = None
     atten_batch_size: Any = None
     expand_idx: Any = None
     ep_recv_counts: Any = None
+    ep_recv_counts_shared: Any = None
 
 
 @dataclass(slots=True)

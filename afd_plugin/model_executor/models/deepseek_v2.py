@@ -52,6 +52,23 @@ def _is_moe_layer(config: object, layer_idx: int) -> bool:
     )
 
 
+def _dequantize_int8_activation(
+    hidden_states: torch.Tensor,
+    dynamic_scales: torch.Tensor | None,
+    *,
+    output_dtype: torch.dtype,
+) -> torch.Tensor:
+    if hidden_states.dtype != torch.int8:
+        return hidden_states
+    if dynamic_scales is None:
+        raise RuntimeError("INT8 AFD shared experts input requires dynamic_scales")
+
+    scales = dynamic_scales.to(torch.float32)
+    while scales.dim() < hidden_states.dim():
+        scales = scales.unsqueeze(-1)
+    return (hidden_states.to(torch.float32) * scales).to(dtype=output_dtype)
+
+
 class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
     """DeepSeek decoder layer with separable Attention and FFN execution."""
 
@@ -320,6 +337,8 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         *,
         group_list: torch.Tensor | None = None,
         dynamic_scales: torch.Tensor | None = None,
+        expand_x_shared: torch.Tensor | None = None,
+        dynamic_scales_shared: torch.Tensor | None = None,
         topk_scales: torch.Tensor | None = None,
         group_list_type: int = 1,
         **kwargs: Any,
@@ -339,6 +358,8 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 hidden_states=hidden_states,
                 group_list=group_list,
                 dynamic_scales=dynamic_scales,
+                expand_x_shared=expand_x_shared,
+                dynamic_scales_shared=dynamic_scales_shared,
                 topk_scales=topk_scales,
                 group_list_type=group_list_type,
             )
@@ -356,6 +377,8 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         hidden_states: torch.Tensor,
         group_list: torch.Tensor,
         dynamic_scales: torch.Tensor | None,
+        expand_x_shared: torch.Tensor | None,
+        dynamic_scales_shared: torch.Tensor | None,
         topk_scales: torch.Tensor | None,
         group_list_type: int,
     ) -> AFDFFNOutput:
@@ -399,7 +422,17 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
 
         shared_output = None
         if experts._shared_experts is not None:
-            shared_output = experts._shared_experts(hidden_states)
+            shared_input = expand_x_shared
+            shared_scales = dynamic_scales_shared
+            if shared_input is None:
+                shared_input = hidden_states
+                shared_scales = dynamic_scales
+            shared_input = _dequantize_int8_activation(
+                shared_input,
+                shared_scales,
+                output_dtype=torch.bfloat16,
+            )
+            shared_output = experts._shared_experts(shared_input)
 
         routed_output = unified_apply_mlp(
             mlp_compute_input=MoEMlpComputeInput(
