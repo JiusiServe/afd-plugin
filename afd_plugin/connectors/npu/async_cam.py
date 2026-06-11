@@ -372,7 +372,7 @@ class AFDAsyncConnector(AFDConnectorBase):
             world_size=self.topology.world_size,
             group_name=self.group_name,
         )
-        return torch.ops.umdk_cam_op_lib.async_combine_recv(
+        output = torch.ops.umdk_cam_op_lib.async_combine_recv(
             placeholder,
             topk_ids,
             topk_weights,
@@ -388,6 +388,8 @@ class AFDAsyncConnector(AFDConnectorBase):
             self.topology.world_size,
             self.group_name,
         )
+        _log_cam_op_outputs("async_combine_recv", output=output)
+        return output
 
     def recv_attn_output(
         self,
@@ -449,6 +451,16 @@ class AFDAsyncConnector(AFDConnectorBase):
             expert_token_nums,
             expert_token_nums_shared,
         ) = outputs
+        _log_cam_op_outputs(
+            "async_dispatch_recv",
+            hidden_states=hidden_states,
+            expand_x_shared=expand_x_shared,
+            dynamic_scales=dynamic_scales,
+            dynamic_scales_shared=dynamic_scales_shared,
+            token_nums_rankid_layeridx=token_nums_rankid_layeridx,
+            expert_token_nums=expert_token_nums,
+            expert_token_nums_shared=expert_token_nums_shared,
+        )
         data.expand_x_shared = expand_x_shared
         data.dynamic_scales = dynamic_scales
         data.dynamic_scales_shared = dynamic_scales_shared
@@ -582,17 +594,42 @@ class AFDAsyncConnector(AFDConnectorBase):
         return payload
 
 
-def _describe_cam_op_arg(value: object) -> str:
+_CAM_LOG_SKIPPED_ARGS = frozenset({"comm_args", "comm_id", "group_name"})
+
+
+def _tensor_first_values(value: Tensor, count: int = 5) -> object:
+    try:
+        return value.detach().flatten()[:count].cpu().tolist()
+    except Exception as exc:  # pragma: no cover - defensive logging helper
+        return f"<unavailable: {type(exc).__name__}>"
+
+
+def _describe_cam_op_arg(name: str, value: object) -> str:
     if isinstance(value, Tensor):
-        return f"Tensor(dtype={value.dtype}, shape={tuple(value.shape)})"
+        description = f"Tensor(dtype={value.dtype}, shape={tuple(value.shape)})"
+        if name == "token_nums_rankid_layeridx":
+            description = (
+                f"{description}, first5={_tensor_first_values(value, count=5)!r}"
+            )
+        return description
     return repr(value)
 
 
-def _log_cam_op_inputs(op_name: str, **kwargs: object) -> None:
-    formatted_args = ", ".join(
-        f"{name}={_describe_cam_op_arg(value)}" for name, value in kwargs.items()
+def _log_cam_op_values(op_name: str, label: str, **kwargs: object) -> None:
+    formatted_args = "\n".join(
+        f"  {name}={_describe_cam_op_arg(name, value)}"
+        for name, value in kwargs.items()
+        if name not in _CAM_LOG_SKIPPED_ARGS
     )
-    logger.warning("AFD CAM %s inputs: %s", op_name, formatted_args)
+    logger.warning("AFD CAM %s %s:\n%s", op_name, label, formatted_args)
+
+
+def _log_cam_op_inputs(op_name: str, **kwargs: object) -> None:
+    _log_cam_op_values(op_name, "inputs", **kwargs)
+
+
+def _log_cam_op_outputs(op_name: str, **kwargs: object) -> None:
+    _log_cam_op_values(op_name, "outputs", **kwargs)
 
 
 def build_async_topology(
