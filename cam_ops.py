@@ -14,7 +14,7 @@ com_out = torch.ops.umdk_cam_op_lib.async_dispatch_send(
     worldSize: int, # Attention + MoE 总卡数
     layerIndex: int, # layer 标识, 从第 0 层开始计数
     tpSize: int, # Attention 侧的 tp size (实际上是 CP size)
-    dynamicQuant: int, # 是否在传输中进行动态量化 0: 量化, 1: 不量化
+    dynamicQuant: int, # 是否在传输中进行动态量化 0: 不量化, 1: 量化
     groupName: str, # HCCL 通信域名字
 )
 com_out # 执行完成标记位
@@ -33,7 +33,7 @@ dis_out = torch.ops.umdk_cam_op_lib.async_dispatch_recv(
     worldSize: int, # Attention + MoE 总卡数
     layerIndex: int, # layer 标识, 从第 0 层开始计数
     tpSize: int, # Attention 侧的 tp size (实际上是 CP size)
-    dynamicQuant: int, # 是否在传输中进行动态量化 0: 量化, 1: 不量化
+    dynamicQuant: int, # 是否在传输中进行动态量化 0: 不量化, 1: 量化
     groupName: str, # HCCL 通信域名字
 )
 dis_out = ( # 输出全部都是 Tensor
