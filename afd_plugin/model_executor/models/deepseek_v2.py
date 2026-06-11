@@ -368,10 +368,33 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         from vllm_ascend.quantization.quant_type import QuantType
 
         experts = self.mlp.experts
-        if experts.quant_type != QuantType.NONE:
+        quant_type = experts.quant_type
+        if quant_type == QuantType.NONE:
+            moe_weights = MoEWeights(
+                w1=experts.w13_weight,
+                w2=experts.w2_weight,
+                w1_bias=experts.w13_bias if experts.moe_config.has_bias else None,
+                w2_bias=experts.w2_bias if experts.moe_config.has_bias else None,
+            )
+        elif quant_type == QuantType.W8A8:
+            if experts.dynamic_eplb:
+                moe_weights = MoEWeights(
+                    w1=experts.w13_weight_list,
+                    w2=experts.w2_weight_list,
+                    w1_scale=experts.w13_weight_scale_fp32_list,
+                    w2_scale=experts.w2_weight_scale_list,
+                )
+            else:
+                moe_weights = MoEWeights(
+                    w1=[experts.w13_weight],
+                    w2=[experts.w2_weight],
+                    w1_scale=[experts.w13_weight_scale_fp32],
+                    w2_scale=[experts.w2_weight_scale],
+                )
+        else:
             raise RuntimeError(
-                "compute_gate_on_attention currently supports only "
-                "unquantized Ascend MoE experts",
+                "compute_gate_on_attention currently supports only unquantized "
+                f"or W8A8 Ascend MoE experts, got {quant_type}",
             )
 
         shared_output = None
@@ -385,13 +408,8 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 group_list_type=int(group_list_type),
                 dynamic_scale=dynamic_scales,
                 topk_scales=topk_scales,
-                weights=MoEWeights(
-                    w1=experts.w13_weight,
-                    w2=experts.w2_weight,
-                    w1_bias=experts.w13_bias if experts.moe_config.has_bias else None,
-                    w2_bias=experts.w2_bias if experts.moe_config.has_bias else None,
-                ),
-                quant=MoEQuantParams(quant_type=QuantType.NONE),
+                weights=moe_weights,
+                quant=MoEQuantParams(quant_type=quant_type),
                 fusion=False,
                 activation=experts.activation,
                 need_trans=False,

@@ -86,3 +86,8 @@ def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():
     assert "AFDFFNOutput(" in compute_moe
     assert "MoEMlpComputeInput(" in compute_moe
     assert "unified_apply_mlp(" in compute_moe
+    assert "quant_type == QuantType.W8A8" in compute_moe
+    assert "w13_weight_scale_fp32" in compute_moe
+    assert "w13_weight_scale_fp32_list" in compute_moe
+    assert "w2_weight_scale_list" in compute_moe
+    assert "MoEQuantParams(quant_type=quant_type)" in compute_moe
