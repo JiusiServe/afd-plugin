@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, TypeAlias
@@ -595,6 +596,16 @@ class AFDAsyncConnector(AFDConnectorBase):
 
 
 _CAM_LOG_SKIPPED_ARGS = frozenset({"comm_args", "comm_id", "group_name"})
+_CAM_OP_IO_LOG_ENV = "AFD_CAM_OP_IO_LOG"
+
+
+def _cam_op_io_logging_enabled() -> bool:
+    return os.environ.get(_CAM_OP_IO_LOG_ENV, "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _tensor_first_values(value: Tensor, count: int = 5) -> object:
@@ -616,6 +627,8 @@ def _describe_cam_op_arg(name: str, value: object) -> str:
 
 
 def _log_cam_op_values(op_name: str, label: str, **kwargs: object) -> None:
+    if not _cam_op_io_logging_enabled():
+        return
     formatted_args = "\n".join(
         f"  {name}={_describe_cam_op_arg(name, value)}"
         for name, value in kwargs.items()
