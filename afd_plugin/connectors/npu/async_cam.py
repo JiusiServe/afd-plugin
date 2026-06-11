@@ -586,7 +586,7 @@ def _log_cam_op_inputs(op_name: str, **kwargs: object) -> None:
     formatted_args = ", ".join(
         f"{name}={_describe_cam_op_arg(value)}" for name, value in kwargs.items()
     )
-    logger.info("AFD CAM %s inputs: %s", op_name, formatted_args)
+    logger.warning("AFD CAM %s inputs: %s", op_name, formatted_args)
 
 
 def build_async_topology(
