@@ -12,9 +12,9 @@ pytest.importorskip("torch")
 from afd_plugin.connectors.npu import async_cam as async_cam_module  # noqa: E402
 from afd_plugin.connectors.npu.async_cam import (  # noqa: E402
     AFD_ASYNC_CAM_GROUP_NAME,
+    CAM_COMM_ID,
     AFDAsyncConnector,
     AFDAsyncConnectorData,
-    CAM_COMM_ID,
     build_async_topology,
 )
 
@@ -70,6 +70,7 @@ class _FakeCamOps:
 class _FakeTorch:
     def __init__(self):
         self.bfloat16 = "bf16"
+        self.float16 = "fp16"
         self.float32 = "fp32"
         self.int32 = "int32"
         self.int64 = "int64"
@@ -162,7 +163,11 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
     calls = []
     fake_torch = _FakeTorch()
     monkeypatch.setattr(async_cam_module, "torch", fake_torch)
-    monkeypatch.setattr(async_cam_module, "ensure_cam_ops_available", lambda: None)
+    monkeypatch.setattr(
+        async_cam_module,
+        "ensure_cam_async_ops_available",
+        lambda: None,
+    )
 
     def fake_init_afd_process_group(**kwargs):
         calls.append(kwargs)
@@ -200,6 +205,7 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
     assert connector.cam_pg is not None
     assert connector.group_name == f"hccl:{AFD_ASYNC_CAM_GROUP_NAME}:5"
     assert connector.comm_args.shape == (1,)
+    assert connector.comm_args.dtype == fake_torch.float16
     assert connector._placeholder.shape == (1,)
 
 
@@ -223,7 +229,7 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
         _afd_config(role="attention", extra_config={"comm_id": 99}),
     )
     connector._initialized = True
-    connector.comm_args = _FakeTensor((1,), dtype="int64")
+    connector.comm_args = _FakeTensor((1,), dtype="fp16")
     connector._placeholder = _FakeTensor((8, 16))
     hidden_states = _FakeTensor((3, 16))
     metadata = AFDConnectorMetadata.create_attention_metadata(
@@ -264,7 +270,7 @@ def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
         _afd_config(role="ffn"),
     )
     connector._initialized = True
-    connector.comm_args = _FakeTensor((1,), dtype="int64")
+    connector.comm_args = _FakeTensor((1,), dtype="fp16")
     connector._placeholder = _FakeTensor((8, 16))
 
     recv_output = connector.recv_attn_output(batch_size=4, layer_idx=1)

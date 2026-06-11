@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, TypeAlias
@@ -12,7 +13,7 @@ from typing import Any, TypeAlias
 import torch
 from torch import Tensor
 
-from afd_plugin.compat.ascend.ops import ensure_cam_ops_available
+from afd_plugin.compat.ascend.ops import ensure_cam_async_ops_available
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import AFDConnectorMetadata, AFDRecvOutput
@@ -21,6 +22,13 @@ from afd_plugin.distributed import init_afd_process_group
 DPMetadataMap: TypeAlias = dict[int, object]
 AFD_ASYNC_CAM_GROUP_NAME = "afd_async_cam"
 CAM_COMM_ID = 0
+
+try:
+    from vllm.logger import init_logger
+except ImportError:
+    logger = logging.getLogger(__name__)
+else:
+    logger = init_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -132,7 +140,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         if self._initialized:
             return
 
-        ensure_cam_ops_available()
+        ensure_cam_async_ops_available()
         self.cam_pg = init_afd_process_group(
             backend="hccl",
             init_method=f"tcp://{self.afd_config.host}:{self.afd_config.port}",
@@ -143,7 +151,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         )
         self.group_name = _hccl_comm_name(self.cam_pg, self.world_rank)
         device = f"npu:{self.local_rank}"
-        self.comm_args = torch.empty((1,), dtype=torch.int64, device=device)
+        self.comm_args = torch.empty((1,), dtype=torch.float16, device=device)
         self._placeholder = torch.empty(
             (1,),
             dtype=torch.bfloat16,
@@ -272,6 +280,26 @@ class AFDAsyncConnector(AFDConnectorBase):
         data.topk_ids = topk_ids
         data.topk_weights = topk_weights
         self._queue_attention_payload(metadata, topk_ids, topk_weights)
+        _log_cam_op_inputs(
+            "async_dispatch_send",
+            hidden_states=hidden_states,
+            topk_ids=topk_ids,
+            comm_args=self.comm_args,
+            comm_id=self.comm_id,
+            max_seq_len=self.max_seq_len,
+            batch_size=data.batch_size,
+            hidden_size=data.hidden_size,
+            topk=data.topk,
+            expert_rank_size=self.expert_rank_size,
+            attention_rank_size=self.attention_rank_size,
+            expert_per_rank=self.expert_per_rank,
+            rank=self.world_rank,
+            world_size=self.topology.world_size,
+            layer_idx=data.layer_idx,
+            tp_size=self.tp_size,
+            dynamic_quant=self.dynamic_quant,
+            group_name=self.group_name,
+        )
         return torch.ops.umdk_cam_op_lib.async_dispatch_send(
             hidden_states,
             topk_ids,
@@ -324,6 +352,23 @@ class AFDAsyncConnector(AFDConnectorBase):
             topk=data.topk,
         )
         placeholder = ref_tensor.new_empty((1,))
+        _log_cam_op_inputs(
+            "async_combine_recv",
+            placeholder=placeholder,
+            topk_ids=topk_ids,
+            topk_weights=topk_weights,
+            comm_args=self.comm_args,
+            comm_id=self.comm_id,
+            batch_size=data.batch_size,
+            hidden_size=data.hidden_size,
+            topk=data.topk,
+            expert_rank_size=self.expert_rank_size,
+            attention_rank_size=self.attention_rank_size,
+            expert_per_rank=self.expert_per_rank,
+            rank=self.world_rank,
+            world_size=self.topology.world_size,
+            group_name=self.group_name,
+        )
         return torch.ops.umdk_cam_op_lib.async_combine_recv(
             placeholder,
             topk_ids,
@@ -359,6 +404,23 @@ class AFDAsyncConnector(AFDConnectorBase):
             )
         data = _ensure_connector_data(metadata)
         placeholder = kwargs.get("placeholder", self._placeholder)
+        _log_cam_op_inputs(
+            "async_dispatch_recv",
+            placeholder=placeholder,
+            comm_args=self.comm_args,
+            comm_id=self.comm_id,
+            batch_size=data.batch_size,
+            hidden_size=data.hidden_size,
+            topk=data.topk,
+            expert_rank_size=self.expert_rank_size,
+            attention_rank_size=self.attention_rank_size,
+            expert_per_rank=self.expert_per_rank,
+            rank=self.world_rank,
+            world_size=self.topology.world_size,
+            tp_size=self.tp_size,
+            dynamic_quant=self.dynamic_quant,
+            group_name=self.group_name,
+        )
         outputs = torch.ops.umdk_cam_op_lib.async_dispatch_recv(
             placeholder,
             self.comm_args,
@@ -420,6 +482,24 @@ class AFDAsyncConnector(AFDConnectorBase):
                 "token_nums_rankid_layeridx",
                 expert_token_nums,
             )
+        _log_cam_op_inputs(
+            "async_combine_send",
+            ffn_output=ffn_output,
+            expand_x_shared=expand_x_shared,
+            comm_args=self.comm_args,
+            token_nums_rankid_layeridx=token_nums_rankid_layeridx,
+            comm_id=self.comm_id,
+            batch_size=data.batch_size,
+            hidden_size=data.hidden_size,
+            topk=data.topk,
+            expert_rank_size=self.expert_rank_size,
+            attention_rank_size=self.attention_rank_size,
+            expert_per_rank=self.expert_per_rank,
+            rank=self.world_rank,
+            world_size=self.topology.world_size,
+            tp_size=self.tp_size,
+            group_name=self.group_name,
+        )
         torch.ops.umdk_cam_op_lib.async_combine_send(
             ffn_output,
             expand_x_shared,
@@ -494,6 +574,19 @@ class AFDAsyncConnector(AFDConnectorBase):
         if not payloads:
             self._pending_attention_payloads.pop(int(stage_idx), None)
         return payload
+
+
+def _describe_cam_op_arg(value: object) -> str:
+    if isinstance(value, Tensor):
+        return f"Tensor(dtype={value.dtype}, shape={tuple(value.shape)})"
+    return repr(value)
+
+
+def _log_cam_op_inputs(op_name: str, **kwargs: object) -> None:
+    formatted_args = ", ".join(
+        f"{name}={_describe_cam_op_arg(value)}" for name, value in kwargs.items()
+    )
+    logger.info("AFD CAM %s inputs: %s", op_name, formatted_args)
 
 
 def build_async_topology(
