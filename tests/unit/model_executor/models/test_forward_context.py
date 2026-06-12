@@ -93,21 +93,35 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
         "    def compute_ffn_output(",
         1,
     )[0]
-    stage_helper = source.split(
-        "    def _run_async_moe_ubatch_layer(",
-        1,
-    )[1].split("    def _recv_async_moe_ubatch_outputs(", 1)[0]
 
+    assert '_AFD_ASYNC_MOE_FORWARD_LOG_ENV = "AFD_CAMP2P_STUB_IO"' in source
     assert "async_moe_ubatch_metadata" in forward_with_afd_v3
-    assert "_run_async_moe_ubatch_layer(" in forward_with_afd_v3
-    assert "if not layer.is_moe_layer:" in forward_with_afd_v3
-    assert "_stitch_async_moe_ubatch_outputs(" in source
-    assert "forward_context.attn_metadata = attn_metadata[stage_idx]" in source
-    assert stage_helper.index("afd_connector.recv_ffn_output(") < stage_helper.index(
-        "layer.compute_attn_output(",
+    assert "_log_async_moe_forward_step(" in forward_with_afd_v3
+    assert '"enter"' in forward_with_afd_v3
+    assert '"attention_begin"' in forward_with_afd_v3
+    assert '"send_end"' in forward_with_afd_v3
+    assert "first_moe_layer = int(self.config.first_k_dense_replace)" in (
+        forward_with_afd_v3
     )
-    assert stage_helper.index("layer.compute_attn_output(") < stage_helper.index(
-        "afd_connector.send_attn_output(",
+    assert "dense_end_layer = min(self.end_layer, first_moe_layer)" in (
+        forward_with_afd_v3
+    )
+    assert "stage_hidden_states = [" in forward_with_afd_v3
+    assert "for stage_idx, ubatch_slice in enumerate(ubatch_slices):" in (
+        forward_with_afd_v3
+    )
+    assert "for moe_layer_offset, layer in enumerate(" in forward_with_afd_v3
+    assert "if moe_layer_offset > 0:" in forward_with_afd_v3
+    assert "def flush_pending_ffn_outputs()" not in forward_with_afd_v3
+    assert "torch.cat(stage_hidden_states, dim=0)" in forward_with_afd_v3
+    assert "_run_async_moe_ubatch_layer(" not in source
+    assert "_recv_async_moe_ubatch_outputs(" not in source
+    assert "forward_context.attn_metadata = attn_metadata[stage_idx]" in source
+    assert forward_with_afd_v3.index("afd_connector.recv_ffn_output(") < (
+        forward_with_afd_v3.index("layer.compute_attn_output(")
+    )
+    assert forward_with_afd_v3.index("layer.compute_attn_output(") < (
+        forward_with_afd_v3.index("afd_connector.send_attn_output(")
     )
 
 
