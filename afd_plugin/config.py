@@ -10,6 +10,10 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
 AFD_ADDITIONAL_CONFIG_KEY: Final[str] = "afd"
+ASYNC_MOE_UBATCHING_CONFIG_KEY: Final[str] = "async_moe_ubatching"
+ASYNC_MOE_NUM_UBATCHES_CONFIG_KEY: Final[str] = "async_moe_num_ubatches"
+ASYNC_MOE_SPLIT_CONFIG_KEY: Final[str] = "async_moe_split"
+ASYNC_MOE_REQUEST_SPLIT: Final[str] = "request"
 AFDRole = Literal["attention", "ffn"]
 
 SUPPORTED_AFD_ROLES: Final[tuple[str, ...]] = ("attention", "ffn")
@@ -125,8 +129,40 @@ def _coerce_int(value: object, *, field_name: str) -> int:
         ) from exc
 
 
-def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, object]:
-    normalized: dict[str, object] = {}
+def _extra_bool(config: AFDConfig, key: str, *, default: bool = False) -> bool:
+    value = (config.extra_config or {}).get(key, default)
+    return _coerce_bool(value, field_name=f"extra_config.{key}")
+
+
+def async_moe_ubatching_enabled(config: AFDConfig) -> bool:
+    """Return whether async connector MoE-only request ubatching is enabled."""
+
+    return _extra_bool(config, ASYNC_MOE_UBATCHING_CONFIG_KEY)
+
+
+def async_moe_num_ubatches(config: AFDConfig) -> int:
+    value = (config.extra_config or {}).get(ASYNC_MOE_NUM_UBATCHES_CONFIG_KEY, 2)
+    return _coerce_int(
+        value,
+        field_name=f"extra_config.{ASYNC_MOE_NUM_UBATCHES_CONFIG_KEY}",
+    )
+
+
+def async_moe_split(config: AFDConfig) -> str:
+    value = (config.extra_config or {}).get(
+        ASYNC_MOE_SPLIT_CONFIG_KEY,
+        ASYNC_MOE_REQUEST_SPLIT,
+    )
+    if not isinstance(value, str):
+        raise TypeError(
+            f"extra_config.{ASYNC_MOE_SPLIT_CONFIG_KEY} must be a string, "
+            f"got {value!r}",
+        )
+    return value.strip().lower()
+
+
+def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
     valid_fields = set(AFDConfig.__dataclass_fields__)  # type: ignore[attr-defined]
 
     for key, value in raw.items():
@@ -293,11 +329,18 @@ def validate_afd_config(
 
 __all__ = [
     "AFDConfig",
+    "ASYNC_MOE_NUM_UBATCHES_CONFIG_KEY",
+    "ASYNC_MOE_REQUEST_SPLIT",
+    "ASYNC_MOE_SPLIT_CONFIG_KEY",
+    "ASYNC_MOE_UBATCHING_CONFIG_KEY",
     "afd_config_from_mapping",
     "AFD_ADDITIONAL_CONFIG_KEY",
     "AFDRole",
     "SUPPORTED_AFD_CONNECTORS",
     "SUPPORTED_AFD_ROLES",
+    "async_moe_num_ubatches",
+    "async_moe_split",
+    "async_moe_ubatching_enabled",
     "parse_afd_config",
     "validate_afd_config",
 ]

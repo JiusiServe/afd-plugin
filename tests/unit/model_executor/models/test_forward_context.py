@@ -7,7 +7,11 @@ import pytest
 
 pytest.importorskip("vllm")
 
-from afd_plugin.model_executor.models import get_afd_metadata_from_forward_context
+from afd_plugin.model_executor.models import (
+    ASYNC_MOE_UBATCH_METADATA_KEY,
+    get_afd_metadata_from_forward_context,
+    get_async_moe_ubatch_metadata_from_forward_context,
+)
 
 
 def test_get_afd_metadata_from_additional_kwargs():
@@ -16,6 +20,17 @@ def test_get_afd_metadata_from_additional_kwargs():
     )
 
     assert get_afd_metadata_from_forward_context(forward_context) == {"stage": 0}
+
+
+def test_get_async_moe_ubatch_metadata_from_additional_kwargs():
+    sidecar = {"ubatch_slices": ["stage0", "stage1"]}
+    forward_context = SimpleNamespace(
+        additional_kwargs={ASYNC_MOE_UBATCH_METADATA_KEY: sidecar},
+    )
+
+    assert (
+        get_async_moe_ubatch_metadata_from_forward_context(forward_context) is sidecar
+    )
 
 
 def test_deepseek_afd_wrapper_keeps_full_model_compile_enabled():
@@ -48,12 +63,13 @@ def test_deepseek_afd_attention_path_can_compute_gate_before_send():
         1,
     )[0]
     forward_with_afd_v2 = source.split("    def forward_with_afd_v2(", 1)[1].split(
-        "    def compute_ffn_output(",
+        "    def forward_with_afd_v3(",
         1,
     )[0]
 
     assert 'if self.afd_role == "attention":' in source
     assert "def _forward_attention(" not in source
+    assert "return self.forward_with_afd_v3(" in forward_with_afd
     assert "return self.forward_with_afd_v2(" in forward_with_afd
     assert "layer.compute_attn_output(" not in forward_with_afd
     assert "layer.compute_attn_output(" in forward_with_afd_v2
@@ -69,6 +85,30 @@ def test_deepseek_afd_gate_on_attention_keeps_dense_layers_local():
     assert "self.compute_gate_on_attention and not self.is_moe_layer" in source
     assert "if not layer.is_moe_layer:" in source
     assert "self.is_dense_mlp_weight(name)" in source
+
+
+def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
+    source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
+    forward_with_afd_v3 = source.split("    def forward_with_afd_v3(", 1)[1].split(
+        "    def compute_ffn_output(",
+        1,
+    )[0]
+    stage_helper = source.split(
+        "    def _run_async_moe_ubatch_layer(",
+        1,
+    )[1].split("    def _recv_async_moe_ubatch_outputs(", 1)[0]
+
+    assert "async_moe_ubatch_metadata" in forward_with_afd_v3
+    assert "_run_async_moe_ubatch_layer(" in forward_with_afd_v3
+    assert "if not layer.is_moe_layer:" in forward_with_afd_v3
+    assert "_stitch_async_moe_ubatch_outputs(" in source
+    assert "forward_context.attn_metadata = attn_metadata[stage_idx]" in source
+    assert stage_helper.index("afd_connector.recv_ffn_output(") < stage_helper.index(
+        "layer.compute_attn_output(",
+    )
+    assert stage_helper.index("layer.compute_attn_output(") < stage_helper.index(
+        "afd_connector.send_attn_output(",
+    )
 
 
 def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():

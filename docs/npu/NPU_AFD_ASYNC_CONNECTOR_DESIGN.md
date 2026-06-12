@@ -72,11 +72,13 @@ FFN worker loop
 - ACL graph capture / replay；
 - 任一侧非 eager 的 AFD async 运行；
 - NPU multistream；
-- DBO / ubatching；
+- vLLM 原生 DBO / ubatching；
 - 真实 CAM 通信算子性能优化；
 - async DP 下多 Attention rank 到同一 FFN rank 的复杂乱序调度优化。
 
-这些能力可以在 connector-driven 基础路径稳定后逐步补齐。
+这些能力可以在 connector-driven 基础路径稳定后逐步补齐。`afdasyncconnector`
+专用的 MoE-only 双 batch 流水不复用 vLLM 原生 `UbatchWrapper`，设计见
+`docs/npu/NPU_AFD_ASYNC_CONNECTOR_MOE_UBATCH_DESIGN.md`。
 
 ## 与当前 EngineCore Patch 的关系
 

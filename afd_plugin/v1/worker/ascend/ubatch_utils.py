@@ -6,8 +6,6 @@ Copied from vLLM-Ascend commit cdd212830271249a1cafcb850c210133f21771c5;
 kept plugin-owned so AFD retains DBO support independent of upstream changes.
 """
 
-import logging
-
 import numpy as np
 import torch
 from vllm.config import VllmConfig
@@ -18,8 +16,6 @@ from vllm.v1.worker.ubatch_utils import (
 )
 from vllm_ascend.ascend_forward_context import MoECommType
 from vllm_ascend.attention.utils import AscendCommonAttentionMetadata
-
-logger = logging.getLogger(__name__)
 
 
 def is_last_ubatch_empty(
@@ -48,41 +44,11 @@ def check_enable_ubatch(
     parallel_config = vllm_config.parallel_config
     num_ubatches = getattr(parallel_config, "num_ubatches", 2)
     if num_ubatches != 2:
-        _log_ubatch_check(
-            False,
-            "num_ubatches_not_2",
-            num_tokens_unpadded,
-            num_tokens_padded,
-            uniform_decode,
-            parallel_config,
-            moe_comm_type,
-            num_ubatches,
-        )
         return False
     if num_tokens_padded < num_ubatches:
-        _log_ubatch_check(
-            False,
-            "padded_tokens_less_than_num_ubatches",
-            num_tokens_unpadded,
-            num_tokens_padded,
-            uniform_decode,
-            parallel_config,
-            moe_comm_type,
-            num_ubatches,
-        )
         return False
 
     if _cp_enabled(vllm_config):
-        _log_ubatch_check(
-            False,
-            "context_parallel_enabled",
-            num_tokens_unpadded,
-            num_tokens_padded,
-            uniform_decode,
-            parallel_config,
-            moe_comm_type,
-            num_ubatches,
-        )
         return False
 
     should_attempt_ubatching = check_ubatch_thresholds(
@@ -91,75 +57,14 @@ def check_enable_ubatch(
         uniform_decode=uniform_decode,
     )
     if not getattr(parallel_config, "enable_dbo", False):
-        _log_ubatch_check(
-            False,
-            "enable_dbo_false",
-            num_tokens_unpadded,
-            num_tokens_padded,
-            uniform_decode,
-            parallel_config,
-            moe_comm_type,
-            num_ubatches,
-        )
         return False
     if not should_attempt_ubatching:
-        _log_ubatch_check(
-            False,
-            "threshold_not_met",
-            num_tokens_unpadded,
-            num_tokens_padded,
-            uniform_decode,
-            parallel_config,
-            moe_comm_type,
-            num_ubatches,
-        )
         return False
 
-    should_ubatch = not is_last_ubatch_empty(
+    return not is_last_ubatch_empty(
         num_tokens_unpadded,
         num_tokens_padded,
         num_ubatches,
-    )
-    _log_ubatch_check(
-        should_ubatch,
-        "ok" if should_ubatch else "last_ubatch_empty",
-        num_tokens_unpadded,
-        num_tokens_padded,
-        uniform_decode,
-        parallel_config,
-        moe_comm_type,
-        num_ubatches,
-    )
-    return should_ubatch
-
-
-def _log_ubatch_check(
-    enabled: bool,
-    reason: str,
-    num_tokens_unpadded: int,
-    num_tokens_padded: int,
-    uniform_decode: bool,
-    parallel_config: object,
-    moe_comm_type: MoECommType | None,
-    num_ubatches: int,
-) -> None:
-    logger.warning(
-        "AFD NPU ubatch check; enabled=%s reason=%s "
-        "num_tokens_unpadded=%s num_tokens_padded=%s uniform_decode=%s "
-        "enable_dbo=%s use_ubatching=%s num_ubatches=%s ubatch_size=%s "
-        "decode_threshold=%s prefill_threshold=%s moe_comm_type=%s",
-        enabled,
-        reason,
-        num_tokens_unpadded,
-        num_tokens_padded,
-        uniform_decode,
-        getattr(parallel_config, "enable_dbo", None),
-        getattr(parallel_config, "use_ubatching", None),
-        num_ubatches,
-        getattr(parallel_config, "ubatch_size", None),
-        getattr(parallel_config, "dbo_decode_token_threshold", None),
-        getattr(parallel_config, "dbo_prefill_token_threshold", None),
-        getattr(moe_comm_type, "name", str(moe_comm_type)),
     )
 
 
@@ -192,6 +97,41 @@ def create_ubatch_slices(
         ubatch_slices.append(UBatchSlice(slice(req_start, req_stop), token_slice))
         start_token = end_token
     return ubatch_slices
+
+
+def create_request_boundary_ubatch_slices(
+    num_scheduled_tokens: np.ndarray,
+    *,
+    num_ubatches: int = 2,
+) -> UBatchSlices | None:
+    """Split scheduled tokens on request boundaries.
+
+    Async MoE ubatching keeps dense layers on the full batch and only slices
+    connector payloads.  Splitting by request count avoids partial request
+    metadata and keeps each stage's common attention metadata rebuildable by
+    the existing Ascend builder stack.
+    """
+
+    assert num_ubatches == 2, "Async MoE ubatching currently supports 2 stages."
+    num_reqs = len(num_scheduled_tokens)
+    if num_reqs < num_ubatches:
+        return None
+
+    cu_num_tokens = np.zeros(num_reqs + 1, dtype=np.int32)
+    np.cumsum(num_scheduled_tokens, dtype=np.int32, out=cu_num_tokens[1:])
+    total_tokens = int(cu_num_tokens[-1])
+    if total_tokens < num_ubatches:
+        return None
+
+    split_req = (num_reqs + 1) // num_ubatches
+    split_token = int(cu_num_tokens[split_req])
+    if split_token <= 0 or split_token >= total_tokens:
+        return None
+
+    return [
+        UBatchSlice(slice(0, split_req), slice(0, split_token)),
+        UBatchSlice(slice(split_req, num_reqs), slice(split_token, total_tokens)),
+    ]
 
 
 def maybe_create_ubatch_slices(
@@ -368,6 +308,7 @@ __all__ = [
     "UBatchSlice",
     "UBatchSlices",
     "check_enable_ubatch",
+    "create_request_boundary_ubatch_slices",
     "create_ubatch_slices",
     "is_last_ubatch_empty",
     "maybe_create_ubatch_slices",

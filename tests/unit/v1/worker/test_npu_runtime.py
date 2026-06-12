@@ -433,6 +433,86 @@ def test_npu_attention_metadata_positional_args_and_padded_slices():
     assert normalized[-1].token_slice == slice(4, 8)
 
 
+def test_npu_request_boundary_ubatch_slices_use_request_counts(monkeypatch):
+    np = pytest.importorskip("numpy")
+    fake_torch = ModuleType("torch")
+    fake_torch.Tensor = object
+    fake_vllm = ModuleType("vllm")
+    fake_vllm_config = ModuleType("vllm.config")
+    fake_vllm_config.VllmConfig = object
+    fake_vllm_v1 = ModuleType("vllm.v1")
+    fake_vllm_worker = ModuleType("vllm.v1.worker")
+    fake_vllm_ubatch_utils = ModuleType("vllm.v1.worker.ubatch_utils")
+
+    class UBatchSlice:
+        def __init__(self, request_slice, token_slice):
+            self.request_slice = request_slice
+            self.token_slice = token_slice
+
+        @property
+        def num_tokens(self):
+            return self.token_slice.stop - self.token_slice.start
+
+        def is_empty(self):
+            return self.num_tokens <= 0
+
+    fake_vllm_ubatch_utils.UBatchSlice = UBatchSlice
+    fake_vllm_ubatch_utils.UBatchSlices = list
+    fake_vllm_ubatch_utils.check_ubatch_thresholds = lambda *_args, **_kwargs: False
+    fake_vllm_ascend = ModuleType("vllm_ascend")
+    fake_forward_context = ModuleType("vllm_ascend.ascend_forward_context")
+    fake_forward_context.MoECommType = SimpleNamespace()
+    fake_attention = ModuleType("vllm_ascend.attention")
+    fake_attention_utils = ModuleType("vllm_ascend.attention.utils")
+    fake_attention_utils.AscendCommonAttentionMetadata = object
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "vllm", fake_vllm)
+    monkeypatch.setitem(sys.modules, "vllm.config", fake_vllm_config)
+    monkeypatch.setitem(sys.modules, "vllm.v1", fake_vllm_v1)
+    monkeypatch.setitem(sys.modules, "vllm.v1.worker", fake_vllm_worker)
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm.v1.worker.ubatch_utils",
+        fake_vllm_ubatch_utils,
+    )
+    monkeypatch.setitem(sys.modules, "vllm_ascend", fake_vllm_ascend)
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_ascend.ascend_forward_context",
+        fake_forward_context,
+    )
+    monkeypatch.setitem(sys.modules, "vllm_ascend.attention", fake_attention)
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_ascend.attention.utils",
+        fake_attention_utils,
+    )
+
+    module_name = "afd_plugin.v1.worker.ascend.ubatch_utils"
+    original_module = sys.modules.pop(module_name, None)
+    try:
+        ubatch_utils = importlib.import_module(module_name)
+        slices = ubatch_utils.create_request_boundary_ubatch_slices(
+            np.array([2, 3, 5, 7], dtype=np.int32),
+        )
+
+        assert slices[0].request_slice == slice(0, 2)
+        assert slices[0].token_slice == slice(0, 5)
+        assert slices[1].request_slice == slice(2, 4)
+        assert slices[1].token_slice == slice(5, 17)
+        assert (
+            ubatch_utils.create_request_boundary_ubatch_slices(
+                np.array([17], dtype=np.int32),
+            )
+            is None
+        )
+    finally:
+        sys.modules.pop(module_name, None)
+        if original_module is not None:
+            sys.modules[module_name] = original_module
+
+
 def test_npu_create_ascend_forward_context_marks_current_ubatch(monkeypatch):
     _require_npu_runtime()
     from afd_plugin.v1.worker.ascend import forward_context as forward_context_module
@@ -968,6 +1048,67 @@ def test_npu_async_feature_validation_allows_quant_zero_or_one():
                 connector="afdasyncconnector",
                 async_dp=True,
                 extra_config={"dynamicQuant": 2},
+            ),
+        )
+
+
+def test_npu_async_moe_ubatching_validation_requires_supported_shape():
+    fail_if_unsupported_npu_afd_features(
+        _vllm_config(
+            connector="afdasyncconnector",
+            async_dp=True,
+            extra_config={
+                "async_moe_ubatching": True,
+                "compute_gate_on_attention": True,
+            },
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="compute_gate_on_attention"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(
+                connector="afdasyncconnector",
+                async_dp=True,
+                extra_config={"async_moe_ubatching": True},
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="exactly two"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(
+                connector="afdasyncconnector",
+                async_dp=True,
+                extra_config={
+                    "async_moe_ubatching": True,
+                    "compute_gate_on_attention": True,
+                    "async_moe_num_ubatches": 3,
+                },
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="request-boundary"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(
+                connector="afdasyncconnector",
+                async_dp=True,
+                extra_config={
+                    "async_moe_ubatching": True,
+                    "compute_gate_on_attention": True,
+                    "async_moe_split": "token",
+                },
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="context parallel"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(
+                connector="afdasyncconnector",
+                async_dp=True,
+                prefill_context_parallel_size=2,
+                extra_config={
+                    "async_moe_ubatching": True,
+                    "compute_gate_on_attention": True,
+                },
             ),
         )
 

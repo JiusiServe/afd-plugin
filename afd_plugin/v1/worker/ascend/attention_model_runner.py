@@ -54,11 +54,18 @@ from afd_plugin.compat.ascend.profiler import (
     step_afd_npu_profiler,
     stop_afd_npu_profiler,
 )
-from afd_plugin.config import AFDConfig, parse_afd_config
+from afd_plugin.config import (
+    AFDConfig,
+    async_moe_num_ubatches,
+    async_moe_ubatching_enabled,
+    parse_afd_config,
+)
 from afd_plugin.connectors import AFDConnectorFactory, AFDDPMetadata, AFDMetadata
+from afd_plugin.model_executor.models import ASYNC_MOE_UBATCH_METADATA_KEY
 from afd_plugin.v1.worker.ascend.npu_ubatch_wrapper import AscendUBatchWrapper
 from afd_plugin.v1.worker.ascend.ubatch_utils import (
     check_enable_ubatch,
+    create_request_boundary_ubatch_slices,
     maybe_create_ubatch_slices,
     pad_out_ubatch_slices,
     split_attn_metadata,
@@ -102,6 +109,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         self._afd_pending_metadata: AFDMetadata | None = None
         self._afd_suppress_metadata_send = False
         self._afd_transaction_counter = 0
+        self._afd_async_moe_ubatch_metadata = None
         self.ubatch_slices = None
         self.prof = create_afd_npu_profiler("attention")
 
@@ -122,6 +130,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         except AttributeError:
             forward_context.dbo_enabled = False
         self._install_afd_metadata_on_forward_context(forward_context)
+        self._install_async_moe_ubatch_metadata_on_forward_context(forward_context)
 
         (
             num_tokens_padded,
@@ -177,6 +186,13 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 kwargs,
                 ubatch_slices,
             )
+        if async_moe_ubatching_enabled(self.afd_config):
+            self.ubatch_slices = None
+            return self._build_attention_metadata_with_async_moe_ubatches(
+                args,
+                kwargs,
+                values,
+            )
         self._afd_pending_metadata = self._build_afd_metadata(
             ubatch_slices,
             int(values.get("num_tokens", 0)),
@@ -185,6 +201,67 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         if ubatch_slices is not None:
             return self._build_attention_metadata_with_ubatches(*args, **kwargs)
         return super()._build_attention_metadata(*args, **kwargs)
+
+    def _build_attention_metadata_with_async_moe_ubatches(
+        self,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        values: dict[str, Any],
+    ) -> Any:
+        full_metadata = super()._build_attention_metadata(*args, **kwargs)
+        self._afd_async_moe_ubatch_metadata = None
+        self._afd_pending_metadata = self._build_afd_metadata(
+            None,
+            int(values.get("num_tokens", 0)),
+        )
+
+        num_scheduled_tokens_np = values.get("num_scheduled_tokens_np")
+        if num_scheduled_tokens_np is None:
+            return full_metadata
+
+        ubatch_slices = create_request_boundary_ubatch_slices(
+            num_scheduled_tokens_np,
+            num_ubatches=async_moe_num_ubatches(self.afd_config),
+        )
+        if ubatch_slices is None:
+            return full_metadata
+
+        logger.warning(
+            "AFD NPU async MoE ubatch split; num_reqs=%s num_tokens=%s "
+            "num_scheduled_tokens=%s request_slices=%s token_slices=%s "
+            "stage_num_tokens=%s",
+            len(num_scheduled_tokens_np),
+            int(values.get("num_tokens", 0)),
+            num_scheduled_tokens_np.tolist(),
+            [
+                (ubatch_slice.request_slice.start, ubatch_slice.request_slice.stop)
+                for ubatch_slice in ubatch_slices
+            ],
+            [
+                (ubatch_slice.token_slice.start, ubatch_slice.token_slice.stop)
+                for ubatch_slice in ubatch_slices
+            ],
+            [int(ubatch_slice.num_tokens) for ubatch_slice in ubatch_slices],
+        )
+
+        stage_args, stage_kwargs = _replace_attention_metadata_ubatch_slices(
+            args,
+            kwargs,
+            ubatch_slices,
+        )
+        stage_attn_metadata, _ = self._build_attention_metadata_with_ubatches(
+            *stage_args,
+            **stage_kwargs,
+        )
+        self._afd_pending_metadata = self._build_afd_metadata(
+            ubatch_slices,
+            int(values.get("num_tokens", 0)),
+        )
+        self._afd_async_moe_ubatch_metadata = {
+            "attn_metadata": stage_attn_metadata,
+            "ubatch_slices": ubatch_slices,
+        }
+        return full_metadata
 
     def _build_attention_metadata_with_ubatches(
         self,
@@ -537,6 +614,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             finally:
                 self._afd_is_graph_capturing = previous
                 self._afd_pending_metadata = None
+                self._afd_async_moe_ubatch_metadata = None
 
         try:
             return self._dummy_run_with_ubatches(
@@ -558,6 +636,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         finally:
             self._afd_is_graph_capturing = previous
             self._afd_pending_metadata = None
+            self._afd_async_moe_ubatch_metadata = None
 
     def _warmup_and_capture(self, *args: Any, **kwargs: Any) -> Any:
         """Capture both single-stage and ubatched FFN graph keys.
@@ -1022,6 +1101,18 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             dp_metadata = self._build_capture_dp_metadata(padded_graph_tokens)
         self._send_dp_metadata(dp_metadata, ubatch_slices)
 
+    def _install_async_moe_ubatch_metadata_on_forward_context(
+        self,
+        forward_context: object,
+    ) -> None:
+        if self._afd_async_moe_ubatch_metadata is None:
+            return
+        if forward_context.additional_kwargs is None:
+            forward_context.additional_kwargs = {}
+        forward_context.additional_kwargs[ASYNC_MOE_UBATCH_METADATA_KEY] = (
+            self._afd_async_moe_ubatch_metadata
+        )
+
     def _send_dp_metadata(self, dp_metadata: Any, ubatch_slices: Any) -> None:
         if ubatch_slices and len(ubatch_slices) > 1:
             dp_metadata_list = {
@@ -1106,7 +1197,9 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
     def initialize_attn_backend(self, *args: Any, **kwargs: Any) -> Any:
         result = super().initialize_attn_backend(*args, **kwargs)
-        if bool(self.vllm_config.parallel_config.use_ubatching):
+        if _is_npu_ubatching_enabled(
+            self.vllm_config,
+        ) or async_moe_ubatching_enabled(self.afd_config):
             self._ensure_two_metadata_builders()
         return result
 
@@ -1148,18 +1241,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 vllm_config=self.vllm_config,
                 moe_comm_type=moe_comm_type,
             )
-            logger.warning(
-                "AFD NPU ubatch DP sync; dp_size=1 should_ubatch=%s "
-                "num_tokens_unpadded=%s num_tokens_padded=%s uniform_decode=%s "
-                "allow_dp_padding=%s cudagraph_mode=%s moe_comm_type=%s",
-                should_ubatch,
-                num_tokens_unpadded,
-                num_tokens_padded,
-                uniform_decode,
-                allow_dp_padding,
-                cudagraph_mode,
-                getattr(moe_comm_type, "name", str(moe_comm_type)),
-            )
             return should_ubatch, num_tokens_padded, None, cudagraph_mode
 
         if not bool(
@@ -1181,23 +1262,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 uniform_decode=uniform_decode,
                 vllm_config=self.vllm_config,
                 moe_comm_type=moe_comm_type,
-            )
-            logger.warning(
-                "AFD NPU ubatch DP sync; async connector uses local metadata "
-                "should_ubatch=%s dp_size=%s dp_rank=%s "
-                "num_tokens_unpadded=%s num_tokens_padded=%s uniform_decode=%s "
-                "allow_dp_padding=%s cudagraph_mode=%s is_draft_model=%s "
-                "moe_comm_type=%s",
-                should_ubatch,
-                self.dp_size,
-                self.dp_rank,
-                num_tokens_unpadded,
-                num_tokens_padded,
-                uniform_decode,
-                allow_dp_padding,
-                cudagraph_mode,
-                is_draft_model,
-                getattr(moe_comm_type, "name", str(moe_comm_type)),
             )
             return (
                 should_ubatch,
@@ -1233,41 +1297,12 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 vllm_config=self.vllm_config,
                 moe_comm_type=moe_comm_type,
             )
-            logger.warning(
-                "AFD NPU ubatch DP sync; skipping allreduce branch "
-                "should_ubatch=%s dp_size=%s dp_rank=%s "
-                "num_tokens_unpadded=%s num_tokens_padded=%s uniform_decode=%s "
-                "allow_dp_padding=%s cudagraph_mode=%s is_draft_model=%s "
-                "moe_comm_type=%s",
-                should_ubatch,
-                self.dp_size,
-                self.dp_rank,
-                num_tokens_unpadded,
-                num_tokens_padded,
-                uniform_decode,
-                allow_dp_padding,
-                cudagraph_mode,
-                is_draft_model,
-                getattr(moe_comm_type, "name", str(moe_comm_type)),
-            )
             return (
                 should_ubatch,
                 num_tokens_padded,
                 num_tokens_after_padding,
                 cudagraph_mode,
             )
-        if can_skip_dp_sync:
-            logger.warning(
-                "AFD NPU ubatch DP sync; skip-allreduce disabled for ubatch "
-                "metadata consistency dp_size=%s dp_rank=%s "
-                "num_tokens_unpadded=%s num_tokens_padded=%s uniform_decode=%s",
-                self.dp_size,
-                self.dp_rank,
-                num_tokens_unpadded,
-                num_tokens_padded,
-                uniform_decode,
-            )
-
         packed_tensor = torch.zeros(3, self.dp_size, device="cpu", dtype=torch.int32)
         packed_tensor[0][self.dp_rank] = num_tokens_unpadded
         packed_tensor[1][self.dp_rank] = num_tokens_padded
@@ -1291,24 +1326,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             uniform_decode=uniform_decode,
             vllm_config=self.vllm_config,
             moe_comm_type=moe_comm_type,
-        )
-        logger.warning(
-            "AFD NPU ubatch DP sync; after allreduce should_ubatch=%s "
-            "dp_size=%s dp_rank=%s min_tokens_across_dp=%s "
-            "max_tokens_across_dp=%s num_tokens_unpadded_across_dp=%s "
-            "num_tokens_padded_across_dp=%s uniform_decode=%s "
-            "allow_dp_padding=%s synced_cudagraph_mode=%s moe_comm_type=%s",
-            should_ubatch,
-            self.dp_size,
-            self.dp_rank,
-            min_tokens_across_dp,
-            max_tokens_across_dp,
-            num_tokens_unpadded_across_dp.tolist(),
-            num_tokens_padded_across_dp.tolist(),
-            uniform_decode,
-            allow_dp_padding,
-            synced_cudagraph_mode,
-            getattr(moe_comm_type, "name", str(moe_comm_type)),
         )
 
         if allow_dp_padding or is_draft_model or should_ubatch:
@@ -1423,16 +1440,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 moe_comm_type=moe_comm_type,
             )
         if not allow_microbatching:
-            logger.warning(
-                "AFD NPU ubatch determine; allow_microbatching=False forces "
-                "should_ubatch=False num_tokens=%s num_tokens_padded=%s "
-                "num_reqs=%s uniform_decode=%s cudagraph_mode=%s",
-                num_tokens,
-                num_tokens_padded,
-                num_reqs,
-                uniform_decode,
-                cudagraph_mode,
-            )
             should_ubatch = False
 
         cudagraph_stats = None
@@ -1443,29 +1450,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 num_paddings=batch_descriptor.num_tokens - num_tokens,
                 runtime_mode=str(cudagraph_mode),
             )
-        logger.warning(
-            "AFD NPU ubatch determine result; should_ubatch=%s "
-            "num_tokens=%s num_tokens_padded=%s num_reqs=%s "
-            "max_num_scheduled_tokens=%s uniform_decode=%s "
-            "allow_microbatching=%s data_parallel_size=%s "
-            "num_tokens_across_dp=%s cudagraph_mode=%s "
-            "batch_descriptor=%s",
-            should_ubatch,
-            num_tokens,
-            num_tokens_padded,
-            num_reqs,
-            max_num_scheduled_tokens,
-            uniform_decode,
-            allow_microbatching,
-            self.vllm_config.parallel_config.data_parallel_size,
-            (
-                num_tokens_across_dp.tolist()
-                if num_tokens_across_dp is not None
-                else None
-            ),
-            cudagraph_mode,
-            batch_descriptor,
-        )
         return (
             cudagraph_mode,
             batch_descriptor,
@@ -1637,7 +1621,17 @@ _ATTENTION_METADATA_ARG_NAMES = [
     "num_tokens_padded",
     "num_reqs_padded",
     "ubatch_slices",
+    "logits_indices",
+    "use_spec_decode",
+    "for_cudagraph_capture",
+    "num_scheduled_tokens",
+    "num_scheduled_tokens_np",
+    "cascade_attn_prefix_lens",
 ]
+
+
+def _is_npu_ubatching_enabled(vllm_config: object) -> bool:
+    return bool(vllm_config.parallel_config.use_ubatching)
 
 
 __all__ = ["AFDNPUAttentionModelRunner"]

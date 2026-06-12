@@ -8,7 +8,8 @@ through the AFD connector.
 """
 
 import typing
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager, suppress
 from itertools import islice
 from typing import Any
 
@@ -39,6 +40,7 @@ from afd_plugin.config import parse_afd_config
 from afd_plugin.connectors import AFDConnectorMetadata, AFDFFNOutput
 from afd_plugin.model_executor.models import (
     get_afd_metadata_from_forward_context,
+    get_async_moe_ubatch_metadata_from_forward_context,
 )
 from afd_plugin.v1.worker.dbo import maybe_apply_dbo_yield
 
@@ -319,9 +321,7 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 scoring_func=getattr(self.config, "scoring_func", "softmax"),
                 num_expert_group=getattr(self.config, "n_group", 1),
                 topk_group=getattr(self.config, "topk_group", 1),
-                routed_scaling_factor=(
-                    routed_scaling_factor if mix_placement else 1.0
-                ),
+                routed_scaling_factor=(routed_scaling_factor if mix_placement else 1.0),
                 e_score_correction_bias=self.gate.e_score_correction_bias,
                 mix_placement=mix_placement,
                 num_logical_experts=router_logits.shape[1],
@@ -600,6 +600,18 @@ class AFDDeepseekV2Model(torch.nn.Module):
         llama_4_scaling: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if self.afd_config.compute_gate_on_attention:
+            forward_context = get_forward_context()
+            if (
+                get_async_moe_ubatch_metadata_from_forward_context(forward_context)
+                is not None
+            ):
+                return self.forward_with_afd_v3(
+                    hidden_states,
+                    residual,
+                    positions,
+                    afd_metadata,
+                    llama_4_scaling,
+                )
             return self.forward_with_afd_v2(
                 hidden_states,
                 residual,
@@ -702,6 +714,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
                 residual,
                 llama_4_scaling,
             )
+
             metadata = AFDConnectorMetadata.create_attention_metadata(
                 layer_idx=layer.layer_idx,
                 stage_idx=stage_idx,
@@ -726,6 +739,188 @@ class AFDDeepseekV2Model(torch.nn.Module):
                 ubatch_idx=stage_idx,
             )
         return hidden_states, residual
+
+    def forward_with_afd_v3(
+        self,
+        hidden_states: torch.Tensor,
+        residual: torch.Tensor | None,
+        positions: torch.Tensor,
+        afd_metadata: object,
+        llama_4_scaling: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        forward_context = get_forward_context()
+        async_moe_ubatch_metadata = get_async_moe_ubatch_metadata_from_forward_context(
+            forward_context
+        )
+        if async_moe_ubatch_metadata is None:
+            return self.forward_with_afd_v2(
+                hidden_states,
+                residual,
+                positions,
+                afd_metadata,
+                llama_4_scaling,
+            )
+        pending_ffn_recv = False
+
+        for layer_offset, layer in enumerate(
+            islice(self.layers, self.start_layer, self.end_layer),
+        ):
+            stage_idx = int(
+                getattr(forward_context, "ubatch_idx", afd_metadata.afd_stage_idx),
+            )
+            afd_metadata.ubatch_idx = stage_idx
+            afd_metadata.afd_stage_idx = stage_idx
+            if layer_offset > 0 and pending_ffn_recv and not layer.is_moe_layer:
+                hidden_states = self._recv_async_moe_ubatch_outputs(
+                    hidden_states=hidden_states,
+                    afd_metadata=afd_metadata,
+                    forward_context=forward_context,
+                    async_moe_ubatch_metadata=async_moe_ubatch_metadata,
+                )
+                pending_ffn_recv = False
+
+            if not layer.is_moe_layer:
+                hidden_states, residual = layer(
+                    positions,
+                    hidden_states,
+                    residual,
+                    llama_4_scaling,
+                )
+                continue
+
+            hidden_states, residual = self._run_async_moe_ubatch_layer(
+                layer=layer,
+                hidden_states=hidden_states,
+                residual=residual,
+                positions=positions,
+                llama_4_scaling=llama_4_scaling,
+                afd_metadata=afd_metadata,
+                forward_context=forward_context,
+                async_moe_ubatch_metadata=async_moe_ubatch_metadata,
+                recv_pending_ffn=pending_ffn_recv,
+            )
+            pending_ffn_recv = True
+
+        if pending_ffn_recv:
+            hidden_states = self._recv_async_moe_ubatch_outputs(
+                hidden_states=hidden_states,
+                afd_metadata=afd_metadata,
+                forward_context=forward_context,
+                async_moe_ubatch_metadata=async_moe_ubatch_metadata,
+            )
+        return hidden_states, residual
+
+    def _run_async_moe_ubatch_layer(
+        self,
+        *,
+        layer: AFDDeepseekV2DecoderLayer,
+        hidden_states: torch.Tensor,
+        residual: torch.Tensor | None,
+        positions: torch.Tensor,
+        llama_4_scaling: torch.Tensor | None,
+        afd_metadata: object,
+        forward_context: object,
+        async_moe_ubatch_metadata: dict[str, Any],
+        recv_pending_ffn: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        ubatch_slices = async_moe_ubatch_metadata["ubatch_slices"]
+        afd_connector = afd_metadata.afd_connector
+        stage_hidden_outputs = []
+        stage_residual_outputs = []
+        for stage_idx, ubatch_slice in enumerate(ubatch_slices):
+            token_slice = ubatch_slice.token_slice
+            stage_hidden_states = _slice_first_dim(hidden_states, token_slice)
+            stage_residual = _slice_optional_first_dim(residual, token_slice)
+            stage_positions = _slice_positions(positions, token_slice)
+            stage_llama_4_scaling = _slice_llama_4_scaling(
+                llama_4_scaling,
+                token_slice,
+                num_tokens=int(hidden_states.shape[0]),
+            )
+            with _use_async_moe_ubatch_forward_context(
+                forward_context=forward_context,
+                parent_afd_metadata=afd_metadata,
+                async_moe_ubatch_metadata=async_moe_ubatch_metadata,
+                stage_idx=stage_idx,
+            ):
+                if recv_pending_ffn:
+                    stage_hidden_states = afd_connector.recv_ffn_output(
+                        ref_tensor=stage_hidden_states,
+                        ubatch_idx=stage_idx,
+                    )
+                (
+                    stage_hidden_states,
+                    stage_residual,
+                    topk_weights,
+                    topk_ids,
+                    router_logits,
+                ) = layer.compute_attn_output(
+                    stage_positions,
+                    stage_hidden_states,
+                    stage_residual,
+                    stage_llama_4_scaling,
+                )
+                if topk_weights is None or topk_ids is None:
+                    raise RuntimeError(
+                        "async_moe_ubatching requires Attention-side topk payloads",
+                    )
+                stage_metadata = AFDConnectorMetadata.create_attention_metadata(
+                    layer_idx=layer.layer_idx,
+                    stage_idx=stage_idx,
+                    seq_len=int(stage_hidden_states.shape[0]),
+                )
+                afd_connector.send_attn_output(
+                    stage_hidden_states,
+                    stage_metadata,
+                    topk_weights=topk_weights,
+                    topk_ids=topk_ids,
+                    router_logits=router_logits,
+                )
+            stage_hidden_outputs.append(stage_hidden_states)
+            stage_residual_outputs.append(stage_residual)
+
+        return (
+            _stitch_async_moe_ubatch_outputs(
+                hidden_states,
+                ubatch_slices,
+                stage_hidden_outputs,
+            ),
+            _stitch_async_moe_optional_ubatch_outputs(
+                hidden_states,
+                ubatch_slices,
+                stage_residual_outputs,
+            ),
+        )
+
+    def _recv_async_moe_ubatch_outputs(
+        self,
+        *,
+        hidden_states: torch.Tensor,
+        afd_metadata: object,
+        forward_context: object,
+        async_moe_ubatch_metadata: dict[str, Any],
+    ) -> torch.Tensor:
+        ubatch_slices = async_moe_ubatch_metadata["ubatch_slices"]
+        afd_connector = afd_metadata.afd_connector
+        stage_outputs = []
+        for stage_idx, ubatch_slice in enumerate(ubatch_slices):
+            with _use_async_moe_ubatch_forward_context(
+                forward_context=forward_context,
+                parent_afd_metadata=afd_metadata,
+                async_moe_ubatch_metadata=async_moe_ubatch_metadata,
+                stage_idx=stage_idx,
+            ):
+                stage_outputs.append(
+                    afd_connector.recv_ffn_output(
+                        ref_tensor=hidden_states[ubatch_slice.token_slice],
+                        ubatch_idx=stage_idx,
+                    ),
+                )
+        return _stitch_async_moe_ubatch_outputs(
+            hidden_states,
+            ubatch_slices,
+            stage_outputs,
+        )
 
     def compute_ffn_output(
         self,
@@ -753,6 +948,180 @@ class AFDDeepseekV2Model(torch.nn.Module):
             scaling_beta=llama_4_scaling_config["beta"],
             positions=positions,
         )
+
+
+_MISSING_FORWARD_CONTEXT_ATTR = object()
+
+
+@contextmanager
+def _use_async_moe_ubatch_forward_context(
+    *,
+    forward_context: object,
+    parent_afd_metadata: object,
+    async_moe_ubatch_metadata: dict[str, Any],
+    stage_idx: int,
+) -> Iterator[None]:
+    ubatch_slices = async_moe_ubatch_metadata["ubatch_slices"]
+    attn_metadata = async_moe_ubatch_metadata["attn_metadata"]
+    stage_afd_metadata = _build_async_moe_stage_afd_metadata(
+        parent_afd_metadata,
+        ubatch_slices,
+        stage_idx,
+    )
+
+    saved_attrs = {
+        "attn_metadata": _read_forward_context_attr(
+            forward_context,
+            "attn_metadata",
+        ),
+        "additional_kwargs": _read_forward_context_attr(
+            forward_context,
+            "additional_kwargs",
+        ),
+        "afd_metadata": _read_forward_context_attr(
+            forward_context,
+            "afd_metadata",
+        ),
+        "ubatch_idx": _read_forward_context_attr(forward_context, "ubatch_idx"),
+        "num_ubatches": _read_forward_context_attr(
+            forward_context,
+            "num_ubatches",
+        ),
+        "num_tokens": _read_forward_context_attr(forward_context, "num_tokens"),
+    }
+
+    original_kwargs = (
+        forward_context.additional_kwargs
+        if saved_attrs["additional_kwargs"] is not _MISSING_FORWARD_CONTEXT_ATTR
+        else None
+    )
+    stage_kwargs = dict(original_kwargs or {})
+    stage_kwargs["afd_metadata"] = stage_afd_metadata
+
+    try:
+        forward_context.attn_metadata = attn_metadata[stage_idx]
+        forward_context.additional_kwargs = stage_kwargs
+        forward_context.afd_metadata = stage_afd_metadata
+        forward_context.ubatch_idx = stage_idx
+        forward_context.num_ubatches = len(ubatch_slices)
+        forward_context.num_tokens = int(ubatch_slices[stage_idx].num_tokens)
+        yield
+    finally:
+        for name, value in saved_attrs.items():
+            _restore_forward_context_attr(forward_context, name, value)
+
+
+def _build_async_moe_stage_afd_metadata(
+    parent_afd_metadata: object,
+    ubatch_slices: object,
+    stage_idx: int,
+) -> object:
+    ubatch_slice = ubatch_slices[stage_idx]
+    stage_metadata = parent_afd_metadata.clone()
+    stage_metadata.afd_stage_idx = stage_idx
+    stage_metadata.ubatch_idx = stage_idx
+    stage_metadata.num_of_stages = len(ubatch_slices)
+    stage_metadata.afd_tokens_start_loc = [ubatch_slice.token_slice.start]
+    stage_metadata.afd_reqs_start_loc = [ubatch_slice.request_slice.start]
+    stage_metadata.afd_tokens_lens = [ubatch_slice.num_tokens]
+    if len(parent_afd_metadata.afd_tokens_unpadded_lens) > stage_idx:
+        unpadded_len = parent_afd_metadata.afd_tokens_unpadded_lens[stage_idx]
+    else:
+        unpadded_len = ubatch_slice.num_tokens
+    stage_metadata.afd_tokens_unpadded_lens = [int(unpadded_len)]
+    return stage_metadata
+
+
+def _stitch_async_moe_ubatch_outputs(
+    hidden_states: torch.Tensor,
+    ubatch_slices: object,
+    stage_outputs: list[torch.Tensor],
+) -> torch.Tensor:
+    if len(stage_outputs) != len(ubatch_slices):
+        raise RuntimeError("async_moe_ubatching stage output count mismatch")
+    stitched = hidden_states.clone()
+    for ubatch_slice, stage_output in zip(
+        ubatch_slices,
+        stage_outputs,
+        strict=True,
+    ):
+        expected_tokens = int(ubatch_slice.num_tokens)
+        if int(stage_output.shape[0]) != expected_tokens:
+            raise RuntimeError(
+                "async_moe_ubatching stage output token count mismatch: "
+                f"expected {expected_tokens}, got {int(stage_output.shape[0])}",
+            )
+        stitched[ubatch_slice.token_slice] = stage_output
+    return stitched
+
+
+def _stitch_async_moe_optional_ubatch_outputs(
+    hidden_states: torch.Tensor,
+    ubatch_slices: object,
+    stage_outputs: list[torch.Tensor | None],
+) -> torch.Tensor | None:
+    if all(stage_output is None for stage_output in stage_outputs):
+        return None
+    if any(stage_output is None for stage_output in stage_outputs):
+        raise RuntimeError("async_moe_ubatching residual stage output mismatch")
+    return _stitch_async_moe_ubatch_outputs(
+        hidden_states,
+        ubatch_slices,
+        [stage_output for stage_output in stage_outputs if stage_output is not None],
+    )
+
+
+def _slice_first_dim(tensor: torch.Tensor, token_slice: slice) -> torch.Tensor:
+    return tensor[token_slice]
+
+
+def _slice_optional_first_dim(
+    tensor: torch.Tensor | None,
+    token_slice: slice,
+) -> torch.Tensor | None:
+    if tensor is None:
+        return None
+    return _slice_first_dim(tensor, token_slice)
+
+
+def _slice_positions(positions: torch.Tensor, token_slice: slice) -> torch.Tensor:
+    if positions.dim() <= 1:
+        return positions[token_slice]
+    return positions[..., token_slice]
+
+
+def _slice_llama_4_scaling(
+    llama_4_scaling: torch.Tensor | None,
+    token_slice: slice,
+    *,
+    num_tokens: int,
+) -> torch.Tensor | None:
+    if llama_4_scaling is None:
+        return None
+    if llama_4_scaling.shape[0] == num_tokens:
+        return llama_4_scaling[token_slice]
+    if llama_4_scaling.dim() > 1 and llama_4_scaling.shape[1] == num_tokens:
+        return llama_4_scaling[:, token_slice]
+    return llama_4_scaling
+
+
+def _read_forward_context_attr(forward_context: object, name: str) -> object:
+    try:
+        return getattr(forward_context, name)
+    except AttributeError:
+        return _MISSING_FORWARD_CONTEXT_ATTR
+
+
+def _restore_forward_context_attr(
+    forward_context: object,
+    name: str,
+    value: object,
+) -> None:
+    if value is _MISSING_FORWARD_CONTEXT_ATTR:
+        with suppress(AttributeError):
+            delattr(forward_context, name)
+        return
+    setattr(forward_context, name, value)
 
 
 class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
