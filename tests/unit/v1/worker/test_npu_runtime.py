@@ -5,7 +5,7 @@ import logging
 import sys
 import threading
 from collections import deque
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -138,6 +138,14 @@ class _FakeStructuredFFNModel:
 class _FakeDPMetadata:
     def __init__(self, values):
         self.num_tokens_across_dp_cpu = values
+
+
+class _FakeScalar:
+    def __init__(self, value):
+        self._value = int(value)
+
+    def item(self):
+        return self._value
 
 
 def _parallel_config(**overrides):
@@ -668,6 +676,78 @@ def test_npu_ffn_runner_passes_async_shared_payload_to_model():
             },
         ),
     ]
+
+
+def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.ascend import ffn_model_runner
+
+    context_calls = []
+
+    @contextmanager
+    def fake_ascend_forward_context(**kwargs):
+        context_calls.append(kwargs)
+        yield SimpleNamespace(additional_kwargs={}, dp_metadata="dp")
+
+    monkeypatch.setattr(
+        ffn_model_runner,
+        "ascend_forward_context",
+        fake_ascend_forward_context,
+    )
+    runner = _new_ffn_runner()
+    runner.vllm_config = _vllm_config(role="ffn")
+    runner.connector = _FakeFFNConnector(ffn_size=2)
+    runner.connector.uses_dp_metadata_control_plane = False
+    runner.model = _RecordingFakeModel()
+    runner.num_layers = 1
+    runner.max_num_tokens = 16
+    metadata = AFDConnectorMetadata.create_ffn_metadata(
+        layer_idx=0,
+        stage_idx=0,
+        seq_lens=[16],
+    )
+    token_nums_rankid_layeridx = [
+        _FakeScalar(5),
+        _FakeScalar(0),
+        _FakeScalar(7),
+    ]
+    runner.connector.attn_outputs.append(
+        AFDRecvOutput(
+            hidden_states="hidden",
+            metadata=metadata,
+            atten_batch_size=token_nums_rankid_layeridx,
+            group_list="groups",
+        ),
+    )
+
+    runner._ffn_forward_connector_driven()
+
+    assert metadata.layer_idx == 7
+    assert metadata.seq_lens == [5]
+    assert runner.model.calls == [
+        (
+            "hidden",
+            7,
+            {
+                "group_list": "groups",
+                "dynamic_scales": None,
+                "expand_x_shared": None,
+                "dynamic_scales_shared": None,
+                "topk_weights": None,
+                "topk_ids": None,
+                "router_logits": None,
+                "row_idx": None,
+                "x_active_mask": None,
+                "cam_p2p_ep_name": "",
+            },
+        ),
+    ]
+    assert runner.connector.ffn_outputs == [
+        ("npu-ffn(hidden, layer=7)", metadata, {"ubatch_idx": 0}),
+    ]
+    assert context_calls[0]["num_tokens"] == 5
+    assert context_calls[0]["afd_metadata"].afd_tokens_lens == [5]
+    assert context_calls[0]["num_tokens_across_dp"].tolist() == [5, 5]
 
 
 def test_npu_ffn_runner_sends_structured_shared_output():

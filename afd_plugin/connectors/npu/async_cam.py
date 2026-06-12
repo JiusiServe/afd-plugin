@@ -492,14 +492,13 @@ class AFDAsyncConnector(AFDConnectorBase):
         expand_x_shared = kwargs.get("expand_x_shared")
         if expand_x_shared is None:
             expand_x_shared = ffn_output
-        expert_token_nums = data.expert_token_nums
-        if expert_token_nums is None:
-            expert_token_nums = kwargs["expert_token_nums"]
         token_nums_rankid_layeridx = data.token_nums_rankid_layeridx
         if token_nums_rankid_layeridx is None:
-            token_nums_rankid_layeridx = kwargs.get(
-                "token_nums_rankid_layeridx",
-                expert_token_nums,
+            token_nums_rankid_layeridx = kwargs.get("token_nums_rankid_layeridx")
+        if token_nums_rankid_layeridx is None:
+            raise RuntimeError(
+                "AFD async CAM combine send requires "
+                "TokenNums_Rankid_Layeridx from async_dispatch_recv",
             )
         _log_cam_op_inputs(
             "async_combine_send",

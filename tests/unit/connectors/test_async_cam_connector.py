@@ -288,6 +288,33 @@ def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][3] is recv_output.atten_batch_size
 
 
+def test_async_combine_send_requires_dispatch_recv_token_metadata(monkeypatch):
+    fake_torch = _FakeTorch()
+    monkeypatch.setattr(async_cam_module, "torch", fake_torch)
+    connector = AFDAsyncConnector(
+        0,
+        0,
+        _vllm_config(),
+        _afd_config(role="ffn"),
+    )
+    connector._initialized = True
+    metadata = AFDConnectorMetadata.create_ffn_metadata(
+        layer_idx=1,
+        stage_idx=0,
+        seq_lens=[4],
+    )
+    metadata.connector_data = AFDAsyncConnectorData(
+        batch_size=4,
+        hidden_size=16,
+        topk=2,
+        layer_idx=1,
+        expert_token_nums=_FakeTensor((4,), dtype="int64"),
+    )
+
+    with pytest.raises(RuntimeError, match="TokenNums_Rankid_Layeridx"):
+        connector.send_ffn_output(_FakeTensor((4, 16)), metadata)
+
+
 def test_async_select_experts_maps_legacy_global_num_experts(monkeypatch):
     calls = []
     fake_package = ModuleType("vllm_ascend")

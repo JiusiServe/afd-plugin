@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+"""Environment-variable helpers for AFD plugin runtime diagnostics."""
+
+from __future__ import annotations
+
+import os
+
+AFD_CAMP2P_STUB_IO = "AFD_CAMP2P_STUB_IO"
+ENV_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def camp2p_stub_io_enabled() -> bool:
+    return os.environ.get(AFD_CAMP2P_STUB_IO, "").lower() in ENV_TRUE_VALUES
+
+
+__all__ = ["AFD_CAMP2P_STUB_IO", "camp2p_stub_io_enabled"]

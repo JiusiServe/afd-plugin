@@ -94,7 +94,8 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
         1,
     )[0]
 
-    assert '_AFD_ASYNC_MOE_FORWARD_LOG_ENV = "AFD_CAMP2P_STUB_IO"' in source
+    assert "from afd_plugin.envs import AFD_CAMP2P_STUB_IO" in source
+    assert "_AFD_ASYNC_MOE_FORWARD_LOG_ENV = AFD_CAMP2P_STUB_IO" in source
     assert "async_moe_ubatch_metadata" in forward_with_afd_v3
     assert "_log_async_moe_forward_step(" in forward_with_afd_v3
     assert '"enter"' in forward_with_afd_v3
@@ -145,3 +146,28 @@ def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():
     assert "w13_weight_scale_fp32_list" in compute_moe
     assert "w2_weight_scale_list" in compute_moe
     assert "MoEQuantParams(quant_type=quant_type)" in compute_moe
+
+
+def test_deepseek_afd_ffn_compute_has_stub_io_diagnostics():
+    source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
+    compute_ffn_output = source.split(
+        "    def compute_ffn_output(",
+        1,
+    )[1].split("    def _compute_moe_with_attention_gate(", 1)[0]
+    compute_moe = source.split(
+        "    def _compute_moe_with_attention_gate(",
+        1,
+    )[1].split("\n\n@native.support_torch_compile", 1)[0]
+
+    assert "camp2p_stub_io_enabled()" in source
+    assert "_log_ffn_compute_step(" in compute_ffn_output
+    assert '"decoder_layer_enter"' in compute_ffn_output
+    assert '"attention_gate_moe_begin"' in compute_ffn_output
+    assert '"dense_mlp_begin"' not in compute_ffn_output
+    assert '"dense_scaling_begin"' not in compute_ffn_output
+    assert '"moe_weights_begin"' in compute_moe
+    assert '"shared_experts_begin"' in compute_moe
+    assert '"routed_unified_apply_mlp_begin"' in compute_moe
+    assert '"routed_scaling_begin"' not in compute_moe
+    assert '"shared_scaling_begin"' not in compute_moe
+    assert '"moe_attention_gate_exit"' in compute_moe

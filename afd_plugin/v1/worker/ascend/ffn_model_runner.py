@@ -32,6 +32,7 @@ from afd_plugin.connectors import (
     AFDMetadata,
     AFDRecvOutput,
 )
+from afd_plugin.envs import camp2p_stub_io_enabled
 from afd_plugin.v1.worker.attention_model_runner import (
     _resolve_world_ranks,
     _with_dp_derived_afd_rank,
@@ -44,6 +45,7 @@ from afd_plugin.v1.worker.cuda_graph import (
 from afd_plugin.v1.worker.ffn_model_runner import _set_moe_layer_index
 
 logger = init_logger(__name__)
+CAM_RECV_PLACEHOLDER_LAYER_IDX = 0
 
 
 class AFDNPUFFNModelRunner(NPUModelRunner):
@@ -280,40 +282,96 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
     def _ffn_forward_connector_driven(self) -> Any:
         stage_idx = 0
-        num_tokens = _connector_driven_batch_size(self.connector, self.max_num_tokens)
-        num_tokens_across_dp = torch.tensor(
-            [num_tokens] * max(1, int(getattr(self.connector, "ffn_size", 1))),
-            dtype=torch.int32,
-            device="cpu",
-        )
-        afd_metadata = AFDMetadata(
-            afd_tokens_start_loc=[0],
-            afd_reqs_start_loc=[0],
-            afd_stage_idx=stage_idx,
-            afd_connector=self.connector,
-            afd_tokens_lens=[num_tokens],
-            num_of_stages=1,
-            afd_tokens_unpadded_lens=[num_tokens],
-        )
         rank_ffn_output = None
 
-        with ascend_forward_context(
-            vllm_config=self.vllm_config,
-            afd_metadata=afd_metadata,
-            model_instance=self.model,
-            num_tokens=num_tokens,
-            num_tokens_across_dp=num_tokens_across_dp,
-        ) as forward_context:
-            for layer_idx in _ffn_layer_indices(self):
-                recv_output = self._recv_attn_output(stage_idx, layer_idx)
-                hidden_states, metadata, payload = _normalize_recv_output(
-                    recv_output,
+        for _ in _ffn_layer_indices(self):
+            _log_ffn_runner_step(
+                "connector_driven_recv_begin",
+                stage_idx=stage_idx,
+            )
+            recv_output = self._recv_attn_output(
+                stage_idx,
+                CAM_RECV_PLACEHOLDER_LAYER_IDX,
+            )
+            _log_ffn_runner_step(
+                "connector_driven_recv_end",
+                stage_idx=stage_idx,
+            )
+            hidden_states, metadata, payload = _normalize_recv_output(
+                recv_output,
+                stage_idx=stage_idx,
+                layer_idx=CAM_RECV_PLACEHOLDER_LAYER_IDX,
+            )
+            _log_ffn_runner_step(
+                "connector_driven_update_metadata_begin",
+                stage_idx=stage_idx,
+            )
+            self.connector.update_metadata(metadata, payload)
+            _log_ffn_runner_step(
+                "connector_driven_update_metadata_end",
+                stage_idx=stage_idx,
+            )
+            token_nums_rankid_layeridx = _cam_token_nums_rankid_layeridx(
+                payload,
+                metadata,
+            )
+            num_tokens = max(1, _cam_metadata_int(token_nums_rankid_layeridx, 0))
+            layer_idx = _cam_metadata_int(token_nums_rankid_layeridx, 2)
+            _log_ffn_runner_step(
+                "connector_driven_received_metadata",
+                stage_idx=stage_idx,
+                received_token_count=num_tokens,
+                received_layer_idx=layer_idx,
+            )
+            metadata.layer_idx = layer_idx
+            metadata.stage_idx = stage_idx
+            metadata.seq_lens = [num_tokens]
+            _sync_connector_data_with_cam_metadata(
+                metadata,
+                layer_idx=layer_idx,
+            )
+            num_tokens_across_dp = torch.tensor(
+                [num_tokens] * max(1, int(getattr(self.connector, "ffn_size", 1))),
+                dtype=torch.int32,
+                device="cpu",
+            )
+            afd_metadata = AFDMetadata(
+                afd_tokens_start_loc=[0],
+                afd_reqs_start_loc=[0],
+                afd_stage_idx=stage_idx,
+                afd_connector=self.connector,
+                afd_tokens_lens=[num_tokens],
+                num_of_stages=1,
+                afd_tokens_unpadded_lens=[num_tokens],
+            )
+
+            logger.debug(
+                "AFD NPU FFN connector-driven recv resolved CAM metadata; "
+                "stage_idx=%d layer_idx=%d num_tokens=%d",
+                stage_idx,
+                layer_idx,
+                num_tokens,
+            )
+
+            _log_ffn_runner_step(
+                "connector_driven_forward_context_begin",
+                stage_idx=stage_idx,
+                layer_idx=layer_idx,
+                num_tokens=num_tokens,
+            )
+            with ascend_forward_context(
+                vllm_config=self.vllm_config,
+                afd_metadata=afd_metadata,
+                model_instance=self.model,
+                num_tokens=num_tokens,
+                num_tokens_across_dp=num_tokens_across_dp,
+            ) as forward_context:
+                _log_ffn_runner_step(
+                    "connector_driven_forward_context_ready",
                     stage_idx=stage_idx,
                     layer_idx=layer_idx,
+                    num_tokens=num_tokens,
                 )
-                self.connector.update_metadata(metadata, payload)
-                metadata.layer_idx = layer_idx
-                metadata.stage_idx = stage_idx
                 if forward_context is not None:
                     forward_context.dp_metadata = None
                     mirror_afd_metadata_on_forward_context(
@@ -336,12 +394,28 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     x_active_mask=payload.x_active_mask,
                     cam_p2p_ep_name=payload.cam_p2p_ep_name or "",
                 )
+                _log_ffn_runner_step(
+                    "connector_driven_send_begin",
+                    stage_idx=stage_idx,
+                    layer_idx=layer_idx,
+                    output=_ffn_output_debug_info(rank_ffn_output),
+                )
                 _send_ffn_output(
                     self.connector,
                     rank_ffn_output,
                     metadata,
                     stage_idx=stage_idx,
                 )
+                _log_ffn_runner_step(
+                    "connector_driven_send_end",
+                    stage_idx=stage_idx,
+                    layer_idx=layer_idx,
+                )
+            _log_ffn_runner_step(
+                "connector_driven_forward_context_end",
+                stage_idx=stage_idx,
+                layer_idx=layer_idx,
+            )
         return rank_ffn_output
 
     def capture_model(
@@ -477,7 +551,22 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         cam_p2p_ep_name: str = "",
     ) -> Any:
         compute = self.model.compute_ffn_output
-        return compute(
+        _log_ffn_runner_step(
+            "compute_begin",
+            layer_idx=layer_idx,
+            hidden_states=_runtime_tensor_info(hidden_states),
+            group_list=_runtime_tensor_info(group_list),
+            dynamic_scales=_runtime_tensor_info(dynamic_scales),
+            expand_x_shared=_runtime_tensor_info(expand_x_shared),
+            dynamic_scales_shared=_runtime_tensor_info(dynamic_scales_shared),
+            topk_weights=_runtime_tensor_info(topk_weights),
+            topk_ids=_runtime_tensor_info(topk_ids),
+            router_logits=_runtime_tensor_info(router_logits),
+            row_idx=_runtime_tensor_info(row_idx),
+            x_active_mask=_runtime_tensor_info(x_active_mask),
+            cam_p2p_ep_name=cam_p2p_ep_name,
+        )
+        output = compute(
             hidden_states=hidden_states,
             layer_idx=layer_idx,
             group_list=group_list,
@@ -491,6 +580,12 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             x_active_mask=x_active_mask,
             cam_p2p_ep_name=cam_p2p_ep_name,
         )
+        _log_ffn_runner_step(
+            "compute_end",
+            layer_idx=layer_idx,
+            output=_ffn_output_debug_info(output),
+        )
+        return output
 
     def sample_tokens(self, grammar_output: Any = None) -> Any:
         raise RuntimeError("AFD NPU FFN runners do not sample tokens")
@@ -528,6 +623,70 @@ def _normalize_recv_output(
         )
         recv_output.metadata = metadata
     return hidden_states, metadata, recv_output
+
+def _log_ffn_runner_step(event: str, **kwargs: object) -> None:
+    if not camp2p_stub_io_enabled():
+        return
+    fields = " ".join(f"{key}={value}" for key, value in kwargs.items())
+    logger.warning("AFD NPU FFN runner %s; %s", event, fields)
+
+
+def _runtime_tensor_info(tensor: Any) -> object:
+    if tensor is None:
+        return None
+    try:
+        return {
+            "shape": tuple(tensor.shape),
+            "dtype": tensor.dtype,
+            "device": tensor.device,
+        }
+    except AttributeError:
+        return type(tensor).__name__
+
+
+def _ffn_output_debug_info(output: Any) -> object:
+    if isinstance(output, AFDFFNOutput):
+        return {
+            "routed_output": _runtime_tensor_info(output.routed_output),
+            "shared_output": _runtime_tensor_info(output.shared_output),
+        }
+    return _runtime_tensor_info(output)
+
+
+def _cam_token_nums_rankid_layeridx(
+    payload: AFDRecvOutput,
+    metadata: AFDConnectorMetadata,
+) -> Any:
+    token_nums_rankid_layeridx = payload.atten_batch_size
+    if token_nums_rankid_layeridx is None:
+        connector_data = metadata.connector_data
+        if connector_data is not None:
+            token_nums_rankid_layeridx = connector_data.token_nums_rankid_layeridx
+    if token_nums_rankid_layeridx is None:
+        raise RuntimeError(
+            "AFD NPU connector-driven FFN requires CAM "
+            "TokenNums_Rankid_Layeridx from async_dispatch_recv",
+        )
+    return token_nums_rankid_layeridx
+
+
+def _cam_metadata_int(token_nums_rankid_layeridx: Any, index: int) -> int:
+    value = token_nums_rankid_layeridx[index]
+    if isinstance(value, (int, float)):
+        return int(value)
+    return int(value.item())
+
+
+def _sync_connector_data_with_cam_metadata(
+    metadata: AFDConnectorMetadata,
+    *,
+    layer_idx: int,
+) -> None:
+    connector_data = metadata.connector_data
+    if connector_data is None:
+        return
+    connector_data.layer_idx = int(layer_idx)
+
 
 def _send_ffn_output(
     connector: Any,
