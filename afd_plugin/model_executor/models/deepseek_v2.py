@@ -906,102 +906,13 @@ class AFDDeepseekV2Model(torch.nn.Module):
                 for stage_hidden_state in stage_hidden_states
             ],
         )
-        for moe_layer_offset, layer in enumerate(
-            islice(self.layers, moe_start_layer, self.end_layer),
-        ):
-            for stage_idx, ubatch_slice in enumerate(ubatch_slices):
-                afd_metadata.ubatch_idx = stage_idx
-                afd_metadata.afd_stage_idx = stage_idx
-                expected_tokens = int(ubatch_slice.num_tokens)
-                with _use_async_moe_ubatch_forward_context(
-                    forward_context=forward_context,
-                    parent_afd_metadata=afd_metadata,
-                    async_moe_ubatch_metadata=async_moe_ubatch_metadata,
-                    stage_idx=stage_idx,
-                ):
-                    if moe_layer_offset > 0:
-                        _log_async_moe_forward_step(
-                            "recv_begin",
-                            layer_idx=layer.layer_idx,
-                            stage_idx=stage_idx,
-                            ref_shape=tuple(stage_hidden_states[stage_idx].shape),
-                        )
-                        stage_hidden_states[stage_idx] = afd_connector.recv_ffn_output(
-                            ref_tensor=stage_hidden_states[stage_idx],
-                            ubatch_idx=stage_idx,
-                        )
-                        _log_async_moe_forward_step(
-                            "recv_end",
-                            layer_idx=layer.layer_idx,
-                            stage_idx=stage_idx,
-                            hidden_shape=tuple(stage_hidden_states[stage_idx].shape),
-                        )
-                    _log_async_moe_forward_step(
-                        "attention_begin",
-                        layer_idx=layer.layer_idx,
-                        stage_idx=stage_idx,
-                        hidden_shape=tuple(stage_hidden_states[stage_idx].shape),
-                        token_slice=(
-                            ubatch_slice.token_slice.start,
-                            ubatch_slice.token_slice.stop,
-                        ),
-                    )
-                    (
-                        stage_hidden_states[stage_idx],
-                        stage_residual[stage_idx],
-                        topk_weights,
-                        topk_ids,
-                        router_logits,
-                    ) = layer.compute_attn_output(
-                        stage_positions[stage_idx],
-                        stage_hidden_states[stage_idx],
-                        stage_residual[stage_idx],
-                        stage_llama_4_scaling[stage_idx],
-                    )
-                    _log_async_moe_forward_step(
-                        "attention_end",
-                        layer_idx=layer.layer_idx,
-                        stage_idx=stage_idx,
-                        hidden_shape=tuple(stage_hidden_states[stage_idx].shape),
-                        has_topk_weights=topk_weights is not None,
-                        has_topk_ids=topk_ids is not None,
-                        has_router_logits=router_logits is not None,
-                    )
-                    if topk_weights is None or topk_ids is None:
-                        raise RuntimeError(
-                            "async_moe_ubatching requires Attention-side topk payloads",
-                        )
-                    if int(stage_hidden_states[stage_idx].shape[0]) != expected_tokens:
-                        raise RuntimeError(
-                            "async_moe_ubatching stage output token count mismatch: "
-                            f"expected {expected_tokens}, got "
-                            f"{int(stage_hidden_states[stage_idx].shape[0])}",
-                        )
-                    stage_metadata = AFDConnectorMetadata.create_attention_metadata(
-                        layer_idx=layer.layer_idx,
-                        stage_idx=stage_idx,
-                        seq_len=expected_tokens,
-                    )
-                    _log_async_moe_forward_step(
-                        "send_begin",
-                        layer_idx=layer.layer_idx,
-                        stage_idx=stage_idx,
-                        hidden_shape=tuple(stage_hidden_states[stage_idx].shape),
-                    )
-                    afd_connector.send_attn_output(
-                        stage_hidden_states[stage_idx],
-                        stage_metadata,
-                        topk_weights=topk_weights,
-                        topk_ids=topk_ids,
-                        router_logits=router_logits,
-                    )
-                    _log_async_moe_forward_step(
-                        "send_end",
-                        layer_idx=layer.layer_idx,
-                        stage_idx=stage_idx,
-                    )
+        moe_layers = list(islice(self.layers, moe_start_layer, self.end_layer))
 
-        for stage_idx in range(len(ubatch_slices)):
+        def compute_stage_attention(
+            layer: Any,
+            stage_idx: int,
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+            ubatch_slice = ubatch_slices[stage_idx]
             with _use_async_moe_ubatch_forward_context(
                 forward_context=forward_context,
                 parent_afd_metadata=afd_metadata,
@@ -1009,19 +920,157 @@ class AFDDeepseekV2Model(torch.nn.Module):
                 stage_idx=stage_idx,
             ):
                 _log_async_moe_forward_step(
-                    "final_recv_begin",
-                    stage_idx=stage_idx,
-                    ref_shape=tuple(stage_hidden_states[stage_idx].shape),
-                )
-                stage_hidden_states[stage_idx] = afd_connector.recv_ffn_output(
-                    ref_tensor=stage_hidden_states[stage_idx],
-                    ubatch_idx=stage_idx,
-                )
-                _log_async_moe_forward_step(
-                    "final_recv_end",
+                    "attention_begin",
+                    layer_idx=layer.layer_idx,
                     stage_idx=stage_idx,
                     hidden_shape=tuple(stage_hidden_states[stage_idx].shape),
+                    token_slice=(
+                        ubatch_slice.token_slice.start,
+                        ubatch_slice.token_slice.stop,
+                    ),
                 )
+                (
+                    stage_hidden_states[stage_idx],
+                    stage_residual[stage_idx],
+                    topk_weights,
+                    topk_ids,
+                    router_logits,
+                ) = layer.compute_attn_output(
+                    stage_positions[stage_idx],
+                    stage_hidden_states[stage_idx],
+                    stage_residual[stage_idx],
+                    stage_llama_4_scaling[stage_idx],
+                )
+                _log_async_moe_forward_step(
+                    "attention_end",
+                    layer_idx=layer.layer_idx,
+                    stage_idx=stage_idx,
+                    hidden_shape=tuple(stage_hidden_states[stage_idx].shape),
+                    has_topk_weights=topk_weights is not None,
+                    has_topk_ids=topk_ids is not None,
+                    has_router_logits=router_logits is not None,
+                )
+            if topk_weights is None or topk_ids is None:
+                raise RuntimeError(
+                    "async_moe_ubatching requires Attention-side topk payloads",
+                )
+            expected_tokens = int(ubatch_slice.num_tokens)
+            if int(stage_hidden_states[stage_idx].shape[0]) != expected_tokens:
+                raise RuntimeError(
+                    "async_moe_ubatching stage output token count mismatch: "
+                    f"expected {expected_tokens}, got "
+                    f"{int(stage_hidden_states[stage_idx].shape[0])}",
+                )
+            return topk_weights, topk_ids, router_logits
+
+        def send_stage_attention(
+            layer: Any,
+            stage_idx: int,
+            topk_weights: torch.Tensor,
+            topk_ids: torch.Tensor,
+            router_logits: torch.Tensor | None,
+        ) -> None:
+            expected_tokens = int(ubatch_slices[stage_idx].num_tokens)
+            stage_metadata = AFDConnectorMetadata.create_attention_metadata(
+                layer_idx=layer.layer_idx,
+                stage_idx=stage_idx,
+                seq_len=expected_tokens,
+            )
+            _log_async_moe_forward_step(
+                "send_begin",
+                layer_idx=layer.layer_idx,
+                stage_idx=stage_idx,
+                hidden_shape=tuple(stage_hidden_states[stage_idx].shape),
+            )
+            afd_connector.send_attn_output(
+                stage_hidden_states[stage_idx],
+                stage_metadata,
+                topk_weights=topk_weights,
+                topk_ids=topk_ids,
+                router_logits=router_logits,
+            )
+            _log_async_moe_forward_step(
+                "send_end",
+                layer_idx=layer.layer_idx,
+                stage_idx=stage_idx,
+            )
+
+        def recv_stage_ffn(layer: Any, stage_idx: int, event_prefix: str) -> None:
+            _log_async_moe_forward_step(
+                f"{event_prefix}_recv_begin",
+                layer_idx=layer.layer_idx,
+                stage_idx=stage_idx,
+                ref_shape=tuple(stage_hidden_states[stage_idx].shape),
+            )
+            stage_hidden_states[stage_idx] = afd_connector.recv_ffn_output(
+                ref_tensor=stage_hidden_states[stage_idx],
+                ubatch_idx=stage_idx,
+            )
+            _log_async_moe_forward_step(
+                f"{event_prefix}_recv_end",
+                layer_idx=layer.layer_idx,
+                stage_idx=stage_idx,
+                hidden_shape=tuple(stage_hidden_states[stage_idx].shape),
+            )
+
+        last_moe_layer_offset = len(moe_layers) - 1
+        first_layer = moe_layers[0]
+        topk_weights, topk_ids, router_logits = compute_stage_attention(
+            first_layer,
+            0,
+        )
+        send_stage_attention(
+            first_layer,
+            0,
+            topk_weights,
+            topk_ids,
+            router_logits,
+        )
+
+        for moe_layer_offset in range(last_moe_layer_offset):
+            current_layer = moe_layers[moe_layer_offset]
+            next_layer = moe_layers[moe_layer_offset + 1]
+
+            topk_weights, topk_ids, router_logits = compute_stage_attention(
+                current_layer,
+                1,
+            )
+            recv_stage_ffn(current_layer, 0, "wavefront")
+            send_stage_attention(
+                current_layer,
+                1,
+                topk_weights,
+                topk_ids,
+                router_logits,
+            )
+
+            topk_weights, topk_ids, router_logits = compute_stage_attention(
+                next_layer,
+                0,
+            )
+            recv_stage_ffn(current_layer, 1, "wavefront")
+            send_stage_attention(
+                next_layer,
+                0,
+                topk_weights,
+                topk_ids,
+                router_logits,
+            )
+
+        last_layer = moe_layers[last_moe_layer_offset]
+        topk_weights, topk_ids, router_logits = compute_stage_attention(
+            last_layer,
+            1,
+        )
+        recv_stage_ffn(last_layer, 0, "final")
+        send_stage_attention(
+            last_layer,
+            1,
+            topk_weights,
+            topk_ids,
+            router_logits,
+        )
+        recv_stage_ffn(last_layer, 1, "final")
         output_hidden_states = torch.cat(stage_hidden_states, dim=0)
         _log_async_moe_forward_step(
             "exit",

@@ -108,21 +108,37 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
         forward_with_afd_v3
     )
     assert "stage_hidden_states = [" in forward_with_afd_v3
-    assert "for stage_idx, ubatch_slice in enumerate(ubatch_slices):" in (
+    assert "moe_layers = list(islice(self.layers, moe_start_layer, self.end_layer))" in (
         forward_with_afd_v3
     )
-    assert "for moe_layer_offset, layer in enumerate(" in forward_with_afd_v3
-    assert "if moe_layer_offset > 0:" in forward_with_afd_v3
+    assert "def compute_stage_attention(" in forward_with_afd_v3
+    assert "def send_stage_attention(" in forward_with_afd_v3
+    assert "def recv_stage_ffn(" in forward_with_afd_v3
+    assert "for moe_layer_offset in range(last_moe_layer_offset):" in (
+        forward_with_afd_v3
+    )
     assert "def flush_pending_ffn_outputs()" not in forward_with_afd_v3
     assert "torch.cat(stage_hidden_states, dim=0)" in forward_with_afd_v3
     assert "_run_async_moe_ubatch_layer(" not in source
     assert "_recv_async_moe_ubatch_outputs(" not in source
     assert "forward_context.attn_metadata = attn_metadata[stage_idx]" in source
-    assert forward_with_afd_v3.index("afd_connector.recv_ffn_output(") < (
+    assert forward_with_afd_v3.index("with _use_async_moe_ubatch_forward_context(") < (
         forward_with_afd_v3.index("layer.compute_attn_output(")
     )
-    assert forward_with_afd_v3.index("layer.compute_attn_output(") < (
-        forward_with_afd_v3.index("afd_connector.send_attn_output(")
+    assert forward_with_afd_v3.index(") = layer.compute_attn_output(") < (
+        forward_with_afd_v3.index("def send_stage_attention(")
+    )
+    assert forward_with_afd_v3.index("first_layer = moe_layers[0]") < (
+        forward_with_afd_v3.index("for moe_layer_offset in range(last_moe_layer_offset):")
+    )
+    assert forward_with_afd_v3.index("recv_stage_ffn(current_layer, 0") < (
+        forward_with_afd_v3.index("send_stage_attention(\n                current_layer,\n                1")
+    )
+    assert forward_with_afd_v3.index("recv_stage_ffn(current_layer, 1") < (
+        forward_with_afd_v3.index("send_stage_attention(\n                next_layer,\n                0")
+    )
+    assert forward_with_afd_v3.index("send_stage_attention(\n            last_layer,\n            1") < (
+        forward_with_afd_v3.index("recv_stage_ffn(last_layer, 1, \"final\")")
     )
 
 
