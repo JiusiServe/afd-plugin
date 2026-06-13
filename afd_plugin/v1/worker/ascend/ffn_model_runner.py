@@ -310,6 +310,11 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             metadata.layer_idx = layer_idx
             metadata.stage_idx = stage_idx
             metadata.seq_lens = [num_tokens]
+            hidden_states = _slice_cam_payload_to_actual_tokens(
+                hidden_states,
+                payload,
+                num_tokens,
+            )
             _sync_connector_data_with_cam_metadata(
                 metadata,
                 layer_idx=layer_idx,
@@ -596,6 +601,23 @@ def _cam_metadata_int(token_nums_rankid_layeridx: Any, index: int) -> int:
     if isinstance(value, (int, float)):
         return int(value)
     return int(value.item())
+
+
+def _slice_cam_payload_to_actual_tokens(
+    hidden_states: Any,
+    payload: AFDRecvOutput,
+    num_tokens: int,
+) -> Any:
+    hidden_states = hidden_states[:num_tokens]
+    if payload.expand_x_shared is not None:
+        payload.expand_x_shared = payload.expand_x_shared[:num_tokens]
+    if payload.dynamic_scales is not None:
+        payload.dynamic_scales = payload.dynamic_scales[:num_tokens]
+    if payload.dynamic_scales_shared is not None:
+        payload.dynamic_scales_shared = payload.dynamic_scales_shared[:num_tokens]
+    if payload.x_active_mask is not None:
+        payload.x_active_mask = payload.x_active_mask[:num_tokens]
+    return hidden_states
 
 
 def _sync_connector_data_with_cam_metadata(

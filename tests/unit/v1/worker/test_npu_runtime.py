@@ -148,6 +148,14 @@ class _FakeScalar:
         return self._value
 
 
+class _FakeTensorLike:
+    def __init__(self, name):
+        self.name = name
+
+    def __getitem__(self, item):
+        return f"{self.name}[{item.start or ''}:{item.stop or ''}]"
+
+
 def _parallel_config(**overrides):
     values = {
         "data_parallel_size": 1,
@@ -713,10 +721,14 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
     ]
     runner.connector.attn_outputs.append(
         AFDRecvOutput(
-            hidden_states="hidden",
+            hidden_states=_FakeTensorLike("hidden"),
             metadata=metadata,
             atten_batch_size=token_nums_rankid_layeridx,
             group_list="groups",
+            dynamic_scales=_FakeTensorLike("scales"),
+            expand_x_shared=_FakeTensorLike("shared-hidden"),
+            dynamic_scales_shared=_FakeTensorLike("shared-scales"),
+            x_active_mask=_FakeTensorLike("active-mask"),
         ),
     )
 
@@ -726,24 +738,24 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
     assert metadata.seq_lens == [5]
     assert runner.model.calls == [
         (
-            "hidden",
+            "hidden[:5]",
             7,
             {
                 "group_list": "groups",
-                "dynamic_scales": None,
-                "expand_x_shared": None,
-                "dynamic_scales_shared": None,
+                "dynamic_scales": "scales[:5]",
+                "expand_x_shared": "shared-hidden[:5]",
+                "dynamic_scales_shared": "shared-scales[:5]",
                 "topk_weights": None,
                 "topk_ids": None,
                 "router_logits": None,
                 "row_idx": None,
-                "x_active_mask": None,
+                "x_active_mask": "active-mask[:5]",
                 "cam_p2p_ep_name": "",
             },
         ),
     ]
     assert runner.connector.ffn_outputs == [
-        ("npu-ffn(hidden, layer=7)", metadata, {"ubatch_idx": 0}),
+        ("npu-ffn(hidden[:5], layer=7)", metadata, {"ubatch_idx": 0}),
     ]
     assert context_calls[0]["num_tokens"] == 5
     assert context_calls[0]["afd_metadata"].afd_tokens_lens == [5]
