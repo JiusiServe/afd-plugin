@@ -58,10 +58,7 @@ def _log_async_moe_forward_step(event: str, **kwargs: object) -> None:
 
 
 def _log_ffn_compute_step(event: str, **kwargs: object) -> None:
-    if not camp2p_stub_io_enabled():
-        return
-    fields = " ".join(f"{key}={value}" for key, value in kwargs.items())
-    logger.warning("AFD FFN compute %s; %s", event, fields)
+    del event, kwargs
 
 
 def _tensor_debug_info(tensor: torch.Tensor | None) -> object:
