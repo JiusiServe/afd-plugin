@@ -97,6 +97,14 @@ def _dequantize_int8_activation(
     return (hidden_states.to(torch.float32) * scales).to(dtype=output_dtype)
 
 
+def _gmmswigluquant_fusion_enabled() -> bool:
+    if get_ascend_config is None:
+        return False
+    ascend_config = get_ascend_config()
+    fusion_config = getattr(ascend_config, "ascend_fusion_config", None)
+    return bool(getattr(fusion_config, "fusion_ops_gmmswigluquant", False))
+
+
 class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
     """DeepSeek decoder layer with separable Attention and FFN execution."""
 
@@ -479,6 +487,10 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 f"or W8A8 Ascend MoE experts, got {quant_type}",
             )
         _log_ffn_compute_step("moe_weights_end", quant_type=quant_type)
+        use_gmmswigluquant_fusion = (
+            quant_type in (QuantType.W8A8, getattr(QuantType, "MXFP8", None))
+            and _gmmswigluquant_fusion_enabled()
+        )
 
         shared_output = None
         if experts._shared_experts is not None:
@@ -509,7 +521,7 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 topk_scales=topk_scales,
                 weights=moe_weights,
                 quant=MoEQuantParams(quant_type=quant_type),
-                fusion=False,
+                fusion=use_gmmswigluquant_fusion,
                 activation=experts.activation,
                 need_trans=False,
                 dynamic_eplb=experts.dynamic_eplb,

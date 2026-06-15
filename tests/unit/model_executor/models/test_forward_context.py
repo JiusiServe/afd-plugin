@@ -162,6 +162,9 @@ def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():
     assert "w13_weight_scale_fp32_list" in compute_moe
     assert "w2_weight_scale_list" in compute_moe
     assert "MoEQuantParams(quant_type=quant_type)" in compute_moe
+    assert "_gmmswigluquant_fusion_enabled()" in compute_moe
+    assert "fusion=use_gmmswigluquant_fusion" in compute_moe
+    assert "fusion=False" not in compute_moe
 
 
 def test_deepseek_afd_ffn_compute_has_stub_io_diagnostics():
