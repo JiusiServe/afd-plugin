@@ -84,11 +84,9 @@ def _ensure_cam_async_custom_opp_env() -> None:
 
 def _load_cam_async_cust_opapi() -> None:
     cust_opapi = get_cam_async_cust_opapi_path()
-    print(f"jcz _load_cam_async_cust_opapi 1 cust_opapi:{cust_opapi}")
     if not cust_opapi.exists():
         return
     try:
-        print(f"jcz _load_cam_async_cust_opapi 2 cust_opapi:{cust_opapi}")
         ctypes.CDLL(str(cust_opapi), mode=ctypes.RTLD_GLOBAL)
     except OSError as exc:
         raise RuntimeError(
