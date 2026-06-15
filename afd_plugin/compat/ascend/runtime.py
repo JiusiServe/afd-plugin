@@ -167,12 +167,10 @@ def _fail_if_unsupported_npu_async_moe_ubatching_features(
             "async_moe_ubatching currently supports only request-boundary split; "
             f"got async_moe_split={split!r}",
         )
-    if (
-        int(parallel_config.prefill_context_parallel_size) > 1
-        or int(parallel_config.decode_context_parallel_size) > 1
-    ):
+    if int(parallel_config.decode_context_parallel_size) > 1:
         raise RuntimeError(
-            "async_moe_ubatching does not support context parallel metadata yet",
+            "async_moe_ubatching does not support decode context parallel "
+            "metadata yet",
         )
 
 

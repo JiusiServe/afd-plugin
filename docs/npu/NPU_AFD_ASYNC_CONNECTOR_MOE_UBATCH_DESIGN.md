@@ -59,8 +59,8 @@ MoE layer:
 - Phase 2：request-boundary 双 stage 切分 helper 已实现。
 - Phase 3：Attention runner full metadata + async MoE sidecar metadata 已实现。
 - Phase 4：DeepSeek MoE 层按 stage send/recv 并 stitch 回 full batch 已实现。
-- Phase 5：PCP / DSA-CP 的 stage-local metadata 仍未实现，当前 validation
-  直接拒绝 context parallel。
+- Phase 5：prefill PCP 的 stage-local metadata 已实现第一版；decode CP、spec
+  decode、hybrid attention 的 PCP metadata 仍未放行。
 
 ## 非目标
 
@@ -216,7 +216,7 @@ Validation 规则：
 - `compute_gate_on_attention == True`；
 - `async_moe_num_ubatches == 2`；
 - `parallel_config.use_ubatching == False`，避免安装 `UbatchWrapper`；
-- `prefill_context_parallel_size == 1` 且 `decode_context_parallel_size == 1`；
+- `decode_context_parallel_size == 1`；prefill PCP 仅支持 prefill-only batch；
 - graph / multistream 继续禁用；
 - 非 prefill 或不支持的 attention backend 可以先 fail fast。
 
@@ -489,7 +489,7 @@ request-boundary 切分保证 token order 是连续区间，因此 stitch 可以
 
 ### Phase 5：PCP / SFA CP
 
-- 抽取或新增 stage-local PCP metadata 生成 helper。
+- 新增 stage-local PCP metadata 生成 helper。
 - SFA CP builder 使用 stage-local `prefill_context_parallel_metadata`。
 - DSA-CP 通过重新 builder 自动生成 `DSACPContext`。
 - 真实 NPU smoke 覆盖：

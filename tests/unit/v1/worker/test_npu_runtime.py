@@ -1191,12 +1191,24 @@ def test_npu_async_moe_ubatching_validation_requires_supported_shape():
             ),
         )
 
-    with pytest.raises(RuntimeError, match="context parallel"):
+    fail_if_unsupported_npu_afd_features(
+        _vllm_config(
+            connector="afdasyncconnector",
+            async_dp=True,
+            prefill_context_parallel_size=2,
+            extra_config={
+                "async_moe_ubatching": True,
+                "compute_gate_on_attention": True,
+            },
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="decode context parallel"):
         fail_if_unsupported_npu_afd_features(
             _vllm_config(
                 connector="afdasyncconnector",
                 async_dp=True,
-                prefill_context_parallel_size=2,
+                decode_context_parallel_size=2,
                 extra_config={
                     "async_moe_ubatching": True,
                     "compute_gate_on_attention": True,

@@ -315,6 +315,70 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 num_reqs,
             )
 
+        def _build_stage_local_pcp_metadata(
+            common_attn_metadata: Any,
+            ubatch_slice: Any,
+        ) -> None:
+            if not self.use_cp or int(self.pcp_size) <= 1:
+                return
+            if int(getattr(self.pcp_manager, "num_decode_reqs", 0)) > 0:
+                raise RuntimeError(
+                    "async_moe_ubatching with PCP currently supports "
+                    "prefill-only batches",
+                )
+            if self.speculative_config is not None:
+                raise RuntimeError(
+                    "async_moe_ubatching with PCP does not support speculative "
+                    "decode metadata yet",
+                )
+            if bool(getattr(self.pcp_manager, "pcp_use_hybrid_attn", False)):
+                raise RuntimeError(
+                    "async_moe_ubatching with PCP does not support hybrid "
+                    "attention metadata yet",
+                )
+
+            original_num_scheduled_tokens = (
+                self.pcp_manager.query_lens_pcp_full.cpu[
+                    ubatch_slice.request_slice
+                ]
+                .to("cpu")
+                .numpy()
+                .copy()
+            )
+            stage_num_reqs = ubatch_slice.request_slice.stop - (
+                ubatch_slice.request_slice.start
+            )
+            manager_state = _snapshot_pcp_manager_state(self.pcp_manager)
+            try:
+                self.pcp_manager.init_batch_info(
+                    original_num_scheduled_tokens,
+                    stage_num_reqs,
+                )
+                stage_pcp_tokens, _ = self.pcp_manager.update_tokens_for_pcp(
+                    original_num_scheduled_tokens,
+                    self.arange_np,
+                )
+                stage_query_lens = torch.from_numpy(stage_pcp_tokens).to(
+                    self.query_lens.device,
+                )
+                pcp_metadata, block_table_tensor = (
+                    self.pcp_manager.generate_pcp_metadata(
+                        int(common_attn_metadata.num_actual_tokens),
+                        stage_query_lens,
+                        self.input_batch,
+                        stage_pcp_tokens,
+                        common_attn_metadata.block_table_tensor,
+                        stage_num_reqs,
+                        stage_num_reqs,
+                    )
+                )
+                common_attn_metadata.prefill_context_parallel_metadata = (
+                    _clone_pcp_metadata(pcp_metadata)
+                )
+                common_attn_metadata.block_table_tensor = block_table_tensor
+            finally:
+                _restore_pcp_manager_state(self.pcp_manager, manager_state)
+
         def _get_block_table_and_slot_mapping(kv_cache_gid: int):
             assert num_reqs_padded is not None and num_tokens_padded is not None
             kv_cache_spec = kv_cache_groups[kv_cache_gid].kv_cache_spec
@@ -500,9 +564,13 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             if self.enable_hamming_sparse is True:
                 build_kvcomp_metadata(self.kvcomp_meta_data, cm)
             for attn_gid in range(len(self.attn_groups[kv_cache_gid])):
-                for ubid, ubatch_cm in enumerate(
-                    split_attn_metadata(ubatch_slices, cm, num_tokens_padded),
-                ):
+                ubatch_common_metadata = split_attn_metadata(
+                    ubatch_slices,
+                    cm,
+                    num_tokens_padded,
+                )
+                for ubid, ubatch_cm in enumerate(ubatch_common_metadata):
+                    _build_stage_local_pcp_metadata(ubatch_cm, ubatch_slices[ubid])
                     _build_attn_group_metadata(kv_cache_gid, attn_gid, ubatch_cm, ubid)
 
         if self.is_mm_prefix_lm:
@@ -1571,6 +1639,75 @@ def _normalize_metadata_ubatch_slices(
         int(num_tokens_padded),
         int(num_reqs_padded),
     )
+
+
+def _snapshot_pcp_manager_state(pcp_manager: Any) -> dict[str, Any]:
+    state: dict[str, Any] = {}
+    for name in (
+        "num_reqs",
+        "num_decode_reqs",
+        "num_prefill_reqs",
+        "num_decode_tokens",
+        "num_scheduled_tokens_padded",
+        "pcp_padded_tokens_length",
+        "pcp_padded_tokens_fla",
+        "num_actual_tokens_pcp_padded",
+        "total_num_sampled_tokens_pcp",
+        "pcp_tokens_padded",
+        "max_num_tokens_across_pcp",
+        "total_num_scheduled_tokens",
+        "total_pcp_padding_tokens_fla",
+        "q_head_idx_tensor",
+        "q_tail_idx_tensor",
+        "q_full_idx",
+        "kv_idx_names",
+        "extra_long_seq_kwargs",
+        "long_seq_metadata",
+    ):
+        if hasattr(pcp_manager, name):
+            state[name] = copy.copy(getattr(pcp_manager, name))
+    for name in ("pcp_tokens", "num_pcp_pads_cpu", "pcp_unpad_mask_cpu"):
+        if hasattr(pcp_manager, name):
+            state[name] = getattr(pcp_manager, name).copy()
+    if hasattr(pcp_manager, "query_lens_pcp_full"):
+        state["query_lens_pcp_full_cpu"] = pcp_manager.query_lens_pcp_full.cpu.clone()
+    if hasattr(pcp_manager, "pcp_allgather_restore_idx"):
+        restore_idx = pcp_manager.pcp_allgather_restore_idx
+        state["pcp_allgather_restore_idx_np"] = restore_idx.np.copy()
+        state["pcp_allgather_restore_idx_gpu"] = restore_idx.gpu.clone()
+    return state
+
+
+def _restore_pcp_manager_state(pcp_manager: Any, state: dict[str, Any]) -> None:
+    for name, value in state.items():
+        if name == "query_lens_pcp_full_cpu":
+            pcp_manager.query_lens_pcp_full.cpu.copy_(value)
+            pcp_manager.query_lens_pcp_full.copy_to_gpu()
+            continue
+        if name == "pcp_allgather_restore_idx_np":
+            pcp_manager.pcp_allgather_restore_idx.np[...] = value
+            continue
+        if name == "pcp_allgather_restore_idx_gpu":
+            pcp_manager.pcp_allgather_restore_idx.gpu.copy_(value)
+            continue
+        if name in ("pcp_tokens", "num_pcp_pads_cpu", "pcp_unpad_mask_cpu"):
+            getattr(pcp_manager, name)[...] = value
+            continue
+        setattr(pcp_manager, name, value)
+
+
+def _clone_pcp_metadata(pcp_metadata: Any) -> Any:
+    if pcp_metadata is None:
+        return None
+    cloned = copy.copy(pcp_metadata)
+    for name, value in vars(pcp_metadata).items():
+        if hasattr(value, "clone"):
+            setattr(cloned, name, value.clone())
+        elif isinstance(value, list):
+            setattr(cloned, name, list(value))
+        else:
+            setattr(cloned, name, copy.copy(value))
+    return cloned
 
 
 def _replace_attention_metadata_ubatch_slices(
