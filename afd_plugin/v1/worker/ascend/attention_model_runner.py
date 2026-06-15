@@ -318,6 +318,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         def _build_stage_local_pcp_metadata(
             common_attn_metadata: Any,
             ubatch_slice: Any,
+            kv_cache_gid: int,
         ) -> None:
             if not self.use_cp or int(self.pcp_size) <= 1:
                 return
@@ -337,13 +338,20 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                     "attention metadata yet",
                 )
 
-            original_num_scheduled_tokens = (
-                self.pcp_manager.query_lens_pcp_full.cpu[
-                    ubatch_slice.request_slice
-                ]
+            full_num_scheduled_tokens = (
+                self.pcp_manager.query_lens_pcp_full.cpu[:num_reqs]
                 .to("cpu")
                 .numpy()
                 .copy()
+            )
+            original_num_scheduled_tokens = full_num_scheduled_tokens[
+                ubatch_slice.request_slice
+            ].copy()
+            original_token_start = int(
+                full_num_scheduled_tokens[: ubatch_slice.request_slice.start].sum(),
+            )
+            original_token_stop = int(
+                full_num_scheduled_tokens[: ubatch_slice.request_slice.stop].sum(),
             )
             stage_num_reqs = ubatch_slice.request_slice.stop - (
                 ubatch_slice.request_slice.start
@@ -372,6 +380,19 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                         stage_num_reqs,
                     )
                 )
+                if original_token_stop > original_token_start:
+                    raw_slot_mapping = self.input_batch.block_table[
+                        kv_cache_gid
+                    ].slot_mapping.gpu[original_token_start:original_token_stop]
+                    stage_num_tokens = int(stage_pcp_tokens.sum())
+                    common_attn_metadata.slot_mapping = (
+                        self.pcp_manager.get_padded_slot_mapping(
+                            stage_num_tokens,
+                            stage_num_tokens,
+                            raw_slot_mapping,
+                            kv_cache_gid,
+                        ).clone()
+                    )
                 common_attn_metadata.prefill_context_parallel_metadata = (
                     _clone_pcp_metadata(pcp_metadata)
                 )
@@ -570,7 +591,11 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                     num_tokens_padded,
                 )
                 for ubid, ubatch_cm in enumerate(ubatch_common_metadata):
-                    _build_stage_local_pcp_metadata(ubatch_cm, ubatch_slices[ubid])
+                    _build_stage_local_pcp_metadata(
+                        ubatch_cm,
+                        ubatch_slices[ubid],
+                        kv_cache_gid,
+                    )
                     _build_attn_group_metadata(kv_cache_gid, attn_gid, ubatch_cm, ubid)
 
         if self.is_mm_prefix_lm:
