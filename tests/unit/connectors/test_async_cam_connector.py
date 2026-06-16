@@ -80,12 +80,12 @@ class _FakeTorch:
         return _FakeTensor(shape, dtype=dtype, device=device)
 
 
-def _vllm_config():
+def _vllm_config(*, tp_size: int = 1):
     return SimpleNamespace(
         parallel_config=SimpleNamespace(
             data_parallel_size=1,
             data_parallel_rank=0,
-            tensor_parallel_size=1,
+            tensor_parallel_size=tp_size,
         ),
         scheduler_config=SimpleNamespace(max_num_batched_tokens=8),
         model_config=SimpleNamespace(
@@ -143,6 +143,18 @@ def test_async_connector_factory_creates_import_safe_connector():
     assert connector.ffn_step_trigger == "connector"
     assert connector.requires_eager is True
     assert connector.required_platform == "ascend"
+    assert connector.tp_size == 1
+
+
+def test_async_connector_uses_attn_ranks_per_dp_for_cam_tp_size():
+    connector = AFDAsyncConnector(
+        0,
+        0,
+        _vllm_config(tp_size=8),
+        _afd_config(role="attention", extra_config={"attn_ranks_per_dp": "2"}),
+    )
+
+    assert connector.tp_size == 2
 
 
 def test_async_topology_uses_cam_attention_first_rank_layout():
@@ -226,7 +238,10 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
         0,
         0,
         _vllm_config(),
-        _afd_config(role="attention", extra_config={"comm_id": 99}),
+        _afd_config(
+            role="attention",
+            extra_config={"comm_id": 99, "attn_ranks_per_dp": 3},
+        ),
     )
     connector._initialized = True
     connector.comm_args = _FakeTensor((1,), dtype="fp16")
@@ -257,6 +272,7 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][4] == CAM_COMM_ID
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][5:11] == (3, 16, 2, 2, 4, 4)
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][5:11] == (3, 16, 2, 2, 4, 4)
+    assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][14] == 3
     assert isinstance(metadata.connector_data, AFDAsyncConnectorData)
 
 
@@ -267,7 +283,7 @@ def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
         0,
         0,
         _vllm_config(),
-        _afd_config(role="ffn"),
+        _afd_config(role="ffn", extra_config={"attn_ranks_per_dp": 2}),
     )
     connector._initialized = True
     connector.comm_args = _FakeTensor((1,), dtype="fp16")
@@ -285,6 +301,8 @@ def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
     assert recv_output.ep_recv_counts_shared.shape == (1,)
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][0] == "dispatch_recv"
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][0] == "combine_send"
+    assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][11] == 2
+    assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][13] == 2
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][3] is recv_output.atten_batch_size
 
 
