@@ -306,6 +306,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 metadata,
             )
             num_tokens = max(1, _cam_metadata_int(token_nums_rankid_layeridx, 0))
+            shared_num_tokens = _cam_shared_token_count(payload, num_tokens)
             layer_idx = _cam_metadata_int(token_nums_rankid_layeridx, 2)
             metadata.layer_idx = layer_idx
             metadata.stage_idx = stage_idx
@@ -314,6 +315,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 hidden_states,
                 payload,
                 num_tokens,
+                shared_num_tokens=shared_num_tokens,
             )
             _sync_connector_data_with_cam_metadata(
                 metadata,
@@ -336,10 +338,11 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
             logger.debug(
                 "AFD NPU FFN connector-driven recv resolved CAM metadata; "
-                "stage_idx=%d layer_idx=%d num_tokens=%d",
+                "stage_idx=%d layer_idx=%d num_tokens=%d shared_num_tokens=%d",
                 stage_idx,
                 layer_idx,
                 num_tokens,
+                shared_num_tokens,
             )
 
             with ascend_forward_context(
@@ -603,18 +606,33 @@ def _cam_metadata_int(token_nums_rankid_layeridx: Any, index: int) -> int:
     return int(value.item())
 
 
+def _cam_shared_token_count(payload: AFDRecvOutput, fallback: int) -> int:
+    expert_token_nums_shared = payload.ep_recv_counts_shared
+    print(f"expert_token_nums_shared:{expert_token_nums_shared} expert_token_nums_shared:{expert_token_nums_shared[0]}", flush=True)
+    return expert_token_nums_shared[0]
+    # if expert_token_nums_shared is None:
+    #     return max(1, int(fallback))
+    # return max(1, _cam_metadata_int(expert_token_nums_shared, 0))
+
+
 def _slice_cam_payload_to_actual_tokens(
     hidden_states: Any,
     payload: AFDRecvOutput,
     num_tokens: int,
+    *,
+    shared_num_tokens: int | None = None,
 ) -> Any:
+    if shared_num_tokens is None:
+        shared_num_tokens = num_tokens
     hidden_states = hidden_states[:num_tokens]
     if payload.expand_x_shared is not None:
-        payload.expand_x_shared = payload.expand_x_shared[:num_tokens]
+        payload.expand_x_shared = payload.expand_x_shared[:shared_num_tokens]
     if payload.dynamic_scales is not None:
         payload.dynamic_scales = payload.dynamic_scales[:num_tokens]
     if payload.dynamic_scales_shared is not None:
-        payload.dynamic_scales_shared = payload.dynamic_scales_shared[:num_tokens]
+        payload.dynamic_scales_shared = payload.dynamic_scales_shared[
+            :shared_num_tokens
+        ]
     if payload.x_active_mask is not None:
         payload.x_active_mask = payload.x_active_mask[:num_tokens]
     return hidden_states

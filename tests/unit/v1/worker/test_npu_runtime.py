@@ -728,6 +728,7 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
             dynamic_scales=_FakeTensorLike("scales"),
             expand_x_shared=_FakeTensorLike("shared-hidden"),
             dynamic_scales_shared=_FakeTensorLike("shared-scales"),
+            ep_recv_counts_shared=[_FakeScalar(2)],
             x_active_mask=_FakeTensorLike("active-mask"),
         ),
     )
@@ -743,8 +744,8 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
             {
                 "group_list": "groups",
                 "dynamic_scales": "scales[:5]",
-                "expand_x_shared": "shared-hidden[:5]",
-                "dynamic_scales_shared": "shared-scales[:5]",
+                "expand_x_shared": "shared-hidden[:2]",
+                "dynamic_scales_shared": "shared-scales[:2]",
                 "topk_weights": None,
                 "topk_ids": None,
                 "router_logits": None,
