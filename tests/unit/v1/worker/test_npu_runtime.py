@@ -763,6 +763,45 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
     assert context_calls[0]["num_tokens_across_dp"].tolist() == [5, 5]
 
 
+def test_cam_shared_token_count_uses_token_nums_rankid_layeridx():
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.ascend.ffn_model_runner import _cam_shared_token_count
+
+    metadata = AFDConnectorMetadata.create_ffn_metadata(
+        layer_idx=0,
+        stage_idx=0,
+        seq_lens=[10],
+    )
+    token_nums_rankid_layeridx = [
+        _FakeScalar(10),
+        _FakeScalar(0),
+        _FakeScalar(7),
+        _FakeScalar(0),
+        _FakeScalar(2),
+        _FakeScalar(100),
+        _FakeScalar(200),
+        _FakeScalar(300),
+        _FakeScalar(4),
+        _FakeScalar(1),
+        _FakeScalar(2),
+        _FakeScalar(6),
+        _FakeScalar(3),
+        _FakeScalar(4),
+        _FakeScalar(8),
+        _FakeScalar(5),
+        _FakeScalar(6),
+    ]
+    payload = AFDRecvOutput(
+        hidden_states=_FakeTensorLike("hidden"),
+        metadata=metadata,
+        atten_batch_size=token_nums_rankid_layeridx,
+        ep_recv_counts=[_FakeScalar(12), _FakeScalar(15)],
+        ep_recv_counts_shared=[_FakeScalar(1)],
+    )
+
+    assert _cam_shared_token_count(payload, fallback=10) == 18
+
+
 def test_npu_ffn_runner_sends_structured_shared_output():
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")

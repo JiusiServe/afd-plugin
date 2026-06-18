@@ -607,12 +607,53 @@ def _cam_metadata_int(token_nums_rankid_layeridx: Any, index: int) -> int:
 
 
 def _cam_shared_token_count(payload: AFDRecvOutput, fallback: int) -> int:
+    token_nums_rankid_layeridx = payload.atten_batch_size
+    expert_token_nums = payload.ep_recv_counts
+    if token_nums_rankid_layeridx is not None and expert_token_nums is not None:
+        expert_per_rank = _cam_sequence_length(expert_token_nums)
+        total_fields = _cam_sequence_length(token_nums_rankid_layeridx)
+        block_size = 1 + expert_per_rank
+        token_count_fields = total_fields - 5
+        if expert_per_rank > 0 and token_count_fields > 0:
+            divisor = 1 + block_size
+            if token_count_fields % divisor == 0:
+                tp_size = token_count_fields // divisor
+                counts_start = 5 + tp_size
+                counts_end = counts_start + tp_size * block_size
+                if isinstance(token_nums_rankid_layeridx, torch.Tensor):
+                    shared_counts = token_nums_rankid_layeridx[
+                        counts_start:counts_end:block_size
+                    ]
+                    shared_token_count = max(0, int(shared_counts.sum().item()))
+                    print(
+                        f"cam_shared_token_count:{shared_token_count}",
+                        flush=True,
+                    )
+                    return shared_token_count
+                shared_token_count = sum(
+                    _cam_metadata_int(
+                        token_nums_rankid_layeridx,
+                        counts_start + cp_rank * block_size,
+                    )
+                    for cp_rank in range(tp_size)
+                )
+                shared_token_count = max(0, shared_token_count)
+                print(f"cam_shared_token_count:{shared_token_count}", flush=True)
+                return shared_token_count
+
     expert_token_nums_shared = payload.ep_recv_counts_shared
-    print(f"expert_token_nums_shared:{expert_token_nums_shared} expert_token_nums_shared:{expert_token_nums_shared[0]}", flush=True)
-    return expert_token_nums_shared[0]
-    # if expert_token_nums_shared is None:
-    #     return max(1, int(fallback))
-    # return max(1, _cam_metadata_int(expert_token_nums_shared, 0))
+    if expert_token_nums_shared is None:
+        shared_token_count = max(1, int(fallback))
+    else:
+        shared_token_count = max(1, _cam_metadata_int(expert_token_nums_shared, 0))
+    print(f"cam_shared_token_count:{shared_token_count}", flush=True)
+    return shared_token_count
+
+
+def _cam_sequence_length(values: Any) -> int:
+    if isinstance(values, torch.Tensor):
+        return int(values.numel())
+    return len(values)
 
 
 def _slice_cam_payload_to_actual_tokens(
