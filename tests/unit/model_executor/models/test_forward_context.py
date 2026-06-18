@@ -78,6 +78,29 @@ def test_deepseek_afd_attention_path_can_compute_gate_before_send():
     assert "topk_ids" in forward_with_afd_v2
 
 
+def test_deepseek_afd_attention_gate_can_force_balanced_topk_ids():
+    source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
+    compute_attn_output = source.split("    def compute_attn_output(", 1)[1].split(
+        "    def compute_ffn_output(",
+        1,
+    )[0]
+
+    assert "force_balanced_topk_ids_enabled" in source
+    assert "def _force_balanced_topk_ids(" in source
+    assert "topk_ids.copy_(balanced_topk_ids)" in source
+    assert "topk_weights, topk_ids = afd_connector.select_experts(" in (
+        compute_attn_output
+    )
+    assert "if force_balanced_topk_ids_enabled():" in compute_attn_output
+    assert (
+        compute_attn_output.index(
+            "topk_weights, topk_ids = afd_connector.select_experts(",
+        )
+        < compute_attn_output.index("if force_balanced_topk_ids_enabled():")
+        < compute_attn_output.index("topk_weights = topk_weights.to(torch.float32)")
+    )
+
+
 def test_deepseek_afd_gate_on_attention_keeps_dense_layers_local():
     source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
 
@@ -94,7 +117,7 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
         1,
     )[0]
 
-    assert "from afd_plugin.envs import AFD_CAMP2P_STUB_IO" in source
+    assert "AFD_CAMP2P_STUB_IO" in source
     assert "_AFD_ASYNC_MOE_FORWARD_LOG_ENV = AFD_CAMP2P_STUB_IO" in source
     assert "async_moe_ubatch_metadata" in forward_with_afd_v3
     assert "_log_async_moe_forward_step(" in forward_with_afd_v3
@@ -108,8 +131,9 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
         forward_with_afd_v3
     )
     assert "stage_hidden_states = [" in forward_with_afd_v3
-    assert "moe_layers = list(islice(self.layers, moe_start_layer, self.end_layer))" in (
-        forward_with_afd_v3
+    assert (
+        "moe_layers = list(islice(self.layers, moe_start_layer, self.end_layer))"
+        in forward_with_afd_v3
     )
     assert "def compute_stage_attention(" in forward_with_afd_v3
     assert "def send_stage_attention(" in forward_with_afd_v3
@@ -128,16 +152,24 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
     assert forward_with_afd_v3.index(") = layer.compute_attn_output(") < (
         forward_with_afd_v3.index("def send_stage_attention(")
     )
-    assert forward_with_afd_v3.index("first_layer = moe_layers[0]") < (
-        forward_with_afd_v3.index("for moe_layer_offset in range(last_moe_layer_offset):")
+    assert forward_with_afd_v3.index(
+        "first_layer = moe_layers[0]",
+    ) < forward_with_afd_v3.index(
+        "for moe_layer_offset in range(last_moe_layer_offset):",
     )
     assert forward_with_afd_v3.index("recv_stage_ffn(current_layer, 0") < (
-        forward_with_afd_v3.index("send_stage_attention(\n                current_layer,\n                1")
+        forward_with_afd_v3.index(
+            "send_stage_attention(\n                current_layer,\n                1",
+        )
     )
     assert forward_with_afd_v3.index("recv_stage_ffn(current_layer, 1") < (
-        forward_with_afd_v3.index("send_stage_attention(\n                next_layer,\n                0")
+        forward_with_afd_v3.index(
+            "send_stage_attention(\n                next_layer,\n                0",
+        )
     )
-    assert forward_with_afd_v3.index("send_stage_attention(\n            last_layer,\n            1") < (
+    assert forward_with_afd_v3.index(
+        "send_stage_attention(\n            last_layer,\n            1",
+    ) < (
         forward_with_afd_v3.index("recv_stage_ffn(last_layer, 1, \"final\")")
     )
 

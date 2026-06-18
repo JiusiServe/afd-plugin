@@ -39,7 +39,11 @@ except ImportError:
 
 from afd_plugin.config import parse_afd_config
 from afd_plugin.connectors import AFDConnectorMetadata, AFDFFNOutput
-from afd_plugin.envs import AFD_CAMP2P_STUB_IO, camp2p_stub_io_enabled
+from afd_plugin.envs import (
+    AFD_CAMP2P_STUB_IO,
+    camp2p_stub_io_enabled,
+    force_balanced_topk_ids_enabled,
+)
 from afd_plugin.model_executor.models import (
     get_afd_metadata_from_forward_context,
     get_async_moe_ubatch_metadata_from_forward_context,
@@ -103,6 +107,23 @@ def _gmmswigluquant_fusion_enabled() -> bool:
     ascend_config = get_ascend_config()
     fusion_config = getattr(ascend_config, "ascend_fusion_config", None)
     return bool(getattr(fusion_config, "fusion_ops_gmmswigluquant", False))
+
+
+def _force_balanced_topk_ids(
+    topk_ids: torch.Tensor,
+    *,
+    num_logical_experts: int,
+) -> torch.Tensor:
+    balanced_topk_ids = torch.arange(
+        topk_ids.numel(),
+        device=topk_ids.device,
+        dtype=torch.int64,
+    ).reshape(topk_ids.shape)
+    balanced_topk_ids = balanced_topk_ids.remainder(num_logical_experts).to(
+        dtype=topk_ids.dtype,
+    )
+    topk_ids.copy_(balanced_topk_ids)
+    return topk_ids
 
 
 class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
@@ -362,6 +383,11 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 num_shared_experts=self.config.n_shared_experts,
                 global_num_experts=global_num_experts,
             )
+            if force_balanced_topk_ids_enabled():
+                topk_ids = _force_balanced_topk_ids(
+                    topk_ids,
+                    num_logical_experts=router_logits.shape[1],
+                )
             topk_weights = topk_weights.to(torch.float32)
         return hidden_states, residual, topk_weights, topk_ids, router_logits
 
