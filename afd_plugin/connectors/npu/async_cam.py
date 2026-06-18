@@ -92,10 +92,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         self._initialized = False
         parallel_config = vllm_config.parallel_config
         hf_config = vllm_config.model_config.hf_config
-        if int(parallel_config.data_parallel_size) > 1:
-            self._role_rank = int(parallel_config.data_parallel_rank)
-        else:
-            self._role_rank = int(afd_config.afd_server_rank)
+        self._role_rank = int(afd_config.afd_server_rank)
         self.hidden_size = int(hf_config.hidden_size)
         self.topk = max(1, int(hf_config.num_experts_per_tok))
         self.num_routed_experts = max(1, int(hf_config.n_routed_experts))
