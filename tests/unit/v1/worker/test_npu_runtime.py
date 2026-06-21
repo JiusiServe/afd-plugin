@@ -802,6 +802,36 @@ def test_cam_shared_token_count_uses_token_nums_rankid_layeridx():
     assert _cam_shared_token_count(payload, fallback=10) == 18
 
 
+def test_slice_cam_payload_shared_tensors_fallback_to_100_tokens():
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.ascend.ffn_model_runner import (
+        _slice_cam_payload_to_actual_tokens,
+    )
+
+    payload = AFDRecvOutput(
+        hidden_states=_FakeTensorLike("hidden"),
+        metadata=AFDConnectorMetadata.create_ffn_metadata(
+            layer_idx=0,
+            stage_idx=0,
+            seq_lens=[10],
+        ),
+        dynamic_scales=_FakeTensorLike("scales"),
+        expand_x_shared=_FakeTensorLike("shared-hidden"),
+        dynamic_scales_shared=_FakeTensorLike("shared-scales"),
+    )
+
+    _slice_cam_payload_to_actual_tokens(
+        payload.hidden_states,
+        payload,
+        num_tokens=5,
+        shared_num_tokens=0,
+    )
+
+    assert payload.dynamic_scales == "scales[:5]"
+    assert payload.expand_x_shared == "shared-hidden[:100]"
+    assert payload.dynamic_scales_shared == "shared-scales[:100]"
+
+
 def test_npu_ffn_runner_sends_structured_shared_output():
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")

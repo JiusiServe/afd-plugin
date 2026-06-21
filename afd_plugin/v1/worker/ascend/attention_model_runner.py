@@ -370,7 +370,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 stage_query_lens = torch.from_numpy(stage_pcp_tokens).to(
                     self.query_lens.device,
                 )
-                print(f"haha _debug_pcp_metadata_enabled:{_debug_pcp_metadata_enabled()}")
                 if _debug_pcp_metadata_enabled():
                     logger.warning(
                         "AFD PCP stage split input; kv_cache_gid=%s attn_gid=%s "

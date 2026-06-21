@@ -460,6 +460,8 @@ class AFDAsyncConnector(AFDConnectorBase):
             expert_token_nums=expert_token_nums,
             expert_token_nums_shared=expert_token_nums_shared,
         )
+        print(f"expert_token_nums:{expert_token_nums}", flush=True)
+        print(f"token_nums_rankid_layeridx first5={token_nums_rankid_layeridx[:5]}", flush=True)
         data.expand_x_shared = expand_x_shared
         data.dynamic_scales = dynamic_scales
         data.dynamic_scales_shared = dynamic_scales_shared
