@@ -449,7 +449,7 @@ def test_npu_attention_metadata_positional_args_and_padded_slices():
     assert normalized[-1].token_slice == slice(4, 8)
 
 
-def test_npu_request_boundary_ubatch_slices_use_request_counts(monkeypatch):
+def test_npu_request_boundary_ubatch_slices_balance_tokens(monkeypatch):
     np = pytest.importorskip("numpy")
     fake_torch = ModuleType("torch")
     fake_torch.Tensor = object
@@ -513,10 +513,19 @@ def test_npu_request_boundary_ubatch_slices_use_request_counts(monkeypatch):
             np.array([2, 3, 5, 7], dtype=np.int32),
         )
 
-        assert slices[0].request_slice == slice(0, 2)
-        assert slices[0].token_slice == slice(0, 5)
-        assert slices[1].request_slice == slice(2, 4)
-        assert slices[1].token_slice == slice(5, 17)
+        assert slices[0].request_slice == slice(0, 3)
+        assert slices[0].token_slice == slice(0, 10)
+        assert slices[1].request_slice == slice(3, 4)
+        assert slices[1].token_slice == slice(10, 17)
+
+        slices = ubatch_utils.create_request_boundary_ubatch_slices(
+            np.array([824, 846, 16], dtype=np.int32),
+        )
+
+        assert slices[0].request_slice == slice(0, 1)
+        assert slices[0].token_slice == slice(0, 824)
+        assert slices[1].request_slice == slice(1, 3)
+        assert slices[1].token_slice == slice(824, 1686)
         assert (
             ubatch_utils.create_request_boundary_ubatch_slices(
                 np.array([17], dtype=np.int32),

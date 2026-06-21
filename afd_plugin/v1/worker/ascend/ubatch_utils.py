@@ -107,9 +107,10 @@ def create_request_boundary_ubatch_slices(
     """Split scheduled tokens on request boundaries.
 
     Async MoE ubatching keeps dense layers on the full batch and only slices
-    connector payloads.  Splitting by request count avoids partial request
+    connector payloads.  Splitting on request boundaries avoids partial request
     metadata and keeps each stage's common attention metadata rebuildable by
-    the existing Ascend builder stack.
+    the existing Ascend builder stack.  Among those boundaries, pick the split
+    whose two stages have the closest token counts.
     """
 
     assert num_ubatches == 2, "Async MoE ubatching currently supports 2 stages."
@@ -123,7 +124,13 @@ def create_request_boundary_ubatch_slices(
     if total_tokens < num_ubatches:
         return None
 
-    split_req = (num_reqs + 1) // num_ubatches
+    split_req = min(
+        range(1, num_reqs),
+        key=lambda req_idx: (
+            abs(int(cu_num_tokens[req_idx]) * 2 - total_tokens),
+            abs(req_idx * num_ubatches - num_reqs),
+        ),
+    )
     split_token = int(cu_num_tokens[split_req])
     if split_token <= 0 or split_token >= total_tokens:
         return None
