@@ -40,8 +40,6 @@ except ImportError:
 from afd_plugin.config import parse_afd_config
 from afd_plugin.connectors import AFDConnectorMetadata, AFDFFNOutput
 from afd_plugin.envs import (
-    AFD_CAMP2P_STUB_IO,
-    camp2p_stub_io_enabled,
     force_balanced_topk_ids_enabled,
 )
 from afd_plugin.model_executor.models import (
@@ -51,28 +49,6 @@ from afd_plugin.model_executor.models import (
 from afd_plugin.v1.worker.dbo import maybe_apply_dbo_yield
 
 logger = init_logger(__name__)
-_AFD_ASYNC_MOE_FORWARD_LOG_ENV = AFD_CAMP2P_STUB_IO
-
-
-def _log_async_moe_forward_step(event: str, **kwargs: object) -> None:
-    if not camp2p_stub_io_enabled():
-        return
-    fields = " ".join(f"{key}={value}" for key, value in kwargs.items())
-    logger.warning("AFD async MoE ubatch forward %s; %s", event, fields)
-
-
-def _log_ffn_compute_step(event: str, **kwargs: object) -> None:
-    del event, kwargs
-
-
-def _tensor_debug_info(tensor: torch.Tensor | None) -> object:
-    if tensor is None:
-        return None
-    return {
-        "shape": tuple(tensor.shape),
-        "dtype": tensor.dtype,
-        "device": tensor.device,
-    }
 
 
 def _is_moe_layer(config: object, layer_idx: int) -> bool:
@@ -404,16 +380,6 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         **kwargs: Any,
     ) -> torch.Tensor | AFDFFNOutput:
         del kwargs
-        _log_ffn_compute_step(
-            "decoder_layer_enter",
-            compute_gate_on_attention=self.compute_gate_on_attention,
-            is_moe_layer=self.is_moe_layer,
-            hidden_states=_tensor_debug_info(hidden_states),
-            group_list=_tensor_debug_info(group_list),
-            dynamic_scales=_tensor_debug_info(dynamic_scales),
-            expand_x_shared=_tensor_debug_info(expand_x_shared),
-            dynamic_scales_shared=_tensor_debug_info(dynamic_scales_shared),
-        )
         if self.compute_gate_on_attention and not self.is_moe_layer:
             raise RuntimeError(
                 "Dense DeepSeek layers are computed on the Attention side "
@@ -424,7 +390,6 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 raise RuntimeError(
                     "compute_gate_on_attention FFN MoE compute requires group_list",
                 )
-            _log_ffn_compute_step("attention_gate_moe_begin")
             output = self._compute_moe_with_attention_gate(
                 hidden_states=hidden_states,
                 group_list=group_list,
@@ -434,12 +399,6 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 topk_scales=topk_scales,
                 group_list_type=group_list_type,
             )
-            _log_ffn_compute_step(
-                "attention_gate_moe_end",
-                routed_output=_tensor_debug_info(output.routed_output),
-                shared_output=_tensor_debug_info(output.shared_output),
-            )
-            _log_ffn_compute_step("decoder_layer_exit")
             return output
         hidden_states = self.mlp(hidden_states)
         if (
@@ -447,10 +406,6 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
             and hidden_states.dtype == torch.float16
         ):
             hidden_states *= 1.0 / self.routed_scaling_factor
-        _log_ffn_compute_step(
-            "decoder_layer_exit",
-            hidden_states=_tensor_debug_info(hidden_states),
-        )
         return hidden_states
 
     def _compute_moe_with_attention_gate(
@@ -472,19 +427,8 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         from vllm_ascend.ops.fused_moe.moe_stage_params import MoEQuantParams
         from vllm_ascend.quantization.quant_type import QuantType
 
-        _log_ffn_compute_step(
-            "moe_attention_gate_enter",
-            hidden_states=_tensor_debug_info(hidden_states),
-            group_list=_tensor_debug_info(group_list),
-            dynamic_scales=_tensor_debug_info(dynamic_scales),
-            expand_x_shared=_tensor_debug_info(expand_x_shared),
-            dynamic_scales_shared=_tensor_debug_info(dynamic_scales_shared),
-            topk_scales=_tensor_debug_info(topk_scales),
-            group_list_type=group_list_type,
-        )
         experts = self.mlp.experts
         quant_type = experts.quant_type
-        _log_ffn_compute_step("moe_weights_begin", quant_type=quant_type)
         if quant_type == QuantType.NONE:
             moe_weights = MoEWeights(
                 w1=experts.w13_weight,
@@ -512,7 +456,6 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 "compute_gate_on_attention currently supports only unquantized "
                 f"or W8A8 Ascend MoE experts, got {quant_type}",
             )
-        _log_ffn_compute_step("moe_weights_end", quant_type=quant_type)
         use_gmmswigluquant_fusion = (
             quant_type in (QuantType.W8A8, getattr(QuantType, "MXFP8", None))
             and _gmmswigluquant_fusion_enabled()
@@ -520,7 +463,6 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
 
         shared_output = None
         if experts._shared_experts is not None:
-            _log_ffn_compute_step("shared_experts_begin")
             shared_input = expand_x_shared
             shared_scales = dynamic_scales_shared
             if shared_input is None:
@@ -532,12 +474,7 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 output_dtype=torch.bfloat16,
             )
             shared_output = experts._shared_experts(shared_input)
-            _log_ffn_compute_step(
-                "shared_experts_end",
-                shared_output=_tensor_debug_info(shared_output),
-            )
 
-        _log_ffn_compute_step("routed_unified_apply_mlp_begin")
         routed_output = unified_apply_mlp(
             mlp_compute_input=MoEMlpComputeInput(
                 hidden_states=hidden_states,
@@ -553,21 +490,12 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 dynamic_eplb=experts.dynamic_eplb,
             ),
         )
-        _log_ffn_compute_step(
-            "routed_unified_apply_mlp_end",
-            routed_output=_tensor_debug_info(routed_output),
-        )
 
         if hidden_states.dtype != torch.float16:
             routed_output *= self.mlp.routed_scaling_factor
         elif shared_output is not None:
             shared_output *= 1.0 / self.mlp.routed_scaling_factor
 
-        _log_ffn_compute_step(
-            "moe_attention_gate_exit",
-            routed_output=_tensor_debug_info(routed_output),
-            shared_output=_tensor_debug_info(shared_output),
-        )
         return AFDFFNOutput(
             routed_output=routed_output,
             shared_output=shared_output,
@@ -878,29 +806,13 @@ class AFDDeepseekV2Model(torch.nn.Module):
         first_moe_layer = int(self.config.first_k_dense_replace)
         dense_end_layer = min(self.end_layer, first_moe_layer)
         for layer in islice(self.layers, self.start_layer, dense_end_layer):
-            _log_async_moe_forward_step(
-                "dense_begin",
-                layer_idx=layer.layer_idx,
-                hidden_shape=tuple(hidden_states.shape),
-            )
             hidden_states, residual = layer(
                 positions,
                 hidden_states,
                 residual,
                 llama_4_scaling,
             )
-            _log_async_moe_forward_step(
-                "dense_end",
-                layer_idx=layer.layer_idx,
-                hidden_shape=tuple(hidden_states.shape),
-            )
         if dense_end_layer == self.end_layer:
-            _log_async_moe_forward_step(
-                "exit_dense_only",
-                start_layer=self.start_layer,
-                end_layer=self.end_layer,
-                hidden_shape=tuple(hidden_states.shape),
-            )
             return hidden_states, residual
 
         stage_hidden_states = [
@@ -924,26 +836,6 @@ class AFDDeepseekV2Model(torch.nn.Module):
         ]
 
         moe_start_layer = max(self.start_layer, first_moe_layer)
-        _log_async_moe_forward_step(
-            "enter",
-            start_layer=self.start_layer,
-            end_layer=self.end_layer,
-            dense_end_layer=dense_end_layer,
-            moe_start_layer=moe_start_layer,
-            num_stages=len(ubatch_slices),
-            request_slices=[
-                (ubatch_slice.request_slice.start, ubatch_slice.request_slice.stop)
-                for ubatch_slice in ubatch_slices
-            ],
-            token_slices=[
-                (ubatch_slice.token_slice.start, ubatch_slice.token_slice.stop)
-                for ubatch_slice in ubatch_slices
-            ],
-            stage_shapes=[
-                tuple(stage_hidden_state.shape)
-                for stage_hidden_state in stage_hidden_states
-            ],
-        )
         moe_layers = list(islice(self.layers, moe_start_layer, self.end_layer))
 
         def compute_stage_attention(
@@ -957,16 +849,6 @@ class AFDDeepseekV2Model(torch.nn.Module):
                 async_moe_ubatch_metadata=async_moe_ubatch_metadata,
                 stage_idx=stage_idx,
             ):
-                _log_async_moe_forward_step(
-                    "attention_begin",
-                    layer_idx=layer.layer_idx,
-                    stage_idx=stage_idx,
-                    hidden_shape=tuple(stage_hidden_states[stage_idx].shape),
-                    token_slice=(
-                        ubatch_slice.token_slice.start,
-                        ubatch_slice.token_slice.stop,
-                    ),
-                )
                 (
                     stage_hidden_states[stage_idx],
                     stage_residual[stage_idx],
@@ -978,15 +860,6 @@ class AFDDeepseekV2Model(torch.nn.Module):
                     stage_hidden_states[stage_idx],
                     stage_residual[stage_idx],
                     stage_llama_4_scaling[stage_idx],
-                )
-                _log_async_moe_forward_step(
-                    "attention_end",
-                    layer_idx=layer.layer_idx,
-                    stage_idx=stage_idx,
-                    hidden_shape=tuple(stage_hidden_states[stage_idx].shape),
-                    has_topk_weights=topk_weights is not None,
-                    has_topk_ids=topk_ids is not None,
-                    has_router_logits=router_logits is not None,
                 )
             if topk_weights is None or topk_ids is None:
                 raise RuntimeError(
@@ -1014,12 +887,6 @@ class AFDDeepseekV2Model(torch.nn.Module):
                 stage_idx=stage_idx,
                 seq_len=expected_tokens,
             )
-            _log_async_moe_forward_step(
-                "send_begin",
-                layer_idx=layer.layer_idx,
-                stage_idx=stage_idx,
-                hidden_shape=tuple(stage_hidden_states[stage_idx].shape),
-            )
             afd_connector.send_attn_output(
                 stage_hidden_states[stage_idx],
                 stage_metadata,
@@ -1027,28 +894,12 @@ class AFDDeepseekV2Model(torch.nn.Module):
                 topk_ids=topk_ids,
                 router_logits=router_logits,
             )
-            _log_async_moe_forward_step(
-                "send_end",
-                layer_idx=layer.layer_idx,
-                stage_idx=stage_idx,
-            )
 
         def recv_stage_ffn(layer: Any, stage_idx: int, event_prefix: str) -> None:
-            _log_async_moe_forward_step(
-                f"{event_prefix}_recv_begin",
-                layer_idx=layer.layer_idx,
-                stage_idx=stage_idx,
-                ref_shape=tuple(stage_hidden_states[stage_idx].shape),
-            )
+            del layer, event_prefix
             stage_hidden_states[stage_idx] = afd_connector.recv_ffn_output(
                 ref_tensor=stage_hidden_states[stage_idx],
                 ubatch_idx=stage_idx,
-            )
-            _log_async_moe_forward_step(
-                f"{event_prefix}_recv_end",
-                layer_idx=layer.layer_idx,
-                stage_idx=stage_idx,
-                hidden_shape=tuple(stage_hidden_states[stage_idx].shape),
             )
 
         last_moe_layer_offset = len(moe_layers) - 1
@@ -1110,10 +961,6 @@ class AFDDeepseekV2Model(torch.nn.Module):
         )
         recv_stage_ffn(last_layer, 1, "final")
         output_hidden_states = torch.cat(stage_hidden_states, dim=0)
-        _log_async_moe_forward_step(
-            "exit",
-            hidden_shape=tuple(output_hidden_states.shape),
-        )
         return (
             output_hidden_states,
             _cat_optional_async_moe_stage_outputs(
@@ -1128,20 +975,10 @@ class AFDDeepseekV2Model(torch.nn.Module):
         layer_idx: int,
         **kwargs: Any,
     ) -> torch.Tensor | AFDFFNOutput:
-        _log_ffn_compute_step(
-            "model_layer_dispatch_begin",
-            layer_idx=layer_idx,
-            hidden_states=_tensor_debug_info(hidden_states),
-        )
-        output = self.layers[layer_idx].compute_ffn_output(
+        return self.layers[layer_idx].compute_ffn_output(
             hidden_states,
             **kwargs,
         )
-        _log_ffn_compute_step(
-            "model_layer_dispatch_end",
-            layer_idx=layer_idx,
-        )
-        return output
 
     def _get_llama_4_scaling(
         self,
@@ -1347,17 +1184,7 @@ class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
         layer_idx: int,
         **kwargs: Any,
     ) -> torch.Tensor | AFDFFNOutput:
-        _log_ffn_compute_step(
-            "causal_lm_ffn_dispatch_begin",
-            layer_idx=layer_idx,
-            hidden_states=_tensor_debug_info(hidden_states),
-        )
-        output = self.model.compute_ffn_output(hidden_states, layer_idx, **kwargs)
-        _log_ffn_compute_step(
-            "causal_lm_ffn_dispatch_end",
-            layer_idx=layer_idx,
-        )
-        return output
+        return self.model.compute_ffn_output(hidden_states, layer_idx, **kwargs)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         ascend_config = get_ascend_config() if get_ascend_config is not None else None
