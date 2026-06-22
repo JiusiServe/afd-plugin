@@ -460,8 +460,9 @@ class AFDAsyncConnector(AFDConnectorBase):
             expert_token_nums=expert_token_nums,
             expert_token_nums_shared=expert_token_nums_shared,
         )
-        print(f"expert_token_nums:{expert_token_nums}", flush=True)
-        print(f"token_nums_rankid_layeridx first5={token_nums_rankid_layeridx[:5]}", flush=True)
+        # print(f"expert_token_nums:{expert_token_nums} sum:{expert_token_nums.sum()}", flush=True)
+        # print(f"expert_token_nums_shared:{expert_token_nums_shared}", flush=True)
+        # print(f"token_nums_rankid_layeridx first5={token_nums_rankid_layeridx[:5]}", flush=True)
         data.expand_x_shared = expand_x_shared
         data.dynamic_scales = dynamic_scales
         data.dynamic_scales_shared = dynamic_scales_shared
@@ -628,12 +629,12 @@ def _describe_cam_op_arg(name: str, value: object) -> str:
 def _log_cam_op_values(op_name: str, label: str, **kwargs: object) -> None:
     if not _cam_op_io_logging_enabled():
         return
-    formatted_args = "\n".join(
-        f"  {name}={_describe_cam_op_arg(name, value)}"
-        for name, value in kwargs.items()
-        if name not in _CAM_LOG_SKIPPED_ARGS
-    )
-    logger.warning("AFD CAM %s %s:\n%s", op_name, label, formatted_args)
+    # formatted_args = "\n".join(
+    #     f"  {name}={_describe_cam_op_arg(name, value)}"
+    #     for name, value in kwargs.items()
+    #     if name not in _CAM_LOG_SKIPPED_ARGS
+    # )
+    # logger.warning("AFD CAM %s %s:\n%s", op_name, label, formatted_args)
 
 
 def _log_cam_op_inputs(op_name: str, **kwargs: object) -> None:

@@ -772,7 +772,7 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
     assert context_calls[0]["num_tokens_across_dp"].tolist() == [5, 5]
 
 
-def test_cam_shared_token_count_uses_token_nums_rankid_layeridx():
+def test_cam_shared_token_count_uses_expert_tokens_shared_directly():
     _require_npu_runtime()
     from afd_plugin.v1.worker.ascend.ffn_model_runner import _cam_shared_token_count
 
@@ -805,10 +805,10 @@ def test_cam_shared_token_count_uses_token_nums_rankid_layeridx():
         metadata=metadata,
         atten_batch_size=token_nums_rankid_layeridx,
         ep_recv_counts=[_FakeScalar(12), _FakeScalar(15)],
-        ep_recv_counts_shared=[_FakeScalar(1)],
+        ep_recv_counts_shared=[_FakeScalar(9)],
     )
 
-    assert _cam_shared_token_count(payload, fallback=10) == 18
+    assert _cam_shared_token_count(payload, fallback=10) == 9
 
 
 def test_slice_cam_payload_shared_tensors_fallback_to_100_tokens():

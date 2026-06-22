@@ -102,6 +102,8 @@ def _compute_w8a8_shared_experts_from_int8(
         unsqueeze_output = True
     elif pertoken_scale.dim() == 2 and pertoken_scale.shape[1] == 1:
         pertoken_scale = pertoken_scale.squeeze(dim=1)
+    quantized_input = quantized_input.clone()
+    pertoken_scale = pertoken_scale.clone()
 
     gate_up = torch_npu.npu_quant_matmul(
         quantized_input,
