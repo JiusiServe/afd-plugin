@@ -77,6 +77,48 @@ def _dequantize_int8_activation(
     return (hidden_states.to(torch.float32) * scales).to(dtype=output_dtype)
 
 
+def _compute_w8a8_shared_experts_from_int8(
+    shared_experts: torch.nn.Module,
+    hidden_states: torch.Tensor,
+    dynamic_scales: torch.Tensor | None,
+    *,
+    output_dtype: torch.dtype,
+) -> torch.Tensor:
+    if dynamic_scales is None:
+        raise RuntimeError("INT8 AFD shared experts fast path requires dynamic_scales")
+
+    import torch_npu
+
+    quantized_input = hidden_states
+    pertoken_scale = dynamic_scales
+    unsqueeze_output = False
+    if (
+        pertoken_scale.dim() == 2
+        and quantized_input.dim() == 3
+        and quantized_input.shape[1] == 1
+    ):
+        quantized_input = quantized_input.squeeze(dim=1)
+        pertoken_scale = pertoken_scale.squeeze(dim=1)
+        unsqueeze_output = True
+    elif pertoken_scale.dim() == 2 and pertoken_scale.shape[1] == 1:
+        pertoken_scale = pertoken_scale.squeeze(dim=1)
+
+    gate_up = torch_npu.npu_quant_matmul(
+        quantized_input,
+        shared_experts.gate_up_proj.weight,
+        shared_experts.gate_up_proj.weight_scale,
+        pertoken_scale=pertoken_scale,
+        bias=None,
+        output_dtype=output_dtype,
+    )
+    if unsqueeze_output:
+        gate_up = gate_up.unsqueeze(dim=1)
+
+    shared_act = shared_experts.act_fn(gate_up)
+    shared_output, _ = shared_experts.down_proj(shared_act)
+    return shared_output
+
+
 def _gmmswigluquant_fusion_enabled() -> bool:
     if get_ascend_config is None:
         return False
@@ -465,15 +507,20 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         if experts._shared_experts is not None:
             shared_input = expand_x_shared
             shared_scales = dynamic_scales_shared
-            if shared_input is None:
-                shared_input = hidden_states
-                shared_scales = dynamic_scales
-            shared_input = _dequantize_int8_activation(
-                shared_input,
-                shared_scales,
-                output_dtype=torch.bfloat16,
-            )
-            shared_output = experts._shared_experts(shared_input)
+            if shared_input.dtype == torch.int8 and quant_type == QuantType.W8A8:
+                shared_output = _compute_w8a8_shared_experts_from_int8(
+                    experts._shared_experts,
+                    shared_input,
+                    shared_scales,
+                    output_dtype=torch.bfloat16,
+                )
+            else:
+                shared_input = _dequantize_int8_activation(
+                    shared_input,
+                    shared_scales,
+                    output_dtype=torch.bfloat16,
+                )
+                shared_output = experts._shared_experts(shared_input)
 
         routed_output = unified_apply_mlp(
             mlp_compute_input=MoEMlpComputeInput(

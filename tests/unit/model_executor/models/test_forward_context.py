@@ -191,6 +191,8 @@ def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():
     assert "MoEQuantParams(quant_type=quant_type)" in compute_moe
     assert "_gmmswigluquant_fusion_enabled()" in compute_moe
     assert "fusion=use_gmmswigluquant_fusion" in compute_moe
+    assert "_compute_w8a8_shared_experts_from_int8(" in compute_moe
+    assert "shared_input.dtype == torch.int8" in compute_moe
     assert "fusion=False" not in compute_moe
 
 
