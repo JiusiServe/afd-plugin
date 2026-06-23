@@ -79,15 +79,6 @@ class OfflineCsvSchedule:
             )
 
         for request_index, request in enumerate(requests):
-            source_line = getattr(request, "source_line", None)
-            expected_source_line = self.request_source_lines[request_index]
-            if source_line is not None and source_line != expected_source_line:
-                raise ValueError(
-                    f"Prompt request {request_index} metadata source_line="
-                    f"{source_line} does not match CSV line "
-                    f"{expected_source_line}."
-                )
-
             target_prompt_tokens = getattr(request, "target_prompt_tokens", None)
             expected_token_count = self.request_token_counts[request_index]
             if (

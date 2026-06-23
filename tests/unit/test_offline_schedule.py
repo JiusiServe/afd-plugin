@@ -4,6 +4,12 @@
 from afd_plugin.offline_schedule import OfflineCsvSchedule
 
 
+class _Request:
+    def __init__(self, source_line: int, target_prompt_tokens: int) -> None:
+        self.source_line = source_line
+        self.target_prompt_tokens = target_prompt_tokens
+
+
 def test_offline_csv_schedule_maps_groups_to_dp_ranks(tmp_path):
     schedule_csv = tmp_path / "schedule.csv"
     schedule_csv.write_text(
@@ -38,3 +44,33 @@ def test_offline_csv_schedule_maps_groups_to_dp_ranks(tmp_path):
     assert dp0.request_token_counts == (16547, 20718, 8496, 98, 111, 222, 333, 444)
     assert dp0.total_requests == 8
     assert dp1.total_requests == 8
+
+
+def test_offline_csv_schedule_allows_merged_group_source_lines(tmp_path):
+    schedule_csv = tmp_path / "schedule.csv"
+    schedule_csv.write_text(
+        "\n".join(
+            [
+                "16547",
+                "15069",
+                "6218",
+                "73",
+                "0",
+                "14597",
+                "12699",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    requests = [
+        _Request(source_line=1, target_prompt_tokens=16547),
+        _Request(source_line=3, target_prompt_tokens=15069),
+        _Request(source_line=4, target_prompt_tokens=6218),
+        _Request(source_line=5, target_prompt_tokens=73),
+        _Request(source_line=7, target_prompt_tokens=14597),
+        _Request(source_line=8, target_prompt_tokens=12699),
+    ]
+
+    schedule = OfflineCsvSchedule.from_csv(str(schedule_csv), dp_size=3, dp_rank=0)
+
+    schedule.validate_requests(requests)
