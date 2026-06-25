@@ -44,6 +44,18 @@ except PackageNotFoundError:
 _logger = logging.getLogger(__name__)
 _registered = False
 
+_HY3_MODEL_REGISTRATIONS = {
+    # config.json uses 'HunyuanImage3ForCausalMM'; vllm-omni maps this to
+    # HunyuanImage3ForConditionalGeneration internally, but vLLM looks up by
+    # the architecture name from config.json, so register under both keys.
+    "HunyuanImage3ForCausalMM": (
+        "afd_plugin.model_executor.models.hunyuan_v1:AFDHunyuanImage3ForConditionalGeneration"
+    ),
+    "HunyuanImage3ForConditionalGeneration": (
+        "afd_plugin.model_executor.models.hunyuan_v1:AFDHunyuanImage3ForConditionalGeneration"
+    ),
+}
+
 _DEEPSEEK_MODEL_REGISTRATIONS = {
     "DeepseekForCausalLM": (
         "afd_plugin.model_executor.models.deepseek_v2:AFDDeepseekForCausalLM"
@@ -152,7 +164,23 @@ def register_afd() -> None:
     for model_arch, model_cls in _DEEPSEEK_MODEL_REGISTRATIONS.items():
         ModelRegistry.register_model(model_arch, model_cls)
 
+    for model_arch, model_cls in _HY3_MODEL_REGISTRATIONS.items():
+        ModelRegistry.register_model(model_arch, model_cls)
+
     _registered = True
+
+    try:
+        from vllm_omni.model_executor.models import OmniModelRegistry
+
+        for model_arch, model_cls in _HY3_MODEL_REGISTRATIONS.items():
+            OmniModelRegistry.register_model(model_arch, model_cls)
+        _logger.warning("AFD plugin: registered HY3 models into OmniModelRegistry")
+    except ImportError:
+        _logger.warning("AFD plugin: vllm-omni not present, skip OmniModelRegistry")
+    except Exception:
+        _logger.warning(
+            "AFD plugin: OmniModelRegistry registration failed", exc_info=True
+        )
 
 
 __all__ = [
@@ -166,4 +194,5 @@ __all__ = [
     "__version__",
     "_DEEPSEEK_MODEL_REGISTRATIONS",
     "register_afd",
+    "_HY3_MODEL_REGISTRATIONS",
 ]
