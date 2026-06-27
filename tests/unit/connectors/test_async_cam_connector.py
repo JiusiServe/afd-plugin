@@ -80,11 +80,12 @@ class _FakeTorch:
         return _FakeTensor(shape, dtype=dtype, device=device)
 
 
-def _vllm_config(*, tp_size: int = 1):
+def _vllm_config(*, tp_size: int = 1, pcp_size: int = 1):
     return SimpleNamespace(
         parallel_config=SimpleNamespace(
             data_parallel_size=1,
             data_parallel_rank=0,
+            prefill_context_parallel_size=pcp_size,
             tensor_parallel_size=tp_size,
         ),
         scheduler_config=SimpleNamespace(max_num_batched_tokens=8),
@@ -146,15 +147,15 @@ def test_async_connector_factory_creates_import_safe_connector():
     assert connector.tp_size == 1
 
 
-def test_async_connector_uses_attn_ranks_per_dp_for_cam_tp_size():
+def test_async_connector_uses_pcp_times_tp_for_cam_tp_size():
     connector = AFDAsyncConnector(
         0,
         0,
-        _vllm_config(tp_size=8),
-        _afd_config(role="attention", extra_config={"attn_ranks_per_dp": "2"}),
+        _vllm_config(tp_size=4, pcp_size=2),
+        _afd_config(role="attention"),
     )
 
-    assert connector.tp_size == 2
+    assert connector.tp_size == 8
 
 
 def test_async_topology_uses_cam_attention_first_rank_layout():
@@ -237,11 +238,8 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
     connector = AFDAsyncConnector(
         0,
         0,
-        _vllm_config(),
-        _afd_config(
-            role="attention",
-            extra_config={"comm_id": 99, "attn_ranks_per_dp": 3},
-        ),
+        _vllm_config(pcp_size=3),
+        _afd_config(role="attention", extra_config={"comm_id": 99}),
     )
     connector._initialized = True
     connector.comm_args = _FakeTensor((1,), dtype="fp16")
@@ -282,8 +280,8 @@ def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
     connector = AFDAsyncConnector(
         0,
         0,
-        _vllm_config(),
-        _afd_config(role="ffn", extra_config={"attn_ranks_per_dp": 2}),
+        _vllm_config(pcp_size=2),
+        _afd_config(role="ffn"),
     )
     connector._initialized = True
     connector.comm_args = _FakeTensor((1,), dtype="fp16")

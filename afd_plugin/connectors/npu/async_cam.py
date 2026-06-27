@@ -23,7 +23,6 @@ from afd_plugin.distributed import init_afd_process_group
 DPMetadataMap: TypeAlias = dict[int, object]
 AFD_ASYNC_CAM_GROUP_NAME = "afd_async_cam"
 CAM_COMM_ID = 0
-ATTN_RANKS_PER_DP_CONFIG_KEY = "attn_ranks_per_dp"
 
 try:
     from vllm.logger import init_logger
@@ -113,7 +112,7 @@ class AFDAsyncConnector(AFDConnectorBase):
             int(vllm_config.scheduler_config.max_num_batched_tokens),
         )
         self.comm_id = CAM_COMM_ID
-        self.tp_size = _resolve_attn_ranks_per_dp(afd_config)
+        self.tp_size = _resolve_cam_tp_size(parallel_config)
         self.cam_pg: Any | None = None
         self.topology = build_async_topology(
             afd_config,
@@ -690,26 +689,28 @@ def build_async_topology(
     )
 
 
-def _resolve_attn_ranks_per_dp(afd_config: AFDConfig) -> int:
-    value = afd_config.extra_config.get(ATTN_RANKS_PER_DP_CONFIG_KEY, 1)
+def _resolve_cam_tp_size(parallel_config: object) -> int:
+    pcp_size = _resolve_parallel_size(
+        parallel_config,
+        "prefill_context_parallel_size",
+    )
+    tp_size = _resolve_parallel_size(parallel_config, "tensor_parallel_size")
+    return pcp_size * tp_size
+
+
+def _resolve_parallel_size(parallel_config: object, name: str) -> int:
+    value = getattr(parallel_config, name, 1)
     if isinstance(value, bool):
-        raise TypeError(
-            f"extra_config.{ATTN_RANKS_PER_DP_CONFIG_KEY} must be an integer, "
-            f"got {value!r}",
-        )
+        raise TypeError(f"parallel_config.{name} must be an integer, got {value!r}")
     try:
-        attn_ranks_per_dp = int(value)
+        size = int(value)
     except (TypeError, ValueError) as exc:
         raise TypeError(
-            f"extra_config.{ATTN_RANKS_PER_DP_CONFIG_KEY} must be an integer, "
-            f"got {value!r}",
+            f"parallel_config.{name} must be an integer, got {value!r}",
         ) from exc
-    if attn_ranks_per_dp <= 0:
-        raise ValueError(
-            f"extra_config.{ATTN_RANKS_PER_DP_CONFIG_KEY} must be positive, "
-            f"got {value!r}",
-        )
-    return attn_ranks_per_dp
+    if size <= 0:
+        raise ValueError(f"parallel_config.{name} must be positive, got {value!r}")
+    return size
 
 
 def _ensure_connector_data(metadata: AFDConnectorMetadata) -> AFDAsyncConnectorData:
@@ -752,7 +753,6 @@ __all__ = [
     "AFDAsyncConnector",
     "AFDAsyncConnectorData",
     "AFDAsyncTopology",
-    "ATTN_RANKS_PER_DP_CONFIG_KEY",
     "CAM_COMM_ID",
     "build_async_topology",
 ]
