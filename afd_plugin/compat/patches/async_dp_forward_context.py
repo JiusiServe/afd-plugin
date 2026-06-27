@@ -4,8 +4,6 @@
 
 This module patches:
 1. ``vllm.forward_context.set_forward_context``
-2. ``vllm.forward_context.coordinate_batch_across_dp``
-3. ``vllm.v1.worker.dp_utils.coordinate_batch_across_dp``
 
 Why:
     vLLM 0.19.1 constructs ``DPMetadata`` and coordinates token counts across
@@ -15,8 +13,8 @@ Why:
 
 How:
     Non-AFD configs delegate to vLLM unchanged. AFD async configs create the
-    normal ``ForwardContext`` with ``dp_metadata=None`` and make DP batch
-    coordination return the same early-exit shape as DP=1.
+    normal ``ForwardContext`` with ``dp_metadata=None`` so vLLM does not enter
+    native DP metadata coordination from this path.
 
 Future plan:
     Remove this patch when vLLM exposes a plugin-owned way to opt out of MoE
@@ -30,21 +28,15 @@ from contextlib import contextmanager
 from typing import Any
 
 import vllm.forward_context as forward_context_module
-import vllm.v1.worker.dp_utils as dp_utils_module
 from vllm.config import CUDAGraphMode
 from vllm.forward_context import DPMetadata
 
-from afd_plugin.compat.async_dp import (
-    ensure_async_dp_compat_attr,
-    is_afd_async_dp,
-    parallel_config_async_dp,
-)
+from afd_plugin.compat.async_dp import is_afd_async_dp
 from afd_plugin.compat.vllm import TARGET_VLLM_VERSION
 
 _PATCH_APPLIED = False
 
 _original_set_forward_context = forward_context_module.set_forward_context
-_original_coordinate_batch_across_dp = dp_utils_module.coordinate_batch_across_dp
 
 _FORWARD_CONTEXT_IMPORT_MODULES = (
     "vllm.v1.worker.gpu_model_runner",
@@ -68,7 +60,6 @@ def _patched_set_forward_context(
 ):
     """Create a forward context without DP metadata for AFD async-DP."""
 
-    ensure_async_dp_compat_attr(vllm_config)
     if not is_afd_async_dp(vllm_config):
         with _original_set_forward_context(
             attn_metadata,
@@ -169,28 +160,6 @@ def _patched_set_forward_context(
                     )
 
 
-def _patched_coordinate_batch_across_dp(
-    num_tokens_unpadded: int,
-    parallel_config: Any,
-    uniform_decode: bool | None = None,
-    num_scheduled_tokens_per_request: dict[str, int] | None = None,
-    cudagraph_mode: CUDAGraphMode = CUDAGraphMode.NONE,
-    allow_microbatching: bool = True,
-) -> tuple[bool, Any | None, CUDAGraphMode]:
-    """Skip native DP batch coordination for mirrored AFD async-DP."""
-
-    if parallel_config_async_dp(parallel_config):
-        return False, None, cudagraph_mode
-    return _original_coordinate_batch_across_dp(
-        num_tokens_unpadded,
-        parallel_config,
-        uniform_decode,
-        num_scheduled_tokens_per_request,
-        cudagraph_mode,
-        allow_microbatching,
-    )
-
-
 def apply_async_dp_forward_context_patch() -> None:
     """Apply AFD async-DP forward-context patches once per process."""
 
@@ -202,10 +171,6 @@ def apply_async_dp_forward_context_patch() -> None:
     _PATCH_APPLIED = True
 
     forward_context_module.set_forward_context = _patched_set_forward_context
-    forward_context_module.coordinate_batch_across_dp = (
-        _patched_coordinate_batch_across_dp
-    )
-    dp_utils_module.coordinate_batch_across_dp = _patched_coordinate_batch_across_dp
     _patch_loaded_forward_context_imports()
     forward_context_module.logger.debug(
         "AFD async-DP forward-context patch applied",

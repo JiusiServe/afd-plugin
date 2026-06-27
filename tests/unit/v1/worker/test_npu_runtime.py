@@ -181,12 +181,14 @@ def _vllm_config(
     extra_config=None,
     **parallel_overrides,
 ):
+    async_dp = bool(parallel_overrides.pop("async_dp", False))
     return SimpleNamespace(
         additional_config={
             "afd": {
                 "enabled": True,
                 "role": role,
                 "connector": connector,
+                "async": async_dp,
                 "extra_config": extra_config or {},
             },
         },
@@ -1165,10 +1167,11 @@ def test_npu_feature_validation_allows_two_ubatches_only():
     fail_if_unsupported_npu_afd_features(config)
 
 
-def test_npu_async_feature_validation_uses_additional_config_and_requires_eager():
-    fail_if_unsupported_npu_afd_features(
-        _vllm_config(connector="afdasyncconnector", async_dp=False),
-    )
+def test_npu_async_feature_validation_requires_async_config_and_eager():
+    with pytest.raises(RuntimeError, match="async=true"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(connector="afdasyncconnector", async_dp=False),
+        )
 
     config = _vllm_config(connector="afdasyncconnector", async_dp=True)
     config.model_config.enforce_eager = False

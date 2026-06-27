@@ -5,6 +5,7 @@ import importlib
 import logging
 import sys
 import types
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ def _config(
     *,
     connector: str = "afdasyncconnector",
     role: str = "attention",
+    async_dp: bool = True,
     is_moe: bool = True,
     data_parallel_size: int = 2,
 ):
@@ -23,6 +25,7 @@ def _config(
                 "enabled": True,
                 "connector": connector,
                 "role": role,
+                "async": async_dp,
             },
         },
         model_config=SimpleNamespace(is_moe=is_moe),
@@ -76,10 +79,11 @@ def _install_fake_vllm_engine(monkeypatch: pytest.MonkeyPatch):
             self.parallel_config = parallel_config
             self.enable_wave_coordination = enable_wave_coordination
 
+    @contextmanager
     def launch_core_engines(vllm_config, executor_class, log_stats, addresses,
                             num_api_servers=1):
         del executor_class, log_stats, addresses, num_api_servers
-        return utils_module.DPCoordinator(
+        yield utils_module.DPCoordinator(
             vllm_config.parallel_config,
             enable_wave_coordination=True,
         )
@@ -140,7 +144,7 @@ def test_async_dp_engine_patch_preserves_non_async_moe_dp(monkeypatch):
     patch_module.apply_async_dp_engine_patch()
 
     engine = core_module.EngineCoreProc.run_engine_core(
-        vllm_config=_config(connector="camp2pconnector"),
+        vllm_config=_config(connector="camp2pconnector", async_dp=False),
         dp_rank=1,
     )
 
@@ -153,14 +157,14 @@ def test_async_dp_coordinator_disables_wave_coordination(monkeypatch):
     client_module = sys.modules["vllm.v1.engine.core_client"]
     patch_module.apply_async_dp_engine_patch()
 
-    coordinator = utils_module.launch_core_engines(
+    with utils_module.launch_core_engines(
         _config(),
         object,
         False,
         object(),
-    )
+    ) as coordinator:
+        assert coordinator.enable_wave_coordination is False
 
-    assert coordinator.enable_wave_coordination is False
     assert client_module.launch_core_engines is utils_module.launch_core_engines
 
 

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
 AFD_ADDITIONAL_CONFIG_KEY: Final[str] = "afd"
+AFD_ASYNC_CONNECTOR: Final[str] = "afdasyncconnector"
 ASYNC_MOE_UBATCHING_CONFIG_KEY: Final[str] = "async_moe_ubatching"
 ASYNC_MOE_NUM_UBATCHES_CONFIG_KEY: Final[str] = "async_moe_num_ubatches"
 ASYNC_MOE_SPLIT_CONFIG_KEY: Final[str] = "async_moe_split"
@@ -20,7 +21,7 @@ SUPPORTED_AFD_ROLES: Final[tuple[str, ...]] = ("attention", "ffn")
 SUPPORTED_AFD_CONNECTORS: Final[tuple[str, ...]] = (
     "p2pconnector",
     "camp2pconnector",
-    "afdasyncconnector",
+    AFD_ASYNC_CONNECTOR,
 )
 
 _ALIASES: Final[dict[str, str]] = {
@@ -29,6 +30,7 @@ _ALIASES: Final[dict[str, str]] = {
     "afd_port": "port",
     "afd_host": "host",
     "afd_extra_config": "extra_config",
+    "async": "async_dp",
 }
 
 
@@ -47,6 +49,8 @@ class AFDConfig:
     extra_config: dict[str, Any] = field(default_factory=dict)
     # Connector implementation name used to create the backend data path.
     connector: str = "p2pconnector"
+    # Whether AFD owns async data-parallel runtime patches for this process.
+    async_dp: bool = False
     # Role owned by this process: Attention sends hidden states; FFN receives.
     role: AFDRole = "attention"
     # Port used by the AFD connector rendezvous/control path.
@@ -96,6 +100,7 @@ class AFDConfig:
         factors: list[object] = [
             self.enabled,
             self.connector,
+            self.async_dp,
             self.role,
             self.num_attention_ranks,
             self.num_ffn_ranks,
@@ -183,6 +188,11 @@ def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
         normalized["enabled"] = _coerce_bool(
             normalized["enabled"],
             field_name="enabled",
+        )
+    if "async_dp" in normalized:
+        normalized["async_dp"] = _coerce_bool(
+            normalized["async_dp"],
+            field_name="async",
         )
 
     for field_name in (
@@ -294,6 +304,10 @@ def validate_afd_config(
             "AFD connector must be one of "
             f"{SUPPORTED_AFD_CONNECTORS!r}, got {config.connector!r}",
         )
+    if config.async_dp and config.connector != AFD_ASYNC_CONNECTOR:
+        raise ValueError(
+            "AFD async mode requires connector='afdasyncconnector'",
+        )
     p2p_sizes: tuple[int, int] | None = None
     if config.connector == "p2pconnector":
         from afd_plugin.distributed import (
@@ -329,6 +343,7 @@ def validate_afd_config(
 
 __all__ = [
     "AFDConfig",
+    "AFD_ASYNC_CONNECTOR",
     "ASYNC_MOE_NUM_UBATCHES_CONFIG_KEY",
     "ASYNC_MOE_REQUEST_SPLIT",
     "ASYNC_MOE_SPLIT_CONFIG_KEY",

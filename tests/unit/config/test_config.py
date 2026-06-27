@@ -99,6 +99,35 @@ def test_async_moe_ubatching_helpers_read_extra_config():
     assert async_moe_split(config) == "request"
 
 
+def test_parse_async_dp_config_from_async_alias():
+    config = parse_afd_config(
+        {
+            "afd": {
+                "enabled": True,
+                "connector": "afdasyncconnector",
+                "role": "attention",
+                "async": "true",
+            },
+        },
+    )
+
+    assert config.async_dp is True
+
+
+def test_async_dp_requires_async_connector():
+    with pytest.raises(ValueError, match="requires connector='afdasyncconnector'"):
+        parse_afd_config(
+            {
+                "afd": {
+                    "enabled": True,
+                    "connector": "camp2pconnector",
+                    "role": "attention",
+                    "async": True,
+                },
+            },
+        )
+
+
 def test_original_afd_field_aliases_are_supported():
     config = afd_config_from_mapping(
         {

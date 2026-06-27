@@ -113,7 +113,7 @@ def _fail_if_unsupported_npu_afd_async_features(
     if not is_afd_async_dp(vllm_config):
         raise RuntimeError(
             "AFDAsyncConnector requires additional_config['afd'] "
-            "with connector='afdasyncconnector'",
+            "with async=true and connector='afdasyncconnector'",
         )
     if not bool(vllm_config.model_config.enforce_eager):
         raise RuntimeError(

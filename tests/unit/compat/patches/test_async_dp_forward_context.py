@@ -11,13 +11,14 @@ from types import SimpleNamespace
 import pytest
 
 
-def _config(*, connector: str = "afdasyncconnector"):
+def _config(*, connector: str = "afdasyncconnector", async_dp: bool = True):
     return SimpleNamespace(
         additional_config={
             "afd": {
                 "enabled": True,
                 "connector": connector,
                 "role": "attention",
+                "async": async_dp,
             },
         },
         compilation_config=SimpleNamespace(
@@ -166,39 +167,9 @@ def test_async_dp_forward_context_preserves_non_async_path(monkeypatch):
 
     with forward_module.set_forward_context(
         attn_metadata=object(),
-        vllm_config=_config(connector="camp2pconnector"),
+        vllm_config=_config(connector="camp2pconnector", async_dp=False),
         num_tokens=4,
     ):
         pass
 
     assert forward_module.original_set_forward_context_called is True
-
-
-def test_async_dp_coordinate_batch_across_dp_early_returns(monkeypatch):
-    patch_module = _load_patch_module(monkeypatch)
-    dp_utils_module = sys.modules["vllm.v1.worker.dp_utils"]
-    patch_module.apply_async_dp_forward_context_patch()
-    config = _config()
-    config.parallel_config.async_dp = True
-
-    result = dp_utils_module.coordinate_batch_across_dp(
-        num_tokens_unpadded=8,
-        parallel_config=config.parallel_config,
-    )
-
-    assert result == (False, None, "NONE")
-
-
-def test_async_dp_coordinate_batch_across_dp_preserves_non_async(monkeypatch):
-    patch_module = _load_patch_module(monkeypatch)
-    dp_utils_module = sys.modules["vllm.v1.worker.dp_utils"]
-    forward_module = sys.modules["vllm.forward_context"]
-    patch_module.apply_async_dp_forward_context_patch()
-
-    result = dp_utils_module.coordinate_batch_across_dp(
-        num_tokens_unpadded=8,
-        parallel_config=SimpleNamespace(),
-    )
-
-    assert result == (True, "tokens", "NONE")
-    assert forward_module.original_coordinate_called is True
