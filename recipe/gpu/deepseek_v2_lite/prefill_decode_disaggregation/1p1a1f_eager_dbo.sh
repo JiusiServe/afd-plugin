@@ -1,4 +1,4 @@
-MODEL_PATH=${MODEL_PATH:-/path/model_weights/DeepSeek-V2-Lite}
+MODEL_PATH=${MODEL_PATH:-/home/models/hub/models--deepseek-ai--DeepSeek-V2-Lite/snapshots/604d5664dddd88a0433dbae533b7fe9472482de0}
 
 CUDA_VISIBLE_DEVICES=0 uv run vllm serve "$MODEL_PATH" \
   --host 127.0.0.1 \
@@ -6,7 +6,7 @@ CUDA_VISIBLE_DEVICES=0 uv run vllm serve "$MODEL_PATH" \
   --tensor-parallel-size 1 \
   --data-parallel-size 1 \
   --enable-expert-parallel \
-  --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes": [64]}'  \
+  --enforce-eager \
   --max-num-seqs 64 \
   --max-num-batched-tokens 64 \
   --max-model-len 8192 \
@@ -14,19 +14,6 @@ CUDA_VISIBLE_DEVICES=0 uv run vllm serve "$MODEL_PATH" \
   > afd_prefill.log 2>&1 &
 
 CUDA_VISIBLE_DEVICES=1 uv run vllm serve "$MODEL_PATH" \
-  --host 127.0.0.1 \
-  --port 18302 \
-  --tensor-parallel-size 1 \
-  --data-parallel-size 1 \
-  --enable-expert-parallel \
-  --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes": [64]}'  \
-  --max-num-seqs 64 \
-  --max-num-batched-tokens 64 \
-  --max-model-len 8192 \
-  --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_producer","kv_connector_extra_config":{"discard_partial_chunks":false,"lmcache_rpc_port":"producer2"}}' \
-  > afd_prefill1.log 2>&1 &
-
-CUDA_VISIBLE_DEVICES=2 uv run vllm serve "$MODEL_PATH" \
     --worker-cls afd_plugin.v1.worker.AFDAttentionWorker \
     --data-parallel-size 1 \
     --tensor-parallel-size 1 \
@@ -50,16 +37,13 @@ CUDA_VISIBLE_DEVICES=2 uv run vllm serve "$MODEL_PATH" \
     --enable-dbo \
     --dbo-decode-token-threshold 2 \
     --dbo-prefill-token-threshold 12 \
-    --max-cudagraph-capture-size 64 \
-    --compilation-config '{
-        "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes":[64]
-    }' \
+    --enforce-eager \
     --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_consumer","kv_connector_extra_config":{"discard_partial_chunks":false,"lmcache_rpc_port":"consumer"}}' \
     --host 127.0.0.1 \
     --port 18305 \
     --trust-remote-code > attn.log 2>&1 &
 
-CUDA_VISIBLE_DEVICES=3 uv run vllm serve "$MODEL_PATH" \
+CUDA_VISIBLE_DEVICES=2 uv run vllm serve "$MODEL_PATH" \
     --worker-cls afd_plugin.v1.worker.AFDFFNWorker \
     --data-parallel-size 1 \
     --tensor-parallel-size 1 \
@@ -83,10 +67,7 @@ CUDA_VISIBLE_DEVICES=3 uv run vllm serve "$MODEL_PATH" \
     --dbo-decode-token-threshold 2 \
     --dbo-prefill-token-threshold 12 \
     --max-num-batched-tokens 64 \
-    --max-cudagraph-capture-size 64 \
-    --compilation-config '{
-        "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes":[64]
-    }' \
+    --enforce-eager \
     --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_consumer","kv_connector_extra_config":{"discard_partial_chunks":false,"lmcache_rpc_port":"consumer"}}' \
     --host 127.0.0.1 \
     --port 18305 \
