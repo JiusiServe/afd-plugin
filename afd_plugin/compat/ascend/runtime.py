@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from afd_plugin.compat.async_dp import is_afd_async_dp
 from afd_plugin.config import (
     ASYNC_MOE_REQUEST_SPLIT,
     AFDConfig,
@@ -109,8 +110,11 @@ def _fail_if_unsupported_npu_afd_async_features(
 ) -> None:
     extra = afd_config.extra_config or {}
     parallel_config = vllm_config.parallel_config
-    if not bool(parallel_config.async_dp):
-        raise RuntimeError("AFDAsyncConnector requires async_dp")
+    if not is_afd_async_dp(vllm_config):
+        raise RuntimeError(
+            "AFDAsyncConnector requires additional_config['afd'] "
+            "with connector='afdasyncconnector'",
+        )
     if not bool(vllm_config.model_config.enforce_eager):
         raise RuntimeError(
             "AFDAsyncConnector supports only eager Attention/FFN execution",
