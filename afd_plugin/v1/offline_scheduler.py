@@ -10,9 +10,10 @@ from collections import deque
 from collections.abc import Iterable
 from typing import Any
 
+from vllm.v1.core.sched.scheduler import Scheduler
+
 from afd_plugin import envs
 from afd_plugin.offline_schedule import OfflineCsvSchedule
-from vllm.v1.core.sched.scheduler import Scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 class OfflineAdmissionGate:
     def __init__(
         self,
-        scheduler: "OfflineCsvScheduler",
+        scheduler: OfflineCsvScheduler,
         schedule: OfflineCsvSchedule,
         request_indices: tuple[int, ...] | None,
     ) -> None:
@@ -33,15 +34,11 @@ class OfflineAdmissionGate:
         self.request_id_to_index: dict[str, int] = {}
         self.admitted_current_step_indices: set[int] = set()
 
-        self.release_current_step()
+        self.release_ready_step()
 
-    def add_request(self, request: Any) -> bool:
+    def add_request(self, request: Any) -> None:
         request_index = self.next_request_index()
         self.request_id_to_index[request.request_id] = request_index
-
-        step = self.schedule.index_to_step[request_index]
-        if step == self.current_step:
-            return True
 
         if request.resumable:
             request.streaming_queue = deque()
@@ -51,12 +48,13 @@ class OfflineAdmissionGate:
 
             request.record_event(EngineCoreEventType.QUEUED)
         self.future_requests[request_index] = request
-        return False
+        self.release_ready_step()
 
     def after_schedule(self, scheduler_output: Any) -> None:
         current_indices = self.current_step_indices()
         if not current_indices:
             self.advance_empty_steps()
+            self.release_ready_step()
             return
 
         scheduled_indices = {
@@ -76,8 +74,8 @@ class OfflineAdmissionGate:
             )
             self.current_step += 1
             self.admitted_current_step_indices.clear()
-            self.release_current_step()
             self.advance_empty_steps()
+            self.release_ready_step()
 
     def finish_requests(self, request_ids: str | Iterable[str] | None) -> None:
         if isinstance(request_ids, str):
@@ -132,13 +130,18 @@ class OfflineAdmissionGate:
             if request is not None:
                 self.scheduler._enqueue_waiting_request(request)
 
+    def release_ready_step(self) -> None:
+        current_indices = self.current_step_indices()
+        if current_indices and current_indices <= self.future_requests.keys():
+            self.release_current_step()
+
     def advance_empty_steps(self) -> None:
         while (
             self.current_step < len(self.schedule.rank_steps)
             and not self.schedule.rank_steps[self.current_step]
         ):
             self.current_step += 1
-            self.release_current_step()
+            self.release_ready_step()
 
 
 class OfflineCsvScheduler(Scheduler):
@@ -188,9 +191,7 @@ class OfflineCsvScheduler(Scheduler):
             super().add_request(request)
             return
 
-        should_enqueue_now = self.offline_admission_gate.add_request(request)
-        if should_enqueue_now:
-            super().add_request(request)
+        self.offline_admission_gate.add_request(request)
 
     def schedule(self) -> Any:
         scheduler_output = super().schedule()
