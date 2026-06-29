@@ -23,6 +23,7 @@ from afd_plugin.distributed import init_afd_process_group
 DPMetadataMap: TypeAlias = dict[int, object]
 AFD_ASYNC_CAM_GROUP_NAME = "afd_async_cam"
 CAM_COMM_ID = 0
+ATTN_RANKS_PER_DP_CONFIG_KEY = "attn_ranks_per_dp"
 
 try:
     from vllm.logger import init_logger
@@ -89,7 +90,6 @@ class AFDAsyncConnector(AFDConnectorBase):
     ) -> None:
         super().__init__(rank, local_rank, vllm_config, afd_config)
         self._initialized = False
-        parallel_config = vllm_config.parallel_config
         hf_config = vllm_config.model_config.hf_config
         self._role_rank = int(afd_config.afd_server_rank)
         self.hidden_size = int(hf_config.hidden_size)
@@ -112,7 +112,7 @@ class AFDAsyncConnector(AFDConnectorBase):
             int(vllm_config.scheduler_config.max_num_batched_tokens),
         )
         self.comm_id = CAM_COMM_ID
-        self.tp_size = _resolve_cam_tp_size(parallel_config)
+        self.tp_size = _resolve_cam_tp_size(afd_config)
         self.cam_pg: Any | None = None
         self.topology = build_async_topology(
             afd_config,
@@ -628,12 +628,12 @@ def _describe_cam_op_arg(name: str, value: object) -> str:
 def _log_cam_op_values(op_name: str, label: str, **kwargs: object) -> None:
     if not _cam_op_io_logging_enabled():
         return
-    # formatted_args = "\n".join(
-    #     f"  {name}={_describe_cam_op_arg(name, value)}"
-    #     for name, value in kwargs.items()
-    #     if name not in _CAM_LOG_SKIPPED_ARGS
-    # )
-    # logger.warning("AFD CAM %s %s:\n%s", op_name, label, formatted_args)
+    formatted_args = "\n".join(
+        f"  {name}={_describe_cam_op_arg(name, value)}"
+        for name, value in kwargs.items()
+        if name not in _CAM_LOG_SKIPPED_ARGS
+    )
+    logger.warning("AFD CAM %s %s:\n%s", op_name, label, formatted_args)
 
 
 def _log_cam_op_inputs(op_name: str, **kwargs: object) -> None:
@@ -689,27 +689,25 @@ def build_async_topology(
     )
 
 
-def _resolve_cam_tp_size(parallel_config: object) -> int:
-    pcp_size = _resolve_parallel_size(
-        parallel_config,
-        "prefill_context_parallel_size",
-    )
-    tp_size = _resolve_parallel_size(parallel_config, "tensor_parallel_size")
-    return pcp_size * tp_size
-
-
-def _resolve_parallel_size(parallel_config: object, name: str) -> int:
-    value = getattr(parallel_config, name, 1)
+def _resolve_cam_tp_size(afd_config: AFDConfig) -> int:
+    value = afd_config.extra_config.get(ATTN_RANKS_PER_DP_CONFIG_KEY, 1)
     if isinstance(value, bool):
-        raise TypeError(f"parallel_config.{name} must be an integer, got {value!r}")
+        raise TypeError(
+            f"extra_config.{ATTN_RANKS_PER_DP_CONFIG_KEY} must be an integer, "
+            f"got {value!r}",
+        )
     try:
         size = int(value)
     except (TypeError, ValueError) as exc:
         raise TypeError(
-            f"parallel_config.{name} must be an integer, got {value!r}",
+            f"extra_config.{ATTN_RANKS_PER_DP_CONFIG_KEY} must be an integer, "
+            f"got {value!r}",
         ) from exc
     if size <= 0:
-        raise ValueError(f"parallel_config.{name} must be positive, got {value!r}")
+        raise ValueError(
+            f"extra_config.{ATTN_RANKS_PER_DP_CONFIG_KEY} must be positive, "
+            f"got {value!r}",
+        )
     return size
 
 
@@ -753,6 +751,7 @@ __all__ = [
     "AFDAsyncConnector",
     "AFDAsyncConnectorData",
     "AFDAsyncTopology",
+    "ATTN_RANKS_PER_DP_CONFIG_KEY",
     "CAM_COMM_ID",
     "build_async_topology",
 ]

@@ -147,15 +147,36 @@ def test_async_connector_factory_creates_import_safe_connector():
     assert connector.tp_size == 1
 
 
-def test_async_connector_uses_pcp_times_tp_for_cam_tp_size():
+def test_async_connector_uses_attn_ranks_per_dp_for_cam_tp_size():
     connector = AFDAsyncConnector(
         0,
         0,
         _vllm_config(tp_size=4, pcp_size=2),
-        _afd_config(role="attention"),
+        _afd_config(role="attention", extra_config={"attn_ranks_per_dp": "3"}),
     )
 
-    assert connector.tp_size == 8
+    assert connector.tp_size == 3
+
+
+@pytest.mark.parametrize("value", [True, "bad"])
+def test_async_connector_rejects_invalid_attn_ranks_per_dp(value):
+    with pytest.raises(TypeError, match="extra_config.attn_ranks_per_dp"):
+        AFDAsyncConnector(
+            0,
+            0,
+            _vllm_config(),
+            _afd_config(role="attention", extra_config={"attn_ranks_per_dp": value}),
+        )
+
+
+def test_async_connector_rejects_nonpositive_attn_ranks_per_dp():
+    with pytest.raises(ValueError, match="extra_config.attn_ranks_per_dp"):
+        AFDAsyncConnector(
+            0,
+            0,
+            _vllm_config(),
+            _afd_config(role="attention", extra_config={"attn_ranks_per_dp": 0}),
+        )
 
 
 def test_async_topology_uses_cam_attention_first_rank_layout():
@@ -239,7 +260,10 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
         0,
         0,
         _vllm_config(pcp_size=3),
-        _afd_config(role="attention", extra_config={"comm_id": 99}),
+        _afd_config(
+            role="attention",
+            extra_config={"comm_id": 99, "attn_ranks_per_dp": 3},
+        ),
     )
     connector._initialized = True
     connector.comm_args = _FakeTensor((1,), dtype="fp16")
@@ -281,7 +305,7 @@ def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
         0,
         0,
         _vllm_config(pcp_size=2),
-        _afd_config(role="ffn"),
+        _afd_config(role="ffn", extra_config={"attn_ranks_per_dp": 2}),
     )
     connector._initialized = True
     connector.comm_args = _FakeTensor((1,), dtype="fp16")
