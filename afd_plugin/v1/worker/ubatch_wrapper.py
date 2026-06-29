@@ -284,13 +284,15 @@ def build_ubatch_dp_metadata_list(
             device="cpu",
             dtype=torch.int32,
         )
-        ubatch_dp_metadata.append(
-            DPMetadata.make(
-                parallel_config,
-                ubatch_slice.num_tokens,
-                num_tokens_across_dp_cpu,
-            ),
+        dp_metadata = DPMetadata.make(
+            parallel_config,
+            ubatch_slice.num_tokens,
+            num_tokens_across_dp_cpu,
         )
+        # vLLM>=0.23's native DPMetadata no longer carries
+        # ``max_tokens_across_dp_cpu``; AFD relies on it downstream.
+        dp_metadata.max_tokens_across_dp_cpu = torch.max(num_tokens_across_dp_cpu)
+        ubatch_dp_metadata.append(dp_metadata)
     return ubatch_dp_metadata
 
 
