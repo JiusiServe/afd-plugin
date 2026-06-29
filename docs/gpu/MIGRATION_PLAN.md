@@ -6,7 +6,7 @@
 
 ### Phase 0：基线与兼容性盘点
 
-- 确认 vLLM `v0.19.1` 的 plugin hook 和 class-path 扩展点。
+- 确认 vLLM `v0.23.0` 的 plugin hook 和 class-path 扩展点。
 - 将 AFD commit 与目标 vLLM 版本做 diff，并按 config、connector、
   distributed state、engine、worker、model、CLI、example 分类。
 - 判断哪些 in-tree 改动可以变成普通 plugin class，哪些需要兼容 shim。
@@ -101,7 +101,7 @@
 - 文档化支持的 topology 组合、已知限制、必需环境变量和故障模式。
 - 添加 FFN server 和 connector traffic 的 profiling/debugging 说明。
 - 添加端到端 GPU integration tests 和 runbook。
-- 在明确测试其他版本之前，兼容性说明都绑定到 vLLM `v0.19.1`。
+- 在明确测试其他版本之前，兼容性说明都绑定到 vLLM `v0.23.0`。
 
 ## 初始目录结构
 
@@ -131,7 +131,7 @@ afd-plugin/
 
 - `afd_plugin`：插件主包。顶层只放全局注册、配置、校验、轻量公共入口等跨目录
   模块；具体文件名后续再定。
-- `afd_plugin.compat`：vLLM `v0.19.1` 的版本保护、延迟 import、兼容 helper
+- `afd_plugin.compat`：vLLM `v0.23.0` 的版本保护、延迟 import、兼容 helper
   和 shim。所有与目标 vLLM 版本强绑定的兼容逻辑优先集中在这里。
 - `afd_plugin.compat.patches`：不得不 monkey patch vLLM 时使用的隔离区。这里的
   patch 必须幂等、受版本保护、有文档说明，并且只在没有可用 plugin/class-path

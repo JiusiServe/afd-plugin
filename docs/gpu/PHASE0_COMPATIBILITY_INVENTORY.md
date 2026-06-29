@@ -285,3 +285,36 @@ Phase 0 完成时，应能明确回答：
 - `AFDFFNWorker.execute_model()` 对意外 scheduler 调用 fail fast。
 - FFN 侧 EngineCore patch 是当前 FFN daemon 模式方案，必须保持幂等、版本保护和
   测试覆盖。
+
+## 从 v0.19.1 迁移到 v0.23.0 的影响
+
+插件运行时基线已从 `v0.19.1` 升级到 `v0.23.0`。上一节是原始 `v0.19.1` 迁移基线的
+历史记录，保留不动；本节记录从 `v0.19.1` 升级到 `v0.23.0` 时实际遇到的接口变化与
+对应处理。
+
+仍然可用、与 `v0.19.1` 一致的扩展点：
+
+- `vllm.general_plugins`、`VLLM_PLUGINS`、`--worker-cls`、`--additional-config`、
+  `--scheduler-cls` 均可用；
+- `ForwardContext.additional_kwargs` 仍可承载 `afd_metadata`；
+- FFN 侧“返回空 KV spec + 在 `initialize_from_config()` 启动 loop”方案保留。
+
+需要适配的 `v0.23.0` 接口变化：
+
+- **`DPMetadata` 去掉了 `max_tokens_across_dp_cpu`**。`v0.19.1` 的 `DPMetadata` 含
+  `max_tokens_across_dp_cpu` 和 `chunked_sizes`；`v0.23.0` 的原生 `DPMetadata` 只
+  保留 `num_tokens_across_dp_cpu`（以及 `sp_local_sizes`，不再有 `chunked_sizes`
+  方法）。AFD 在 `attention_model_runner._build_capture_dp_metadata` 和
+  `ubatch_wrapper.build_ubatch_dp_metadata_list` 中，对 DP>1 走原生
+  `DPMetadata.make()` 的路径重新挂回 `max_tokens_across_dp_cpu`，以维持下游
+  （p2p 序列化、NPU forward context）对该字段的依赖。
+- **`set_forward_context` / `DPMetadata.make` 对 `parallel_config` 字段的要求变多**。
+  `v0.23.0` 会读取 `parallel_config.is_moe_model`（断言 `is not False`）和
+  `tensor_parallel_size`，并在 `create_forward_context` 中读取
+  `compilation_config.fast_moe_cold_start` / `static_forward_context`；相关单测的
+  mock config 已补齐这些字段。
+- **`compile_or_warm_up_model()` 返回类型变化**。`v0.19.1` 返回 `float`，`v0.23.0`
+  返回 `CompilationTimes`（与 `v0.20.2` 一致）。
+- 版本保护 `afd_plugin.compat.vllm.TARGET_VLLM_VERSION` 与 `pyproject.toml` 的
+  vllm extra 均已指向 `0.23.0`。
+

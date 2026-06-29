@@ -1,7 +1,7 @@
 # Phase 6 CUDA Graph Status
 
-本文档记录 AFD plugin 当前 CUDA graph 实现状态。目标版本仍固定为
-vLLM `v0.19.1`，不修改 `../vllm` 源码树；所有行为通过本插件 runtime、
+本文档记录 AFD plugin 当前 CUDA graph 实现状态。目标版本固定为
+vLLM `v0.23.0`，不修改 `../vllm` 源码树；所有行为通过本插件 runtime、
 connector、model wrapper、显式 class path 或受控 compat shim 提供。
 
 ## Current Status
