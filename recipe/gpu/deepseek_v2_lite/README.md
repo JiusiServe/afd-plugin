@@ -13,15 +13,21 @@ End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
 - DeepSeek-V2-Lite weights on disk. All scripts default to
   `/path/model_weights/DeepSeek-V2-Lite`; override with
   `MODEL_PATH=...` when launching.
+- A free TCP port `6269` on `127.0.0.1` for the AFD p2p connector, a free TCP port `7500` on `127.0.0.1` for the disaggregation proxy and
+  ports `18301`/`18302`/`18305` for the vLLM HTTP servers.
 
 ## Directory layout
 
 ```
 .
 ├── benchmark.sh                          # online serving benchmark client
-├── prefill_decode_disaggregation/        # prefill_decode_disaggregation, 1P1A1F topology
-│   ├── 1p1a1f_eager_dbo.sh
-│   └── 1p1a1f_graph_dbo.sh
+├── prefill_decode_disaggregation/        # prefill_decode_disaggregation, 2P1A1F topology
+│   ├── 2p1a1f_eager_dbo.sh
+│   ├── 2p1a1f_graph_dbo.sh
+│   ├── disagg_proxy_server.py
+│   └── lmcache/                          # LMCacheConnectorV1 config 
+│       ├── decode.yaml
+│       └── prefill.yaml
 └── prefill_decode_colocation/             # prefill_decode_colocation, 2A2F topology
     ├── 2a2f_eager_dbo_dp1tp2.sh
     ├── 2a2f_eager_dbo_dp2tp1.sh
@@ -48,7 +54,7 @@ The four variants cover the TP/DP cross product:
 ## Running
 
 Pick a script and execute it from the repository root. Each script
-backgrounds its workers and writes per-worker logs (`afd_prefill.log`, `attn.log`, `ffn.log`) in the current directory.
+backgrounds its workers and writes per-worker logs (`afd_prefill0.log`, `attn.log`, `ffn.log`) in the current directory.
 
 ### prefill_decode_colocation
 ```bash
