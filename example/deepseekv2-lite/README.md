@@ -1,17 +1,17 @@
 # DeepSeek-V2-Lite AFD Examples
 
 End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
-(Attention-FFN Disaggregation) plugin on vLLM `v0.19.1`.
+(Attention-FFN Disaggregation) plugin on vLLM `v0.23.0`.
 
 ## Prerequisites
 
 - 4 GPUs (A/H-class, tested against L20X).
-- vLLM `v0.19.1` and the `afd-plugin` package installed in the same
+- vLLM `v0.23.0` and the `afd-plugin` package installed in the same
   environment (see repository root `AGENTS.md`).
 - DeepSeek-V2-Lite weights on disk. All scripts default to
   `/path/model_weights/DeepSeek-V2-Lite`; override with
   `MODEL_PATH=...` when launching.
-- A free TCP port `6269` on `127.0.0.1` for the AFD p2p connector, and
+- A free TCP port `6269` on `127.0.0.1` for the AFD p2p connector, a free TCP port `7500` on `127.0.0.1` for the disaggregation proxy and
   ports `18301`/`18302`/`18305` for the vLLM HTTP servers.
 
 ## Directory layout
@@ -21,7 +21,11 @@ End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
 ├── benchmark.sh                          # online serving benchmark client
 ├── prefill_decode_disaggregation/        # prefill_decode_disaggregation, 2P1A1F topology
 │   ├── 2p1a1f_eager_dbo.sh
-│   └── 2p1a1f_graph_dbo.sh
+│   ├── 2p1a1f_graph_dbo.sh
+│   ├── disagg_proxy_server.py
+│   └── lmcache/                          # LMCacheConnectorV1 config 
+│       ├── decode.yaml
+│       └── prefill.yaml
 └── prefill_decode_multiplexing/          # prefill_decode_multiplexing, 2A2F topology
     ├── 2a2f_eager_dbo_dp1tp2.sh
     ├── 2a2f_eager_dbo_dp2tp1.sh
@@ -82,7 +86,7 @@ The four variants cover the TP/DP cross product:
 ## Running
 
 Pick a script and execute it from the repository root. Each script
-backgrounds its workers and writes per-worker logs (`afd_prefill.log`,
+backgrounds its workers and writes per-worker logs (`afd_prefill0.log`,
 `afd_prefill1.log`, `attn.log`, `ffn.log`) in the current directory.
 
 ```bash
@@ -90,9 +94,8 @@ export MODEL_PATH=/path/model_weights/DeepSeek-V2-Lite
 bash example/deepseekv2-lite/prefill_decode_multiplexing/2a2f_graph_dbo_dp1tp2.sh
 ```
 
-Wait for `attn.log` and `ffn.log` to print the
-`Application startup complete` line on port `18305` before sending
-traffic.
+Wait for `attn.log` (`afd_prefill0.log` and `afd_prefill1.log`) to print the
+`Application startup complete` line before sending traffic.
 
 ### Running the benchmark
 
@@ -106,8 +109,8 @@ bash example/deepseekv2-lite/benchmark.sh
 ```
 
 It fires 1024 random requests (1024 input tokens / 128 output tokens) at
-unlimited request rate with `--max-concurrency 32` against `127.0.0.1:18305`,
-and dumps the JSON result to `$RESULT_DIR/$RESULT_FILENAME`.
+unlimited request rate with `--max-concurrency 32` against `127.0.0.1:18300` (the proxy) and dumps the JSON result to `$RESULT_DIR/$RESULT_FILENAME`. To do benchmark for prefill/decode multiplexing, modify the port to `18305` (the decode tier) and the result filename accordingly.
+
 
 ## Common AFD configuration
 

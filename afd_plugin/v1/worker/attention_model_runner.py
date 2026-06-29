@@ -263,16 +263,22 @@ class AFDAttentionModelRunner(GPUModelRunner):
             int(values.get("num_tokens", 0)),
         ):
             should_ubatch = False
-            return (
-                cudagraph_mode,
-                batch_descriptor,
-                should_ubatch,
-                num_tokens_across_dp,
-                cudagraph_stats,
-            )
-        if should_ubatch:
-            return result
-        should_ubatch = self._should_ubatch_without_vllm_dp(*args, **kwargs)
+        elif not should_ubatch:
+            should_ubatch = self._should_ubatch_without_vllm_dp(*args, **kwargs)
+        # Disable ubatching when cudagraph padding would push the final ubatch
+        # split point to/past the real token count. ``split_attn_metadata``
+        # splits on the padded token count while the attention metadata only
+        # covers the real requests, so the trailing ubatch would start outside
+        # every real request and vLLM dies with "Token slice start outside of
+        # first request". This happens for small uniform-decode batches under a
+        # FULL_DECODE cudagraph (e.g. 2 real tokens padded to capture size 64,
+        # split at 32); fall back to the non-ubatched full-decode graph there.
+        if should_ubatch and not _ubatch_split_within_real_tokens(
+            self.vllm_config,
+            batch_descriptor,
+            values,
+        ):
+            should_ubatch = False
         return (
             cudagraph_mode,
             batch_descriptor,
@@ -542,6 +548,31 @@ def _batch_execution_values(
 def _has_enough_tokens_for_ubatches(vllm_config: object, num_tokens: int) -> bool:
     num_ubatches = int(vllm_config.parallel_config.num_ubatches)
     return int(num_tokens) >= max(num_ubatches, 1)
+
+
+def _ubatch_split_within_real_tokens(
+    vllm_config: object,
+    batch_descriptor: object,
+    values: dict[str, Any],
+) -> bool:
+    """Return True if a 2+-way ubatch split stays inside the real tokens.
+
+    vLLM splits ubatches on ``batch_descriptor.num_tokens`` (which is padded up
+    to the cudagraph capture size for a FULL_DECODE graph) but the attention
+    metadata only covers the real requests. If the last split point
+    ``padded // num_ubatches * (num_ubatches - 1)`` is at or beyond the real
+    token count, the trailing ubatch starts outside every real request and
+    ``split_attn_metadata`` asserts "Token slice start outside of first
+    request". Returning False there makes the caller skip ubatching.
+    """
+    num_ubatches = int(getattr(vllm_config.parallel_config, "num_ubatches", 1))
+    if num_ubatches < 2:
+        return True
+    real_tokens = int(values.get("num_tokens", 0) or 0)
+    padded = getattr(batch_descriptor, "num_tokens", None)
+    padded_tokens = int(padded) if padded is not None else real_tokens
+    last_split_point = (padded_tokens // num_ubatches) * (num_ubatches - 1)
+    return last_split_point < real_tokens
 
 
 def _forward_context_num_tokens(

@@ -5,7 +5,7 @@ RESULT_FILENAME=${RESULT_FILENAME:-2p1a1f_graph_dbo.json}
 mkdir -p "$RESULT_DIR"
 
 uv run vllm bench serve \
-    --host 127.0.0.1 --port 18305 \
+    --host 127.0.0.1 --port 18300 \
     --model "$MODEL_PATH" \
     --dataset-name random \
     --random-input-len 1024 \
