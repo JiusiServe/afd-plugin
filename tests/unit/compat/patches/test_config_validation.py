@@ -9,7 +9,7 @@ from afd_plugin.compat.patches.config_validation import apply_config_validation_
 
 def _install_fake_vllm_config(monkeypatch):
     vllm_module = types.ModuleType("vllm")
-    vllm_module.__version__ = "0.19.1"
+    vllm_module.__version__ = "0.23.0"
     config_package = types.ModuleType("vllm.config")
     config_module = types.ModuleType("vllm.config.vllm")
     engine_package = types.ModuleType("vllm.engine")

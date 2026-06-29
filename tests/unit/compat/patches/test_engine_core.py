@@ -55,7 +55,7 @@ def _install_fake_vllm_core(monkeypatch: pytest.MonkeyPatch):
     core_module.EngineCoreProc = EngineCoreProc
     core_module.DPEngineCoreProc = DPEngineCoreProc
     core_module.EngineShutdownState = _EngineShutdownState
-    core_module.VLLM_VERSION = "0.19.1"
+    core_module.VLLM_VERSION = "0.23.0"
     core_module.logger = logging.getLogger("fake-vllm-core")
 
     monkeypatch.setitem(sys.modules, "vllm", vllm_module)
