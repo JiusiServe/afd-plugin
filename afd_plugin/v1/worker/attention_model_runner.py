@@ -190,11 +190,16 @@ class AFDAttentionModelRunner(GPUModelRunner):
             device="cpu",
         )
         if dp_size > 1:
-            return DPMetadata.make(
+            dp_metadata = DPMetadata.make(
                 self.vllm_config.parallel_config,
                 int(num_tokens),
                 num_tokens_across_dp_cpu,
             )
+            # vLLM>=0.23's native DPMetadata no longer carries
+            # ``max_tokens_across_dp_cpu``; AFD relies on it downstream, so
+            # attach it to preserve the invariant.
+            dp_metadata.max_tokens_across_dp_cpu = torch.max(num_tokens_across_dp_cpu)
+            return dp_metadata
         max_tokens_across_dp_cpu = torch.max(num_tokens_across_dp_cpu)
         return AFDDPMetadata(
             num_tokens_across_dp_cpu=num_tokens_across_dp_cpu,

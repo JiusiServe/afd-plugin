@@ -108,6 +108,8 @@ def _parallel_config(**overrides):
     values = {
         "data_parallel_size": 1,
         "data_parallel_rank": 0,
+        "tensor_parallel_size": 1,
+        "is_moe_model": True,
         "use_ubatching": False,
         "num_ubatches": 1,
         "dbo_decode_token_threshold": 32,

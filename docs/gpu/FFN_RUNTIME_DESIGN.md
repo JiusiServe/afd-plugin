@@ -211,7 +211,7 @@ execute_ffn_step(dp_metadata_list=...)
 - `--worker-cls` 确实是 FFN worker
 - connector 名称合法
 - topology 字段存在且可解析
-- vLLM 版本为已验证的 `v0.19.1`
+- vLLM 版本为已验证的 `v0.23.0`
 
 `AFDFFNWorker.execute_model(...)` 被调用时应 fail fast，错误信息应说明：
 

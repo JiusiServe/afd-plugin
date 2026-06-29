@@ -7,7 +7,7 @@
 
 - Attention 侧继续使用原生 `vllm serve` 启动。
 - 通过 `--worker-cls` 显式接入 AFD Attention worker。
-- 不修改 vLLM `v0.19.1` 源码。
+- 不修改 vLLM `v0.23.0` 源码。
 - 尽量复用 vLLM v1 原生 `GPUWorker` 和 `GPUModelRunner` 的生命周期、调度、
   KV cache 管理、scheduler output 处理和模型执行流程。
 - AFD 相关行为尽量集中在 `AFDAttentionModelRunner`，worker 只负责注入
@@ -158,7 +158,7 @@ Attention 侧模型逻辑不 patch vLLM 原生 model module。通过 vLLM ModelR
 - `--worker-cls` 确实是 Attention worker
 - connector 名称合法
 - topology 字段存在且可解析
-- vLLM 版本为已验证的 `v0.19.1`
+- vLLM 版本为已验证的 `v0.23.0`
 
 如果 role 与 worker 不匹配，应 fail fast。
 

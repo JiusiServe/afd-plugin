@@ -16,9 +16,7 @@ from typing import Any
 import torch
 from vllm.config import get_current_vllm_config
 from vllm.forward_context import get_forward_context
-from vllm.model_executor.layers.fused_moe.shared_fused_moe import (
-    SharedFusedMoE,
-)
+from vllm.model_executor.layers.fused_moe import FusedMoE
 from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader,
     maybe_remap_kv_scale_name,
@@ -516,7 +514,7 @@ class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
         else:
             num_redundant_experts = self.num_redundant_experts
 
-        expert_params_mapping = SharedFusedMoE.make_expert_params_mapping(
+        expert_params_mapping = FusedMoE.make_expert_params_mapping(
             self,
             ckpt_gate_proj_name="gate_proj",
             ckpt_down_proj_name="down_proj",

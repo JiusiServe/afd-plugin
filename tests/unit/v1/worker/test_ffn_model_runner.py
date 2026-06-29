@@ -77,9 +77,24 @@ def _metadata_for_stage(stage_idx):
     )
 
 
+def _vllm_config():
+    # Mirror the attributes vLLM>=0.23's set_forward_context touches. DP is
+    # disabled (data_parallel_size=1) so the DPMetadata branch is skipped.
+    return SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            data_parallel_size=1,
+            is_moe_model=False,
+        ),
+        compilation_config=SimpleNamespace(
+            fast_moe_cold_start=False,
+            static_forward_context={},
+        ),
+    )
+
+
 def _runner_with_connector_and_model(model, *, num_layers=1):
     runner = object.__new__(GPUFFNModelRunner)
-    runner.vllm_config = SimpleNamespace()
+    runner.vllm_config = _vllm_config()
     runner.connector = _FakeConnector()
     runner.model = model
     runner.num_layers = num_layers

@@ -11,7 +11,7 @@
         &lt;mxCell id=&quot;title&quot; value=&quot;vLLM-AFD-Plugin&quot; style=&quot;text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=44;fontStyle=1;fontColor=#222222;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;390&quot; y=&quot;16&quot; width=&quot;500&quot; height=&quot;48&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;subtitle&quot; value=&quot;external plugin for vLLM v0.19.1&quot; style=&quot;text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=18;fontStyle=1;fontColor=#222222;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;subtitle&quot; value=&quot;external plugin for vLLM v0.23.0&quot; style=&quot;text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=18;fontStyle=1;fontColor=#222222;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;390&quot; y=&quot;66&quot; width=&quot;500&quot; height=&quot;24&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;entry-section&quot; value=&quot;&quot; style=&quot;rounded=0;whiteSpace=wrap;html=1;fillColor=#d2f1f4;strokeColor=#b9b9b9;strokeWidth=2;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
@@ -113,7 +113,7 @@
 &lt;/mxfile&gt;">
 <rect x="0" y="0" width="1280" height="790" fill="#f2f1ef" stroke="none" stroke-width="0"/>
 <g><text x="640" y="43" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="44" font-weight="700" fill="#111">vLLM-AFD-Plugin</text></g>
-<g><text x="640" y="80" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">external plugin for vLLM v0.19.1</text></g>
+<g><text x="640" y="80" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">external plugin for vLLM v0.23.0</text></g>
 <rect x="40" y="100" width="1200" height="116" fill="#d2f1f4" stroke="#b9b9b9" stroke-width="2"/>
 <g><text x="640" y="129" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="30" font-weight="600" fill="#111">EntryPoints</text></g>
 <rect x="265" y="157" width="255" height="46" fill="#d2f1f4" stroke="#b9b9b9" stroke-width="2"/>
