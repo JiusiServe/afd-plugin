@@ -90,7 +90,7 @@ def _load_cam_async_cust_opapi() -> None:
         ctypes.CDLL(str(cust_opapi), mode=ctypes.RTLD_GLOBAL)
     except OSError as exc:
         raise RuntimeError(
-            "AFDAsyncConnector failed to load CAM libcust_opapi.so "
+            "AFDAsyncConnector failed to load CAM libcam_opapi.so "
             f"from {cust_opapi}",
         ) from exc
 

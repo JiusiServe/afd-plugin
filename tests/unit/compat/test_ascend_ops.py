@@ -93,7 +93,7 @@ def test_cam_async_ops_paths_use_cann_cam_vendor():
         "CAM",
         "op_api",
         "lib",
-        "libcust_opapi.so",
+        "libcam_opapi.so",
     )
 
 
@@ -103,7 +103,7 @@ def test_cam_ops_loader_sets_cam_async_custom_opp_env(monkeypatch, tmp_path):
     )
     op_api_lib = vendor_path / "op_api" / "lib"
     op_api_lib.mkdir(parents=True)
-    cust_opapi = op_api_lib / "libcust_opapi.so"
+    cust_opapi = op_api_lib / "libcam_opapi.so"
     cust_opapi.touch()
     monkeypatch.setattr(ops, "get_cam_async_cann_vendor_path", lambda: vendor_path)
     monkeypatch.setattr(ops, "get_cam_async_op_api_lib_path", lambda: op_api_lib)
