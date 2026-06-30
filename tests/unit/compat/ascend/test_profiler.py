@@ -20,7 +20,6 @@ _ENV_NAMES = (
     "AFD_NPU_ATTENTION_PROFILER_REPEAT",
     "AFD_NPU_ATTENTION_PROFILER_SKIP_FIRST",
     "AFD_NPU_ATTENTION_PROFILER_DIR",
-    "AFD_NPU_ATTENTION_PROFILER_WITH_STACK",
     "AFD_NPU_FFN_PROFILER_ENABLE",
     "AFD_NPU_FFN_PROFILER_WAIT",
     "AFD_NPU_FFN_PROFILER_WARMUP",
@@ -28,7 +27,6 @@ _ENV_NAMES = (
     "AFD_NPU_FFN_PROFILER_REPEAT",
     "AFD_NPU_FFN_PROFILER_SKIP_FIRST",
     "AFD_NPU_FFN_PROFILER_DIR",
-    "AFD_NPU_FFN_PROFILER_WITH_STACK",
     "VLLM_ASCEND_MODEL_RUNNER_PROFILER_ENABLE",
     "VLLM_ASCEND_FFN_PROFILER_ENABLE",
     "VLLM_TORCH_PROFILER_DIR",
@@ -52,11 +50,9 @@ def test_npu_profiler_defaults_are_disabled():
     assert attention.repeat == 1
     assert attention.skip_first == 1500
     assert attention.trace_dir == "/tmp/profile/attn"
-    assert attention.with_stack is False
     assert ffn.enabled is False
     assert ffn.active == 20
     assert ffn.trace_dir == "/tmp/profile/ffn"
-    assert ffn.with_stack is False
 
 
 def test_npu_profiler_uses_only_plugin_owned_enable_env(monkeypatch):
@@ -93,7 +89,6 @@ def test_create_npu_profiler_uses_configured_schedule(monkeypatch):
     monkeypatch.setenv("AFD_NPU_FFN_PROFILER_REPEAT", "6")
     monkeypatch.setenv("AFD_NPU_FFN_PROFILER_SKIP_FIRST", "7")
     monkeypatch.setenv("AFD_NPU_FFN_PROFILER_DIR", "/tmp/afd-ffn")
-    monkeypatch.setenv("AFD_NPU_FFN_PROFILER_WITH_STACK", "true")
 
     profiler = create_afd_npu_profiler("ffn")
 

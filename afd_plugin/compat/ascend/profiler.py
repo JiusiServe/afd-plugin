@@ -41,7 +41,6 @@ class AFDNPUProfilerConfig:
     repeat: int
     skip_first: int
     trace_dir: str
-    with_stack: bool
 
 
 def afd_npu_profiler_config(role: AFDNPUProfilerRole) -> AFDNPUProfilerConfig:
@@ -59,7 +58,6 @@ def afd_npu_profiler_config(role: AFDNPUProfilerRole) -> AFDNPUProfilerConfig:
             default=_DEFAULT_SKIP_FIRST_STEPS,
         ),
         trace_dir=_env_dir(f"{prefix}_DIR", default=_DEFAULT_DIR[role]),
-        with_stack=_env_bool(f"{prefix}_WITH_STACK", default=False),
     )
 
 
@@ -81,7 +79,6 @@ def create_afd_npu_profiler(role: AFDNPUProfilerRole) -> Any | None:
         "AFD NPU %s profiler enabled. Traces will be saved to: %s; with_stack=%s",
         role,
         config.trace_dir,
-        config.with_stack,
     )
     profiler = torch_npu.profiler.profile(
         activities=[
