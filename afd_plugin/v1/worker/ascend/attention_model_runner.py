@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import copy
-import os
 from functools import partial
 from typing import Any
 
@@ -64,6 +63,17 @@ from afd_plugin.config import (
 from afd_plugin.connectors import AFDConnectorFactory, AFDDPMetadata, AFDMetadata
 from afd_plugin.model_executor.models import ASYNC_MOE_UBATCH_METADATA_KEY
 from afd_plugin.v1.worker.ascend.npu_ubatch_wrapper import AscendUBatchWrapper
+from afd_plugin.v1.worker.ascend.pcp_debug import (
+    clone_pcp_metadata,
+    debug_pcp_common_metadata_summary,
+    debug_pcp_manager_summary,
+    debug_pcp_metadata_enabled,
+    debug_pcp_metadata_summary,
+    debug_slice_summary,
+    debug_value_summary,
+    restore_pcp_manager_state,
+    snapshot_pcp_manager_state,
+)
 from afd_plugin.v1.worker.ascend.ubatch_utils import (
     check_enable_ubatch,
     create_request_boundary_ubatch_slices,
@@ -351,13 +361,13 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             original_token_stop = int(
                 full_num_scheduled_tokens[: ubatch_slice.request_slice.stop].sum(),
             )
-            original_common_summary = _debug_pcp_common_metadata_summary(
+            original_common_summary = debug_pcp_common_metadata_summary(
                 common_attn_metadata,
             )
             stage_num_reqs = ubatch_slice.request_slice.stop - (
                 ubatch_slice.request_slice.start
             )
-            manager_state = _snapshot_pcp_manager_state(self.pcp_manager)
+            manager_state = snapshot_pcp_manager_state(self.pcp_manager)
             try:
                 self.pcp_manager.init_batch_info(
                     original_num_scheduled_tokens,
@@ -370,7 +380,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 stage_query_lens = torch.from_numpy(stage_pcp_tokens).to(
                     self.query_lens.device,
                 )
-                if _debug_pcp_metadata_enabled():
+                if debug_pcp_metadata_enabled():
                     logger.warning(
                         "AFD PCP stage split input; kv_cache_gid=%s attn_gid=%s "
                         "ubid=%s request_slice=%s token_slice=%s "
@@ -379,13 +389,13 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                         kv_cache_gid,
                         attn_gid,
                         ubid,
-                        _debug_slice_summary(ubatch_slice.request_slice),
-                        _debug_slice_summary(ubatch_slice.token_slice),
+                        debug_slice_summary(ubatch_slice.request_slice),
+                        debug_slice_summary(ubatch_slice.token_slice),
                         stage_num_reqs,
-                        _debug_value_summary(original_num_scheduled_tokens),
-                        _debug_value_summary(stage_pcp_tokens),
+                        debug_value_summary(original_num_scheduled_tokens),
+                        debug_value_summary(stage_pcp_tokens),
                         original_common_summary,
-                        _debug_pcp_manager_summary(self.pcp_manager),
+                        debug_pcp_manager_summary(self.pcp_manager),
                     )
                 pcp_metadata, block_table_tensor = (
                     self.pcp_manager.generate_pcp_metadata(
@@ -412,10 +422,10 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                         ).clone()
                     )
                 common_attn_metadata.prefill_context_parallel_metadata = (
-                    _clone_pcp_metadata(pcp_metadata)
+                    clone_pcp_metadata(pcp_metadata)
                 )
                 common_attn_metadata.block_table_tensor = block_table_tensor
-                if _debug_pcp_metadata_enabled():
+                if debug_pcp_metadata_enabled():
                     logger.warning(
                         "AFD PCP stage split result; kv_cache_gid=%s attn_gid=%s "
                         "ubid=%s request_slice=%s token_slice=%s "
@@ -424,15 +434,15 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                         kv_cache_gid,
                         attn_gid,
                         ubid,
-                        _debug_slice_summary(ubatch_slice.request_slice),
-                        _debug_slice_summary(ubatch_slice.token_slice),
-                        _debug_pcp_metadata_summary(pcp_metadata),
-                        _debug_value_summary(block_table_tensor),
-                        _debug_pcp_common_metadata_summary(common_attn_metadata),
-                        _debug_pcp_manager_summary(self.pcp_manager),
+                        debug_slice_summary(ubatch_slice.request_slice),
+                        debug_slice_summary(ubatch_slice.token_slice),
+                        debug_pcp_metadata_summary(pcp_metadata),
+                        debug_value_summary(block_table_tensor),
+                        debug_pcp_common_metadata_summary(common_attn_metadata),
+                        debug_pcp_manager_summary(self.pcp_manager),
                     )
             finally:
-                _restore_pcp_manager_state(self.pcp_manager, manager_state)
+                restore_pcp_manager_state(self.pcp_manager, manager_state)
 
         def _get_block_table_and_slot_mapping(kv_cache_gid: int):
             assert num_reqs_padded is not None and num_tokens_padded is not None
@@ -1700,265 +1710,6 @@ def _normalize_metadata_ubatch_slices(
         int(num_tokens_padded),
         int(num_reqs_padded),
     )
-
-
-def _debug_pcp_metadata_enabled() -> bool:
-    return os.getenv("AFD_DEBUG_PCP_METADATA", "0").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
-def _debug_slice_summary(value: Any) -> tuple[Any, Any, Any]:
-    return (
-        getattr(value, "start", None),
-        getattr(value, "stop", None),
-        getattr(value, "step", None),
-    )
-
-
-def _debug_scalar(value: Any) -> Any:
-    try:
-        if hasattr(value, "item"):
-            return value.item()
-        return int(value)
-    except Exception:
-        return repr(value)
-
-
-def _debug_value_summary(value: Any, *, limit: int = 8) -> Any:
-    if value is None:
-        return None
-    summary: dict[str, Any] = {"type": type(value).__name__}
-    if hasattr(value, "shape"):
-        try:
-            summary["shape"] = tuple(int(dim) for dim in value.shape)
-        except Exception:
-            summary["shape"] = repr(value.shape)
-    if hasattr(value, "dtype"):
-        summary["dtype"] = str(value.dtype)
-    if hasattr(value, "device"):
-        summary["device"] = str(value.device)
-
-    try:
-        flat = value.detach().flatten().to("cpu") if hasattr(value, "detach") else None
-        if flat is not None:
-            total = int(flat.numel())
-            summary["numel"] = total
-            head_count = min(limit, total)
-            summary["head"] = [_debug_scalar(item) for item in flat[:head_count]]
-            if total > limit:
-                tail_count = min(limit, total)
-                summary["tail"] = [_debug_scalar(item) for item in flat[-tail_count:]]
-            return summary
-    except Exception as exc:
-        summary["values_error"] = repr(exc)
-        return summary
-
-    try:
-        if hasattr(value, "reshape") and hasattr(value, "size"):
-            flat = value.reshape(-1)
-            total = int(flat.size)
-            summary["size"] = total
-            head_count = min(limit, total)
-            summary["head"] = [_debug_scalar(item) for item in flat[:head_count]]
-            if total > limit:
-                tail_count = min(limit, total)
-                summary["tail"] = [_debug_scalar(item) for item in flat[-limit:]]
-            return summary
-    except Exception as exc:
-        summary["values_error"] = repr(exc)
-        return summary
-
-    if isinstance(value, list | tuple):
-        total = len(value)
-        summary["len"] = total
-        summary["head"] = [_debug_scalar(item) for item in value[:limit]]
-        if total > limit:
-            summary["tail"] = [_debug_scalar(item) for item in value[-limit:]]
-        return summary
-
-    if isinstance(value, dict):
-        summary["len"] = len(value)
-        summary["keys"] = list(value.keys())[:limit]
-        return summary
-
-    return value
-
-
-def _debug_pcp_metadata_summary(pcp_metadata: Any) -> Any:
-    if pcp_metadata is None:
-        return None
-    fields = (
-        "query_start_loc",
-        "query_start_loc_cpu",
-        "seq_lens",
-        "seq_lens_cpu",
-        "num_computed_tokens_cpu",
-        "q_head_idx_tensor",
-        "q_tail_idx_tensor",
-        "q_full_idx",
-        "pcp_allgather_restore_idx",
-        "pcp_unpad_mask",
-        "pcp_fa_query_idx",
-        "pcp_enter_fa_restore_idx",
-        "pcp_exit_fa_scatter_idx",
-        "num_computed_tokens_of_pcp_dcp",
-        "query_lens_pcp_full_cpu",
-        "num_actual_tokens_pcp_padded",
-        "actual_seq_lengths_q",
-        "actual_seq_lengths_kv",
-        "actual_seq_lengths_query",
-        "actual_seq_lengths_key",
-        "slot_mapping_cp",
-    )
-    summary: dict[str, Any] = {"type": type(pcp_metadata).__name__}
-    for name in fields:
-        if hasattr(pcp_metadata, name):
-            summary[name] = _debug_value_summary(getattr(pcp_metadata, name))
-    return summary
-
-
-def _debug_pcp_common_metadata_summary(common_attn_metadata: Any) -> dict[str, Any]:
-    fields = (
-        "num_reqs",
-        "num_actual_tokens",
-        "num_input_tokens",
-        "max_query_len",
-        "max_seq_len",
-        "query_start_loc",
-        "query_start_loc_cpu",
-        "seq_lens",
-        "seq_lens_cpu",
-        "num_computed_tokens_cpu",
-        "block_table_tensor",
-        "slot_mapping",
-    )
-    summary: dict[str, Any] = {"type": type(common_attn_metadata).__name__}
-    for name in fields:
-        if hasattr(common_attn_metadata, name):
-            summary[name] = _debug_value_summary(getattr(common_attn_metadata, name))
-    if hasattr(common_attn_metadata, "prefill_context_parallel_metadata"):
-        summary["prefill_context_parallel_metadata"] = _debug_pcp_metadata_summary(
-            common_attn_metadata.prefill_context_parallel_metadata,
-        )
-    return summary
-
-
-def _debug_pcp_manager_summary(pcp_manager: Any) -> dict[str, Any]:
-    fields = (
-        "num_reqs",
-        "num_decode_reqs",
-        "num_prefill_reqs",
-        "num_decode_tokens",
-        "num_scheduled_tokens_padded",
-        "pcp_padded_tokens_length",
-        "pcp_padded_tokens_fla",
-        "num_actual_tokens_pcp_padded",
-        "total_num_sampled_tokens_pcp",
-        "pcp_tokens",
-        "pcp_tokens_padded",
-        "num_pcp_pads_cpu",
-        "pcp_unpad_mask_cpu",
-        "max_num_tokens_across_pcp",
-        "total_num_scheduled_tokens",
-        "total_pcp_padding_tokens_fla",
-        "q_head_idx_tensor",
-        "q_tail_idx_tensor",
-        "q_full_idx",
-    )
-    summary: dict[str, Any] = {"type": type(pcp_manager).__name__}
-    for name in fields:
-        if hasattr(pcp_manager, name):
-            summary[name] = _debug_value_summary(getattr(pcp_manager, name))
-    if hasattr(pcp_manager, "query_lens_pcp_full"):
-        query_lens = pcp_manager.query_lens_pcp_full
-        summary["query_lens_pcp_full.cpu"] = _debug_value_summary(
-            getattr(query_lens, "cpu", None),
-        )
-        summary["query_lens_pcp_full.gpu"] = _debug_value_summary(
-            getattr(query_lens, "gpu", None),
-        )
-    if hasattr(pcp_manager, "pcp_allgather_restore_idx"):
-        restore_idx = pcp_manager.pcp_allgather_restore_idx
-        summary["pcp_allgather_restore_idx.np"] = _debug_value_summary(
-            getattr(restore_idx, "np", None),
-        )
-        summary["pcp_allgather_restore_idx.gpu"] = _debug_value_summary(
-            getattr(restore_idx, "gpu", None),
-        )
-    return summary
-
-
-def _snapshot_pcp_manager_state(pcp_manager: Any) -> dict[str, Any]:
-    state: dict[str, Any] = {}
-    for name in (
-        "num_reqs",
-        "num_decode_reqs",
-        "num_prefill_reqs",
-        "num_decode_tokens",
-        "num_scheduled_tokens_padded",
-        "pcp_padded_tokens_length",
-        "pcp_padded_tokens_fla",
-        "num_actual_tokens_pcp_padded",
-        "total_num_sampled_tokens_pcp",
-        "pcp_tokens_padded",
-        "max_num_tokens_across_pcp",
-        "total_num_scheduled_tokens",
-        "total_pcp_padding_tokens_fla",
-        "q_head_idx_tensor",
-        "q_tail_idx_tensor",
-        "q_full_idx",
-        "kv_idx_names",
-        "extra_long_seq_kwargs",
-        "long_seq_metadata",
-    ):
-        if hasattr(pcp_manager, name):
-            state[name] = copy.copy(getattr(pcp_manager, name))
-    for name in ("pcp_tokens", "num_pcp_pads_cpu", "pcp_unpad_mask_cpu"):
-        if hasattr(pcp_manager, name):
-            state[name] = getattr(pcp_manager, name).copy()
-    if hasattr(pcp_manager, "query_lens_pcp_full"):
-        state["query_lens_pcp_full_cpu"] = pcp_manager.query_lens_pcp_full.cpu.clone()
-    if hasattr(pcp_manager, "pcp_allgather_restore_idx"):
-        restore_idx = pcp_manager.pcp_allgather_restore_idx
-        state["pcp_allgather_restore_idx_np"] = restore_idx.np.copy()
-        state["pcp_allgather_restore_idx_gpu"] = restore_idx.gpu.clone()
-    return state
-
-
-def _restore_pcp_manager_state(pcp_manager: Any, state: dict[str, Any]) -> None:
-    for name, value in state.items():
-        if name == "query_lens_pcp_full_cpu":
-            pcp_manager.query_lens_pcp_full.cpu.copy_(value)
-            pcp_manager.query_lens_pcp_full.copy_to_gpu()
-            continue
-        if name == "pcp_allgather_restore_idx_np":
-            pcp_manager.pcp_allgather_restore_idx.np[...] = value
-            continue
-        if name == "pcp_allgather_restore_idx_gpu":
-            pcp_manager.pcp_allgather_restore_idx.gpu.copy_(value)
-            continue
-        if name in ("pcp_tokens", "num_pcp_pads_cpu", "pcp_unpad_mask_cpu"):
-            getattr(pcp_manager, name)[...] = value
-            continue
-        setattr(pcp_manager, name, value)
-
-
-def _clone_pcp_metadata(pcp_metadata: Any) -> Any:
-    if pcp_metadata is None:
-        return None
-    cloned = copy.copy(pcp_metadata)
-    for name, value in vars(pcp_metadata).items():
-        if hasattr(value, "clone"):
-            setattr(cloned, name, value.clone())
-        elif isinstance(value, list):
-            setattr(cloned, name, list(value))
-        else:
-            setattr(cloned, name, copy.copy(value))
-    return cloned
 
 
 def _replace_attention_metadata_ubatch_slices(
