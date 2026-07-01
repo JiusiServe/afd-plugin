@@ -107,11 +107,13 @@ def register_afd() -> None:
     try:
         from afd_plugin.compat.patches import (
             apply_config_validation_patch,
+            apply_omni_server_patch,
             apply_engine_core_patch,
         )
 
         apply_config_validation_patch()
         apply_engine_core_patch()
+        apply_omni_server_patch()
     except Exception:
         _logger.debug(
             "AFD plugin: compatibility patches could not be applied",
