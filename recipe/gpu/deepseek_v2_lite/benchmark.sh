@@ -11,7 +11,7 @@ uv run vllm bench serve \
     --random-input-len 1024 \
     --random-output-len 128 \
     --num-prompts 1024 \
-    --request-rate inf \
+    --request-rate 5 \
     --max-concurrency 32 \
     --result-dir "$RESULT_DIR" \
     --result-filename "$RESULT_FILENAME" \

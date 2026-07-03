@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""CAMP2P NPU connector for the first real NPU AFD data path."""
+"""CAMP2P NPU connector for AFD execution."""
 
 from __future__ import annotations
 
@@ -76,9 +76,9 @@ class _CAMP2PTopology:
 class CAMP2PAFDConnector(AFDConnectorBase):
     """HCCL/CAMP2P-backed Attention <-> FFN connector for NPU.
 
-    Phase 3B intentionally supports only eager single-stream execution.  ACL
-    graph, ubatching/DBO, communication multistream, quantization modes, and
-    compute-gate-on-attention remain rejected by NPU runtime validation.
+    The connector owns HCCL process-group setup and CAMP2P custom-op transfers.
+    Runtime validation rejects unsupported communication multistream, nonzero
+    quantization modes, and compute-gate-on-attention settings.
     """
 
     def __init__(
@@ -504,7 +504,7 @@ def build_camp2p_topology(
         raise ValueError("CAMP2P topology sizes must be positive")
     if attention_size < ffn_size:
         raise ValueError(
-            "CAMP2P Phase 3B requires attention_size >= ffn_size, got "
+            "CAMP2P requires attention_size >= ffn_size, got "
             f"{attention_size} < {ffn_size}",
         )
     if role_rank < 0:

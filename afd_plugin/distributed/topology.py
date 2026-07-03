@@ -11,7 +11,7 @@ from afd_plugin.config import AFDConfig
 
 @dataclass(frozen=True, slots=True)
 class AFDRankMapping:
-    """Rank mapping for the Phase 4 P2P connector.
+    """Rank mapping for the P2P connector.
 
     The P2P world always places FFN ranks first, followed by Attention ranks:
     ``[F0, F1, ..., A0, A1, ...]``. Each FFN rank owns one subgroup containing

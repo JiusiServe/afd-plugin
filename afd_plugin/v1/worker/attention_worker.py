@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""Attention-side worker for the Phase 2 MVP."""
+"""Attention-side worker for AFD GPU execution."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class AFDAttentionWorker(Worker):
         if self.use_v2_model_runner:
             raise RuntimeError(
                 "AFD Attention runtime currently supports only the vLLM v1 "
-                "GPUModelRunner; unset VLLM_USE_V2_MODEL_RUNNER for Phase 2",
+                "GPUModelRunner; unset VLLM_USE_V2_MODEL_RUNNER",
             )
 
         fail_if_unsupported_ubatching(self.vllm_config)

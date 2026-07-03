@@ -16,9 +16,9 @@ from vllm.forward_context import get_forward_context
 def get_afd_metadata_from_forward_context(forward_context: object | None = None) -> Any:
     """Return AFD metadata from vLLM ``ForwardContext.additional_kwargs``.
 
-    The out-of-tree plugin deliberately avoids adding ``ForwardContext`` fields
-    in Phase 2. Model wrappers should use this helper instead of reading a
-    patched ``forward_ctx.afd_metadata`` attribute.
+    Model wrappers use this helper so AFD metadata stays outside vLLM's
+    ``ForwardContext`` schema, with a compatibility fallback for patched
+    contexts.
     """
 
     if forward_context is None:
@@ -36,13 +36,12 @@ def use_afd_metadata_provider(provider: Any) -> Iterator[None]:
     """Install AFD metadata as vLLM creates a forward context.
 
     Native vLLM dummy runs call the model directly, bypassing
-    ``AFDAttentionModelRunner._model_forward()``.  The original in-tree AFD
-    implementation passed ``afd_metadata`` into ``set_forward_context()``
-    before the compiled model was entered.  Out-of-tree we cannot extend that
-    signature, so during dummy runs we temporarily wrap
-    ``create_forward_context()`` and mutate ``additional_kwargs`` immediately
-    after vLLM creates the context.  Model code can then do a simple metadata
-    read, which keeps ``torch.compile`` away from provider lookups.
+    ``AFDAttentionModelRunner._model_forward()``. Out-of-tree plugins cannot
+    extend the ``set_forward_context()`` signature, so during dummy runs we
+    temporarily wrap ``create_forward_context()`` and mutate
+    ``additional_kwargs`` immediately after vLLM creates the context. Model code
+    can then do a simple metadata read, which keeps ``torch.compile`` away from
+    provider lookups.
     """
 
     original_create = forward_context_module.create_forward_context

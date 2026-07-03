@@ -31,9 +31,9 @@ _ALIASES: Final[dict[str, str]] = {
 class AFDConfig:
     """Plugin-owned AFD configuration.
 
-    The original in-tree AFD config used ``afd_*`` field names. The plugin uses
-    shorter keys inside ``additional_config["afd"]`` while preserving read-only
-    compatibility aliases for code migrated from the original commit.
+    The plugin uses shorter keys inside ``additional_config["afd"]`` while
+    preserving read-only compatibility aliases for legacy ``afd_*`` field
+    names.
     """
 
     # Enables the AFD runtime for the selected worker role.
