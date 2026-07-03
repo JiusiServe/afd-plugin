@@ -250,7 +250,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         self,
         timeout_ms: int | None = None,
     ) -> tuple[dict[int, Any], bool, bool]:
-        del timeout_ms
         if self.p2p_pg is None:
             raise RuntimeError("CAMP2P metadata process group is not initialized")
         src = self.p2p_rank % self.min_size + self.ffn_size
@@ -350,7 +349,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         return hidden_states, None
 
     def recv_ffn_output(self, handle: Any = None, **kwargs: Any) -> Any:
-        del handle
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
         ref_tensor = kwargs.get("ref_tensor")
@@ -381,7 +379,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         ubatch_idx: int | None = None,
         **kwargs: Any,
     ) -> AFDRecvOutput:
-        del timeout_ms
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
@@ -481,7 +478,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         batch_size: int,
         layer_idx: int,
     ) -> CAMP2PAFDConnectorMetadata:
-        del layer_idx
         k = self.num_experts_per_tok
         moe_experts = self.num_routed_experts
         shared_experts = 0
@@ -626,7 +622,6 @@ def _resolve_num_ubatches(vllm_config: object) -> int:
 
 
 def _resolve_int_attr(vllm_config: object, name: str, *, default: int) -> int:
-    del default
     model_config = vllm_config.model_config
     hf_config = model_config.hf_config
     if name == "hidden_size":
@@ -768,21 +763,6 @@ def _register_camp2p_custom_ops() -> None:
         aiv_num: int,
         compute_gate: int,
     ) -> torch.Tensor:
-        del (
-            topk_weights,
-            topk_ids,
-            hccl_comm_name,
-            hccl_comm_name2,
-            hccl_comm_name3,
-            batch_size,
-            hidden_size,
-            topk,
-            ffn_size,
-            attn_size,
-            world_rank,
-            aiv_num,
-            compute_gate,
-        )
         return hidden_states
 
     def recv_ffn_output_impl(
@@ -839,18 +819,6 @@ def _register_camp2p_custom_ops() -> None:
         world_rank: int,
         aiv_num: int,
     ) -> torch.Tensor:
-        del (
-            hccl_comm_name,
-            hccl_comm_name2,
-            hccl_comm_name3,
-            batch_size,
-            hidden_size,
-            topk,
-            ffn_size,
-            attn_size,
-            world_rank,
-            aiv_num,
-        )
         return ref_tensor
 
     send_annotations = {

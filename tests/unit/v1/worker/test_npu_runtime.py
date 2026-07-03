@@ -98,7 +98,6 @@ class _FakeFFNConnector:
 
 class _FakeModel:
     def compute_ffn_output(self, hidden_states, layer_idx, **kwargs):
-        del kwargs
         return f"npu-ffn({hidden_states}, layer={layer_idx})"
 
 
@@ -559,7 +558,6 @@ def test_npu_ffn_runner_warmup_uses_eager_forward_without_graph(monkeypatch):
     capture_flags = []
 
     def fail_graph_capture_context(device):
-        del device
         raise AssertionError("warmup must not enter graph_capture context")
 
     monkeypatch.setattr(ffn_model_runner, "graph_capture", fail_graph_capture_context)

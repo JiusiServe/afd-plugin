@@ -118,7 +118,7 @@ class AFDConnectorBase(ABC):
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
     ) -> None:
-        del metadata, kwargs
+        return None
 
     def update_metadata(
         self,

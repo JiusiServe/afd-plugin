@@ -70,7 +70,6 @@ class AFDNPUFFNWorker(NPUWorker):
         return 0.0
 
     def execute_model(self, scheduler_output: Any) -> None:
-        del scheduler_output
         raise RuntimeError(
             "AFD NPU FFN workers are connector-driven; scheduler-driven "
             "execute_model() is not supported.",

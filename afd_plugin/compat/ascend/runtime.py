@@ -88,8 +88,7 @@ def fail_if_unsupported_npu_afd_features(vllm_config: object) -> None:
         )
 
     if not bool(vllm_config.model_config.enforce_eager):
-        cudagraph_mode_name = vllm_config.compilation_config.cudagraph_mode.name
-        del cudagraph_mode_name
+        _ = vllm_config.compilation_config.cudagraph_mode.name
 
 
 def mirror_afd_metadata_on_forward_context(

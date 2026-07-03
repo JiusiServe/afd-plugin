@@ -91,9 +91,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
     def load_model(self, *, load_dummy_weights: bool = False, **kwargs: Any) -> None:
         """Load the vLLM model."""
 
-        del load_dummy_weights
-        del kwargs
-
         model_loader = get_model_loader(self.load_config)
         with DeviceMemoryProfiler() as profiler:
             if self.model is None:
@@ -115,7 +112,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         return {}
 
     def initialize_kv_cache(self, kv_cache_config: Any) -> None:
-        del kv_cache_config
         return None
 
     def execute_model(
@@ -127,7 +123,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
     ) -> None:
-        del scheduler_output, intermediate_tensors
         step_afd_gpu_profiler(self.prof)
         if dp_metadata_list is None:
             raise RuntimeError("GPUFFNModelRunner requires dp_metadata_list")
@@ -295,19 +290,15 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         return int(cuda_graph_size)
 
     def sample_tokens(self, grammar_output: Any = None) -> Any:
-        del grammar_output
         raise RuntimeError("FFN runners do not sample tokens")
 
     def add_lora(self, lora_request: Any) -> bool:
-        del lora_request
         return False
 
     def remove_lora(self, lora_id: int) -> bool:
-        del lora_id
         return False
 
     def pin_lora(self, lora_id: int) -> bool:
-        del lora_id
         return False
 
     def list_loras(self) -> set[int]:

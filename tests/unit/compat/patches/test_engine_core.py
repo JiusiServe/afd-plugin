@@ -37,7 +37,6 @@ def _install_fake_vllm_core(monkeypatch: pytest.MonkeyPatch):
             executor_fail_callback=None,
             include_finished_set=False,
         ):
-            del executor_class, log_stats, executor_fail_callback, include_finished_set
             self.vllm_config = vllm_config
             self.original_init_called = True
 
@@ -116,7 +115,6 @@ def test_engine_core_patch_runs_and_stops_ffn_loop(monkeypatch):
 
     class Executor:
         def __init__(self, vllm_config):
-            del vllm_config
             self.calls = []
 
         def collective_rpc(self, method):

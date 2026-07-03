@@ -688,8 +688,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         profile_seq_lens: int | None = None,
         profile_cpp: bool = False,
     ) -> Any:
-        del skip_eplb
-
         assert (
             cudagraph_runtime_mode is None
             or cudagraph_runtime_mode.valid_runtime_modes()

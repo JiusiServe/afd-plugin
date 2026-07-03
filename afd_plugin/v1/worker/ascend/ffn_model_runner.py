@@ -86,7 +86,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         return {}
 
     def initialize_kv_cache(self, kv_cache_config: Any) -> None:
-        del kv_cache_config
         return None
 
     def profile_run(self) -> None:
@@ -127,7 +126,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
     ) -> None:
-        del scheduler_output, intermediate_tensors
         step_afd_npu_profiler(self.prof)
         if dp_metadata_list is None:
             raise RuntimeError("AFD NPU FFN is connector-driven")
@@ -404,7 +402,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         )
 
     def sample_tokens(self, grammar_output: Any = None) -> Any:
-        del grammar_output
         raise RuntimeError("AFD NPU FFN runners do not sample tokens")
 
     def shutdown(self) -> None:

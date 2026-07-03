@@ -233,8 +233,6 @@ class P2PAFDConnector(AFDConnectorBase):
         self,
         timeout_ms: int | None = None,
     ) -> tuple[dict[int, Any], bool, bool]:
-        del timeout_ms
-
         if self.p2p_pg is None:
             raise RuntimeError("P2P DP metadata process group is not initialized")
 
@@ -259,7 +257,6 @@ class P2PAFDConnector(AFDConnectorBase):
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
     ) -> None:
-        del kwargs
         if not _torch_is_compiling() and not metadata.validate_tensor_shape(
             tuple(hidden_states.shape),
         ):
@@ -275,7 +272,6 @@ class P2PAFDConnector(AFDConnectorBase):
         )
 
     def recv_ffn_output(self, handle: Any = None, **kwargs: Any) -> Any:
-        del handle
         ref_tensor = kwargs.get("ref_tensor")
         ubatch_idx = kwargs.get("ubatch_idx")
         if ubatch_idx is None:
@@ -295,8 +291,6 @@ class P2PAFDConnector(AFDConnectorBase):
         ubatch_idx: int | None = None,
         **kwargs: Any,
     ) -> AFDRecvOutput:
-        del timeout_ms, kwargs
-
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
         tensor_metadata = self._tensor_metadata_list[ubatch_idx]
         hidden_states_list: list[Any] = []
@@ -337,7 +331,6 @@ class P2PAFDConnector(AFDConnectorBase):
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
     ) -> None:
-        del kwargs
         if not _torch_is_compiling() and not metadata.validate_tensor_shape(
             tuple(ffn_output.shape),
         ):
@@ -561,7 +554,6 @@ def _register_p2p_custom_ops() -> None:
         dst: int,
         comm_id: int,
     ) -> None:
-        del tensor, dst, comm_id
         return None
 
     def afd_p2p_recv_impl(out: torch.Tensor, src: int, comm_id: int) -> None:
@@ -575,7 +567,6 @@ def _register_p2p_custom_ops() -> None:
         )
 
     def afd_p2p_recv_fake(out: torch.Tensor, src: int, comm_id: int) -> None:
-        del out, src, comm_id
         return None
 
     def register_one(**kwargs: Any) -> None:
