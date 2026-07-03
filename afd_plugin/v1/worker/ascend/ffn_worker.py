@@ -70,7 +70,6 @@ class AFDNPUFFNWorker(NPUWorker):
         return 0.0
 
     def execute_model(self, scheduler_output: Any) -> None:
-        del scheduler_output
         raise RuntimeError(
             "AFD NPU FFN workers are connector-driven; scheduler-driven "
             "execute_model() is not supported.",
@@ -108,7 +107,8 @@ class AFDNPUFFNWorker(NPUWorker):
         if event is None:
             return
 
-        _set_npu_device_if_possible(self.device)
+        if self.device.type == "npu":
+            torch.npu.set_device(self.device)
         while not event.is_set():
             try:
                 (
@@ -124,7 +124,8 @@ class AFDNPUFFNWorker(NPUWorker):
                 is_graph_capturing=is_attn_graph_capturing,
                 is_warmup=is_warmup,
             )
-            _synchronize_npu_if_possible(self.device)
+            if self.device.type == "npu":
+                torch.npu.synchronize()
 
     def raise_ffn_loop_error_if_any(self) -> None:
         error = self._ffn_loop_error
@@ -149,18 +150,6 @@ class AFDNPUFFNWorker(NPUWorker):
     def shutdown(self) -> None:
         self.stop_ffn_server_loop()
         super().shutdown()
-
-
-def _set_npu_device_if_possible(device: object) -> None:
-    if device.type != "npu":
-        return
-    torch.npu.set_device(device)
-
-
-def _synchronize_npu_if_possible(device: object) -> None:
-    if device.type != "npu":
-        return
-    torch.npu.synchronize()
 
 
 __all__ = ["AFDNPUFFNWorker"]

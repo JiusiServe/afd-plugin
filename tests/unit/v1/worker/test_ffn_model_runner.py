@@ -10,6 +10,7 @@ pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
 from afd_plugin.connectors import AFDConnectorMetadata, AFDRecvOutput
+from afd_plugin.v1.worker.cuda_graph import make_ffn_graph_key
 from afd_plugin.v1.worker.ffn_model_runner import (
     GPUFFNModelRunner,
     _set_moe_layer_index,
@@ -174,7 +175,7 @@ def test_ffn_runner_requires_dp_metadata_list():
 
 
 def test_ffn_runner_makes_original_style_graph_key():
-    key = GPUFFNModelRunner._make_graph_key(
+    key = make_ffn_graph_key(
         {
             1: _FakeDPMetadata([5, 7]),
             0: _FakeDPMetadata([2, 3]),
@@ -190,7 +191,7 @@ def test_ffn_runner_replays_cuda_graph_when_key_exists():
     graph = _FakeGraph()
     dp_metadata = {0: _FakeDPMetadata([1])}
     runner._cuda_graphs = {
-        GPUFFNModelRunner._make_graph_key(dp_metadata): {"graph": graph},
+        make_ffn_graph_key(dp_metadata): {"graph": graph},
     }
 
     runner.execute_model(dp_metadata_list=dp_metadata)

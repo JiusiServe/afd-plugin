@@ -433,7 +433,6 @@ class AFDDeepseekV2Model(torch.nn.Module):
         layer_idx: int,
         **kwargs: Any,
     ) -> torch.Tensor:
-        del kwargs
         output = self.layers[layer_idx].compute_ffn_output(hidden_states)
         return output
 

@@ -41,9 +41,7 @@ class AFDAttentionWorker(Worker):
         fail_if_unsupported_ubatching(self.vllm_config)
 
         super().init_device()
-        native_model_runner = self.model_runner
         self.model_runner = AFDAttentionModelRunner(self.vllm_config, self.device)
-        del native_model_runner
 
         torch.accelerator.empty_cache()
 

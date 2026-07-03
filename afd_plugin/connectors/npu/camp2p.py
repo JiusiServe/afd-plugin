@@ -90,7 +90,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
     ) -> None:
         super().__init__(rank, local_rank, vllm_config, afd_config)
         self._initialized = False
-        self._role_rank = _resolve_role_rank(vllm_config, afd_config)
+        self._role_rank = int(afd_config.afd_role_rank)
         self.topology = build_camp2p_topology(afd_config, self._role_rank)
         self.world_rank = self.topology.world_rank
         self.p2p_rank = self.topology.p2p_rank
@@ -103,7 +103,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         self.is_graph_capturing = False
         self.is_warmup = False
         self.scheduler_config = vllm_config.scheduler_config
-        self.max_num_reqs = _resolve_max_num_reqs(vllm_config)
+        self.max_num_reqs = int(vllm_config.scheduler_config.max_num_seqs)
         self.afd_pg_list: list[Any] = []
         self.afd_pg: Any | None = None
         self.p2p_pg: Any | None = None
@@ -114,7 +114,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         self.hccl_comm_name1 = ""
         self.hccl_comm_name_list: list[str] = []
         self.aiv_num = _resolve_aiv_num(afd_config)
-        self.hidden_size = _resolve_hidden_size(vllm_config)
+        self.hidden_size = _resolve_int_attr(vllm_config, "hidden_size", default=1)
         self.num_experts_per_tok = _resolve_int_attr(
             vllm_config,
             "num_experts_per_tok",
@@ -159,7 +159,10 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                 timeout=timedelta(minutes=30),
             )
             self.afd_pg_list.append(afd_pg)
-            self.hccl_comm_name_list.append(_hccl_comm_name(afd_pg, self.world_rank))
+            backend = afd_pg._get_backend(torch.device("npu"))
+            self.hccl_comm_name_list.append(
+                str(backend.get_hccl_comm_name(int(self.world_rank))),
+            )
         self.afd_pg = self.afd_pg_list[0]
         self.hccl_comm_name = self.hccl_comm_name_list[0]
         self.hccl_comm_name2 = (
@@ -176,7 +179,10 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                 group_name="afd_moe",
                 timeout=timedelta(minutes=30),
             )
-            self.hccl_comm_name1 = _hccl_comm_name(self.ffn_pg, self.world_rank)
+            backend = self.ffn_pg._get_backend(torch.device("npu"))
+            self.hccl_comm_name1 = str(
+                backend.get_hccl_comm_name(int(self.world_rank)),
+            )
 
         if self.topology.participates_in_p2p_group:
             self.p2p_pg = init_afd_process_group(
@@ -244,7 +250,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         self,
         timeout_ms: int | None = None,
     ) -> tuple[dict[int, Any], bool, bool]:
-        del timeout_ms
         if self.p2p_pg is None:
             raise RuntimeError("CAMP2P metadata process group is not initialized")
         src = self.p2p_rank % self.min_size + self.ffn_size
@@ -311,7 +316,8 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
     ) -> Any:
-        self._require_initialized()
+        if not self._initialized:
+            raise RuntimeError("CAMP2P connector is not initialized")
         if not _is_torch_compiling() and not metadata.validate_tensor_shape(
             tuple(hidden_states.shape),
         ):
@@ -322,7 +328,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         connector_data = self._metadata_data_or_default(metadata, hidden_states)
         topk_ids = kwargs.get("topk_ids")
         topk_weights = kwargs.get("topk_weights")
-        torch = _torch()
         ubatch_idx = int(metadata.stage_idx)
         _set_forward_context_connector_data(connector_data, ubatch_idx=ubatch_idx)
         hidden_states = torch.ops.vllm.afd_camp2p_send_attn_output(
@@ -344,17 +349,16 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         return hidden_states, None
 
     def recv_ffn_output(self, handle: Any = None, **kwargs: Any) -> Any:
-        del handle
-        self._require_initialized()
+        if not self._initialized:
+            raise RuntimeError("CAMP2P connector is not initialized")
         ref_tensor = kwargs.get("ref_tensor")
         if ref_tensor is None:
             raise RuntimeError("CAMP2P recv_ffn_output requires ref_tensor")
         connector_data = _get_forward_context_connector_data()
         if connector_data is None:
             raise RuntimeError("CAMP2P Attention side is missing connector data")
-        torch = _torch()
         ubatch_idx = int(kwargs.get("ubatch_idx", 0) or 0)
-        _set_forward_context_ubatch_idx(ubatch_idx)
+        get_forward_context().ubatch_idx = ubatch_idx
         return torch.ops.vllm.afd_camp2p_recv_ffn_output(
             ref_tensor,
             self.hccl_comm_name,
@@ -375,8 +379,8 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         ubatch_idx: int | None = None,
         **kwargs: Any,
     ) -> AFDRecvOutput:
-        del timeout_ms
-        self._require_initialized()
+        if not self._initialized:
+            raise RuntimeError("CAMP2P connector is not initialized")
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
         metadata = kwargs.get("metadata")
         if metadata is None:
@@ -385,8 +389,13 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                 layer_idx=int(kwargs.get("layer_idx", 0)),
             )
         connector_data = _ensure_connector_data(metadata)
-        group_ep = self._group_ep(ubatch_idx)
-        outputs = _afd_ascend_ops().a2e(
+        group_ep = _get_group_ep(
+            ubatch_idx,
+            self.hccl_comm_name,
+            self.hccl_comm_name2,
+            self.hccl_comm_name3,
+        )
+        outputs = torch.ops.afd_ascend.a2e(
             _empty_npu_tensor(dtype_name="bfloat16"),
             _empty_npu_tensor(dtype_name="int32"),
             _empty_npu_tensor(dtype_name="float32"),
@@ -421,13 +430,19 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
     ) -> None:
-        self._require_initialized()
+        if not self._initialized:
+            raise RuntimeError("CAMP2P connector is not initialized")
         connector_data = _ensure_connector_data(metadata)
         if connector_data.atten_batch_size is None:
             raise RuntimeError("CAMP2P FFN side is missing A2E atten_batch_size")
         ubatch_idx = int(kwargs.get("ubatch_idx", metadata.stage_idx) or 0)
-        group_ep = self._group_ep(ubatch_idx)
-        _afd_ascend_ops().e2a(
+        group_ep = _get_group_ep(
+            ubatch_idx,
+            self.hccl_comm_name,
+            self.hccl_comm_name2,
+            self.hccl_comm_name3,
+        )
+        torch.ops.afd_ascend.e2a(
             ffn_output,
             connector_data.atten_batch_size,
             connector_data.batch_size,
@@ -463,7 +478,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         batch_size: int,
         layer_idx: int,
     ) -> CAMP2PAFDConnectorMetadata:
-        del layer_idx
         k = self.num_experts_per_tok
         moe_experts = self.num_routed_experts
         shared_experts = 0
@@ -480,18 +494,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             h=self.hidden_size,
             k=max(1, int(k)),
         )
-
-    def _group_ep(self, ubatch_idx: int) -> str:
-        return _get_group_ep(
-            ubatch_idx,
-            self.hccl_comm_name,
-            self.hccl_comm_name2,
-            self.hccl_comm_name3,
-        )
-
-    def _require_initialized(self) -> None:
-        if not self._initialized:
-            raise RuntimeError("CAMP2P connector is not initialized")
 
 
 def build_camp2p_topology(
@@ -551,7 +553,6 @@ def build_camp2p_topology(
 
 
 def _send_object(obj: Any, *, dst: int, group: Any) -> None:
-    torch = _torch()
     object_bytes = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
     object_tensor = torch.frombuffer(bytearray(object_bytes), dtype=torch.uint8)
     size_tensor = torch.tensor([object_tensor.numel()], dtype=torch.long, device="cpu")
@@ -560,7 +561,6 @@ def _send_object(obj: Any, *, dst: int, group: Any) -> None:
 
 
 def _recv_object(*, src: int, group: Any) -> Any:
-    torch = _torch()
     size_tensor = torch.empty(1, dtype=torch.long, device="cpu")
     rank_size = torch.distributed.recv(size_tensor, src=src, group=group)
     object_tensor = torch.empty(
@@ -605,25 +605,11 @@ def _num_tokens_for_ffn_rank(
     return max(1, int(fallback))
 
 
-def _resolve_role_rank(vllm_config: object, afd_config: AFDConfig) -> int:
-    del vllm_config
-    return int(afd_config.afd_role_rank)
-
-
 def _resolve_aiv_num(afd_config: AFDConfig) -> int:
     extra = afd_config.extra_config
     key = "attn_core_num" if afd_config.role == "attention" else "ffn_core_num"
     value = extra.get(key, extra.get("core_num", 8))
     return max(1, int(value or 8))
-
-
-def _resolve_hidden_size(vllm_config: object) -> int:
-    return _resolve_int_attr(vllm_config, "hidden_size", default=1)
-
-
-def _resolve_max_num_reqs(vllm_config: object) -> int:
-    scheduler_config = vllm_config.scheduler_config
-    return int(scheduler_config.max_num_seqs)
 
 
 def _resolve_num_ubatches(vllm_config: object) -> int:
@@ -637,7 +623,6 @@ def _resolve_num_ubatches(vllm_config: object) -> int:
 
 
 def _resolve_int_attr(vllm_config: object, name: str, *, default: int) -> int:
-    del default
     model_config = vllm_config.model_config
     hf_config = model_config.hf_config
     if name == "hidden_size":
@@ -698,10 +683,6 @@ def _set_forward_context_connector_data(
         forward_context.ubatch_idx = int(ubatch_idx)
 
 
-def _set_forward_context_ubatch_idx(ubatch_idx: int) -> None:
-    get_forward_context().ubatch_idx = int(ubatch_idx)
-
-
 def _get_forward_context_connector_data() -> CAMP2PAFDConnectorMetadata | None:
     data = getattr(get_forward_context(), "cam_afdconnector_data", None)
     if data is None:
@@ -709,10 +690,6 @@ def _get_forward_context_connector_data() -> CAMP2PAFDConnectorMetadata | None:
     if not isinstance(data, CAMP2PAFDConnectorMetadata):
         raise TypeError("forward_context.cam_afdconnector_data has wrong type")
     return data
-
-
-def _forward_context_ubatch_idx() -> int:
-    return int(getattr(get_forward_context(), "ubatch_idx", 0))
 
 
 def _register_camp2p_custom_ops() -> None:
@@ -744,14 +721,14 @@ def _register_camp2p_custom_ops() -> None:
         connector_data.k = int(topk)
         connector_data.aiv_num = int(aiv_num)
         group_ep = _get_group_ep(
-            _forward_context_ubatch_idx(),
+            int(getattr(get_forward_context(), "ubatch_idx", 0)),
             hccl_comm_name,
             hccl_comm_name2,
             hccl_comm_name3,
         )
         connector_data.group_ep = group_ep
 
-        outputs = _afd_ascend_ops().a2e(
+        outputs = torch.ops.afd_ascend.a2e(
             hidden_states,
             topk_ids,
             topk_weights,
@@ -787,21 +764,6 @@ def _register_camp2p_custom_ops() -> None:
         aiv_num: int,
         compute_gate: int,
     ) -> torch.Tensor:
-        del (
-            topk_weights,
-            topk_ids,
-            hccl_comm_name,
-            hccl_comm_name2,
-            hccl_comm_name3,
-            batch_size,
-            hidden_size,
-            topk,
-            ffn_size,
-            attn_size,
-            world_rank,
-            aiv_num,
-            compute_gate,
-        )
         return hidden_states
 
     def recv_ffn_output_impl(
@@ -825,13 +787,13 @@ def _register_camp2p_custom_ops() -> None:
         connector_data.k = int(topk)
         connector_data.aiv_num = int(aiv_num)
         group_ep = _get_group_ep(
-            _forward_context_ubatch_idx(),
+            int(getattr(get_forward_context(), "ubatch_idx", 0)),
             hccl_comm_name,
             hccl_comm_name2,
             hccl_comm_name3,
         )
         connector_data.group_ep = group_ep
-        output = _afd_ascend_ops().e2a(
+        output = torch.ops.afd_ascend.e2a(
             ref_tensor,
             connector_data.atten_batch_size,
             connector_data.batch_size,
@@ -858,18 +820,6 @@ def _register_camp2p_custom_ops() -> None:
         world_rank: int,
         aiv_num: int,
     ) -> torch.Tensor:
-        del (
-            hccl_comm_name,
-            hccl_comm_name2,
-            hccl_comm_name3,
-            batch_size,
-            hidden_size,
-            topk,
-            ffn_size,
-            attn_size,
-            world_rank,
-            aiv_num,
-        )
         return ref_tensor
 
     send_annotations = {
@@ -935,7 +885,6 @@ def _register_camp2p_custom_ops() -> None:
 
 
 def _is_torch_compiling() -> bool:
-    torch = _torch()
     compiler = getattr(torch, "compiler", None)
     if compiler is not None and hasattr(compiler, "is_compiling"):
         return bool(compiler.is_compiling())
@@ -944,28 +893,12 @@ def _is_torch_compiling() -> bool:
 
 
 def _empty_npu_tensor(*, dtype_name: str) -> Any:
-    torch = _torch()
     dtype = {
         "bfloat16": torch.bfloat16,
         "float32": torch.float32,
         "int32": torch.int32,
     }[dtype_name]
     return torch.tensor([], dtype=dtype, device="npu")
-
-
-def _afd_ascend_ops() -> Any:
-    torch = _torch()
-    return torch.ops.afd_ascend
-
-
-def _hccl_comm_name(group: Any, rank: int) -> str:
-    torch = _torch()
-    backend = group._get_backend(torch.device("npu"))
-    return str(backend.get_hccl_comm_name(int(rank)))
-
-
-def _torch() -> Any:
-    return torch
 
 
 __all__ = [

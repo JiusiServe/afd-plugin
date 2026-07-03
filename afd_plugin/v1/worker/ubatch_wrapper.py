@@ -33,7 +33,7 @@ class AFDUBatchWrapper(UBatchWrapper):
 
     @staticmethod
     def _create_sm_control_context(vllm_config: object) -> object:
-        if _is_afd_enabled(vllm_config):
+        if parse_afd_config(vllm_config).enabled:
             return nullcontext()
         return UBatchWrapper._create_sm_control_context(vllm_config)
 
@@ -67,7 +67,7 @@ class AFDUBatchWrapper(UBatchWrapper):
                 positions=kwargs["positions"],
                 inputs_embeds=kwargs["inputs_embeds"],
                 intermediate_tensors=kwargs["intermediate_tensors"],
-                compute_stream=_current_cuda_stream(),
+                compute_stream=torch.cuda.current_stream(),
                 dp_metadata=dp_metadata,
                 batch_descriptor=forward_context.batch_descriptor,
                 cudagraph_runtime_mode=CUDAGraphMode.NONE,
@@ -92,7 +92,7 @@ class AFDUBatchWrapper(UBatchWrapper):
             positions=kwargs["positions"],
             inputs_embeds=kwargs["inputs_embeds"],
             intermediate_tensors=kwargs["intermediate_tensors"],
-            compute_stream=_current_cuda_stream(),
+            compute_stream=torch.cuda.current_stream(),
             dp_metadata=dp_metadata,
             batch_descriptor=forward_context.batch_descriptor,
             cudagraph_runtime_mode=CUDAGraphMode.NONE,
@@ -271,8 +271,16 @@ def build_ubatch_dp_metadata_list(
     if dp_size <= 1:
         return [
             AFDDPMetadata(
-                num_tokens_across_dp_cpu=_cpu_int_tensor([ubatch_slice.num_tokens]),
-                max_tokens_across_dp_cpu=_cpu_int_tensor([ubatch_slice.num_tokens]),
+                num_tokens_across_dp_cpu=torch.tensor(
+                    [ubatch_slice.num_tokens],
+                    dtype=torch.int32,
+                    device="cpu",
+                ),
+                max_tokens_across_dp_cpu=torch.tensor(
+                    [ubatch_slice.num_tokens],
+                    dtype=torch.int32,
+                    device="cpu",
+                ),
             )
             for ubatch_slice in ubatch_slices
         ]
@@ -303,18 +311,6 @@ def _resolve_ubatch_unpadded_tokens(
     if ubatch_idx < len(unpadded_lens):
         return int(unpadded_lens[ubatch_idx])
     return int(ubatch_slice.num_tokens)
-
-
-def _cpu_int_tensor(values: list[int]) -> Any:
-    return torch.tensor(values, dtype=torch.int32, device="cpu")
-
-
-def _current_cuda_stream() -> Any:
-    return torch.cuda.current_stream()
-
-
-def _is_afd_enabled(vllm_config: object) -> bool:
-    return parse_afd_config(vllm_config).enabled
 
 
 __all__ = [

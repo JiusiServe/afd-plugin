@@ -17,8 +17,6 @@ def maybe_apply_dbo_yield(
     role: str,
 ) -> Any:
     """Yield to the peer ubatch thread when vLLM DBO is active."""
-    del role
-
     try:
         register_dbo_yield_custom_op()
     except ImportError:

@@ -411,7 +411,6 @@ def start_process(
     command: list[str],
     env: dict[str, str],
 ) -> subprocess.Popen[str]:
-    del name
     return subprocess.Popen(
         command,
         cwd=REPO_ROOT,

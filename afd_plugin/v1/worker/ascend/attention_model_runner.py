@@ -513,7 +513,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         previous = self._afd_is_graph_capturing
         self._afd_is_graph_capturing = bool(is_graph_capturing)
         if not (
-            _is_npu_ubatching_enabled(self.vllm_config)
+            bool(self.vllm_config.parallel_config.use_ubatching)
             and allow_microbatching
             and not is_profile
         ):
@@ -688,8 +688,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         profile_seq_lens: int | None = None,
         profile_cpp: bool = False,
     ) -> Any:
-        del skip_eplb
-
         assert (
             cudagraph_runtime_mode is None
             or cudagraph_runtime_mode.valid_runtime_modes()
@@ -1076,7 +1074,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
     def load_model(self, *args: Any, **kwargs: Any) -> Any:
         result = super().load_model(*args, **kwargs)
-        if _is_npu_ubatching_enabled(self.vllm_config):
+        if bool(self.vllm_config.parallel_config.use_ubatching):
             self._install_ascend_ubatch_wrapper()
         return result
 
@@ -1104,7 +1102,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
     def initialize_attn_backend(self, *args: Any, **kwargs: Any) -> Any:
         result = super().initialize_attn_backend(*args, **kwargs)
-        if _is_npu_ubatching_enabled(self.vllm_config):
+        if bool(self.vllm_config.parallel_config.use_ubatching):
             self._ensure_two_metadata_builders()
         return result
 
@@ -1232,9 +1230,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         num_tokens_padded_across_dp = packed_tensor[1, :]
         max_tokens_across_dp = int(num_tokens_padded_across_dp.max().item())
         min_tokens_across_dp = int(num_tokens_unpadded_across_dp.min().item())
-        synced_cudagraph_mode = CUDAGraphMode(
-            _post_process_cudagraph_mode(packed_tensor)
-        )
+        synced_cudagraph_mode = CUDAGraphMode(int(packed_tensor[-1, :].min().item()))
 
         moe_comm_type = select_moe_comm_method(
             max_tokens_across_dp,
@@ -1584,14 +1580,6 @@ def _model_forward_values(
         values.get("inputs_embeds"),
         model_kwargs,
     )
-
-
-def _is_npu_ubatching_enabled(vllm_config: object) -> bool:
-    return bool(vllm_config.parallel_config.use_ubatching)
-
-
-def _post_process_cudagraph_mode(tensor: Any) -> int:
-    return int(tensor[-1, :].min().item())
 
 
 _ATTENTION_METADATA_ARG_NAMES = [

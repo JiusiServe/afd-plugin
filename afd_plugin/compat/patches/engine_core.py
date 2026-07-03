@@ -170,7 +170,7 @@ class _AFDFFNNoopScheduler:
     connector = None
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        del args, kwargs
+        pass
 
     def get_kv_connector(self) -> None:
         return None
@@ -188,7 +188,6 @@ class _AFDFFNNoopScheduler:
         return 0
 
     def finish_requests(self, *args: Any, **kwargs: Any) -> list[Any]:
-        del args, kwargs
         return []
 
 

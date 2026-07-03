@@ -91,9 +91,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
     def load_model(self, *, load_dummy_weights: bool = False, **kwargs: Any) -> None:
         """Load the vLLM model."""
 
-        del load_dummy_weights
-        del kwargs
-
         model_loader = get_model_loader(self.load_config)
         with DeviceMemoryProfiler() as profiler:
             if self.model is None:
@@ -109,13 +106,12 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         self.model_memory_usage = profiler.consumed_memory
 
     def profile_run(self) -> None:
-        return None
+        pass
 
     def get_kv_cache_spec(self) -> dict[str, Any]:
         return {}
 
     def initialize_kv_cache(self, kv_cache_config: Any) -> None:
-        del kv_cache_config
         return None
 
     def execute_model(
@@ -127,11 +123,10 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
     ) -> None:
-        del scheduler_output, intermediate_tensors
         step_afd_gpu_profiler(self.prof)
         if dp_metadata_list is None:
             raise RuntimeError("GPUFFNModelRunner requires dp_metadata_list")
-        graph_key = self._make_graph_key(dp_metadata_list)
+        graph_key = make_ffn_graph_key(dp_metadata_list)
         cuda_graph_info = self._cuda_graphs.get(graph_key)
         run_mode = graph_run_mode(
             is_warmup=is_warmup,
@@ -149,10 +144,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         )
         return None
 
-    @staticmethod
-    def _make_graph_key(dp_metadata_list: dict[int, Any]) -> tuple:
-        return make_ffn_graph_key(dp_metadata_list)
-
     def _ffn_forward(
         self,
         *,
@@ -161,7 +152,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         update_connector_state: bool = True,
     ) -> Any:
         if update_connector_state:
-            self._update_connector_state(
+            self.connector.update_state_from_dp_metadata(
                 dp_metadata_list,
                 is_graph_capturing=is_graph_capturing,
             )
@@ -208,17 +199,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         except TypeError:
             return self.connector.recv_attn_output()
 
-    def _update_connector_state(
-        self,
-        dp_metadata_list: dict[int, Any],
-        *,
-        is_graph_capturing: bool,
-    ) -> None:
-        self.connector.update_state_from_dp_metadata(
-            dp_metadata_list,
-            is_graph_capturing=is_graph_capturing,
-        )
-
     def update_config(self, overrides: dict[str, Any]) -> None:
         for config_name, config_overrides in overrides.items():
             config = getattr(self, config_name)
@@ -243,11 +223,11 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         if mode_name == "FULL":
             if self._graph_memory_pool is None:
                 self._graph_memory_pool = torch.cuda.graph_pool_handle()
-            graph_key = self._make_graph_key(dp_metadata_list)
+            graph_key = make_ffn_graph_key(dp_metadata_list)
             cudagraph = torch.cuda.CUDAGraph()
             # DP metadata receive/update is a control-plane side effect and must
             # complete before CUDA graph capture starts.
-            self._update_connector_state(
+            self.connector.update_state_from_dp_metadata(
                 dp_metadata_list,
                 is_graph_capturing=is_attn_graph_capturing,
             )
@@ -287,7 +267,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         try:
             with graph_capture(device=self.device):
                 if is_warmup:
-                    self._update_connector_state(
+                    self.connector.update_state_from_dp_metadata(
                         dp_metadata_list,
                         is_graph_capturing=False,
                     )
@@ -297,7 +277,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                         update_connector_state=False,
                     )
                 else:
-                    self._capture_graphs(
+                    self._dummy_run(
                         cudagraph_runtime_mode=CUDAGraphMode.FULL,
                         dp_metadata_list=dp_metadata_list,
                         is_attn_graph_capturing=is_attn_graph_capturing,
@@ -309,37 +289,16 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         cuda_graph_size = start_free_gpu_memory - end_free_gpu_memory
         return int(cuda_graph_size)
 
-    def _capture_graphs(
-        self,
-        *,
-        cudagraph_runtime_mode: Any,
-        dp_metadata_list: dict[int, Any],
-        is_attn_graph_capturing: bool = True,
-    ) -> None:
-        self._dummy_run(
-            cudagraph_runtime_mode=cudagraph_runtime_mode,
-            dp_metadata_list=dp_metadata_list,
-            is_attn_graph_capturing=is_attn_graph_capturing,
-        )
-
-    def _dummy_sampler_run(self, hidden_states: Any) -> None:
-        del hidden_states
-        return None
-
     def sample_tokens(self, grammar_output: Any = None) -> Any:
-        del grammar_output
         raise RuntimeError("FFN runners do not sample tokens")
 
     def add_lora(self, lora_request: Any) -> bool:
-        del lora_request
         return False
 
     def remove_lora(self, lora_id: int) -> bool:
-        del lora_id
         return False
 
     def pin_lora(self, lora_id: int) -> bool:
-        del lora_id
         return False
 
     def list_loras(self) -> set[int]:
@@ -403,16 +362,13 @@ def _normalize_recv_output(
         metadata = AFDConnectorMetadata.create_ffn_metadata(
             layer_idx=layer_idx,
             stage_idx=stage_idx,
-            seq_lens=[_tensor_tokens(hidden_states)],
+            seq_lens=[
+                1
+                if getattr(hidden_states, "shape", None) is None
+                else max(1, int(hidden_states.shape[0])),
+            ],
         )
     return hidden_states, metadata, recv_output
-
-
-def _tensor_tokens(hidden_states: Any) -> int:
-    shape = getattr(hidden_states, "shape", None)
-    if shape is None:
-        return 1
-    return max(1, int(shape[0]))
 
 
 __all__ = ["GPUFFNModelRunner"]

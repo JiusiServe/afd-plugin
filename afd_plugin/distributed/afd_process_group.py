@@ -31,7 +31,6 @@ class DefaultProcessGroupSwitcher:
         _update_default_pg(self.new_default_group)
 
     def __exit__(self, exc_type: object, exc_value: object, tb: object) -> None:
-        del exc_type, exc_value, tb
         _update_default_pg(self.default_group)
 
 

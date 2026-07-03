@@ -137,7 +137,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
             )
 
     def load_model(self, *args: Any, **kwargs: Any) -> Any:
-        use_ubatching = _is_ubatching_enabled(self.vllm_config)
+        use_ubatching = bool(self.vllm_config.parallel_config.use_ubatching)
         with _use_afd_ubatch_wrapper_during_load(use_ubatching):
             result = super().load_model(*args, **kwargs)
         if use_ubatching:
@@ -256,10 +256,9 @@ class AFDAttentionModelRunner(GPUModelRunner):
             cudagraph_stats,
         ) = result
         values = _batch_execution_values(args, kwargs)
-        if should_ubatch and not _has_enough_tokens_for_ubatches(
-            self.vllm_config,
-            int(values.get("num_tokens", 0)),
-        ):
+        num_ubatches = int(self.vllm_config.parallel_config.num_ubatches)
+        num_tokens = int(values.get("num_tokens", 0))
+        if should_ubatch and num_tokens < max(num_ubatches, 1):
             should_ubatch = False
             return (
                 cudagraph_mode,
@@ -296,15 +295,12 @@ class AFDAttentionModelRunner(GPUModelRunner):
             num_reqs=values["num_reqs"],
             force_uniform_decode=values.get("force_uniform_decode"),
         )
-        if not _has_enough_tokens_for_ubatches(
-            self.vllm_config,
-            int(values["num_tokens"]),
-        ):
+        num_tokens = int(values["num_tokens"])
+        num_ubatches = int(parallel_config.num_ubatches)
+        if num_tokens < max(num_ubatches, 1):
             return False
-        return _check_ubatch_thresholds(
-            parallel_config,
-            int(values["num_tokens"]),
-            bool(uniform_decode),
+        return bool(
+            check_ubatch_thresholds(parallel_config, num_tokens, bool(uniform_decode)),
         )
 
     def _model_forward(self, *args: Any, **kwargs: Any) -> Any:
@@ -445,7 +441,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
 def fail_if_unsupported_ubatching(vllm_config: object) -> None:
     parallel_config = vllm_config.parallel_config
     num_ubatches = int(parallel_config.num_ubatches)
-    if _is_ubatching_enabled(vllm_config) and num_ubatches != 2:
+    if bool(vllm_config.parallel_config.use_ubatching) and num_ubatches != 2:
         raise RuntimeError(
             "AFD ubatching currently supports exactly two ubatches; "
             f"got num_ubatches={num_ubatches}",
@@ -501,18 +497,6 @@ def _with_dp_derived_afd_rank(
     return replace(afd_config, afd_role_rank=role_rank)
 
 
-def _is_ubatching_enabled(vllm_config: object) -> bool:
-    return bool(vllm_config.parallel_config.use_ubatching)
-
-
-def _check_ubatch_thresholds(
-    parallel_config: object,
-    num_tokens: int,
-    uniform_decode: bool,
-) -> bool:
-    return bool(check_ubatch_thresholds(parallel_config, num_tokens, uniform_decode))
-
-
 def _batch_execution_values(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
@@ -530,11 +514,6 @@ def _batch_execution_values(
     values = dict(zip(names, args, strict=False))
     values.update(kwargs)
     return values
-
-
-def _has_enough_tokens_for_ubatches(vllm_config: object, num_tokens: int) -> bool:
-    num_ubatches = int(vllm_config.parallel_config.num_ubatches)
-    return int(num_tokens) >= max(num_ubatches, 1)
 
 
 def _forward_context_num_tokens(

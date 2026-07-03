@@ -51,9 +51,7 @@ class AFDFFNWorker(Worker):
         fail_if_unsupported_ubatching(self.vllm_config)
 
         super().init_device()
-        native_model_runner = self.model_runner
         self.model_runner = GPUFFNModelRunner(self.vllm_config, self.device)
-        del native_model_runner
 
         torch.accelerator.empty_cache()
 
@@ -80,7 +78,6 @@ class AFDFFNWorker(Worker):
     def execute_model(self, scheduler_output: Any) -> None:
         """Fail fast if the default scheduler tries to execute FFN work."""
 
-        del scheduler_output
         raise RuntimeError(
             "AFD FFN workers are connector-driven; scheduler-driven "
             "execute_model() is not supported.",

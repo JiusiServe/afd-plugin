@@ -98,7 +98,6 @@ class _FakeFFNConnector:
 
 class _FakeModel:
     def compute_ffn_output(self, hidden_states, layer_idx, **kwargs):
-        del kwargs
         return f"npu-ffn({hidden_states}, layer={layer_idx})"
 
 
@@ -544,7 +543,10 @@ def test_npu_ffn_runner_logs_acl_graph_miss_and_falls_back_to_eager(caplog):
     ]
 
 
-def test_npu_ffn_runner_warmup_uses_eager_forward_without_graph():
+def test_npu_ffn_runner_warmup_uses_eager_forward_without_graph(monkeypatch):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.ascend import ffn_model_runner
+
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
     runner.connector = _FakeFFNConnector()
@@ -555,12 +557,16 @@ def test_npu_ffn_runner_warmup_uses_eager_forward_without_graph():
     runner._acl_graphs = {}
     capture_flags = []
 
-    def fail_graph_capture_context():
+    def fail_graph_capture_context(device):
         raise AssertionError("warmup must not enter graph_capture context")
 
-    runner._graph_capture_context = fail_graph_capture_context
-    runner._set_cudagraph_capturing_enabled = capture_flags.append
-    runner._npu_free_memory = lambda: 0
+    monkeypatch.setattr(ffn_model_runner, "graph_capture", fail_graph_capture_context)
+    monkeypatch.setattr(
+        ffn_model_runner,
+        "set_cudagraph_capturing_enabled",
+        capture_flags.append,
+    )
+    monkeypatch.setattr(ffn_model_runner.torch.npu, "mem_get_info", lambda: (0, 0))
     metadata = AFDConnectorMetadata.create_attention_metadata(
         layer_idx=0,
         stage_idx=0,
@@ -586,7 +592,6 @@ def test_npu_ffn_runner_capture_stores_acl_graph_and_skips_duplicate_state_updat
     _require_npu_runtime()
     from afd_plugin.v1.worker.ascend import ffn_model_runner
 
-    monkeypatch.setattr(ffn_model_runner, "_full_aclgraph_runtime_mode", lambda: "FULL")
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
     runner.connector = _FakeFFNConnector()
@@ -596,11 +601,19 @@ def test_npu_ffn_runner_capture_stores_acl_graph_and_skips_duplicate_state_updat
     runner.use_aclgraph = True
     runner._acl_graphs = {}
     runner.graph_pool = None
-    runner._graph_capture_context = lambda: nullcontext()
-    runner._npu_graph_context = lambda graph: nullcontext()
-    runner._new_npu_graph = _FakeGraph
-    runner._set_cudagraph_capturing_enabled = lambda enabled: None
-    runner._npu_free_memory = lambda: 0
+    monkeypatch.setattr(ffn_model_runner, "graph_capture", lambda device: nullcontext())
+    monkeypatch.setattr(
+        ffn_model_runner.torch.npu,
+        "graph",
+        lambda graph, pool: nullcontext(),
+    )
+    monkeypatch.setattr(ffn_model_runner.torch.npu, "NPUGraph", _FakeGraph)
+    monkeypatch.setattr(
+        ffn_model_runner,
+        "set_cudagraph_capturing_enabled",
+        lambda enabled: None,
+    )
+    monkeypatch.setattr(ffn_model_runner.torch.npu, "mem_get_info", lambda: (0, 0))
     metadata = AFDConnectorMetadata.create_attention_metadata(
         layer_idx=0,
         stage_idx=0,

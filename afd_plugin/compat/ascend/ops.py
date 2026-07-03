@@ -50,9 +50,8 @@ def _ensure_custom_opp_env() -> None:
 
 
 def _assert_afd_namespace_registered(torch: object) -> None:
-    _a2e = torch.ops.afd_ascend.a2e
-    _e2a = torch.ops.afd_ascend.e2a
-    del _a2e, _e2a
+    _ = torch.ops.afd_ascend.a2e
+    _ = torch.ops.afd_ascend.e2a
 
 
 @lru_cache(maxsize=1)
