@@ -1,5 +1,5 @@
-MODEL_PATH=${MODEL_PATH:-/path/model_weights/DeepSeek-V2-Lite}
-RESULT_DIR=${RESULT_DIR:-/path/results}
+MODEL_PATH=${MODEL_PATH:-/path/to/model_weights}
+RESULT_DIR=${RESULT_DIR:-/tmp/results}
 RESULT_FILENAME=${RESULT_FILENAME:-2p1a1f_graph_dbo.json}
 
 mkdir -p "$RESULT_DIR"
