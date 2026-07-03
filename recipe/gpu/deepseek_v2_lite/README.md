@@ -22,14 +22,14 @@ End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
 ├── prefill_decode_disaggregation/        # prefill_decode_disaggregation, 1P1A1F topology
 │   ├── 1p1a1f_eager_dbo.sh
 │   └── 1p1a1f_graph_dbo.sh
-└── prefill_decode_colocated/             # prefill_decode_colocated, 2A2F topology
+└── prefill_decode_colocation/             # prefill_decode_colocation, 2A2F topology
     ├── 2a2f_eager_dbo_dp1tp2.sh
     ├── 2a2f_eager_dbo_dp2tp1.sh
     ├── 2a2f_graph_dbo_dp1tp2.sh
     └── 2a2f_graph_dbo_dp2tp1.sh
 ```
 
-### 2. Prefill/Decode Colocated — `2a2f`
+### 2. Prefill/Decode Colocation — `2a2f`
 
 2 processes, two GPUs each:
 
@@ -50,10 +50,10 @@ The four variants cover the TP/DP cross product:
 Pick a script and execute it from the repository root. Each script
 backgrounds its workers and writes per-worker logs (`afd_prefill.log`, `attn.log`, `ffn.log`) in the current directory.
 
-### prefill_decode_colocated
+### prefill_decode_colocation
 ```bash
 export MODEL_PATH=/path/model_weights/DeepSeek-V2-Lite
-bash recipe/gpu/deepseek_v2_lite/prefill_decode_colocated/2a2f_graph_dbo_dp1tp2.sh
+bash recipe/gpu/deepseek_v2_lite/prefill_decode_colocation/2a2f_graph_dbo_dp1tp2.sh
 ```
 
 Wait for `attn.log` to print the `Application startup complete` line
