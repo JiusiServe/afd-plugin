@@ -2,10 +2,10 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """EngineCore compatibility patch for AFD FFN daemon mode.
 
-The original in-tree AFD implementation treats the FFN side as a connector
-daemon, not as a normal request-scheduling EngineCore. After constructing the
-model executor, FFN EngineCore initialization returns before KV cache and
-scheduler setup. This keeps FFN startup out of HybridKVCacheCoordinator.
+The AFD FFN side runs as a connector daemon, not as a normal request-scheduling
+EngineCore. After constructing the model executor, FFN EngineCore
+initialization returns before KV cache and scheduler setup. This keeps FFN
+startup out of HybridKVCacheCoordinator.
 """
 
 from __future__ import annotations

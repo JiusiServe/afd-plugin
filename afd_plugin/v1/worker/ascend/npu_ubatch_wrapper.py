@@ -2,8 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """AFD-owned Ascend ubatch wrapper.
 
-This is the plugin copy of the basic Ascend DBO wrapper from vLLM-Ascend
-commit ``cdd212830271249a1cafcb850c210133f21771c5``.
+Provides the Ascend DBO wrapper used by AFD NPU runtimes while keeping the
+implementation plugin-owned.
 """
 
 import threading

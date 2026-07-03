@@ -49,7 +49,7 @@ def npu_afd_num_ubatches(vllm_config: object) -> int:
 
 
 def fail_if_unsupported_npu_afd_features(vllm_config: object) -> None:
-    """Fail fast for NPU AFD features intentionally outside the first version."""
+    """Fail fast for NPU AFD settings that are not currently supported."""
 
     afd_config = parse_afd_config(vllm_config)
     extra = afd_config.extra_config or {}

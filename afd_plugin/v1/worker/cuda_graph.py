@@ -57,7 +57,7 @@ def validate_cuda_graph_mode(
     if mode_name not in _SUPPORTED_GRAPH_MODES:
         role_suffix = f" for {role}" if role else ""
         raise RuntimeError(
-            "AFD Phase 6 only supports CUDA graph mode "
+            "AFD only supports CUDA graph mode "
             f"{FULL_DECODE_ONLY}{role_suffix}; got {mode_name!r}.",
         )
 
@@ -102,7 +102,7 @@ def make_ffn_graph_key(
     ffn_size: int | None = None,
     fallback: int = 1,
 ) -> tuple[tuple[int, tuple]]:
-    """Extract the original AFD-style hashable key from DP metadata."""
+    """Extract the AFD FFN graph hashable key from DP metadata."""
 
     key_parts: list[tuple[int, tuple]] = []
     for stage_idx, metadata in sorted(dp_metadata_list.items()):

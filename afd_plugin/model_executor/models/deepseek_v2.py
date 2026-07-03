@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""DeepSeek V2 AFD E2E model wrapper.
+"""DeepSeek V2 AFD model wrapper.
 
-This is a deliberately small Phase 4 wrapper for 1A1F end-to-end validation.
-It does not prune weights by role.
-Both Attention and FFN sides load the full model; only the forward path is
-split so hidden states can travel through the AFD connector.
+The wrapper does not prune weights by role. Both Attention and FFN sides load
+the full model; only the forward path is split so hidden states can travel
+through the AFD connector.
 """
 
 import typing
@@ -455,7 +454,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
 
 
 class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
-    """DeepSeekV2 causal LM wrapper for AFD Phase 4 E2E smoke tests."""
+    """DeepSeekV2 causal LM wrapper for AFD execution."""
 
     model_cls = AFDDeepseekV2Model
 

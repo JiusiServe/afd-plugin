@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""NPU FFN-side model runner for the first AFD runtime version."""
+"""NPU FFN-side model runner for AFD execution."""
 
 from __future__ import annotations
 
@@ -46,11 +46,7 @@ logger = init_logger(__name__)
 
 
 class AFDNPUFFNModelRunner(NPUModelRunner):
-    """Connector-driven NPU FFN runner.
-
-    This first version supports eager single-stream execution and keeps ACL graph
-    and ubatching out of the data path.
-    """
+    """Connector-driven NPU FFN runner for AFD execution."""
 
     afd_expected_role = "ffn"
 

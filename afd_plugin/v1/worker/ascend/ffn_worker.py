@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""NPU FFN-side worker for the first AFD runtime version."""
+"""NPU FFN-side worker for AFD execution."""
 
 from __future__ import annotations
 

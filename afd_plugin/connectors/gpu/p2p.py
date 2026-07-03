@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""P2P AFD connector migrated from the original in-tree AFD branch."""
+"""NCCL-backed P2P AFD connector."""
 
 import json
 from datetime import timedelta
@@ -38,11 +38,11 @@ class _TensorMetadata(NamedTuple):
 
 
 class P2PAFDConnector(AFDConnectorBase):
-    """NCCL-backed Attention <-> FFN connector for Phase 4.
+    """NCCL-backed Attention <-> FFN connector.
 
-    The first supported topology matches the original AFD branch: FFN ranks are
-    placed before Attention ranks in the AFD world, and each FFN rank owns a
-    subgroup with one or more consecutive Attention ranks.
+    The P2P topology places FFN ranks before Attention ranks in the AFD world,
+    and each FFN rank owns a subgroup with one or more consecutive Attention
+    ranks.
     """
 
     def __init__(
@@ -595,10 +595,9 @@ def _register_p2p_custom_ops() -> None:
         try:
             direct_register_custom_op(**kwargs)
         except RuntimeError as exc:
-            # The op may already exist if another AFD connector instance or the
-            # in-tree reference implementation registered it first in this
-            # process. Keep this module's communicator registry local and reuse
-            # the existing vLLM namespace op.
+            # The op may already be registered in the vLLM namespace by another
+            # connector instance in this process. Keep this module's
+            # communicator registry local and reuse the existing op.
             text = str(exc).lower()
             if not any(
                 marker in text
