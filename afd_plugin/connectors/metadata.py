@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
+import torch
+
 
 @dataclass(slots=True)
 class AFDDPMetadata:
@@ -47,28 +49,14 @@ class AFDDPMetadata:
         return self.local_sizes
 
     def cu_tokens_across_sp(self, sp_size: int) -> Any:
-        try:
-            import torch
-
-            num_tokens = _cpu_int_tensor_or_list(self.num_tokens_across_dp_cpu)
-            if isinstance(num_tokens, list):
-                num_tokens = torch.tensor(num_tokens, dtype=torch.int32, device="cpu")
-            num_tokens_across_sp_cpu = (num_tokens - 1 + sp_size) // sp_size
-            num_tokens_across_sp_cpu = num_tokens_across_sp_cpu.repeat_interleave(
-                sp_size,
-            )
-            return torch.cumsum(num_tokens_across_sp_cpu, dim=0)
-        except ModuleNotFoundError:
-            local_sizes = _compute_sp_num_tokens(
-                self.num_tokens_across_dp_cpu,
-                sp_size,
-            )
-            cumulative: list[int] = []
-            total = 0
-            for size in local_sizes:
-                total += int(size)
-                cumulative.append(total)
-            return cumulative
+        num_tokens = _cpu_int_tensor_or_list(self.num_tokens_across_dp_cpu)
+        if isinstance(num_tokens, list):
+            num_tokens = torch.tensor(num_tokens, dtype=torch.int32, device="cpu")
+        num_tokens_across_sp_cpu = (num_tokens - 1 + sp_size) // sp_size
+        num_tokens_across_sp_cpu = num_tokens_across_sp_cpu.repeat_interleave(
+            sp_size,
+        )
+        return torch.cumsum(num_tokens_across_sp_cpu, dim=0)
 
     @contextmanager
     def chunked_sizes(
@@ -102,12 +90,7 @@ AFDSingleDPMetadata = AFDDPMetadata
 
 def _cpu_int_tensor_or_list(value: Any) -> Any:
     values = _to_int_list(value)
-    try:
-        import torch
-
-        return torch.tensor(values, dtype=torch.int32, device="cpu")
-    except ModuleNotFoundError:
-        return values
+    return torch.tensor(values, dtype=torch.int32, device="cpu")
 
 
 def _cpu_scalar_tensor_or_int(value: Any) -> Any:
@@ -117,12 +100,7 @@ def _cpu_scalar_tensor_or_int(value: Any) -> Any:
         value = max(int(item) for item in value)
     else:
         value = int(value.item())
-    try:
-        import torch
-
-        return torch.tensor(value, dtype=torch.int32, device="cpu")
-    except ModuleNotFoundError:
-        return value
+    return torch.tensor(value, dtype=torch.int32, device="cpu")
 
 
 def _max_token_count(value: Any) -> Any:

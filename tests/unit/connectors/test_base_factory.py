@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+pytest.importorskip("torch")
+
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
     AFDConnectorBase,
@@ -18,6 +20,9 @@ def test_dummy_connector_is_not_registered():
 
 
 def test_backend_connector_modules_are_registered_by_backend_package():
+    pytest.importorskip("vllm")
+    pytest.importorskip("torch_npu")
+
     assert (
         AFDConnectorFactory.get_connector_class("p2pconnector").__module__
         == "afd_plugin.connectors.gpu.p2p"

@@ -1,15 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""P2P AFD connector migrated from the original in-tree AFD branch.
-
-The module is intentionally CPU-safe at import time. CUDA, torch.distributed,
-PyNCCL, and vLLM runtime imports are delayed until connector initialization or
-actual send/recv calls.
-"""
+"""P2P AFD connector migrated from the original in-tree AFD branch."""
 
 import json
 from datetime import timedelta
 from typing import Any, NamedTuple
+
+import torch
+from torch.distributed.distributed_c10d import _get_default_group
+from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+from vllm.distributed.utils import StatelessProcessGroup
+from vllm.forward_context import get_forward_context
+from vllm.utils.torch_utils import direct_register_custom_op
 
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
@@ -105,10 +107,6 @@ class P2PAFDConnector(AFDConnectorBase):
 
         _register_p2p_custom_ops()
 
-        from torch.distributed.distributed_c10d import _get_default_group
-        from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
-        from vllm.distributed.utils import StatelessProcessGroup
-
         afd_pg = init_afd_process_group(
             backend="nccl",
             init_method=f"tcp://{self.afd_config.host}:{self.afd_config.port}",
@@ -163,8 +161,6 @@ class P2PAFDConnector(AFDConnectorBase):
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
     ) -> None:
-        import torch
-
         self.dp_metadata_list = dp_metadata_list
         self.is_graph_capturing = is_graph_capturing
         self.is_warmup = is_warmup
@@ -206,8 +202,6 @@ class P2PAFDConnector(AFDConnectorBase):
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
     ) -> None:
-        import torch
-
         if self.p2p_pg is None:
             return
         device = torch.device(f"cuda:{self.local_rank}")
@@ -233,7 +227,6 @@ class P2PAFDConnector(AFDConnectorBase):
         timeout_ms: int | None = None,
     ) -> tuple[dict[int, Any], bool, bool]:
         del timeout_ms
-        import torch
 
         if self.p2p_pg is None:
             raise RuntimeError("P2P DP metadata process group is not initialized")
@@ -296,7 +289,6 @@ class P2PAFDConnector(AFDConnectorBase):
         **kwargs: Any,
     ) -> AFDRecvOutput:
         del timeout_ms, kwargs
-        import torch
 
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
         tensor_metadata = self._tensor_metadata_list[ubatch_idx]
@@ -390,7 +382,6 @@ class P2PAFDConnector(AFDConnectorBase):
             raise ValueError(f"invalid P2P destination rank {dst}")
         if getattr(hidden_states, "is_cpu", False):
             raise ValueError("P2P hidden states must be on GPU")
-        import torch
 
         comm_id = self._comm_id_for_communicator(communicator)
         torch.ops.vllm.afd_p2p_send(
@@ -415,8 +406,6 @@ class P2PAFDConnector(AFDConnectorBase):
             return ref_tensor
         if src >= process_group.world_size:
             raise ValueError(f"invalid P2P source rank {src}")
-
-        import torch
 
         size = list(tensor_metadata.size)
         if ref_tensor is not None:
@@ -449,8 +438,6 @@ class P2PAFDConnector(AFDConnectorBase):
     @staticmethod
     def _current_ubatch_idx() -> int:
         try:
-            from vllm.forward_context import get_forward_context
-
             forward_context = get_forward_context()
             afd_metadata = forward_context.additional_kwargs["afd_metadata"]
             return int(afd_metadata.ubatch_idx)
@@ -470,8 +457,6 @@ def _matches_tensor_metadata(value: Any, tensor_metadata: _TensorMetadata) -> bo
 
 def _torch_is_compiling() -> bool:
     try:
-        import torch
-
         return bool(torch.compiler.is_compiling())
     except Exception:
         return False
@@ -568,9 +553,6 @@ def _register_p2p_custom_ops() -> None:
 
     if _AFD_CUSTOM_OPS_REGISTERED:
         return
-
-    import torch
-    from vllm.utils.torch_utils import direct_register_custom_op
 
     def afd_p2p_send_impl(
         tensor: torch.Tensor,

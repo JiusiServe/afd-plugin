@@ -14,11 +14,13 @@ from itertools import islice
 from typing import Any
 
 import torch
+import torch.nn as nn
 from vllm.config import get_current_vllm_config
 from vllm.forward_context import get_forward_context
 from vllm.model_executor.layers.fused_moe.shared_fused_moe import (
     SharedFusedMoE,
 )
+from vllm.model_executor.layers.linear import ReplicatedLinear
 from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader,
     maybe_remap_kv_scale_name,
@@ -115,8 +117,6 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 getattr(afd_config, "compute_gate_on_attention", False)
                 and layer_idx >= config.first_k_dense_replace
             ):
-                from vllm.model_executor.layers.linear import ReplicatedLinear
-
                 self.gate = ReplicatedLinear(
                     config.hidden_size,
                     config.n_routed_experts,
@@ -125,8 +125,6 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                     prefix=f"{prefix}.gate",
                 )
                 if getattr(config, "topk_method", None) == "noaux_tc":
-                    import torch.nn as nn
-
                     self.gate.e_score_correction_bias = nn.Parameter(
                         torch.empty(config.n_routed_experts, dtype=torch.float32)
                     )

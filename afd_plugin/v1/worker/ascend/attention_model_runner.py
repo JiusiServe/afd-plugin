@@ -4,13 +4,44 @@
 
 from __future__ import annotations
 
+import copy
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    import numpy as np
-
+import numpy as np
+import torch
+import torch.distributed as dist
+from vllm.compilation.cuda_graph import CUDAGraphStat
+from vllm.config import CUDAGraphMode
+from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
+from vllm.distributed.parallel_state import get_dp_group
+from vllm.forward_context import BatchDescriptor, get_forward_context
 from vllm.logger import init_logger
+from vllm.sequence import IntermediateTensors
+from vllm.utils.math_utils import cdiv
+from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
+from vllm.v1.kv_cache_interface import EncoderOnlyAttentionSpec
+from vllm_ascend.ascend_forward_context import (
+    select_moe_comm_method,
+    set_ascend_forward_context,
+)
+from vllm_ascend.attention.attention_v1 import AscendAttentionState
+from vllm_ascend.attention.kvcomp_attn.attention_utils import build_kvcomp_metadata
+from vllm_ascend.attention.utils import (
+    AscendCommonAttentionMetadata,
+    using_paged_attention,
+)
+from vllm_ascend.compilation.acl_graph import ACLGraphWrapper
+from vllm_ascend.ops.rotary_embedding import update_cos_sin
+from vllm_ascend.patch.worker.patch_module import patch_torch_npu_argsort
+from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
+from vllm_ascend.spec_decode.draft_proposer import AscendDraftModelProposer
+from vllm_ascend.spec_decode.eagle_proposer import AscendEagleProposer
+from vllm_ascend.utils import (
+    enable_sp,
+    lmhead_tp_enable,
+    should_skip_allreduce_across_dp_group,
+)
 from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
 
 from afd_plugin.compat.ascend import (
@@ -25,9 +56,12 @@ from afd_plugin.compat.ascend.profiler import (
 )
 from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import AFDConnectorFactory, AFDDPMetadata, AFDMetadata
+from afd_plugin.v1.worker.ascend.npu_ubatch_wrapper import AscendUBatchWrapper
 from afd_plugin.v1.worker.ascend.ubatch_utils import (
     check_enable_ubatch,
+    maybe_create_ubatch_slices,
     pad_out_ubatch_slices,
+    split_attn_metadata,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
     _forward_context_num_tokens,
@@ -80,9 +114,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         return super().execute_model(*args, **kwargs)
 
     def _model_forward(self, *args: Any, **kwargs: Any) -> Any:
-        from vllm.forward_context import get_forward_context
-        from vllm.sequence import IntermediateTensors
-
         forward_context = get_forward_context()
         if self.ubatch_slices is not None:
             forward_context.ubatch_slices = self.ubatch_slices
@@ -176,19 +207,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         vLLM-Ascend's ``NPUModelRunner._build_attention_metadata`` by
         ``cdd212830271249a1cafcb850c210133f21771c5``.
         """
-
-        import copy
-
-        import torch
-        from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
-        from vllm.v1.kv_cache_interface import EncoderOnlyAttentionSpec
-        from vllm_ascend.attention.utils import AscendCommonAttentionMetadata
-        from vllm_ascend.patch.worker.patch_module import patch_torch_npu_argsort
-        from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
-        from vllm_ascend.spec_decode.draft_proposer import AscendDraftModelProposer
-        from vllm_ascend.spec_decode.eagle_proposer import AscendEagleProposer
-
-        from afd_plugin.v1.worker.ascend.ubatch_utils import split_attn_metadata
 
         if len(self.kv_cache_config.kv_cache_groups) == 0:
             return {}, None
@@ -404,10 +422,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 else:
                     spec_decode_common_attn_metadata = cm
             if self.enable_hamming_sparse is True:
-                from vllm_ascend.attention.kvcomp_attn.attention_utils import (
-                    build_kvcomp_metadata,
-                )
-
                 build_kvcomp_metadata(self.kvcomp_meta_data, cm)
             for attn_gid in range(len(self.attn_groups[kv_cache_gid])):
                 for ubid, ubatch_cm in enumerate(
@@ -459,8 +473,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         profile_cpp: bool = False,
         count_prof_step: bool = False,
     ) -> Any:
-        import torch
-
         if count_prof_step:
             step_afd_npu_profiler(self.prof)
 
@@ -556,11 +568,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         corresponding non-ubatched decode graph first, because live decode can
         still produce a single-stage key below the ubatch threshold.
         """
-
-        try:
-            from vllm.config import CUDAGraphMode
-        except Exception:
-            return super()._warmup_and_capture(*args, **kwargs)
 
         names = [
             "desc",
@@ -683,18 +690,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         profile_cpp: bool = False,
     ) -> Any:
         del skip_eplb
-        import numpy as np
-        import torch
-        from vllm.config import CUDAGraphMode
-        from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
-        from vllm.utils.math_utils import cdiv
-        from vllm_ascend.ascend_forward_context import set_ascend_forward_context
-        from vllm_ascend.attention.attention_v1 import AscendAttentionState
-        from vllm_ascend.attention.utils import using_paged_attention
-        from vllm_ascend.ops.rotary_embedding import update_cos_sin
-        from vllm_ascend.utils import enable_sp, lmhead_tp_enable
-
-        from afd_plugin.v1.worker.ascend.ubatch_utils import maybe_create_ubatch_slices
 
         assert (
             cudagraph_runtime_mode is None
@@ -1087,11 +1082,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         return result
 
     def _install_ascend_ubatch_wrapper(self) -> None:
-        from vllm.config import CUDAGraphMode
-        from vllm_ascend.compilation.acl_graph import ACLGraphWrapper
-
-        from afd_plugin.v1.worker.ascend.npu_ubatch_wrapper import AscendUBatchWrapper
-
         if isinstance(self.model, AscendUBatchWrapper):
             return
         model = self.model
@@ -1109,8 +1099,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         )
 
     def get_model(self) -> Any:
-        from afd_plugin.v1.worker.ascend.npu_ubatch_wrapper import AscendUBatchWrapper
-
         if isinstance(self.model, AscendUBatchWrapper):
             return self.model.unwrap()
         return super().get_model()
@@ -1141,13 +1129,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         cudagraph_mode: Any = None,
         allow_dp_padding: bool = False,
     ) -> tuple[bool, int, Any | None, Any]:
-        import torch
-        import torch.distributed as dist
-        from vllm.config import CUDAGraphMode
-        from vllm.distributed.parallel_state import get_dp_group
-        from vllm_ascend.ascend_forward_context import select_moe_comm_method
-        from vllm_ascend.utils import should_skip_allreduce_across_dp_group
-
         if cudagraph_mode is None:
             cudagraph_mode = CUDAGraphMode.NONE
         if num_tokens_padded is None:
@@ -1316,12 +1297,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         force_num_active_loras: int | None = None,
         num_encoder_reqs: int = 0,
     ) -> tuple[Any, Any, bool, Any | None, Any | None]:
-        import numpy as np
-        from vllm.compilation.cuda_graph import CUDAGraphStat
-        from vllm.config import CUDAGraphMode
-        from vllm_ascend.ascend_forward_context import select_moe_comm_method
-        from vllm_ascend.utils import enable_sp
-
         num_tokens_padded = self._pad_for_sequence_parallelism(num_tokens)
         is_all_decode = np.all(self.input_batch.num_computed_tokens_cpu[:num_reqs] > 0)
         uniform_decode = (
@@ -1347,8 +1322,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             num_tokens_to_dispatch, disable_full=False, valid_modes=None
         ):
             if force_eager:
-                from vllm.forward_context import BatchDescriptor
-
                 return (CUDAGraphMode.NONE, BatchDescriptor(num_tokens_padded))
             return self.cudagraph_dispatcher.dispatch(
                 num_tokens=num_tokens_to_dispatch,
@@ -1464,9 +1437,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         intermediate_tensors: Any | None,
         sync_self: bool,
     ) -> Any:
-        from vllm.sequence import IntermediateTensors
-        from vllm_ascend.utils import enable_sp
-
         assert self.intermediate_tensors is not None
         tp = self.vllm_config.parallel_config.tensor_parallel_size
 
@@ -1515,17 +1485,12 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
 
 def _make_uniform_dp_metadata(dp_size: int, num_tokens: int) -> AFDDPMetadata:
-    try:
-        import torch
-    except ModuleNotFoundError:
-        num_tokens_across_dp_cpu = [int(num_tokens)] * int(dp_size)
-    else:
-        num_tokens_across_dp_cpu = torch.full(
-            (int(dp_size),),
-            int(num_tokens),
-            dtype=torch.int32,
-            device="cpu",
-        )
+    num_tokens_across_dp_cpu = torch.full(
+        (int(dp_size),),
+        int(num_tokens),
+        dtype=torch.int32,
+        device="cpu",
+    )
     return AFDDPMetadata(num_tokens_across_dp_cpu=num_tokens_across_dp_cpu)
 
 

@@ -5,6 +5,10 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+pytest.importorskip("torch")
+pytest.importorskip("vllm")
+pytest.importorskip("torch_npu")
+
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
     AFDConnectorFactory,
@@ -54,7 +58,7 @@ def _afd_config(*, role: str, rank: int = 0):
     )
 
 
-def test_camp2p_factory_creates_import_safe_connector():
+def test_camp2p_factory_creates_connector():
     connector = AFDConnectorFactory.create_connector(
         0,
         0,

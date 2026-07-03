@@ -1,19 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""CAMP2P NPU connector for the first real NPU AFD data path.
-
-The module stays import-safe on CPU/GPU machines.  torch-npu, HCCL process
-groups, and the plugin-owned ``torch.ops.afd_ascend`` custom ops are imported
-only when the connector is initialized or used.
-"""
+"""CAMP2P NPU connector for the first real NPU AFD data path."""
 
 from __future__ import annotations
 
-import logging
 import pickle
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
+
+import torch
+import torch.distributed as dist
+import torch_npu  # noqa: F401
+from vllm.forward_context import get_forward_context
+from vllm.logger import init_logger
+from vllm.utils.torch_utils import direct_register_custom_op
 
 from afd_plugin.compat.ascend import ensure_afd_ascend_ops_loaded
 from afd_plugin.config import AFDConfig
@@ -22,13 +23,7 @@ from afd_plugin.connectors.metadata import AFDConnectorMetadata, AFDRecvOutput
 from afd_plugin.distributed import init_afd_process_group, topology_from_config
 
 _CAMP2P_CUSTOM_OPS_REGISTERED = False
-
-try:
-    from vllm.logger import init_logger
-except ImportError:
-    logger = logging.getLogger(__name__)
-else:
-    logger = init_logger(__name__)
+logger = init_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -36,7 +31,7 @@ class CAMP2PAFDConnectorMetadata:
     """CAMP2P payload metadata carried between recv and send phases.
 
     This mirrors ``vllm_ascend.distributed.metadata.CAMP2PAFDConnectorMetadata``
-    while keeping the class plugin-owned and CPU-safe at import time.
+    while keeping the class plugin-owned.
     """
 
     moe_expert_num: int = 0
@@ -147,7 +142,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         if self._initialized:
             return
         ensure_afd_ascend_ops_loaded()
-        import torch_npu  # noqa: F401
 
         _register_camp2p_custom_ops()
 
@@ -197,8 +191,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         self._initialized = True
 
     def close(self) -> None:
-        import torch.distributed as dist
-
         groups = [self.p2p_pg, self.ffn_pg, *self.afd_pg_list]
         if self.afd_pg is not None and not self.afd_pg_list:
             groups.append(self.afd_pg)
@@ -700,8 +692,6 @@ def _set_forward_context_connector_data(
     *,
     ubatch_idx: int | None = None,
 ) -> None:
-    from vllm.forward_context import get_forward_context
-
     forward_context = get_forward_context()
     forward_context.cam_afdconnector_data = data
     if ubatch_idx is not None:
@@ -709,14 +699,10 @@ def _set_forward_context_connector_data(
 
 
 def _set_forward_context_ubatch_idx(ubatch_idx: int) -> None:
-    from vllm.forward_context import get_forward_context
-
     get_forward_context().ubatch_idx = int(ubatch_idx)
 
 
 def _get_forward_context_connector_data() -> CAMP2PAFDConnectorMetadata | None:
-    from vllm.forward_context import get_forward_context
-
     data = getattr(get_forward_context(), "cam_afdconnector_data", None)
     if data is None:
         return None
@@ -726,8 +712,6 @@ def _get_forward_context_connector_data() -> CAMP2PAFDConnectorMetadata | None:
 
 
 def _forward_context_ubatch_idx() -> int:
-    from vllm.forward_context import get_forward_context
-
     return int(getattr(get_forward_context(), "ubatch_idx", 0))
 
 
@@ -735,9 +719,6 @@ def _register_camp2p_custom_ops() -> None:
     global _CAMP2P_CUSTOM_OPS_REGISTERED
     if _CAMP2P_CUSTOM_OPS_REGISTERED:
         return
-
-    import torch
-    from vllm.utils.torch_utils import direct_register_custom_op
 
     def send_attn_output_impl(
         hidden_states: torch.Tensor,
@@ -984,8 +965,6 @@ def _hccl_comm_name(group: Any, rank: int) -> str:
 
 
 def _torch() -> Any:
-    import torch
-
     return torch
 
 

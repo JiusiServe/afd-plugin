@@ -11,7 +11,10 @@ from typing import Any
 import torch
 import vllm.v1.worker.gpu_model_runner as gpu_model_runner
 from vllm.config import CUDAGraphMode
-from vllm.distributed.parallel_state import get_world_group
+from vllm.distributed.parallel_state import (
+    get_tensor_model_parallel_rank,
+    get_world_group,
+)
 from vllm.forward_context import DPMetadata, get_forward_context
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.gpu_ubatch_wrapper import UBatchWrapper
@@ -482,12 +485,7 @@ def _with_dp_derived_afd_rank(
     if dp_size <= 1 and tp_size <= 1:
         return afd_config
     dp_rank = int(parallel_config.data_parallel_rank) if dp_size > 1 else 0
-    if tp_size > 1:
-        from vllm.distributed.parallel_state import get_tensor_model_parallel_rank
-
-        tp_rank = get_tensor_model_parallel_rank()
-    else:
-        tp_rank = 0
+    tp_rank = get_tensor_model_parallel_rank() if tp_size > 1 else 0
     role_size = (
         afd_config.num_attention_servers
         if afd_config.role == "attention"

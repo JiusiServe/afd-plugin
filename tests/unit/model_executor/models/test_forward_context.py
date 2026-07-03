@@ -3,6 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+pytest.importorskip("vllm")
+
 from afd_plugin.model_executor.models import get_afd_metadata_from_forward_context
 
 

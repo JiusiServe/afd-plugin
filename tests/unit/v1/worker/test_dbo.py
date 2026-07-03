@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 pytest.importorskip("torch")
+pytest.importorskip("vllm")
 
 from afd_plugin.v1.worker import dbo
 from afd_plugin.v1.worker.dbo import maybe_apply_dbo_yield

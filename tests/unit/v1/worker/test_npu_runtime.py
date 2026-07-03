@@ -9,6 +9,8 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+pytest.importorskip("torch")
+
 from afd_plugin.compat.ascend import (
     fail_if_unsupported_npu_afd_features,
     npu_afd_num_ubatches,

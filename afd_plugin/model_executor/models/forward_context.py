@@ -9,6 +9,9 @@ from contextlib import contextmanager
 from functools import wraps
 from typing import Any
 
+import vllm.forward_context as forward_context_module
+from vllm.forward_context import get_forward_context
+
 
 def get_afd_metadata_from_forward_context(forward_context: object | None = None) -> Any:
     """Return AFD metadata from vLLM ``ForwardContext.additional_kwargs``.
@@ -19,8 +22,6 @@ def get_afd_metadata_from_forward_context(forward_context: object | None = None)
     """
 
     if forward_context is None:
-        from vllm.forward_context import get_forward_context
-
         forward_context = get_forward_context()
 
     additional_kwargs = forward_context.additional_kwargs or {}
@@ -43,12 +44,6 @@ def use_afd_metadata_provider(provider: Any) -> Iterator[None]:
     after vLLM creates the context.  Model code can then do a simple metadata
     read, which keeps ``torch.compile`` away from provider lookups.
     """
-
-    try:
-        import vllm.forward_context as forward_context_module
-    except ImportError:
-        yield
-        return
 
     original_create = forward_context_module.create_forward_context
     install = provider._install_afd_metadata_on_forward_context
