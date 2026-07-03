@@ -29,7 +29,7 @@ End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
     └── 2a2f_graph_dbo_dp2tp1.sh
 ```
 
-### 2. Prefill/Decode colocation — `2a2f`
+### 2. Prefill/Decode Colocation — `2a2f`
 
 2 processes, two GPUs each:
 
