@@ -106,7 +106,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         self.model_memory_usage = profiler.consumed_memory
 
     def profile_run(self) -> None:
-        return None
+        pass
 
     def get_kv_cache_spec(self) -> dict[str, Any]:
         return {}

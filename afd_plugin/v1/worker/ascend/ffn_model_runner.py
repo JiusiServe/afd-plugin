@@ -429,7 +429,11 @@ def _normalize_recv_output(
         metadata = AFDConnectorMetadata.create_ffn_metadata(
             layer_idx=layer_idx,
             stage_idx=stage_idx,
-            seq_lens=[max(1, int(hidden_states.shape[0]))],
+            seq_lens=[
+                1
+                if getattr(hidden_states, "shape", None) is None
+                else max(1, int(hidden_states.shape[0])),
+            ],
         )
         recv_output.metadata = metadata
     return hidden_states, metadata, recv_output

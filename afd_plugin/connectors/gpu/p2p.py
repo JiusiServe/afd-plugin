@@ -554,7 +554,7 @@ def _register_p2p_custom_ops() -> None:
         dst: int,
         comm_id: int,
     ) -> None:
-        return None
+        pass
 
     def afd_p2p_recv_impl(out: torch.Tensor, src: int, comm_id: int) -> None:
         communicator = _AFD_COMMUNICATORS.get(int(comm_id))
@@ -567,7 +567,7 @@ def _register_p2p_custom_ops() -> None:
         )
 
     def afd_p2p_recv_fake(out: torch.Tensor, src: int, comm_id: int) -> None:
-        return None
+        pass
 
     def register_one(**kwargs: Any) -> None:
         try:

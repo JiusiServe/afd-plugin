@@ -113,12 +113,12 @@ class AFDConnectorBase(ABC):
             seq_lens=list(seq_lens),
         )
 
-    def configure_metadata(
+    def configure_metadata(  # noqa: B027
         self,
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
     ) -> None:
-        return None
+        pass
 
     def update_metadata(
         self,

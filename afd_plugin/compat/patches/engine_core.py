@@ -170,7 +170,7 @@ class _AFDFFNNoopScheduler:
     connector = None
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        return None
+        pass
 
     def get_kv_connector(self) -> None:
         return None
