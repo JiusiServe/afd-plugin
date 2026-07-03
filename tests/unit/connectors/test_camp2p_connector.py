@@ -193,18 +193,24 @@ def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
     assert connector.hccl_comm_name_list == ["hccl:afd:2", "hccl:afd1:2"]
     assert connector.hccl_comm_name == "hccl:afd:2"
     assert connector.hccl_comm_name2 == "hccl:afd1:2"
-    assert camp2p_module._get_group_ep(
-        0,
-        connector.hccl_comm_name,
-        connector.hccl_comm_name2,
-        "",
-    ) == "hccl:afd:2"
-    assert camp2p_module._get_group_ep(
-        1,
-        connector.hccl_comm_name,
-        connector.hccl_comm_name2,
-        "",
-    ) == "hccl:afd1:2"
+    assert (
+        camp2p_module._get_group_ep(
+            0,
+            connector.hccl_comm_name,
+            connector.hccl_comm_name2,
+            "",
+        )
+        == "hccl:afd:2"
+    )
+    assert (
+        camp2p_module._get_group_ep(
+            1,
+            connector.hccl_comm_name,
+            connector.hccl_comm_name2,
+            "",
+        )
+        == "hccl:afd1:2"
+    )
 
 
 def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):

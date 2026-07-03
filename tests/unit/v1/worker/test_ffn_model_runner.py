@@ -10,11 +10,11 @@ pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
 from afd_plugin.connectors import AFDConnectorMetadata, AFDRecvOutput
+from afd_plugin.v1.worker.cuda_graph import make_ffn_graph_key
 from afd_plugin.v1.worker.ffn_model_runner import (
     GPUFFNModelRunner,
     _set_moe_layer_index,
 )
-from afd_plugin.v1.worker.cuda_graph import make_ffn_graph_key
 from afd_plugin.v1.worker.ffn_worker import AFDFFNWorker
 
 

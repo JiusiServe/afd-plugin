@@ -495,6 +495,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             k=max(1, int(k)),
         )
 
+
 def build_camp2p_topology(
     afd_config: AFDConfig,
     role_rank: int | None = None,

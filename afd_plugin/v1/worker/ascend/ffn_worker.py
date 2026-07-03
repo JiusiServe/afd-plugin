@@ -151,4 +151,5 @@ class AFDNPUFFNWorker(NPUWorker):
         self.stop_ffn_server_loop()
         super().shutdown()
 
+
 __all__ = ["AFDNPUFFNWorker"]
