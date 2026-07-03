@@ -47,9 +47,9 @@ def init_afd_process_group(
 ) -> object:
     """Create a plugin-owned process group without patching vLLM source.
 
-    This mirrors the small helper added by the original in-tree AFD branch, but
-    keeps it isolated in the plugin. It relies on PyTorch/vLLM private APIs and
-    fails fast if the target runtime stack is unavailable.
+    The helper keeps process-group setup isolated in the plugin. It relies on
+    PyTorch/vLLM private APIs and fails fast if the target runtime stack is
+    unavailable.
     """
 
     rendezvous_iterator = rendezvous(

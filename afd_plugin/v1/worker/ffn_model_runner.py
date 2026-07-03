@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""FFN-side model runner for the Phase 3 MVP."""
+"""FFN-side model runner for AFD GPU execution."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ from afd_plugin.v1.worker.cuda_graph import (
 
 
 class GPUFFNModelRunner(LoRAModelRunnerMixin):
-    """Minimal FFN model runner for connector-driven Phase 3 execution."""
+    """FFN model runner for connector-driven AFD GPU execution."""
 
     afd_expected_role = "ffn"
 

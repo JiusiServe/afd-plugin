@@ -66,10 +66,9 @@ _DEEPSEEK_MODEL_REGISTRATIONS = {
 def register_afd() -> None:
     """Entry point for ``vllm.general_plugins``.
 
-    Phase 1 intentionally performs only lightweight, idempotent setup. Model
-    registration and compatibility patches are deferred until later phases.
-    Importing this package or calling this function remains safe without vLLM
-    installed, which keeps local CPU smoke tests useful on non-CUDA machines.
+    Perform plugin runtime registration when vLLM is available. Importing this
+    package or calling this function remains safe without vLLM installed, which
+    keeps local CPU smoke tests useful on non-CUDA machines.
     """
 
     global _registered

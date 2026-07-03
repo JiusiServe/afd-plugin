@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""NPU Attention-side model runner for the first AFD runtime version."""
+"""NPU Attention-side model runner for AFD execution."""
 
 from __future__ import annotations
 
@@ -203,9 +203,8 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
     ) -> tuple[Any, Any | None]:
         """Build per-ubatch Ascend attention metadata.
 
-        This is the plugin-owned copy of the DBO-specific section added to
-        vLLM-Ascend's ``NPUModelRunner._build_attention_metadata`` by
-        ``cdd212830271249a1cafcb850c210133f21771c5``.
+        Builds the DBO-specific metadata layout required by Ascend ubatching
+        while keeping the implementation plugin-owned.
         """
 
         if len(self.kv_cache_config.kv_cache_groups) == 0:

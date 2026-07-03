@@ -2,9 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """Ascend ubatch helpers owned by the AFD plugin.
 
-These helpers mirror the Ascend DBO logic from vLLM-Ascend commit
-``cdd212830271249a1cafcb850c210133f21771c5`` so AFD can keep using DBO after
-that commit is reverted from vLLM-Ascend.
+Copied from vLLM-Ascend commit cdd212830271249a1cafcb850c210133f21771c5;
+kept plugin-owned so AFD retains DBO support independent of upstream changes.
 """
 
 import logging

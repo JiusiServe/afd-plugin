@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""Attention-side model runner for the Phase 2 MVP."""
+"""Attention-side model runner for AFD GPU execution."""
 
 from __future__ import annotations
 
@@ -447,7 +447,7 @@ def fail_if_unsupported_ubatching(vllm_config: object) -> None:
     num_ubatches = int(parallel_config.num_ubatches)
     if _is_ubatching_enabled(vllm_config) and num_ubatches != 2:
         raise RuntimeError(
-            "AFD Phase 5 currently supports exactly two ubatches; "
+            "AFD ubatching currently supports exactly two ubatches; "
             f"got num_ubatches={num_ubatches}",
         )
 

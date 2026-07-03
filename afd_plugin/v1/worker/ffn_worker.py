@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""FFN-side worker for the Phase 3 MVP."""
+"""FFN-side worker for AFD GPU execution."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ class AFDFFNWorker(Worker):
     """FFN worker that owns the AFD daemon loop.
 
     The FFN side enters through native ``vllm serve --worker-cls``. The native
-    scheduler may still be present, but Phase 3 keeps it from driving model
-    execution and instead runs FFN work from connector metadata.
+    scheduler may still be present, but FFN work is driven by connector
+    metadata.
     """
 
     afd_expected_role = "ffn"
@@ -58,7 +58,7 @@ class AFDFFNWorker(Worker):
         torch.accelerator.empty_cache()
 
     def get_kv_cache_spec(self) -> dict[str, Any]:
-        """FFN workers do not allocate KV cache in the Phase 3 MVP."""
+        """FFN workers do not allocate KV cache."""
 
         return {}
 
@@ -71,7 +71,9 @@ class AFDFFNWorker(Worker):
         self.start_ffn_server_loop()
 
     def compile_or_warm_up_model(self) -> float:
-        """FFN warmup/capture is deferred until later AFD phases."""
+        """FFN workers perform no warmup/capture; model execution is driven
+        entirely by connector metadata.
+        """
 
         return 0.0
 
@@ -80,7 +82,7 @@ class AFDFFNWorker(Worker):
 
         del scheduler_output
         raise RuntimeError(
-            "AFD FFN workers are connector-driven in Phase 3; scheduler-driven "
+            "AFD FFN workers are connector-driven; scheduler-driven "
             "execute_model() is not supported.",
         )
 
