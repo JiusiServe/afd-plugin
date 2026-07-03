@@ -271,8 +271,16 @@ def build_ubatch_dp_metadata_list(
     if dp_size <= 1:
         return [
             AFDDPMetadata(
-                num_tokens_across_dp_cpu=_cpu_int_tensor([ubatch_slice.num_tokens]),
-                max_tokens_across_dp_cpu=_cpu_int_tensor([ubatch_slice.num_tokens]),
+                num_tokens_across_dp_cpu=torch.tensor(
+                    [ubatch_slice.num_tokens],
+                    dtype=torch.int32,
+                    device="cpu",
+                ),
+                max_tokens_across_dp_cpu=torch.tensor(
+                    [ubatch_slice.num_tokens],
+                    dtype=torch.int32,
+                    device="cpu",
+                ),
             )
             for ubatch_slice in ubatch_slices
         ]
@@ -303,10 +311,6 @@ def _resolve_ubatch_unpadded_tokens(
     if ubatch_idx < len(unpadded_lens):
         return int(unpadded_lens[ubatch_idx])
     return int(ubatch_slice.num_tokens)
-
-
-def _cpu_int_tensor(values: list[int]) -> Any:
-    return torch.tensor(values, dtype=torch.int32, device="cpu")
 
 
 __all__ = [

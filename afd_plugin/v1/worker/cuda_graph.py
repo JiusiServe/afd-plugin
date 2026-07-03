@@ -61,9 +61,11 @@ def validate_cuda_graph_mode(
             f"{FULL_DECODE_ONLY}{role_suffix}; got {mode_name!r}.",
         )
 
-    allow_ubatching = _allow_cuda_graph_with_ubatching(vllm_config)
-    if _is_ubatching_enabled(vllm_config) and not allow_ubatching:
-        num_ubatches = getattr(vllm_config.parallel_config, "num_ubatches", None)
+    parallel_config = getattr(vllm_config, "parallel_config", None)
+    use_ubatching = bool(getattr(parallel_config, "use_ubatching", False))
+    num_ubatches = getattr(parallel_config, "num_ubatches", None)
+    allow_ubatching = use_ubatching and int(num_ubatches or 0) == 2
+    if use_ubatching and not allow_ubatching:
         raise RuntimeError(
             "AFD CUDA graph support currently supports ubatching only for "
             f"{FULL_DECODE_ONLY} with exactly two ubatches; "
@@ -141,18 +143,6 @@ def graph_run_mode(
     if graph_enabled and graph_exists:
         return AFDGraphRunMode.REPLAY
     return AFDGraphRunMode.EAGER
-
-
-def _is_ubatching_enabled(vllm_config: object) -> bool:
-    parallel_config = getattr(vllm_config, "parallel_config", None)
-    return bool(getattr(parallel_config, "use_ubatching", False))
-
-
-def _allow_cuda_graph_with_ubatching(vllm_config: object) -> bool:
-    if not _is_ubatching_enabled(vllm_config):
-        return False
-    parallel_config = vllm_config.parallel_config
-    return int(getattr(parallel_config, "num_ubatches", 0)) == 2
 
 
 def _metadata_values_tuple(values: Any) -> tuple[int, ...]:

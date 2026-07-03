@@ -91,7 +91,7 @@ class P2PAFDConnector(AFDConnectorBase):
         for comm_id_name in ("a2e_comm_id", "e2a_comm_id"):
             comm_id = getattr(self, comm_id_name, None)
             if comm_id is not None:
-                _unregister_comm(comm_id)
+                _AFD_COMMUNICATORS.pop(comm_id, None)
                 setattr(self, comm_id_name, None)
         for communicator_name in ("a2e_pynccl", "e2a_pynccl"):
             communicator = getattr(self, communicator_name, None)
@@ -169,7 +169,9 @@ class P2PAFDConnector(AFDConnectorBase):
         dtype = self.vllm_config.model_config.dtype
         dp_rank = int(self.vllm_config.parallel_config.data_parallel_rank)
         for stage_idx, dp_metadata in dp_metadata_list.items():
-            num_tokens = _num_tokens_for_dp_rank(dp_metadata, dp_rank)
+            token_count = dp_metadata.num_tokens_across_dp_cpu[dp_rank]
+            item = getattr(token_count, "item", None)
+            num_tokens = int(item() if callable(item) else token_count)
             self._tensor_metadata_list[int(stage_idx)] = _TensorMetadata(
                 device,
                 dtype,
@@ -184,7 +186,12 @@ class P2PAFDConnector(AFDConnectorBase):
                 for src_rank in range(1, self.group_size):
                     buffer_key = (stage_idx, src_rank, tuple(tensor_metadata.size))
                     existing = self._recv_attn_buffers.get(buffer_key)
-                    if _matches_tensor_metadata(existing, tensor_metadata):
+                    if (
+                        existing is not None
+                        and getattr(existing, "shape", None) == tensor_metadata.size
+                        and getattr(existing, "dtype", None) == tensor_metadata.dtype
+                        and getattr(existing, "device", None) == tensor_metadata.device
+                    ):
                         continue
                     self._recv_attn_buffers[buffer_key] = torch.empty(
                         tuple(tensor_metadata.size),
@@ -445,27 +452,11 @@ class P2PAFDConnector(AFDConnectorBase):
             return 0
 
 
-def _matches_tensor_metadata(value: Any, tensor_metadata: _TensorMetadata) -> bool:
-    if value is None:
-        return False
-    return (
-        getattr(value, "shape", None) == tensor_metadata.size
-        and getattr(value, "dtype", None) == tensor_metadata.dtype
-        and getattr(value, "device", None) == tensor_metadata.device
-    )
-
-
 def _torch_is_compiling() -> bool:
     try:
         return bool(torch.compiler.is_compiling())
     except Exception:
         return False
-
-
-def _num_tokens_for_dp_rank(dp_metadata: Any, dp_rank: int) -> int:
-    token_count = dp_metadata.num_tokens_across_dp_cpu[dp_rank]
-    item = getattr(token_count, "item", None)
-    return int(item() if callable(item) else token_count)
 
 
 def _to_int_list(value: Any) -> list[int]:
@@ -542,10 +533,6 @@ def _register_comm(communicator: Any) -> int:
     _AFD_COMMUNICATORS[comm_id] = communicator
     _AFD_COMM_ID_COUNTER += 1
     return comm_id
-
-
-def _unregister_comm(comm_id: int) -> None:
-    _AFD_COMMUNICATORS.pop(comm_id, None)
 
 
 def _register_p2p_custom_ops() -> None:

@@ -159,7 +159,10 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                 timeout=timedelta(minutes=30),
             )
             self.afd_pg_list.append(afd_pg)
-            self.hccl_comm_name_list.append(_hccl_comm_name(afd_pg, self.world_rank))
+            backend = afd_pg._get_backend(torch.device("npu"))
+            self.hccl_comm_name_list.append(
+                str(backend.get_hccl_comm_name(int(self.world_rank))),
+            )
         self.afd_pg = self.afd_pg_list[0]
         self.hccl_comm_name = self.hccl_comm_name_list[0]
         self.hccl_comm_name2 = (
@@ -176,7 +179,10 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                 group_name="afd_moe",
                 timeout=timedelta(minutes=30),
             )
-            self.hccl_comm_name1 = _hccl_comm_name(self.ffn_pg, self.world_rank)
+            backend = self.ffn_pg._get_backend(torch.device("npu"))
+            self.hccl_comm_name1 = str(
+                backend.get_hccl_comm_name(int(self.world_rank)),
+            )
 
         if self.topology.participates_in_p2p_group:
             self.p2p_pg = init_afd_process_group(
@@ -311,7 +317,8 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
     ) -> Any:
-        self._require_initialized()
+        if not self._initialized:
+            raise RuntimeError("CAMP2P connector is not initialized")
         if not _is_torch_compiling() and not metadata.validate_tensor_shape(
             tuple(hidden_states.shape),
         ):
@@ -344,7 +351,8 @@ class CAMP2PAFDConnector(AFDConnectorBase):
 
     def recv_ffn_output(self, handle: Any = None, **kwargs: Any) -> Any:
         del handle
-        self._require_initialized()
+        if not self._initialized:
+            raise RuntimeError("CAMP2P connector is not initialized")
         ref_tensor = kwargs.get("ref_tensor")
         if ref_tensor is None:
             raise RuntimeError("CAMP2P recv_ffn_output requires ref_tensor")
@@ -374,7 +382,8 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         **kwargs: Any,
     ) -> AFDRecvOutput:
         del timeout_ms
-        self._require_initialized()
+        if not self._initialized:
+            raise RuntimeError("CAMP2P connector is not initialized")
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
         metadata = kwargs.get("metadata")
         if metadata is None:
@@ -383,7 +392,12 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                 layer_idx=int(kwargs.get("layer_idx", 0)),
             )
         connector_data = _ensure_connector_data(metadata)
-        group_ep = self._group_ep(ubatch_idx)
+        group_ep = _get_group_ep(
+            ubatch_idx,
+            self.hccl_comm_name,
+            self.hccl_comm_name2,
+            self.hccl_comm_name3,
+        )
         outputs = torch.ops.afd_ascend.a2e(
             _empty_npu_tensor(dtype_name="bfloat16"),
             _empty_npu_tensor(dtype_name="int32"),
@@ -419,12 +433,18 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
     ) -> None:
-        self._require_initialized()
+        if not self._initialized:
+            raise RuntimeError("CAMP2P connector is not initialized")
         connector_data = _ensure_connector_data(metadata)
         if connector_data.atten_batch_size is None:
             raise RuntimeError("CAMP2P FFN side is missing A2E atten_batch_size")
         ubatch_idx = int(kwargs.get("ubatch_idx", metadata.stage_idx) or 0)
-        group_ep = self._group_ep(ubatch_idx)
+        group_ep = _get_group_ep(
+            ubatch_idx,
+            self.hccl_comm_name,
+            self.hccl_comm_name2,
+            self.hccl_comm_name3,
+        )
         torch.ops.afd_ascend.e2a(
             ffn_output,
             connector_data.atten_batch_size,
@@ -478,19 +498,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             h=self.hidden_size,
             k=max(1, int(k)),
         )
-
-    def _group_ep(self, ubatch_idx: int) -> str:
-        return _get_group_ep(
-            ubatch_idx,
-            self.hccl_comm_name,
-            self.hccl_comm_name2,
-            self.hccl_comm_name3,
-        )
-
-    def _require_initialized(self) -> None:
-        if not self._initialized:
-            raise RuntimeError("CAMP2P connector is not initialized")
-
 
 def build_camp2p_topology(
     afd_config: AFDConfig,
@@ -923,11 +930,6 @@ def _empty_npu_tensor(*, dtype_name: str) -> Any:
         "int32": torch.int32,
     }[dtype_name]
     return torch.tensor([], dtype=dtype, device="npu")
-
-
-def _hccl_comm_name(group: Any, rank: int) -> str:
-    backend = group._get_backend(torch.device("npu"))
-    return str(backend.get_hccl_comm_name(int(rank)))
 
 
 __all__ = [

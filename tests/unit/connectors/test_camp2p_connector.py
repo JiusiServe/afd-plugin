@@ -167,17 +167,18 @@ def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
 
     def fake_init_afd_process_group(**kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(group_name=kwargs["group_name"])
+        backend = SimpleNamespace(
+            get_hccl_comm_name=lambda rank: f"hccl:{kwargs['group_name']}:{rank}",
+        )
+        return SimpleNamespace(
+            group_name=kwargs["group_name"],
+            _get_backend=lambda device: backend,
+        )
 
     monkeypatch.setattr(
         camp2p_module,
         "init_afd_process_group",
         fake_init_afd_process_group,
-    )
-    monkeypatch.setattr(
-        camp2p_module,
-        "_hccl_comm_name",
-        lambda group, rank: f"hccl:{group.group_name}:{rank}",
     )
     connector = CAMP2PAFDConnector(
         0,
@@ -192,8 +193,18 @@ def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
     assert connector.hccl_comm_name_list == ["hccl:afd:2", "hccl:afd1:2"]
     assert connector.hccl_comm_name == "hccl:afd:2"
     assert connector.hccl_comm_name2 == "hccl:afd1:2"
-    assert connector._group_ep(0) == "hccl:afd:2"
-    assert connector._group_ep(1) == "hccl:afd1:2"
+    assert camp2p_module._get_group_ep(
+        0,
+        connector.hccl_comm_name,
+        connector.hccl_comm_name2,
+        "",
+    ) == "hccl:afd:2"
+    assert camp2p_module._get_group_ep(
+        1,
+        connector.hccl_comm_name,
+        connector.hccl_comm_name2,
+        "",
+    ) == "hccl:afd1:2"
 
 
 def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
