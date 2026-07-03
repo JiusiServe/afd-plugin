@@ -67,10 +67,12 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             vllm_config,
             self.afd_config,
         )
-        self.num_layers = _resolve_num_hidden_layers(self.model_config)
+        self.num_layers = int(self.model_config.hf_config.num_hidden_layers)
         self.use_aclgraph = _use_npu_aclgraph(vllm_config, self)
         self._acl_graphs: dict[tuple, dict[str, Any]] = {}
-        self.graph_pool = _resolve_graph_pool() if self.use_aclgraph else None
+        self.graph_pool = (
+            current_platform.get_global_graph_pool() if self.use_aclgraph else None
+        )
         self.prof = create_afd_npu_profiler("ffn")
 
     @staticmethod
@@ -99,7 +101,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
     ) -> None:
         if dp_metadata_list is None:
             raise RuntimeError("AFD NPU FFN requires dp_metadata_list")
-        if _runner_uses_aclgraph(self) and (is_graph_capturing or is_warmup):
+        if bool(self.use_aclgraph) and (is_graph_capturing or is_warmup):
             logger.debug(
                 "AFD NPU FFN execute_ffn_step enters capture_model; "
                 "key=%s is_graph_capturing=%s is_warmup=%s",
@@ -130,9 +132,9 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         if dp_metadata_list is None:
             raise RuntimeError("AFD NPU FFN is connector-driven")
         graph_key = self._make_graph_key(dp_metadata_list)
-        acl_graphs = _runner_acl_graphs(self)
+        acl_graphs = self._acl_graphs
         graph_info = acl_graphs.get(graph_key)
-        graph_enabled = _runner_uses_aclgraph(self)
+        graph_enabled = bool(self.use_aclgraph)
         run_mode = graph_run_mode(
             is_warmup=is_warmup and graph_enabled,
             is_graph_capturing=is_graph_capturing and graph_enabled,
@@ -282,8 +284,8 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             is_warmup,
             is_attn_graph_capturing,
         )
-        start_free_memory = self._npu_free_memory()
-        self._set_cudagraph_capturing_enabled(True)
+        start_free_memory = int(torch.npu.mem_get_info()[0])
+        set_cudagraph_capturing_enabled(True)
         try:
             if is_warmup:
                 self._ffn_forward(
@@ -291,16 +293,16 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     is_graph_capturing=False,
                 )
             else:
-                with self._graph_capture_context():
+                with graph_capture(device=self.device):
                     self._capture_graphs(
-                        aclgraph_runtime_mode=_full_aclgraph_runtime_mode(),
+                        aclgraph_runtime_mode=CUDAGraphMode.FULL,
                         dp_metadata_list=dp_metadata_list,
                         is_attn_graph_capturing=is_attn_graph_capturing,
                     )
         finally:
-            self._set_cudagraph_capturing_enabled(False)
+            set_cudagraph_capturing_enabled(False)
 
-        end_free_memory = self._npu_free_memory()
+        end_free_memory = int(torch.npu.mem_get_info()[0])
         graph_size = max(0, int(start_free_memory - end_free_memory))
         logger.debug(
             "AFD NPU FFN capture_model end; key=%s graph_size=%d",
@@ -325,14 +327,14 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             return
 
         logger.debug("AFD NPU FFN capturing ACL graph for key=%s", graph_key)
-        graph = self._new_npu_graph()
+        graph = torch.npu.NPUGraph()
         logger.debug("AFD NPU FFN created NPUGraph for key=%s", graph_key)
         self.connector.update_state_from_dp_metadata(
             dp_metadata_list,
             is_graph_capturing=is_attn_graph_capturing,
         )
         logger.debug("AFD NPU FFN updated connector state for key=%s", graph_key)
-        with self._npu_graph_context(graph):
+        with torch.npu.graph(graph, pool=self.graph_pool):
             logger.debug(
                 "AFD NPU FFN entered NPU graph context for key=%s",
                 graph_key,
@@ -349,23 +351,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             "output": output,
         }
         logger.debug("AFD NPU FFN captured ACL graph for key=%s", graph_key)
-
-    def _new_npu_graph(self) -> Any:
-        return torch.npu.NPUGraph()
-
-    def _npu_graph_context(self, graph: Any) -> Any:
-        return torch.npu.graph(graph, pool=self.graph_pool)
-
-    def _graph_capture_context(self) -> Any:
-        return graph_capture(device=self.device)
-
-    @staticmethod
-    def _set_cudagraph_capturing_enabled(enabled: bool) -> None:
-        set_cudagraph_capturing_enabled(enabled)
-
-    @staticmethod
-    def _npu_free_memory() -> int:
-        return int(torch.npu.mem_get_info()[0])
 
     def _recv_attn_output(self, stage_idx: int, layer_idx: int) -> Any:
         logger.debug(
@@ -447,14 +432,10 @@ def _normalize_recv_output(
         metadata = AFDConnectorMetadata.create_ffn_metadata(
             layer_idx=layer_idx,
             stage_idx=stage_idx,
-            seq_lens=[_tensor_tokens(hidden_states)],
+            seq_lens=[max(1, int(hidden_states.shape[0]))],
         )
         recv_output.metadata = metadata
     return hidden_states, metadata, recv_output
-
-
-def _resolve_num_hidden_layers(model_config: object) -> int:
-    return int(model_config.hf_config.num_hidden_layers)
 
 
 def _ffn_token_counts_across_ranks(
@@ -505,10 +486,6 @@ def _ffn_token_count_for_rank(connector: Any, num_tokens_across_dp: Any) -> int:
     return max(1, int(values[role_rank]))
 
 
-def _tensor_tokens(hidden_states: Any) -> int:
-    return max(1, int(hidden_states.shape[0]))
-
-
 def _to_int_list(value: Any) -> list[int]:
     if value is None:
         return []
@@ -554,22 +531,6 @@ def _use_npu_aclgraph(vllm_config: object, runner: object) -> bool:
         "FULL_DECODE_ONLY",
         "PIECEWISE",
     }
-
-
-def _resolve_graph_pool() -> Any:
-    return current_platform.get_global_graph_pool()
-
-
-def _full_aclgraph_runtime_mode() -> Any:
-    return CUDAGraphMode.FULL
-
-
-def _runner_acl_graphs(runner: object) -> dict[tuple, dict[str, Any]]:
-    return runner._acl_graphs
-
-
-def _runner_uses_aclgraph(runner: object) -> bool:
-    return bool(runner.use_aclgraph)
 
 
 def _log_graph_key_lookup(
