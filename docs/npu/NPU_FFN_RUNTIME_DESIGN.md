@@ -11,7 +11,7 @@ vLLM-Ascend worker class:
 ```bash
 VLLM_PLUGINS=ascend,afd vllm serve <model> \
   --worker-cls afd_plugin.v1.worker.ascend.AFDNPUFFNWorker \
-  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"camp2pconnector","host":"127.0.0.1","port":1239,"num_attention_servers":1,"num_ffn_servers":1}}'
+  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"camp2pconnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 The FFN process is connector-driven. It should not receive OpenAI/vLLM
@@ -67,7 +67,7 @@ Current behavior:
 - parses `AFDConfig` with expected role `ffn`;
 - installs a vLLM-Ascend `vllm_config.afd_config` compatibility proxy;
 - validates unsupported NPU AFD features;
-- derives `afd_server_rank` from DP/TP ranks;
+- derives `afd_role_rank` from DP/TP ranks;
 - creates `camp2pconnector`;
 - returns empty KV cache specs and no-ops KV initialization;
 - receives DP metadata and Attention outputs from the connector;
@@ -131,7 +131,7 @@ topology, HCCL/Gloo process groups, custom-op loading, DP metadata exchange,
 receive metadata construction, and FFN/Attention payload transfer.
 
 The connector supports non-equal A/F topologies where
-`num_attention_servers >= num_ffn_servers` and the ratio is integral. FFN token
+`num_attention_ranks >= num_ffn_ranks` and the ratio is integral. FFN token
 counts are derived from Attention DP metadata and projected back to DP-level
 counts for vLLM's forward context when TP is enabled.
 

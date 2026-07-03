@@ -22,10 +22,9 @@ def test_parse_canonical_additional_config_namespace():
                 "enabled": True,
                 "role": "ffn",
                 "connector": "p2pconnector",
-                "num_afd_stages": "3",
-                "num_attention_servers": 2,
-                "num_ffn_servers": 2,
-                "afd_server_rank": 1,
+                "num_attention_ranks": 2,
+                "num_ffn_ranks": 2,
+                "afd_role_rank": 1,
             },
         },
         expected_role="ffn",
@@ -35,8 +34,7 @@ def test_parse_canonical_additional_config_namespace():
     assert config.role == "ffn"
     assert config.afd_role == "ffn"
     assert config.is_ffn_server
-    assert config.num_afd_stages == 3
-    assert config.afd_server_rank == 1
+    assert config.afd_role_rank == 1
 
 
 def test_parse_vllm_like_config_object():
@@ -75,14 +73,34 @@ def test_original_afd_field_aliases_are_supported():
     assert config.afd_extra_config == {"rank_map": "env"}
 
 
+def test_integer_like_config_values_are_coerced():
+    class IntLike:
+        def __int__(self) -> int:
+            return 2
+
+    config = afd_config_from_mapping(
+        {
+            "num_attention_ranks": IntLike(),
+            "num_ffn_ranks": IntLike(),
+            "afd_role_rank": "1",
+        },
+    )
+
+    assert config.num_attention_ranks == 2
+    assert config.num_ffn_ranks == 2
+    assert config.afd_role_rank == 1
+
+
 @pytest.mark.parametrize(
     ("raw", "message"),
     [
         ({"enabled": "maybe"}, "enabled must be a boolean"),
         ({"role": "decode"}, "AFD role must be one of"),
         ({"connector": "tcp"}, "AFD connector must be one of"),
-        ({"num_afd_stages": 0}, "num_afd_stages must be positive"),
-        ({"afd_server_rank": 2, "num_attention_servers": 2}, "afd_server_rank"),
+        ({"afd_role_rank": 2, "num_attention_ranks": 2}, "afd_role_rank"),
+        ({"num_attention_servers": 2}, "unknown AFD config field"),
+        ({"num_ffn_servers": 2}, "unknown AFD config field"),
+        ({"afd_server_rank": 0}, "unknown AFD config field"),
         ({"unknown": True}, "unknown AFD config field"),
     ],
 )

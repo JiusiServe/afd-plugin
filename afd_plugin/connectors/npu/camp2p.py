@@ -499,7 +499,7 @@ def build_camp2p_topology(
     role_rank: int | None = None,
 ) -> _CAMP2PTopology:
     attention_size, ffn_size = topology_from_config(afd_config)
-    role_rank = afd_config.afd_server_rank if role_rank is None else int(role_rank)
+    role_rank = afd_config.afd_role_rank if role_rank is None else int(role_rank)
     if attention_size <= 0 or ffn_size <= 0:
         raise ValueError("CAMP2P topology sizes must be positive")
     if attention_size < ffn_size:
@@ -590,7 +590,7 @@ def _num_tokens_for_ffn_rank(
     counts = _to_int_list(token_counts)
     # Expand DP-level counts to AFD-level when TP > 1.
     # num_tokens_across_dp_cpu has dp_size entries, but attention_size
-    # = num_attention_servers includes TP workers.  Each DP rank's count
+    # = num_attention_ranks includes TP workers.  Each DP rank's count
     # is replicated tp_size times.
     if len(counts) < attention_size and attention_size % len(counts) == 0:
         tp_size = attention_size // len(counts)
@@ -607,7 +607,7 @@ def _num_tokens_for_ffn_rank(
 
 def _resolve_role_rank(vllm_config: object, afd_config: AFDConfig) -> int:
     del vllm_config
-    return int(afd_config.afd_server_rank)
+    return int(afd_config.afd_role_rank)
 
 
 def _resolve_aiv_num(afd_config: AFDConfig) -> int:

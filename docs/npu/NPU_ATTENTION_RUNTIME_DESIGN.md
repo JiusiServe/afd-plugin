@@ -10,7 +10,7 @@ NPU Attention is selected with an explicit vLLM-Ascend worker class:
 ```bash
 VLLM_PLUGINS=ascend,afd vllm serve <model> \
   --worker-cls afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker \
-  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"camp2pconnector","host":"127.0.0.1","port":1239,"num_attention_servers":1,"num_ffn_servers":1}}'
+  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"camp2pconnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 NPU runtime modules intentionally import real vLLM-Ascend dependencies. The
@@ -67,7 +67,7 @@ Current behavior:
 - installs a read-only `vllm_config.afd_config` compatibility proxy for
   vLLM-Ascend code that still reads that attribute;
 - validates unsupported NPU feature flags;
-- derives `afd_server_rank` from DP/TP ranks;
+- derives `afd_role_rank` from DP/TP ranks;
 - creates and initializes `camp2pconnector`;
 - injects AFD metadata into Ascend/vLLM forward context;
 - sends DP metadata to FFN ranks before model forward;

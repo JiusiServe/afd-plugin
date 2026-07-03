@@ -101,8 +101,8 @@ shape; only `role` and `afd_size` differ between attention and FFN:
     "connector": "p2pconnector",
     "host": "127.0.0.1",
     "port": 6269,
-    "num_attention_servers": 1,      // 2 in 2A2F
-    "num_ffn_servers": 1,            // 2 in 2A2F
+    "num_attention_ranks": 1,      // 2 in 2A2F
+    "num_ffn_ranks": 1,            // 2 in 2A2F
     "extra_config": {
       "afd_size": "1A1F"             // "2A2F" in 2A2F
     }

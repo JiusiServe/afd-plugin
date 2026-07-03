@@ -43,20 +43,20 @@ class AFDRankMapping:
 def topology_from_config(config: AFDConfig) -> tuple[int, int]:
     """Return ``(attention_size, ffn_size)`` for an AFD config."""
 
-    return config.num_attention_servers, config.num_ffn_servers
+    return config.num_attention_ranks, config.num_ffn_ranks
 
 
 def validate_p2p_topology(config: AFDConfig) -> None:
     attention_size, ffn_size = topology_from_config(config)
     if attention_size < ffn_size:
         raise ValueError(
-            "p2pconnector currently requires num_attention_servers >= "
-            f"num_ffn_servers, got {attention_size} < {ffn_size}",
+            "p2pconnector currently requires num_attention_ranks >= "
+            f"num_ffn_ranks, got {attention_size} < {ffn_size}",
         )
     if attention_size % ffn_size != 0:
         raise ValueError(
-            "p2pconnector currently requires num_attention_servers to be a "
-            "multiple of num_ffn_servers, got "
+            "p2pconnector currently requires num_attention_ranks to be a "
+            "multiple of num_ffn_ranks, got "
             f"{attention_size} and {ffn_size}",
         )
 
@@ -69,7 +69,7 @@ def build_rank_mapping(
 
     validate_p2p_topology(config)
     attention_size, ffn_size = topology_from_config(config)
-    role_rank = config.afd_server_rank if role_rank is None else role_rank
+    role_rank = config.afd_role_rank if role_rank is None else role_rank
     if role_rank < 0:
         raise ValueError(f"AFD role rank must be non-negative, got {role_rank}")
 

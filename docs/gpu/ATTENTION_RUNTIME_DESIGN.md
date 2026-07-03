@@ -10,7 +10,7 @@ GPU Attention is selected with an explicit worker class:
 ```bash
 vllm serve <model> \
   --worker-cls afd_plugin.v1.worker.AFDAttentionWorker \
-  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"p2pconnector","host":"127.0.0.1","port":1239,"num_attention_servers":1,"num_ffn_servers":1}}'
+  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"p2pconnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 The public config channel is vLLM `additional_config["afd"]`; the plugin does
@@ -42,7 +42,7 @@ profiling, sleep/wake, and shutdown.
 Current behavior:
 
 - parses and validates `AFDConfig` with expected role `attention`;
-- derives `afd_server_rank` from DP/TP ranks when DP or TP is enabled;
+- derives `afd_role_rank` from DP/TP ranks when DP or TP is enabled;
 - validates CUDA graph mode with `validate_cuda_graph_mode`;
 - creates and initializes the configured connector through
   `AFDConnectorFactory`;
@@ -103,7 +103,7 @@ GPU Attention uses `p2pconnector`, implemented by
 initialization and remains owned by the model runner. Rank topology is validated
 from `AFDConfig`; FFN ranks are ordered before Attention ranks.
 
-`num_attention_servers` must be greater than or equal to `num_ffn_servers` and
+`num_attention_ranks` must be greater than or equal to `num_ffn_ranks` and
 divisible by it.
 
 ## Current Limits

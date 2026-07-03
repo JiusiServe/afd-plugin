@@ -12,8 +12,8 @@ CUDA_VISIBLE_DEVICES=0,1 uv run vllm serve "$MODEL_PATH" \
             "connector": "p2pconnector",
             "host": "127.0.0.1",
             "port": 6269,
-            "num_attention_servers": 2,
-            "num_ffn_servers": 2,
+            "num_attention_ranks": 2,
+            "num_ffn_ranks": 2,
             "extra_config": {
                 "afd_size": "2A2F"
             }
@@ -41,8 +41,8 @@ CUDA_VISIBLE_DEVICES=2,3 uv run vllm serve "$MODEL_PATH" \
             "connector": "p2pconnector",
             "host": "127.0.0.1",
             "port": 6269,
-            "num_attention_servers": 2,
-            "num_ffn_servers": 2,
+            "num_attention_ranks": 2,
+            "num_ffn_ranks": 2,
             "extra_config": {
                 "afd_size": "2A2F"
             }

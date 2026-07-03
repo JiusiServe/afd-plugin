@@ -569,9 +569,9 @@ def test_afd_rank_derives_from_data_parallel_rank():
         enabled=True,
         role="attention",
         connector="p2pconnector",
-        num_attention_servers=2,
-        num_ffn_servers=2,
-        afd_server_rank=0,
+        num_attention_ranks=2,
+        num_ffn_ranks=2,
+        afd_role_rank=0,
     )
     vllm_config = SimpleNamespace(
         parallel_config=_parallel_config(data_parallel_size=2, data_parallel_rank=1),
@@ -579,8 +579,8 @@ def test_afd_rank_derives_from_data_parallel_rank():
 
     ranked = _with_dp_derived_afd_rank(vllm_config, config)
 
-    assert ranked.afd_server_rank == 1
-    assert config.afd_server_rank == 0
+    assert ranked.afd_role_rank == 1
+    assert config.afd_role_rank == 0
 
 
 # --- TP rank derivation tests ---
@@ -617,9 +617,9 @@ def test_afd_rank_derives_from_tp_rank_dp1_tp2(monkeypatch):
         enabled=True,
         role="attention",
         connector="p2pconnector",
-        num_attention_servers=4,
-        num_ffn_servers=4,
-        afd_server_rank=0,
+        num_attention_ranks=4,
+        num_ffn_ranks=4,
+        afd_role_rank=0,
     )
     vllm_config = SimpleNamespace(
         parallel_config=_parallel_config_with_tp(dp_size=1, tp_size=2),
@@ -628,7 +628,7 @@ def test_afd_rank_derives_from_tp_rank_dp1_tp2(monkeypatch):
     ranked = _with_dp_derived_afd_rank(vllm_config, config)
 
     # role_rank = base(0) + dp_rank(0) * tp_size(2) + tp_rank(1) = 1
-    assert ranked.afd_server_rank == 1
+    assert ranked.afd_role_rank == 1
 
 
 def test_afd_rank_derives_from_dp_and_tp_ranks_dp2_tp2(monkeypatch):
@@ -642,9 +642,9 @@ def test_afd_rank_derives_from_dp_and_tp_ranks_dp2_tp2(monkeypatch):
         enabled=True,
         role="attention",
         connector="p2pconnector",
-        num_attention_servers=4,
-        num_ffn_servers=4,
-        afd_server_rank=0,
+        num_attention_ranks=4,
+        num_ffn_ranks=4,
+        afd_role_rank=0,
     )
     vllm_config = SimpleNamespace(
         parallel_config=_parallel_config_with_tp(dp_size=2, dp_rank=1, tp_size=2),
@@ -653,7 +653,7 @@ def test_afd_rank_derives_from_dp_and_tp_ranks_dp2_tp2(monkeypatch):
     ranked = _with_dp_derived_afd_rank(vllm_config, config)
 
     # role_rank = base(0) + dp_rank(1) * tp_size(2) + tp_rank(1) = 3
-    assert ranked.afd_server_rank == 3
+    assert ranked.afd_role_rank == 3
 
 
 def test_afd_rank_unchanged_when_dp1_tp1():
@@ -662,9 +662,9 @@ def test_afd_rank_unchanged_when_dp1_tp1():
         enabled=True,
         role="attention",
         connector="p2pconnector",
-        num_attention_servers=1,
-        num_ffn_servers=1,
-        afd_server_rank=0,
+        num_attention_ranks=1,
+        num_ffn_ranks=1,
+        afd_role_rank=0,
     )
     vllm_config = SimpleNamespace(
         parallel_config=_parallel_config_with_tp(dp_size=1, tp_size=1),
@@ -686,9 +686,9 @@ def test_afd_rank_raises_for_out_of_range_dp2_tp2(monkeypatch):
         enabled=True,
         role="attention",
         connector="p2pconnector",
-        num_attention_servers=2,
-        num_ffn_servers=2,
-        afd_server_rank=0,
+        num_attention_ranks=2,
+        num_ffn_ranks=2,
+        afd_role_rank=0,
     )
     vllm_config = SimpleNamespace(
         parallel_config=_parallel_config_with_tp(dp_size=2, dp_rank=1, tp_size=2),

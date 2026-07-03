@@ -104,8 +104,18 @@ def parse_args() -> argparse.Namespace:
         default="vllm",
         help="vLLM executable to run. Defaults to 'vllm'.",
     )
-    parser.add_argument("--num-attention-servers", type=int, default=1)
-    parser.add_argument("--num-ffn-servers", type=int, default=1)
+    parser.add_argument(
+        "--num-attention-ranks",
+        dest="num_attention_ranks",
+        type=int,
+        default=1,
+    )
+    parser.add_argument(
+        "--num-ffn-ranks",
+        dest="num_ffn_ranks",
+        type=int,
+        default=1,
+    )
     parser.add_argument(
         "--attention-gpus",
         default="0",
@@ -136,7 +146,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Number of completion requests to send. Defaults to the number of "
-            "Attention servers."
+            "Attention ranks."
         ),
     )
     parser.add_argument(
@@ -236,14 +246,14 @@ def validate_topology(
     attention_gpus: list[str],
     ffn_gpus: list[str],
 ) -> None:
-    if args.num_attention_servers != len(attention_gpus):
+    if args.num_attention_ranks != len(attention_gpus):
         raise ValueError(
-            "--num-attention-servers must match the number of --attention-gpus",
+            "--num-attention-ranks must match the number of --attention-gpus",
         )
-    if args.num_ffn_servers != len(ffn_gpus):
-        raise ValueError("--num-ffn-servers must match the number of --ffn-gpus")
-    if args.num_attention_servers < 1 or args.num_ffn_servers < 1:
-        raise ValueError("AFD E2E requires at least one Attention and FFN server")
+    if args.num_ffn_ranks != len(ffn_gpus):
+        raise ValueError("--num-ffn-ranks must match the number of --ffn-gpus")
+    if args.num_attention_ranks < 1 or args.num_ffn_ranks < 1:
+        raise ValueError("AFD E2E requires at least one Attention and FFN rank")
 
 
 def build_vllm_command(
@@ -252,10 +262,10 @@ def build_vllm_command(
     role: str,
 ) -> list[str]:
     tp_size = args.tp_size
-    role_total_servers = (
-        args.num_attention_servers if role == "attention" else args.num_ffn_servers
+    role_total_ranks = (
+        args.num_attention_ranks if role == "attention" else args.num_ffn_ranks
     )
-    role_dp_size = max(1, role_total_servers // tp_size)
+    role_dp_size = max(1, role_total_ranks // tp_size)
     is_npu = args.device_backend == "npu"
 
     afd_config = {
@@ -265,8 +275,8 @@ def build_vllm_command(
             "connector": "camp2pconnector" if is_npu else "p2pconnector",
             "host": args.afd_host,
             "port": args.afd_port,
-            "num_attention_servers": args.num_attention_servers,
-            "num_ffn_servers": args.num_ffn_servers,
+            "num_attention_ranks": args.num_attention_ranks,
+            "num_ffn_ranks": args.num_ffn_ranks,
         },
     }
     if is_npu:
@@ -483,7 +493,7 @@ def request_completions(args: argparse.Namespace) -> list[dict[str, Any]]:
     request_count = (
         int(args.num_requests)
         if args.num_requests is not None
-        else max(int(args.num_attention_servers), 1)
+        else max(int(args.num_attention_ranks), 1)
     )
     if request_count == 1:
         return [request_completion(args)]

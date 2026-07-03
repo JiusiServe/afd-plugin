@@ -36,16 +36,25 @@ class AFDConfig:
     names.
     """
 
+    # Enables the AFD runtime for the selected worker role.
     enabled: bool = False
+    # Open connector/plugin extension namespace, aligned with vLLM extra config.
     extra_config: dict[str, Any] = field(default_factory=dict)
+    # Connector implementation name used to create the backend data path.
     connector: str = "p2pconnector"
+    # Role owned by this process: Attention sends hidden states; FFN receives.
     role: AFDRole = "attention"
+    # Port used by the AFD connector rendezvous/control path.
     port: int = 1239
+    # Host used by the AFD connector rendezvous/control path.
     host: str = "127.0.0.1"
-    num_afd_stages: int = 3
-    num_attention_servers: int = 1
-    num_ffn_servers: int = 1
-    afd_server_rank: int = 0
+    # Number of AFD Attention ranks participating in this topology.
+    num_attention_ranks: int = 1
+    # Number of AFD FFN ranks participating in this topology.
+    num_ffn_ranks: int = 1
+    # Rank of this process within its AFD role group.
+    afd_role_rank: int = 0
+    # Whether Attention computes MoE gate outputs before sending to FFN.
     compute_gate_on_attention: bool = False
 
     @property
@@ -79,13 +88,12 @@ class AFDConfig:
     def compute_hash(self) -> str:
         """Return a stable hash for graph-affecting AFD settings."""
 
-        factors: list[Any] = [
+        factors: list[object] = [
             self.enabled,
             self.connector,
             self.role,
-            self.num_afd_stages,
-            self.num_attention_servers,
-            self.num_ffn_servers,
+            self.num_attention_ranks,
+            self.num_ffn_ranks,
         ]
         return hashlib.sha256(str(factors).encode()).hexdigest()
 
@@ -93,7 +101,7 @@ class AFDConfig:
         validate_afd_config(self, expected_role=expected_role)
 
 
-def _coerce_bool(value: Any, *, field_name: str) -> bool:
+def _coerce_bool(value: object, *, field_name: str) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -105,17 +113,19 @@ def _coerce_bool(value: Any, *, field_name: str) -> bool:
     raise TypeError(f"{field_name} must be a boolean, got {value!r}")
 
 
-def _coerce_int(value: Any, *, field_name: str) -> int:
+def _coerce_int(value: object, *, field_name: str) -> int:
     if isinstance(value, bool):
         raise TypeError(f"{field_name} must be an integer, got {value!r}")
     try:
         return int(value)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(f"{field_name} must be an integer, got {value!r}") from exc
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise TypeError(
+            f"{field_name} must be an integer, got {value!r}",
+        ) from exc
 
 
-def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
-    normalized: dict[str, Any] = {}
+def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, object]:
+    normalized: dict[str, object] = {}
     valid_fields = set(AFDConfig.__dataclass_fields__)  # type: ignore[attr-defined]
 
     for key, value in raw.items():
@@ -140,10 +150,9 @@ def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
 
     for field_name in (
         "port",
-        "num_afd_stages",
-        "num_attention_servers",
-        "num_ffn_servers",
-        "afd_server_rank",
+        "num_attention_ranks",
+        "num_ffn_ranks",
+        "afd_role_rank",
     ):
         if field_name in normalized:
             normalized[field_name] = _coerce_int(
@@ -248,28 +257,23 @@ def validate_afd_config(
         raise ValueError("AFD host must be non-empty")
     if not 0 < config.port < 65536:
         raise ValueError(f"AFD port must be in 1..65535, got {config.port}")
-    if config.num_afd_stages <= 0:
+    if config.num_attention_ranks <= 0:
         raise ValueError(
-            f"num_afd_stages must be positive, got {config.num_afd_stages}",
+            f"num_attention_ranks must be positive, got {config.num_attention_ranks}",
         )
-    if config.num_attention_servers <= 0:
+    if config.num_ffn_ranks <= 0:
         raise ValueError(
-            "num_attention_servers must be positive, "
-            f"got {config.num_attention_servers}",
-        )
-    if config.num_ffn_servers <= 0:
-        raise ValueError(
-            f"num_ffn_servers must be positive, got {config.num_ffn_servers}",
+            f"num_ffn_ranks must be positive, got {config.num_ffn_ranks}",
         )
 
     if config.role == "attention":
-        server_count = p2p_sizes[0] if p2p_sizes else config.num_attention_servers
+        rank_count = p2p_sizes[0] if p2p_sizes else config.num_attention_ranks
     else:
-        server_count = p2p_sizes[1] if p2p_sizes else config.num_ffn_servers
-    if not 0 <= config.afd_server_rank < server_count:
+        rank_count = p2p_sizes[1] if p2p_sizes else config.num_ffn_ranks
+    if not 0 <= config.afd_role_rank < rank_count:
         raise ValueError(
-            "afd_server_rank must be within this role's server count "
-            f"(rank={config.afd_server_rank}, count={server_count})",
+            "afd_role_rank must be within this role's rank count "
+            f"(rank={config.afd_role_rank}, count={rank_count})",
         )
 
 

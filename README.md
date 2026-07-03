@@ -52,7 +52,7 @@ Connector support:
 
 | Connector | Platform | Status | Notes |
 | --- | --- | --- | --- |
-| `p2pconnector` | CUDA | Supported | FFN ranks are ordered before Attention ranks. `num_attention_servers` must be greater than or equal to `num_ffn_servers` and divisible by it. |
+| `p2pconnector` | CUDA | Supported | FFN ranks are ordered before Attention ranks. `num_attention_ranks` must be greater than or equal to `num_ffn_ranks` and divisible by it. |
 | `camp2pconnector` | Ascend NPU | Supported | Uses HCCL/CAMP2P custom ops. Ascend ops build by default; set `AFD_BUILD_ASCEND_OPS=0` to skip them. |
 
 Connector implementations are grouped by backend package:
@@ -126,7 +126,7 @@ vllm serve /path/to/DeepSeek-V2-Lite \
   --enforce-eager \
   --host 127.0.0.1 \
   --port 18000 \
-  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"p2pconnector","host":"127.0.0.1","port":6239,"num_attention_servers":1,"num_ffn_servers":1}}'
+  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"p2pconnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 GPU FFN-side shape:
@@ -141,7 +141,7 @@ vllm serve /path/to/DeepSeek-V2-Lite \
   --enforce-eager \
   --host 127.0.0.1 \
   --port 18001 \
-  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"p2pconnector","host":"127.0.0.1","port":6239,"num_attention_servers":1,"num_ffn_servers":1}}'
+  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"p2pconnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 NPU uses the same config channel with Ascend class paths and
@@ -157,7 +157,7 @@ vllm serve /path/to/DeepSeek-V2-Lite \
   --enforce-eager \
   --host 127.0.0.1 \
   --port 18000 \
-  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"camp2pconnector","host":"127.0.0.1","port":6239,"num_attention_servers":1,"num_ffn_servers":1}}'
+  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"camp2pconnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 Start the FFN side first, then start the Attention side and send requests to
@@ -170,8 +170,8 @@ For repeatable local smoke testing, prefer the bundled runner:
 uv run python tests/e2e/runner.py \
   --model /path/to/DeepSeek-V2-Lite \
   --device-backend gpu \
-  --num-attention-servers 1 \
-  --num-ffn-servers 1 \
+  --num-attention-ranks 1 \
+  --num-ffn-ranks 1 \
   --attention-gpus 0 \
   --ffn-gpus 1 \
   --api-port-base 18000 \
@@ -194,10 +194,9 @@ The canonical config shape is:
     "connector": "p2pconnector",
     "host": "127.0.0.1",
     "port": 1239,
-    "num_afd_stages": 3,
-    "num_attention_servers": 2,
-    "num_ffn_servers": 1,
-    "afd_server_rank": 0,
+    "num_attention_ranks": 2,
+    "num_ffn_ranks": 1,
+    "afd_role_rank": 0,
     "compute_gate_on_attention": false,
     "extra_config": {}
   }

@@ -15,8 +15,8 @@ def _args() -> argparse.Namespace:
     return argparse.Namespace(
         model="/models/DeepSeek-V2-Lite",
         vllm_bin="vllm",
-        num_attention_servers=2,
-        num_ffn_servers=2,
+        num_attention_ranks=2,
+        num_ffn_ranks=2,
         api_host="127.0.0.1",
         api_port_base=18100,
         afd_host="127.0.0.1",
@@ -61,10 +61,10 @@ def test_runner_uses_native_dp_for_attention_topology():
     )
 
     additional_config = json.loads(_arg_value(command, "--additional-config"))
-    assert additional_config["afd"]["num_attention_servers"] == 2
-    assert additional_config["afd"]["num_ffn_servers"] == 2
+    assert additional_config["afd"]["num_attention_ranks"] == 2
+    assert additional_config["afd"]["num_ffn_ranks"] == 2
     assert "extra_config" not in additional_config["afd"]
-    assert "afd_server_rank" not in additional_config["afd"]
+    assert "afd_role_rank" not in additional_config["afd"]
 
 
 def test_runner_uses_native_dp_for_ffn_topology():

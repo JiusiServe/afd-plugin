@@ -487,18 +487,18 @@ def _with_dp_derived_afd_rank(
     dp_rank = int(parallel_config.data_parallel_rank) if dp_size > 1 else 0
     tp_rank = get_tensor_model_parallel_rank() if tp_size > 1 else 0
     role_size = (
-        afd_config.num_attention_servers
+        afd_config.num_attention_ranks
         if afd_config.role == "attention"
-        else afd_config.num_ffn_servers
+        else afd_config.num_ffn_ranks
     )
-    role_rank = afd_config.afd_server_rank + dp_rank * tp_size + tp_rank
+    role_rank = afd_config.afd_role_rank + dp_rank * tp_size + tp_rank
     if role_rank >= role_size:
         raise ValueError(
             "AFD role rank derived from distributed ranks is out of range: "
-            f"base={afd_config.afd_server_rank}, dp_rank={dp_rank}, "
+            f"base={afd_config.afd_role_rank}, dp_rank={dp_rank}, "
             f"tp_rank={tp_rank}, role_size={role_size}",
         )
-    return replace(afd_config, afd_server_rank=role_rank)
+    return replace(afd_config, afd_role_rank=role_rank)
 
 
 def _is_ubatching_enabled(vllm_config: object) -> bool:

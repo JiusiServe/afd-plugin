@@ -50,8 +50,8 @@ def test_p2p_connector_can_be_constructed_without_runtime_initialization():
             enabled=True,
             role="attention",
             connector="p2pconnector",
-            num_attention_servers=2,
-            num_ffn_servers=1,
+            num_attention_ranks=2,
+            num_ffn_ranks=1,
         ),
     )
 
@@ -79,8 +79,8 @@ def test_p2p_connector_uses_dp_rank_as_role_rank_for_native_dp():
             enabled=True,
             role="attention",
             connector="p2pconnector",
-            num_attention_servers=2,
-            num_ffn_servers=2,
+            num_attention_ranks=2,
+            num_ffn_ranks=2,
         ),
     )
 
@@ -111,9 +111,9 @@ def test_p2p_topology_supports_equal_and_integer_multiple_attention_counts(
             enabled=True,
             role=role,
             connector="p2pconnector",
-            num_attention_servers=attention_size,
-            num_ffn_servers=ffn_size,
-            afd_server_rank=role_rank,
+            num_attention_ranks=attention_size,
+            num_ffn_ranks=ffn_size,
+            afd_role_rank=role_rank,
         ),
     )
 
@@ -128,18 +128,18 @@ def test_p2p_topology_supports_equal_and_integer_multiple_attention_counts(
         (
             {
                 "connector": "p2pconnector",
-                "num_attention_servers": 1,
-                "num_ffn_servers": 2,
+                "num_attention_ranks": 1,
+                "num_ffn_ranks": 2,
             },
-            "num_attention_servers >= num_ffn_servers",
+            "num_attention_ranks >= num_ffn_ranks",
         ),
         (
             {
                 "connector": "p2pconnector",
-                "num_attention_servers": 3,
-                "num_ffn_servers": 2,
+                "num_attention_ranks": 3,
+                "num_ffn_ranks": 2,
             },
-            "multiple of num_ffn_servers",
+            "multiple of num_ffn_ranks",
         ),
     ],
 )
@@ -226,8 +226,8 @@ def test_p2p_hidden_state_send_uses_registered_custom_op(monkeypatch):
             enabled=True,
             role="attention",
             connector="p2pconnector",
-            num_attention_servers=2,
-            num_ffn_servers=1,
+            num_attention_ranks=2,
+            num_ffn_ranks=1,
         ),
     )
     communicator = object()
@@ -271,8 +271,8 @@ def test_p2p_recv_preserves_dynamic_ref_tensor_first_dim(monkeypatch):
             enabled=True,
             role="attention",
             connector="p2pconnector",
-            num_attention_servers=2,
-            num_ffn_servers=1,
+            num_attention_ranks=2,
+            num_ffn_ranks=1,
         ),
     )
     communicator = object()

@@ -11,7 +11,7 @@ class:
 ```bash
 vllm serve <model> \
   --worker-cls afd_plugin.v1.worker.AFDFFNWorker \
-  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"p2pconnector","host":"127.0.0.1","port":1239,"num_attention_servers":1,"num_ffn_servers":1}}'
+  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"p2pconnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 The FFN process is not request-driven. Start the FFN process first, then start
@@ -47,7 +47,7 @@ execution.
 Current behavior:
 
 - parses and validates `AFDConfig` with expected role `ffn`;
-- derives `afd_server_rank` from DP/TP ranks when needed;
+- derives `afd_role_rank` from DP/TP ranks when needed;
 - validates CUDA graph mode;
 - creates the configured connector through `AFDConnectorFactory`;
 - loads the model through vLLM's model loader;

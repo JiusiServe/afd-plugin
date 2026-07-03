@@ -58,7 +58,7 @@ class P2PAFDConnector(AFDConnectorBase):
         if parallel_config.data_parallel_size > 1:
             role_rank = int(parallel_config.data_parallel_rank)
         else:
-            role_rank = int(afd_config.afd_server_rank)
+            role_rank = int(afd_config.afd_role_rank)
         self.mapping = build_rank_mapping(
             afd_config,
             role_rank=role_rank,

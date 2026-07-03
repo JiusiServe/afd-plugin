@@ -52,9 +52,9 @@ def _afd_config(*, role: str, rank: int = 0):
         enabled=True,
         connector="camp2pconnector",
         role=role,
-        afd_server_rank=rank,
-        num_attention_servers=4,
-        num_ffn_servers=2,
+        afd_role_rank=rank,
+        num_attention_ranks=4,
+        num_ffn_ranks=2,
     )
 
 
