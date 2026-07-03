@@ -73,6 +73,24 @@ def test_original_afd_field_aliases_are_supported():
     assert config.afd_extra_config == {"rank_map": "env"}
 
 
+def test_integer_like_config_values_are_coerced():
+    class IntLike:
+        def __int__(self) -> int:
+            return 2
+
+    config = afd_config_from_mapping(
+        {
+            "num_attention_ranks": IntLike(),
+            "num_ffn_ranks": IntLike(),
+            "afd_role_rank": "1",
+        },
+    )
+
+    assert config.num_attention_ranks == 2
+    assert config.num_ffn_ranks == 2
+    assert config.afd_role_rank == 1
+
+
 @pytest.mark.parametrize(
     ("raw", "message"),
     [

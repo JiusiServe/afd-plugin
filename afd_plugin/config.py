@@ -116,16 +116,12 @@ def _coerce_bool(value: object, *, field_name: str) -> bool:
 def _coerce_int(value: object, *, field_name: str) -> int:
     if isinstance(value, bool):
         raise TypeError(f"{field_name} must be an integer, got {value!r}")
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError as exc:
-            raise TypeError(
-                f"{field_name} must be an integer, got {value!r}",
-            ) from exc
-    raise TypeError(f"{field_name} must be an integer, got {value!r}")
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise TypeError(
+            f"{field_name} must be an integer, got {value!r}",
+        ) from exc
 
 
 def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, object]:
@@ -263,8 +259,7 @@ def validate_afd_config(
         raise ValueError(f"AFD port must be in 1..65535, got {config.port}")
     if config.num_attention_ranks <= 0:
         raise ValueError(
-            "num_attention_ranks must be positive, "
-            f"got {config.num_attention_ranks}",
+            f"num_attention_ranks must be positive, got {config.num_attention_ranks}",
         )
     if config.num_ffn_ranks <= 0:
         raise ValueError(
