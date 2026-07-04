@@ -31,9 +31,6 @@ class _RecordingConnector:
         self.dp_metadata_updates = []
         self.sent_dp_metadata_lists = []
 
-    def is_attn_top_min_size_rank(self, world_rank):
-        return world_rank == self.world_rank
-
     def update_state_from_dp_metadata(self, payload):
         assert isinstance(payload, AFDDPMetadataPayload)
         self.dp_metadata_updates.append(

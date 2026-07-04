@@ -227,14 +227,13 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         self.is_graph_capturing = payload.is_graph_capturing
         self.is_warmup = payload.is_warmup
 
-    def is_attn_top_min_size_rank(self, world_rank: int) -> bool:
-        return self.ffn_size <= int(world_rank) < self.ffn_size + self.min_size
-
     def send_dp_metadata_list(
         self,
         payload: AFDDPMetadataPayload,
     ) -> None:
         if self.p2p_pg is None:
+            return
+        if not self.topology.is_attn_top_min_size_rank:
             return
         for dst in self.dst_list:
             _send_object(payload, dst=dst, group=self.p2p_pg)

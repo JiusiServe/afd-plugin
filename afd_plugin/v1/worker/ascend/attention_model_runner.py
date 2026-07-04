@@ -1042,20 +1042,15 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             is_warmup=is_warmup,
         )
         self.afd_connector.update_state_from_dp_metadata(payload)
-        should_send = self.afd_connector.is_attn_top_min_size_rank(
-            self.afd_connector.world_rank,
-        )
         logger.warning(
             "AFD NPU Attention send_dp_metadata decision; world_rank=%d "
-            "key=%s should_send=%s is_graph_capturing=%s is_warmup=%s",
+            "key=%s is_graph_capturing=%s is_warmup=%s",
             self.afd_connector.world_rank,
             _dp_metadata_debug_key(dp_metadata_list),
-            should_send,
             is_graph_capturing,
             is_warmup,
         )
-        if should_send:
-            self.afd_connector.send_dp_metadata_list(payload)
+        self.afd_connector.send_dp_metadata_list(payload)
 
     def _ensure_dp_metadata(self, dp_metadata: Any) -> Any:
         if dp_metadata is not None:

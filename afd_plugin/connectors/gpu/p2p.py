@@ -200,14 +200,13 @@ class P2PAFDConnector(AFDConnectorBase):
                         device=tensor_metadata.device,
                     )
 
-    def is_attn_top_min_size_rank(self, world_rank: int) -> bool:
-        return self.ffn_size <= world_rank < self.ffn_size + self.min_size
-
     def send_dp_metadata_list(
         self,
         payload: AFDDPMetadataPayload,
     ) -> None:
         if self.p2p_pg is None:
+            return
+        if not (self.ffn_size <= self.world_rank < self.ffn_size + self.min_size):
             return
         device = torch.device(f"cuda:{self.local_rank}")
         object_bytes = _encode_dp_metadata_payload(payload)
