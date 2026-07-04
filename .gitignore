@@ -219,3 +219,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# runtime generated deploy files
+*.generated/
