@@ -125,11 +125,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             "n_routed_experts",
             default=0,
         )
-        self.num_shared_experts = _resolve_int_attr(
-            vllm_config,
-            "n_shared_experts",
-            default=0,
-        )
 
     @property
     def is_initialized(self) -> bool:
