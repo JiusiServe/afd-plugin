@@ -121,11 +121,14 @@ def test_ascend_ops_build_env_overrides_platform_default(
     value: str,
     expected: list[str],
 ):
-    assert _run_setup_py(
-        monkeypatch,
-        afd_build_ascend_ops=value,
-        has_torch_npu=value in {"0", "false", "no", "off"},
-    ) == expected
+    assert (
+        _run_setup_py(
+            monkeypatch,
+            afd_build_ascend_ops=value,
+            has_torch_npu=value in {"0", "false", "no", "off"},
+        )
+        == expected
+    )
 
 
 def test_ascend_ops_build_env_rejects_invalid_value(

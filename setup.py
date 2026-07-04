@@ -45,8 +45,7 @@ def _should_build_ascend_ops() -> bool:
         if _env_disabled(requested):
             return False
         raise RuntimeError(
-            "AFD_BUILD_ASCEND_OPS must be one of: 1, 0, true, false, yes, no, "
-            "on, off",
+            "AFD_BUILD_ASCEND_OPS must be one of: 1, 0, true, false, yes, no, on, off",
         )
     return _running_on_ascend_platform()
 
