@@ -55,7 +55,12 @@ from afd_plugin.compat.ascend.profiler import (
     stop_afd_npu_profiler,
 )
 from afd_plugin.config import AFDConfig, parse_afd_config
-from afd_plugin.connectors import AFDConnectorFactory, AFDDPMetadata, AFDMetadata
+from afd_plugin.connectors import (
+    AFDConnectorFactory,
+    AFDDPMetadata,
+    AFDDPMetadataPayload,
+    AFDMetadata,
+)
 from afd_plugin.v1.worker.ascend.npu_ubatch_wrapper import AscendUBatchWrapper
 from afd_plugin.v1.worker.ascend.ubatch_utils import (
     check_enable_ubatch,
@@ -1050,9 +1055,11 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         )
         if should_send:
             self.afd_connector.send_dp_metadata_list(
-                dp_metadata_list,
-                is_graph_capturing=is_graph_capturing,
-                is_warmup=is_warmup,
+                AFDDPMetadataPayload(
+                    dp_metadata_list=dp_metadata_list,
+                    is_graph_capturing=is_graph_capturing,
+                    is_warmup=is_warmup,
+                ),
             )
 
     def _ensure_dp_metadata(self, dp_metadata: Any) -> Any:

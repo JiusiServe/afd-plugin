@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from afd_plugin.config import AFDConfig
-from afd_plugin.connectors.metadata import AFDConnectorMetadata, AFDRecvOutput
+from afd_plugin.connectors.metadata import (
+    AFDConnectorMetadata,
+    AFDDPMetadataPayload,
+    AFDRecvOutput,
+)
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -89,19 +93,18 @@ class AFDConnectorBase(ABC):
     ) -> None:
         raise NotImplementedError
 
+    @abstractmethod
     def send_dp_metadata_list(
         self,
-        dp_metadata_list: dict[int, Any],
-        *,
-        is_graph_capturing: bool = False,
-        is_warmup: bool = False,
+        payload: AFDDPMetadataPayload,
     ) -> None:
         raise NotImplementedError
 
+    @abstractmethod
     def recv_dp_metadata_list(
         self,
         timeout_ms: int | None = None,
-    ) -> tuple[dict[int, Any], bool, bool]:
+    ) -> AFDDPMetadataPayload:
         raise NotImplementedError
 
     def create_recv_metadata(self, **kwargs: Any) -> AFDConnectorMetadata:

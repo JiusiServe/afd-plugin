@@ -19,7 +19,11 @@ from vllm.utils.torch_utils import direct_register_custom_op
 from afd_plugin.compat.ascend import ensure_afd_ascend_ops_loaded
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
-from afd_plugin.connectors.metadata import AFDConnectorMetadata, AFDRecvOutput
+from afd_plugin.connectors.metadata import (
+    AFDConnectorMetadata,
+    AFDDPMetadataPayload,
+    AFDRecvOutput,
+)
 from afd_plugin.distributed import init_afd_process_group, topology_from_config
 
 if TYPE_CHECKING:
@@ -235,31 +239,33 @@ class CAMP2PAFDConnector(AFDConnectorBase):
 
     def send_dp_metadata_list(
         self,
-        dp_metadata_list: dict[int, Any],
-        *,
-        is_graph_capturing: bool = False,
-        is_warmup: bool = False,
+        payload: AFDDPMetadataPayload,
     ) -> None:
         if self.p2p_pg is None:
             return
-        payload = (dp_metadata_list, bool(is_graph_capturing), bool(is_warmup))
         for dst in self.dst_list:
             _send_object(payload, dst=dst, group=self.p2p_pg)
 
     def recv_dp_metadata_list(
         self,
         timeout_ms: int | None = None,
-    ) -> tuple[dict[int, Any], bool, bool]:
+    ) -> AFDDPMetadataPayload:
         if self.p2p_pg is None:
             raise RuntimeError("CAMP2P metadata process group is not initialized")
         src = self.p2p_rank % self.min_size + self.ffn_size
         payload = _recv_object(src=src, group=self.p2p_pg)
+        if isinstance(payload, AFDDPMetadataPayload):
+            return payload
         if len(payload) == 3:
             dp_metadata_list, is_graph_capturing, is_warmup = payload
         else:
             dp_metadata_list, is_graph_capturing = payload
             is_warmup = False
-        return dp_metadata_list, bool(is_graph_capturing), bool(is_warmup)
+        return AFDDPMetadataPayload(
+            dp_metadata_list=dp_metadata_list,
+            is_graph_capturing=bool(is_graph_capturing),
+            is_warmup=bool(is_warmup),
+        )
 
     def configure_metadata(
         self,

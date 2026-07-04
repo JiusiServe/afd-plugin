@@ -18,6 +18,7 @@ from afd_plugin.compat.ascend import (
 from afd_plugin.compat.ascend import runtime as ascend_runtime
 from afd_plugin.connectors import (
     AFDConnectorMetadata,
+    AFDDPMetadataPayload,
     AFDMetadata,
     AFDRecvOutput,
 )
@@ -44,15 +45,14 @@ class _RecordingConnector:
             (dp_metadata_list, is_graph_capturing, is_warmup),
         )
 
-    def send_dp_metadata_list(
-        self,
-        dp_metadata_list,
-        *,
-        is_graph_capturing=False,
-        is_warmup=False,
-    ):
+    def send_dp_metadata_list(self, payload):
+        assert isinstance(payload, AFDDPMetadataPayload)
         self.sent_dp_metadata_lists.append(
-            (dp_metadata_list, is_graph_capturing, is_warmup),
+            (
+                payload.dp_metadata_list,
+                payload.is_graph_capturing,
+                payload.is_warmup,
+            ),
         )
 
 
@@ -257,7 +257,10 @@ def test_npu_attention_runner_sends_per_ubatch_dp_metadata():
     assert sorted(dp_metadata_list) == [0, 1]
     assert _tokens(dp_metadata_list[0]) == [4]
     assert _tokens(dp_metadata_list[1]) == [3]
-    assert runner.afd_connector.sent_dp_metadata_lists[0][0] == dp_metadata_list
+    sent_dp_metadata_list = runner.afd_connector.sent_dp_metadata_lists[0][0]
+    assert sorted(sent_dp_metadata_list) == [0, 1]
+    assert _tokens(sent_dp_metadata_list[0]) == [4]
+    assert _tokens(sent_dp_metadata_list[1]) == [3]
 
 
 def test_npu_attention_capture_microbatch_also_captures_single_stage():

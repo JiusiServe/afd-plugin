@@ -11,7 +11,11 @@ pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
 from afd_plugin.config import AFDConfig, afd_config_from_mapping
-from afd_plugin.connectors import AFDConnectorFactory, AFDDPMetadata
+from afd_plugin.connectors import (
+    AFDConnectorFactory,
+    AFDDPMetadata,
+    AFDDPMetadataPayload,
+)
 from afd_plugin.distributed import build_rank_mapping
 
 
@@ -162,13 +166,14 @@ def test_p2p_dp_metadata_serialization_uses_json_payload():
     )
 
     payload = module._encode_dp_metadata_payload(
-        {7: metadata},
-        is_graph_capturing=True,
-        is_warmup=False,
+        AFDDPMetadataPayload(
+            dp_metadata_list={7: metadata},
+            is_graph_capturing=True,
+            is_warmup=False,
+        ),
     )
-    decoded, is_graph_capturing, is_warmup = module._decode_dp_metadata_payload(
-        payload,
-    )
+    decoded_payload = module._decode_dp_metadata_payload(payload)
+    decoded = decoded_payload.dp_metadata_list
 
     assert payload.startswith(b"{")
     assert isinstance(decoded[7], AFDDPMetadata)
@@ -177,8 +182,8 @@ def test_p2p_dp_metadata_serialization_uses_json_payload():
     with decoded[7].sp_local_sizes(sequence_parallel_size=1):
         assert decoded[7].get_chunk_sizes_across_dp_rank() == [3, 5]
     assert _tolist(decoded[7].cu_tokens_across_sp(1)) == [3, 8]
-    assert is_graph_capturing is True
-    assert is_warmup is False
+    assert decoded_payload.is_graph_capturing is True
+    assert decoded_payload.is_warmup is False
 
 
 def test_p2p_custom_ops_register_send_recv_with_fake_impls(monkeypatch):

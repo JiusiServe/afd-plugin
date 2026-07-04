@@ -111,13 +111,14 @@ class AFDNPUFFNWorker(NPUWorker):
             torch.npu.set_device(self.device)
         while not event.is_set():
             try:
-                (
-                    dp_metadata_list,
-                    is_attn_graph_capturing,
-                    is_warmup,
-                ) = self.model_runner.connector.recv_dp_metadata_list(timeout_ms=100)
+                payload = self.model_runner.connector.recv_dp_metadata_list(
+                    timeout_ms=100,
+                )
             except TimeoutError:
                 continue
+            dp_metadata_list = payload.dp_metadata_list
+            is_attn_graph_capturing = payload.is_graph_capturing
+            is_warmup = payload.is_warmup
 
             self.model_runner.execute_ffn_step(
                 dp_metadata_list=dp_metadata_list,

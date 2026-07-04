@@ -88,6 +88,41 @@ class AFDDPMetadata:
 AFDSingleDPMetadata = AFDDPMetadata
 
 
+@dataclass(slots=True)
+class AFDDPMetadataPayload:
+    """Structured DP metadata control-plane payload."""
+
+    dp_metadata_list: dict[int, AFDDPMetadata]
+    is_graph_capturing: bool
+    is_warmup: bool
+
+    def __post_init__(self) -> None:
+        self.dp_metadata_list = {
+            int(stage_idx): _ensure_afd_dp_metadata(dp_metadata)
+            for stage_idx, dp_metadata in self.dp_metadata_list.items()
+        }
+        self.is_graph_capturing = bool(self.is_graph_capturing)
+        self.is_warmup = bool(self.is_warmup)
+
+
+def _ensure_afd_dp_metadata(value: Any) -> AFDDPMetadata:
+    if isinstance(value, AFDDPMetadata):
+        return value
+    token_counts = getattr(value, "num_tokens_across_dp_cpu", None)
+    if token_counts is None:
+        raise TypeError(
+            "AFD DP metadata must expose num_tokens_across_dp_cpu",
+        )
+    max_token_count = getattr(value, "max_tokens_across_dp_cpu", None)
+    if max_token_count is None:
+        token_counts_list = _to_int_list(token_counts)
+        max_token_count = max(token_counts_list)
+    return AFDDPMetadata(
+        num_tokens_across_dp_cpu=token_counts,
+        max_tokens_across_dp_cpu=max_token_count,
+    )
+
+
 def _cpu_int_tensor_or_list(value: Any) -> Any:
     values = _to_int_list(value)
     return torch.tensor(values, dtype=torch.int32, device="cpu")
@@ -239,6 +274,7 @@ class AFDMetadata:
 __all__ = [
     "AFDConnectorMetadata",
     "AFDDPMetadata",
+    "AFDDPMetadataPayload",
     "AFDMetadata",
     "AFDRecvOutput",
     "AFDSingleDPMetadata",

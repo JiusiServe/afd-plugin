@@ -10,6 +10,7 @@ from afd_plugin.connectors import (
     AFDConnectorFactory,
     AFDConnectorMetadata,
     AFDDPMetadata,
+    AFDDPMetadataPayload,
     AFDRecvOutput,
 )
 
@@ -109,3 +110,13 @@ class _MinimalConnector(AFDConnectorBase):
 
     def send_ffn_output(self, ffn_output, metadata):
         return None
+
+    def send_dp_metadata_list(self, payload):
+        return None
+
+    def recv_dp_metadata_list(self, timeout_ms=None):
+        return AFDDPMetadataPayload(
+            dp_metadata_list={0: AFDDPMetadata([1])},
+            is_graph_capturing=False,
+            is_warmup=False,
+        )
