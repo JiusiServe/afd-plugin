@@ -277,10 +277,9 @@ def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
         raising=False,
     )
 
-    output, handle = connector.send_attn_output(hidden_states, metadata)
+    output = connector.send_attn_output(hidden_states, metadata)
 
-    assert output is hidden_states
-    assert handle is None
+    assert output is None
     assert captured["ubatch_idx"] == 1
     assert captured["args"][1:4] == ("hccl0", "hccl1", "")
     assert captured["args"][4] == 3

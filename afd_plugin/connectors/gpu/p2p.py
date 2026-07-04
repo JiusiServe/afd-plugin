@@ -4,7 +4,7 @@
 
 import json
 from datetime import timedelta
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import torch
 from torch.distributed.distributed_c10d import _get_default_group
@@ -25,6 +25,9 @@ from afd_plugin.distributed import (
     build_rank_mapping,
     init_afd_process_group,
 )
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
 
 _AFD_COMMUNICATORS: dict[int, Any] = {}
 _AFD_COMM_ID_COUNTER = 0
@@ -49,7 +52,7 @@ class P2PAFDConnector(AFDConnectorBase):
         self,
         rank: int,
         local_rank: int,
-        vllm_config: object,
+        vllm_config: "VllmConfig",
         afd_config: AFDConfig,
     ) -> None:
         super().__init__(rank, local_rank, vllm_config, afd_config)
@@ -253,7 +256,7 @@ class P2PAFDConnector(AFDConnectorBase):
 
     def send_attn_output(
         self,
-        hidden_states: Any,
+        hidden_states: torch.Tensor,
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
     ) -> None:
@@ -271,7 +274,7 @@ class P2PAFDConnector(AFDConnectorBase):
             self.a2e_pynccl,
         )
 
-    def recv_ffn_output(self, handle: Any = None, **kwargs: Any) -> Any:
+    def recv_ffn_output(self, **kwargs: Any) -> torch.Tensor:
         ref_tensor = kwargs.get("ref_tensor")
         ubatch_idx = kwargs.get("ubatch_idx")
         if ubatch_idx is None:
@@ -283,11 +286,15 @@ class P2PAFDConnector(AFDConnectorBase):
             self._tensor_metadata_list[int(ubatch_idx)],
             ref_tensor=ref_tensor,
         )
+        if output is None:
+            raise RuntimeError(
+                "P2P recv_ffn_output requires ref_tensor when no receive is "
+                "performed",
+            )
         return output
 
     def recv_attn_output(
         self,
-        timeout_ms: int | None = None,
         ubatch_idx: int | None = None,
         **kwargs: Any,
     ) -> AFDRecvOutput:
@@ -327,7 +334,7 @@ class P2PAFDConnector(AFDConnectorBase):
 
     def send_ffn_output(
         self,
-        ffn_output: Any,
+        ffn_output: torch.Tensor,
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
     ) -> None:

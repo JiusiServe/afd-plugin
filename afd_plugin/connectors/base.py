@@ -5,10 +5,15 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import torch
 
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.metadata import AFDConnectorMetadata, AFDRecvOutput
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
 
 
 class AFDConnectorBase(ABC):
@@ -18,7 +23,7 @@ class AFDConnectorBase(ABC):
         self,
         rank: int,
         local_rank: int,
-        vllm_config: object,
+        vllm_config: VllmConfig,
         afd_config: AFDConfig,
     ) -> None:
         self.rank = rank
@@ -48,20 +53,19 @@ class AFDConnectorBase(ABC):
     @abstractmethod
     def send_attn_output(
         self,
-        hidden_states: Any,
+        hidden_states: torch.Tensor,
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
-    ) -> Any:
+    ) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def recv_ffn_output(self, handle: Any = None, **kwargs: Any) -> Any:
+    def recv_ffn_output(self, **kwargs: Any) -> torch.Tensor:
         raise NotImplementedError
 
     @abstractmethod
     def recv_attn_output(
         self,
-        timeout_ms: int | None = None,
         ubatch_idx: int | None = None,
         **kwargs: Any,
     ) -> AFDRecvOutput:
@@ -70,7 +74,7 @@ class AFDConnectorBase(ABC):
     @abstractmethod
     def send_ffn_output(
         self,
-        ffn_output: Any,
+        ffn_output: torch.Tensor,
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
     ) -> None:
