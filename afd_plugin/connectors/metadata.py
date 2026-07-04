@@ -8,16 +8,12 @@ import copy
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any
 
 import torch
 
-
-class WorkHandleLike(Protocol):
-    """Async work handle surface used by connector metadata consumers."""
-
-    def wait(self) -> object:
-        ...
+if TYPE_CHECKING:
+    from afd_plugin.connectors.base import AFDConnectorBase
 
 
 @dataclass(slots=True)
@@ -156,7 +152,7 @@ class AFDConnectorMetadata:
     layer_idx: int
     stage_idx: int
     seq_lens: list[int]
-    recv_handle_list: list[WorkHandleLike] | None = None
+    recv_handle_list: list[Any] | None = None
     connector_data: object = None
 
     def __post_init__(self) -> None:
@@ -201,25 +197,6 @@ class AFDConnectorMetadata:
         return len(tensor_shape) > 0 and tensor_shape[0] == self.total_tokens
 
 
-class AFDConnectorLike(Protocol):
-    """Minimal connector surface used by model-visible AFD metadata."""
-
-    def recv_ffn_output(
-        self,
-        handle: Any = None,
-        **kwargs: Any,
-    ) -> torch.Tensor:
-        ...
-
-    def send_attn_output(
-        self,
-        hidden_states: torch.Tensor,
-        metadata: AFDConnectorMetadata,
-        **kwargs: Any,
-    ) -> Any:
-        ...
-
-
 @dataclass(slots=True)
 class AFDRecvOutput:
     """Unified Attention -> FFN payload returned by connector recv paths."""
@@ -246,7 +223,7 @@ class AFDMetadata:
     afd_tokens_start_loc: list[int]
     afd_reqs_start_loc: list[int]
     afd_stage_idx: int
-    afd_connector: AFDConnectorLike
+    afd_connector: AFDConnectorBase
     afd_tokens_lens: list[int]
     num_of_stages: int
     ubatch_idx: int = 0
@@ -264,10 +241,8 @@ class AFDMetadata:
 
 __all__ = [
     "AFDConnectorMetadata",
-    "AFDConnectorLike",
     "AFDDPMetadata",
     "AFDMetadata",
     "AFDRecvOutput",
     "AFDSingleDPMetadata",
-    "WorkHandleLike",
 ]

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 import torch.distributed as dist
 import torch_npu  # noqa: F401
+from torch.distributed.distributed_c10d import ProcessGroup
 from vllm.forward_context import DPMetadata, get_forward_context
 from vllm.logger import init_logger
 from vllm.utils.torch_utils import direct_register_custom_op
@@ -111,10 +112,10 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         self.is_warmup = False
         self.scheduler_config = vllm_config.scheduler_config
         self.max_num_reqs = int(vllm_config.scheduler_config.max_num_seqs)
-        self.afd_pg_list: list[Any] = []
-        self.afd_pg: Any | None = None
-        self.p2p_pg: Any | None = None
-        self.ffn_pg: Any | None = None
+        self.afd_pg_list: list[ProcessGroup] = []
+        self.afd_pg: ProcessGroup | None = None
+        self.p2p_pg: ProcessGroup | None = None
+        self.ffn_pg: ProcessGroup | None = None
         self.hccl_comm_name = ""
         self.hccl_comm_name2 = ""
         self.hccl_comm_name3 = ""
@@ -559,7 +560,7 @@ def build_camp2p_topology(
     )
 
 
-def _send_object(obj: Any, *, dst: int, group: Any) -> None:
+def _send_object(obj: Any, *, dst: int, group: ProcessGroup) -> None:
     object_bytes = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
     object_tensor = torch.frombuffer(bytearray(object_bytes), dtype=torch.uint8)
     size_tensor = torch.tensor([object_tensor.numel()], dtype=torch.long, device="cpu")
@@ -567,7 +568,7 @@ def _send_object(obj: Any, *, dst: int, group: Any) -> None:
     torch.distributed.send(object_tensor, dst=dst, group=group)
 
 
-def _recv_object(*, src: int, group: Any) -> Any:
+def _recv_object(*, src: int, group: ProcessGroup) -> Any:
     size_tensor = torch.empty(1, dtype=torch.long, device="cpu")
     rank_size = torch.distributed.recv(size_tensor, src=src, group=group)
     object_tensor = torch.empty(
