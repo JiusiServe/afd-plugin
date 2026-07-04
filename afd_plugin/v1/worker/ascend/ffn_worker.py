@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from typing import Any
 
 import torch
@@ -115,9 +114,6 @@ class AFDNPUFFNWorker(NPUWorker):
         _set_npu_device_if_possible(self.device)
         while not event.is_set():
             if self.model_runner.connector.ffn_step_trigger == "connector":
-                if _connector_uses_stub_cam_ops(self.model_runner.connector):
-                    time.sleep(0.01)
-                    continue
                 self.model_runner.execute_connector_driven_step()
                 _synchronize_npu_if_possible(self.device)
                 continue
@@ -173,14 +169,6 @@ def _synchronize_npu_if_possible(device: object) -> None:
     if device.type != "npu":
         return
     torch.npu.synchronize()
-
-
-def _connector_uses_stub_cam_ops(connector: object) -> bool:
-    extra_config = connector.afd_config.extra_config or {}
-    value = extra_config.get("use_stub_cam_ops")
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
 
 
 __all__ = ["AFDNPUFFNWorker"]

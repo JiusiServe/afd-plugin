@@ -10,7 +10,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from afd_plugin.config import AFDConfig, parse_afd_config
+from afd_plugin.compat.async_dp import is_afd_async_dp
+from afd_plugin.config import (
+    ASYNC_MOE_REQUEST_SPLIT,
+    AFDConfig,
+    async_moe_num_ubatches,
+    async_moe_split,
+    async_moe_ubatching_enabled,
+    parse_afd_config,
+)
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -60,7 +68,9 @@ def fail_if_unsupported_npu_afd_features(vllm_config: VllmConfig) -> None:
         _fail_if_unsupported_npu_afd_async_features(vllm_config, afd_config)
         return
 
-    if _truthy(extra.get("compute_gate_on_attention")):
+    if afd_config.compute_gate_on_attention or _truthy(
+        extra.get("compute_gate_on_attention"),
+    ):
         raise RuntimeError(
             "AFD NPU runtime does not support compute_gate_on_attention=true yet",
         )
@@ -103,14 +113,24 @@ def _fail_if_unsupported_npu_afd_async_features(
 ) -> None:
     extra = afd_config.extra_config or {}
     parallel_config = vllm_config.parallel_config
-    if not bool(parallel_config.async_dp):
-        raise RuntimeError("AFDAsyncConnector requires async_dp")
+    if not is_afd_async_dp(vllm_config):
+        raise RuntimeError(
+            "AFDAsyncConnector requires additional_config['afd'] "
+            "with async=true and connector='afdasyncconnector'",
+        )
     if not bool(vllm_config.model_config.enforce_eager):
         raise RuntimeError(
             "AFDAsyncConnector supports only eager Attention/FFN execution",
         )
     if bool(parallel_config.use_ubatching):
-        raise RuntimeError("AFDAsyncConnector does not support ubatching/DBO")
+        raise RuntimeError(
+            "AFDAsyncConnector does not support vLLM native ubatching/DBO",
+        )
+    if async_moe_ubatching_enabled(afd_config):
+        _fail_if_unsupported_npu_async_moe_ubatching_features(
+            vllm_config,
+            afd_config,
+        )
     if _truthy(extra.get("is_multistream")):
         raise RuntimeError("AFDAsyncConnector does not support multistream")
     if _truthy(extra.get("is_attn_multistream")):
@@ -130,6 +150,34 @@ def _fail_if_unsupported_npu_afd_async_features(
     if quant_mode not in (None, "", 0, "0", 1, "1"):
         raise RuntimeError(
             "AFDAsyncConnector currently supports only quant_mode/dynamicQuant 0 or 1",
+        )
+
+
+def _fail_if_unsupported_npu_async_moe_ubatching_features(
+    vllm_config: object,
+    afd_config: AFDConfig,
+) -> None:
+    parallel_config = vllm_config.parallel_config
+    if not bool(afd_config.compute_gate_on_attention):
+        raise RuntimeError(
+            "async_moe_ubatching requires compute_gate_on_attention=true",
+        )
+    num_ubatches = async_moe_num_ubatches(afd_config)
+    if num_ubatches != 2:
+        raise RuntimeError(
+            "async_moe_ubatching currently supports exactly two stages; "
+            f"got async_moe_num_ubatches={num_ubatches}",
+        )
+    split = async_moe_split(afd_config)
+    if split != ASYNC_MOE_REQUEST_SPLIT:
+        raise RuntimeError(
+            "async_moe_ubatching currently supports only request-boundary split; "
+            f"got async_moe_split={split!r}",
+        )
+    if int(parallel_config.decode_context_parallel_size) > 1:
+        raise RuntimeError(
+            "async_moe_ubatching does not support decode context parallel "
+            "metadata yet",
         )
 
 
@@ -320,7 +368,10 @@ class _AscendAFDConfigProxy:
 
     @property
     def compute_gate_on_attention(self) -> bool:
-        return bool(self._config.extra_config.get("compute_gate_on_attention", False))
+        return bool(
+            self._config.compute_gate_on_attention
+            or self._config.extra_config.get("compute_gate_on_attention", False),
+        )
 
     @property
     def quant_mode(self) -> int:

@@ -10,13 +10,18 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
 AFD_ADDITIONAL_CONFIG_KEY: Final[str] = "afd"
+AFD_ASYNC_CONNECTOR: Final[str] = "afdasyncconnector"
+ASYNC_MOE_UBATCHING_CONFIG_KEY: Final[str] = "async_moe_ubatching"
+ASYNC_MOE_NUM_UBATCHES_CONFIG_KEY: Final[str] = "async_moe_num_ubatches"
+ASYNC_MOE_SPLIT_CONFIG_KEY: Final[str] = "async_moe_split"
+ASYNC_MOE_REQUEST_SPLIT: Final[str] = "request"
 AFDRole = Literal["attention", "ffn"]
 
 SUPPORTED_AFD_ROLES: Final[tuple[str, ...]] = ("attention", "ffn")
 SUPPORTED_AFD_CONNECTORS: Final[tuple[str, ...]] = (
     "p2pconnector",
     "camp2pconnector",
-    "afdasyncconnector",
+    AFD_ASYNC_CONNECTOR,
 )
 
 _ALIASES: Final[dict[str, str]] = {
@@ -25,6 +30,7 @@ _ALIASES: Final[dict[str, str]] = {
     "afd_port": "port",
     "afd_host": "host",
     "afd_extra_config": "extra_config",
+    "async": "async_dp",
 }
 
 
@@ -43,6 +49,8 @@ class AFDConfig:
     extra_config: dict[str, Any] = field(default_factory=dict)
     # Connector implementation name used to create the backend data path.
     connector: str = "p2pconnector"
+    # Whether AFD owns async data-parallel runtime patches for this process.
+    async_dp: bool = False
     # Role owned by this process: Attention sends hidden states; FFN receives.
     role: AFDRole = "attention"
     # Port used by the AFD connector rendezvous/control path.
@@ -92,6 +100,7 @@ class AFDConfig:
         factors: list[Any] = [
             self.enabled,
             self.connector,
+            self.async_dp,
             self.role,
             self.num_attention_ranks,
             self.num_ffn_ranks,
@@ -125,6 +134,38 @@ def _coerce_int(value: object, *, field_name: str) -> int:
         ) from exc
 
 
+def _extra_bool(config: AFDConfig, key: str, *, default: bool = False) -> bool:
+    value = (config.extra_config or {}).get(key, default)
+    return _coerce_bool(value, field_name=f"extra_config.{key}")
+
+
+def async_moe_ubatching_enabled(config: AFDConfig) -> bool:
+    """Return whether async connector MoE-only request ubatching is enabled."""
+
+    return _extra_bool(config, ASYNC_MOE_UBATCHING_CONFIG_KEY)
+
+
+def async_moe_num_ubatches(config: AFDConfig) -> int:
+    value = (config.extra_config or {}).get(ASYNC_MOE_NUM_UBATCHES_CONFIG_KEY, 2)
+    return _coerce_int(
+        value,
+        field_name=f"extra_config.{ASYNC_MOE_NUM_UBATCHES_CONFIG_KEY}",
+    )
+
+
+def async_moe_split(config: AFDConfig) -> str:
+    value = (config.extra_config or {}).get(
+        ASYNC_MOE_SPLIT_CONFIG_KEY,
+        ASYNC_MOE_REQUEST_SPLIT,
+    )
+    if not isinstance(value, str):
+        raise TypeError(
+            f"extra_config.{ASYNC_MOE_SPLIT_CONFIG_KEY} must be a string, "
+            f"got {value!r}",
+        )
+    return value.strip().lower()
+
+
 def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     valid_fields = set(AFDConfig.__dataclass_fields__)  # type: ignore[attr-defined]
@@ -148,6 +189,11 @@ def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
             normalized["enabled"],
             field_name="enabled",
         )
+    if "async_dp" in normalized:
+        normalized["async_dp"] = _coerce_bool(
+            normalized["async_dp"],
+            field_name="async",
+        )
 
     for field_name in (
         "port",
@@ -166,6 +212,19 @@ def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
         dict,
     ):
         raise TypeError("extra_config must be a dict")
+
+    if "compute_gate_on_attention" in normalized:
+        normalized["compute_gate_on_attention"] = _coerce_bool(
+            normalized["compute_gate_on_attention"],
+            field_name="compute_gate_on_attention",
+        )
+    elif "extra_config" in normalized:
+        extra_config = normalized["extra_config"]
+        if "compute_gate_on_attention" in extra_config:
+            normalized["compute_gate_on_attention"] = _coerce_bool(
+                extra_config["compute_gate_on_attention"],
+                field_name="extra_config.compute_gate_on_attention",
+            )
 
     return normalized
 
@@ -245,6 +304,10 @@ def validate_afd_config(
             "AFD connector must be one of "
             f"{SUPPORTED_AFD_CONNECTORS!r}, got {config.connector!r}",
         )
+    if config.async_dp and config.connector != AFD_ASYNC_CONNECTOR:
+        raise ValueError(
+            "AFD async mode requires connector='afdasyncconnector'",
+        )
     p2p_sizes: tuple[int, int] | None = None
     if config.connector == "p2pconnector":
         from afd_plugin.distributed import (
@@ -280,11 +343,19 @@ def validate_afd_config(
 
 __all__ = [
     "AFDConfig",
+    "AFD_ASYNC_CONNECTOR",
+    "ASYNC_MOE_NUM_UBATCHES_CONFIG_KEY",
+    "ASYNC_MOE_REQUEST_SPLIT",
+    "ASYNC_MOE_SPLIT_CONFIG_KEY",
+    "ASYNC_MOE_UBATCHING_CONFIG_KEY",
     "afd_config_from_mapping",
     "AFD_ADDITIONAL_CONFIG_KEY",
     "AFDRole",
     "SUPPORTED_AFD_CONNECTORS",
     "SUPPORTED_AFD_ROLES",
+    "async_moe_num_ubatches",
+    "async_moe_split",
+    "async_moe_ubatching_enabled",
     "parse_afd_config",
     "validate_afd_config",
 ]

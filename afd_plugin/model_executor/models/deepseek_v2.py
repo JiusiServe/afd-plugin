@@ -8,7 +8,8 @@ through the AFD connector.
 """
 
 import typing
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager, suppress
 from itertools import islice
 from typing import Any
 
@@ -16,6 +17,7 @@ import torch
 import torch.nn as nn
 from vllm.config import VllmConfig, get_current_vllm_config
 from vllm.forward_context import get_forward_context
+from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe.shared_fused_moe import (
     SharedFusedMoE,
 )
@@ -36,11 +38,112 @@ except ImportError:
     get_ascend_config = None
 
 from afd_plugin.config import parse_afd_config
-from afd_plugin.connectors import AFDConnectorMetadata
+from afd_plugin.connectors import AFDConnectorMetadata, AFDFFNOutput
+from afd_plugin.envs import (
+    force_balanced_topk_ids_enabled,
+)
 from afd_plugin.model_executor.models import (
     get_afd_metadata_from_forward_context,
+    get_async_moe_ubatch_metadata_from_forward_context,
 )
 from afd_plugin.v1.worker.dbo import maybe_apply_dbo_yield
+
+logger = init_logger(__name__)
+
+
+def _is_moe_layer(config: object, layer_idx: int) -> bool:
+    moe_layer_freq = getattr(config, "moe_layer_freq", 1)
+    return (
+        config.n_routed_experts is not None
+        and layer_idx >= config.first_k_dense_replace
+        and layer_idx % moe_layer_freq == 0
+    )
+
+
+def _dequantize_int8_activation(
+    hidden_states: torch.Tensor,
+    dynamic_scales: torch.Tensor | None,
+    *,
+    output_dtype: torch.dtype,
+) -> torch.Tensor:
+    if hidden_states.dtype != torch.int8:
+        return hidden_states
+    if dynamic_scales is None:
+        raise RuntimeError("INT8 AFD shared experts input requires dynamic_scales")
+
+    scales = dynamic_scales.to(torch.float32)
+    while scales.dim() < hidden_states.dim():
+        scales = scales.unsqueeze(-1)
+    return (hidden_states.to(torch.float32) * scales).to(dtype=output_dtype)
+
+
+def _compute_w8a8_shared_experts_from_int8(
+    shared_experts: torch.nn.Module,
+    hidden_states: torch.Tensor,
+    dynamic_scales: torch.Tensor | None,
+    *,
+    output_dtype: torch.dtype,
+) -> torch.Tensor:
+    if dynamic_scales is None:
+        raise RuntimeError("INT8 AFD shared experts fast path requires dynamic_scales")
+
+    import torch_npu
+
+    quantized_input = hidden_states
+    pertoken_scale = dynamic_scales
+    unsqueeze_output = False
+    if (
+        pertoken_scale.dim() == 2
+        and quantized_input.dim() == 3
+        and quantized_input.shape[1] == 1
+    ):
+        quantized_input = quantized_input.squeeze(dim=1)
+        pertoken_scale = pertoken_scale.squeeze(dim=1)
+        unsqueeze_output = True
+    elif pertoken_scale.dim() == 2 and pertoken_scale.shape[1] == 1:
+        pertoken_scale = pertoken_scale.squeeze(dim=1)
+    quantized_input = quantized_input.clone()
+    pertoken_scale = pertoken_scale.clone()
+
+    gate_up = torch_npu.npu_quant_matmul(
+        quantized_input,
+        shared_experts.gate_up_proj.weight,
+        shared_experts.gate_up_proj.weight_scale,
+        pertoken_scale=pertoken_scale,
+        bias=None,
+        output_dtype=output_dtype,
+    )
+    if unsqueeze_output:
+        gate_up = gate_up.unsqueeze(dim=1)
+
+    shared_act = shared_experts.act_fn(gate_up)
+    shared_output, _ = shared_experts.down_proj(shared_act)
+    return shared_output
+
+
+def _gmmswigluquant_fusion_enabled() -> bool:
+    if get_ascend_config is None:
+        return False
+    ascend_config = get_ascend_config()
+    fusion_config = getattr(ascend_config, "ascend_fusion_config", None)
+    return bool(getattr(fusion_config, "fusion_ops_gmmswigluquant", False))
+
+
+def _force_balanced_topk_ids(
+    topk_ids: torch.Tensor,
+    *,
+    num_logical_experts: int,
+) -> torch.Tensor:
+    balanced_topk_ids = torch.arange(
+        topk_ids.numel(),
+        device=topk_ids.device,
+        dtype=torch.int64,
+    ).reshape(topk_ids.shape)
+    balanced_topk_ids = balanced_topk_ids.remainder(num_logical_experts).to(
+        dtype=topk_ids.dtype,
+    )
+    topk_ids.copy_(balanced_topk_ids)
+    return topk_ids
 
 
 class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
@@ -66,12 +169,17 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         quant_config = vllm_config.quant_config
         parallel_config = vllm_config.parallel_config
 
+        self.vllm_config = vllm_config
+        self.config = config
+        self.afd_config = afd_config
         self.hidden_size = config.hidden_size
         max_position_embeddings = getattr(config, "max_position_embeddings", 8192)
-        moe_layer_freq = getattr(config, "moe_layer_freq", 1)
         prefix = args[1] if len(args) > 1 else kwargs.get("prefix", "")
         layer_idx = int(prefix.split(sep=".")[-1])
         self.layer_idx = layer_idx
+        self.is_moe_layer = _is_moe_layer(config, layer_idx)
+        self.compute_gate_on_attention = bool(afd_config.compute_gate_on_attention)
+        self.top_k = int(config.num_experts_per_tok)
 
         qk_nope_head_dim = getattr(config, "qk_nope_head_dim", 0)
         qk_rope_head_dim = getattr(config, "qk_rope_head_dim", 0)
@@ -84,7 +192,7 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         self.routed_scaling_factor = getattr(config, "routed_scaling_factor", 1.0)
         self.afd_role = afd_role
 
-        # Create only the modules needed for this role
+        # Create only the modules needed for this role.
         if afd_role == "attention":
             attn_cls = (
                 native.DeepseekAttention
@@ -112,10 +220,7 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 topk_indices_buffer=kwargs.get("topk_indices_buffer"),
             )
 
-            if (
-                getattr(afd_config, "compute_gate_on_attention", False)
-                and layer_idx >= config.first_k_dense_replace
-            ):
+            if self.compute_gate_on_attention and self.is_moe_layer:
                 self.gate = ReplicatedLinear(
                     config.hidden_size,
                     config.n_routed_experts,
@@ -130,12 +235,19 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 else:
                     self.gate.e_score_correction_bias = None
 
+            if self.compute_gate_on_attention and not self.is_moe_layer:
+                self.mlp = native.DeepseekV2MLP(
+                    hidden_size=config.hidden_size,
+                    intermediate_size=config.intermediate_size,
+                    hidden_act=config.hidden_act,
+                    quant_config=quant_config,
+                    prefix=f"{prefix}.mlp",
+                )
+
         elif afd_role == "ffn":
-            if (
-                config.n_routed_experts is not None
-                and layer_idx >= config.first_k_dense_replace
-                and layer_idx % moe_layer_freq == 0
-            ):
+            if self.compute_gate_on_attention and not self.is_moe_layer:
+                pass
+            elif self.is_moe_layer:
                 self.mlp = native.DeepseekV2MoE(
                     config=config,
                     parallel_config=parallel_config,
@@ -191,7 +303,9 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
             hidden_states,
             residual,
         )
-        if self.afd_role == "attention":
+        if self.afd_role == "attention" and not (
+            self.compute_gate_on_attention and not self.is_moe_layer
+        ):
             return hidden_states, residual
 
         hidden_states = self.mlp(hidden_states)
@@ -208,7 +322,13 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
         llama_4_scaling: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+    ]:
         if residual is None:
             residual = hidden_states.clone()
             hidden_states = self.input_layernorm(hidden_states)
@@ -235,9 +355,95 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
             hidden_states,
             residual,
         )
-        return hidden_states, residual
+        topk_weights = None
+        topk_ids = None
+        router_logits = None
+        if self.compute_gate_on_attention and self.is_moe_layer:
+            router_logits, _ = self.gate(hidden_states)
+            afd_metadata = get_afd_metadata_from_forward_context()
+            if afd_metadata is None:
+                raise RuntimeError(
+                    "AFD connector required for compute_gate_on_attention "
+                    "but not found in forward context",
+                )
+            afd_connector = afd_metadata.afd_connector
+            mix_placement = bool(
+                getattr(self.vllm_config, "additional_config", {}).get(
+                    "mix_placement",
+                    False,
+                ),
+            )
+            num_redundant_experts = (
+                self.vllm_config.parallel_config.eplb_config.num_redundant_experts
+            )
+            if mix_placement:
+                global_num_experts = (
+                    self.config.n_shared_experts
+                    + self.config.n_routed_experts
+                    + num_redundant_experts
+                )
+            else:
+                global_num_experts = (
+                    self.config.n_routed_experts + num_redundant_experts
+                )
+            routed_scaling_factor = getattr(self.config, "routed_scaling_factor", 1.0)
+            topk_weights, topk_ids = afd_connector.select_experts(
+                hidden_states=hidden_states,
+                router_logits=router_logits,
+                top_k=self.top_k,
+                use_grouped_topk=True,
+                renormalize=getattr(self.config, "norm_topk_prob", True),
+                scoring_func=getattr(self.config, "scoring_func", "softmax"),
+                num_expert_group=getattr(self.config, "n_group", 1),
+                topk_group=getattr(self.config, "topk_group", 1),
+                routed_scaling_factor=(routed_scaling_factor if mix_placement else 1.0),
+                e_score_correction_bias=self.gate.e_score_correction_bias,
+                mix_placement=mix_placement,
+                num_logical_experts=router_logits.shape[1],
+                num_shared_experts=self.config.n_shared_experts,
+                global_num_experts=global_num_experts,
+            )
+            if force_balanced_topk_ids_enabled():
+                topk_ids = _force_balanced_topk_ids(
+                    topk_ids,
+                    num_logical_experts=router_logits.shape[1],
+                )
+            topk_weights = topk_weights.to(torch.float32)
+        return hidden_states, residual, topk_weights, topk_ids, router_logits
 
-    def compute_ffn_output(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def compute_ffn_output(
+        self,
+        hidden_states: torch.Tensor,
+        *,
+        group_list: torch.Tensor | None = None,
+        dynamic_scales: torch.Tensor | None = None,
+        expand_x_shared: torch.Tensor | None = None,
+        dynamic_scales_shared: torch.Tensor | None = None,
+        topk_scales: torch.Tensor | None = None,
+        group_list_type: int = 1,
+        **kwargs: Any,
+    ) -> torch.Tensor | AFDFFNOutput:
+        del kwargs
+        if self.compute_gate_on_attention and not self.is_moe_layer:
+            raise RuntimeError(
+                "Dense DeepSeek layers are computed on the Attention side "
+                "when compute_gate_on_attention=true",
+            )
+        if self.compute_gate_on_attention:
+            if group_list is None:
+                raise RuntimeError(
+                    "compute_gate_on_attention FFN MoE compute requires group_list",
+                )
+            output = self._compute_moe_with_attention_gate(
+                hidden_states=hidden_states,
+                group_list=group_list,
+                dynamic_scales=dynamic_scales,
+                expand_x_shared=expand_x_shared,
+                dynamic_scales_shared=dynamic_scales_shared,
+                topk_scales=topk_scales,
+                group_list_type=group_list_type,
+            )
+            return output
         hidden_states = self.mlp(hidden_states)
         if (
             isinstance(self.mlp, native.DeepseekV2MLP)
@@ -245,6 +451,104 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         ):
             hidden_states *= 1.0 / self.routed_scaling_factor
         return hidden_states
+
+    def _compute_moe_with_attention_gate(
+        self,
+        *,
+        hidden_states: torch.Tensor,
+        group_list: torch.Tensor,
+        dynamic_scales: torch.Tensor | None,
+        expand_x_shared: torch.Tensor | None,
+        dynamic_scales_shared: torch.Tensor | None,
+        topk_scales: torch.Tensor | None,
+        group_list_type: int,
+    ) -> AFDFFNOutput:
+        from vllm_ascend.ops.fused_moe.moe_mlp import unified_apply_mlp
+        from vllm_ascend.ops.fused_moe.moe_stage_contracts import (
+            MoEMlpComputeInput,
+            MoEWeights,
+        )
+        from vllm_ascend.ops.fused_moe.moe_stage_params import MoEQuantParams
+        from vllm_ascend.quantization.quant_type import QuantType
+
+        experts = self.mlp.experts
+        quant_type = experts.quant_type
+        if quant_type == QuantType.NONE:
+            moe_weights = MoEWeights(
+                w1=experts.w13_weight,
+                w2=experts.w2_weight,
+                w1_bias=experts.w13_bias if experts.moe_config.has_bias else None,
+                w2_bias=experts.w2_bias if experts.moe_config.has_bias else None,
+            )
+        elif quant_type == QuantType.W8A8:
+            if experts.dynamic_eplb:
+                moe_weights = MoEWeights(
+                    w1=experts.w13_weight_list,
+                    w2=experts.w2_weight_list,
+                    w1_scale=experts.w13_weight_scale_fp32_list,
+                    w2_scale=experts.w2_weight_scale_list,
+                )
+            else:
+                moe_weights = MoEWeights(
+                    w1=[experts.w13_weight],
+                    w2=[experts.w2_weight],
+                    w1_scale=[experts.w13_weight_scale_fp32],
+                    w2_scale=[experts.w2_weight_scale],
+                )
+        else:
+            raise RuntimeError(
+                "compute_gate_on_attention currently supports only unquantized "
+                f"or W8A8 Ascend MoE experts, got {quant_type}",
+            )
+        use_gmmswigluquant_fusion = (
+            quant_type in (QuantType.W8A8, getattr(QuantType, "MXFP8", None))
+            and _gmmswigluquant_fusion_enabled()
+        )
+
+        shared_output = None
+        if experts._shared_experts is not None:
+            shared_input = expand_x_shared
+            shared_scales = dynamic_scales_shared
+            if shared_input.dtype == torch.int8 and quant_type == QuantType.W8A8:
+                shared_output = _compute_w8a8_shared_experts_from_int8(
+                    experts._shared_experts,
+                    shared_input,
+                    shared_scales,
+                    output_dtype=torch.bfloat16,
+                )
+            else:
+                shared_input = _dequantize_int8_activation(
+                    shared_input,
+                    shared_scales,
+                    output_dtype=torch.bfloat16,
+                )
+                shared_output = experts._shared_experts(shared_input)
+
+        routed_output = unified_apply_mlp(
+            mlp_compute_input=MoEMlpComputeInput(
+                hidden_states=hidden_states,
+                group_list=group_list,
+                group_list_type=int(group_list_type),
+                dynamic_scale=dynamic_scales,
+                topk_scales=topk_scales,
+                weights=moe_weights,
+                quant=MoEQuantParams(quant_type=quant_type),
+                fusion=use_gmmswigluquant_fusion,
+                activation=experts.activation,
+                need_trans=False,
+                dynamic_eplb=experts.dynamic_eplb,
+            ),
+        )
+
+        if hidden_states.dtype != torch.float16:
+            routed_output *= self.mlp.routed_scaling_factor
+        elif shared_output is not None:
+            shared_output *= 1.0 / self.mlp.routed_scaling_factor
+
+        return AFDFFNOutput(
+            routed_output=routed_output,
+            shared_output=shared_output,
+        )
 
 
 @native.support_torch_compile
@@ -261,6 +565,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
 
         config = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
+        self.afd_config = parse_afd_config(vllm_config, validate=False)
         self.config = config
         self.device = native.current_platform.device_type
 
@@ -384,6 +689,27 @@ class AFDDeepseekV2Model(torch.nn.Module):
         afd_metadata: object,
         llama_4_scaling: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        if self.afd_config.compute_gate_on_attention:
+            forward_context = get_forward_context()
+            if (
+                get_async_moe_ubatch_metadata_from_forward_context(forward_context)
+                is not None
+            ):
+                return self.forward_with_afd_v3(
+                    hidden_states,
+                    residual,
+                    positions,
+                    afd_metadata,
+                    llama_4_scaling,
+                )
+            return self.forward_with_afd_v2(
+                hidden_states,
+                residual,
+                positions,
+                afd_metadata,
+                llama_4_scaling,
+            )
+
         afd_connector = afd_metadata.afd_connector
         forward_context = get_forward_context()
         stage_idx = int(
@@ -427,14 +753,281 @@ class AFDDeepseekV2Model(torch.nn.Module):
         )
         return hidden_states, residual
 
+    def forward_with_afd_v2(
+        self,
+        hidden_states: torch.Tensor,
+        residual: torch.Tensor | None,
+        positions: torch.Tensor,
+        afd_metadata: object,
+        llama_4_scaling: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        afd_connector = afd_metadata.afd_connector
+        forward_context = get_forward_context()
+        stage_idx = int(
+            getattr(forward_context, "ubatch_idx", afd_metadata.afd_stage_idx),
+        )
+        pending_ffn_recv = False
+
+        for layer_offset, layer in enumerate(
+            islice(self.layers, self.start_layer, self.end_layer),
+        ):
+            stage_idx = int(
+                getattr(forward_context, "ubatch_idx", afd_metadata.afd_stage_idx),
+            )
+            afd_metadata.ubatch_idx = stage_idx
+            afd_metadata.afd_stage_idx = stage_idx
+            if layer_offset > 0 and pending_ffn_recv:
+                hidden_states = afd_connector.recv_ffn_output(
+                    ref_tensor=hidden_states,
+                    ubatch_idx=stage_idx,
+                )
+                pending_ffn_recv = False
+
+            if not layer.is_moe_layer:
+                hidden_states, residual = layer(
+                    positions,
+                    hidden_states,
+                    residual,
+                    llama_4_scaling,
+                )
+                continue
+
+            (
+                hidden_states,
+                residual,
+                topk_weights,
+                topk_ids,
+                router_logits,
+            ) = layer.compute_attn_output(
+                positions,
+                hidden_states,
+                residual,
+                llama_4_scaling,
+            )
+
+            metadata = AFDConnectorMetadata.create_attention_metadata(
+                layer_idx=layer.layer_idx,
+                stage_idx=stage_idx,
+                seq_len=int(hidden_states.shape[0]),
+            )
+            afd_connector.send_attn_output(
+                hidden_states,
+                metadata,
+                topk_weights=topk_weights,
+                topk_ids=topk_ids,
+                router_logits=router_logits,
+            )
+            pending_ffn_recv = True
+            hidden_states = maybe_apply_dbo_yield(
+                hidden_states,
+                role="attention",
+            )
+
+        if pending_ffn_recv:
+            hidden_states = afd_connector.recv_ffn_output(
+                ref_tensor=hidden_states,
+                ubatch_idx=stage_idx,
+            )
+        return hidden_states, residual
+
+    def forward_with_afd_v3(
+        self,
+        hidden_states: torch.Tensor,
+        residual: torch.Tensor | None,
+        positions: torch.Tensor,
+        afd_metadata: object,
+        llama_4_scaling: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        forward_context = get_forward_context()
+        async_moe_ubatch_metadata = get_async_moe_ubatch_metadata_from_forward_context(
+            forward_context
+        )
+        if async_moe_ubatch_metadata is None:
+            return self.forward_with_afd_v2(
+                hidden_states,
+                residual,
+                positions,
+                afd_metadata,
+                llama_4_scaling,
+            )
+        ubatch_slices = async_moe_ubatch_metadata["ubatch_slices"]
+        afd_connector = afd_metadata.afd_connector
+        first_moe_layer = int(self.config.first_k_dense_replace)
+        dense_end_layer = min(self.end_layer, first_moe_layer)
+        for layer in islice(self.layers, self.start_layer, dense_end_layer):
+            hidden_states, residual = layer(
+                positions,
+                hidden_states,
+                residual,
+                llama_4_scaling,
+            )
+        if dense_end_layer == self.end_layer:
+            return hidden_states, residual
+
+        stage_hidden_states = [
+            hidden_states[ubatch_slice.token_slice] for ubatch_slice in ubatch_slices
+        ]
+        stage_residual = [
+            _slice_optional_first_dim(residual, ubatch_slice.token_slice)
+            for ubatch_slice in ubatch_slices
+        ]
+        stage_positions = [
+            _slice_positions(positions, ubatch_slice.token_slice)
+            for ubatch_slice in ubatch_slices
+        ]
+        stage_llama_4_scaling = [
+            _slice_llama_4_scaling(
+                llama_4_scaling,
+                ubatch_slice.token_slice,
+                num_tokens=int(hidden_states.shape[0]),
+            )
+            for ubatch_slice in ubatch_slices
+        ]
+
+        moe_start_layer = max(self.start_layer, first_moe_layer)
+        moe_layers = list(islice(self.layers, moe_start_layer, self.end_layer))
+
+        def compute_stage_attention(
+            layer: Any,
+            stage_idx: int,
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+            ubatch_slice = ubatch_slices[stage_idx]
+            with _use_async_moe_ubatch_forward_context(
+                forward_context=forward_context,
+                parent_afd_metadata=afd_metadata,
+                async_moe_ubatch_metadata=async_moe_ubatch_metadata,
+                stage_idx=stage_idx,
+            ):
+                (
+                    stage_hidden_states[stage_idx],
+                    stage_residual[stage_idx],
+                    topk_weights,
+                    topk_ids,
+                    router_logits,
+                ) = layer.compute_attn_output(
+                    stage_positions[stage_idx],
+                    stage_hidden_states[stage_idx],
+                    stage_residual[stage_idx],
+                    stage_llama_4_scaling[stage_idx],
+                )
+            if topk_weights is None or topk_ids is None:
+                raise RuntimeError(
+                    "async_moe_ubatching requires Attention-side topk payloads",
+                )
+            expected_tokens = int(ubatch_slice.num_tokens)
+            if int(stage_hidden_states[stage_idx].shape[0]) != expected_tokens:
+                raise RuntimeError(
+                    "async_moe_ubatching stage output token count mismatch: "
+                    f"expected {expected_tokens}, got "
+                    f"{int(stage_hidden_states[stage_idx].shape[0])}",
+                )
+            return topk_weights, topk_ids, router_logits
+
+        def send_stage_attention(
+            layer: Any,
+            stage_idx: int,
+            topk_weights: torch.Tensor,
+            topk_ids: torch.Tensor,
+            router_logits: torch.Tensor | None,
+        ) -> None:
+            expected_tokens = int(ubatch_slices[stage_idx].num_tokens)
+            stage_metadata = AFDConnectorMetadata.create_attention_metadata(
+                layer_idx=layer.layer_idx,
+                stage_idx=stage_idx,
+                seq_len=expected_tokens,
+            )
+            afd_connector.send_attn_output(
+                stage_hidden_states[stage_idx],
+                stage_metadata,
+                topk_weights=topk_weights,
+                topk_ids=topk_ids,
+                router_logits=router_logits,
+            )
+
+        def recv_stage_ffn(layer: Any, stage_idx: int, event_prefix: str) -> None:
+            del layer, event_prefix
+            stage_hidden_states[stage_idx] = afd_connector.recv_ffn_output(
+                ref_tensor=stage_hidden_states[stage_idx],
+                ubatch_idx=stage_idx,
+            )
+
+        last_moe_layer_offset = len(moe_layers) - 1
+        first_layer = moe_layers[0]
+        topk_weights, topk_ids, router_logits = compute_stage_attention(
+            first_layer,
+            0,
+        )
+        send_stage_attention(
+            first_layer,
+            0,
+            topk_weights,
+            topk_ids,
+            router_logits,
+        )
+
+        for moe_layer_offset in range(last_moe_layer_offset):
+            current_layer = moe_layers[moe_layer_offset]
+            next_layer = moe_layers[moe_layer_offset + 1]
+
+            topk_weights, topk_ids, router_logits = compute_stage_attention(
+                current_layer,
+                1,
+            )
+            recv_stage_ffn(current_layer, 0, "wavefront")
+            send_stage_attention(
+                current_layer,
+                1,
+                topk_weights,
+                topk_ids,
+                router_logits,
+            )
+
+            topk_weights, topk_ids, router_logits = compute_stage_attention(
+                next_layer,
+                0,
+            )
+            recv_stage_ffn(current_layer, 1, "wavefront")
+            send_stage_attention(
+                next_layer,
+                0,
+                topk_weights,
+                topk_ids,
+                router_logits,
+            )
+
+        last_layer = moe_layers[last_moe_layer_offset]
+        topk_weights, topk_ids, router_logits = compute_stage_attention(
+            last_layer,
+            1,
+        )
+        recv_stage_ffn(last_layer, 0, "final")
+        send_stage_attention(
+            last_layer,
+            1,
+            topk_weights,
+            topk_ids,
+            router_logits,
+        )
+        recv_stage_ffn(last_layer, 1, "final")
+        output_hidden_states = torch.cat(stage_hidden_states, dim=0)
+        return (
+            output_hidden_states,
+            _cat_optional_async_moe_stage_outputs(
+                stage_residual,
+                stage_hidden_states,
+            ),
+        )
+
     def compute_ffn_output(
         self,
         hidden_states: torch.Tensor,
         layer_idx: int,
         **kwargs: Any,
-    ) -> torch.Tensor:
-        output = self.layers[layer_idx].compute_ffn_output(hidden_states)
-        return output
+    ) -> torch.Tensor | AFDFFNOutput:
+        return self.layers[layer_idx].compute_ffn_output(
+            hidden_states,
+            **kwargs,
+        )
 
     def _get_llama_4_scaling(
         self,
@@ -450,6 +1043,156 @@ class AFDDeepseekV2Model(torch.nn.Module):
             scaling_beta=llama_4_scaling_config["beta"],
             positions=positions,
         )
+
+
+_MISSING_FORWARD_CONTEXT_ATTR = object()
+
+
+@contextmanager
+def _use_async_moe_ubatch_forward_context(
+    *,
+    forward_context: object,
+    parent_afd_metadata: object,
+    async_moe_ubatch_metadata: dict[str, Any],
+    stage_idx: int,
+) -> Iterator[None]:
+    ubatch_slices = async_moe_ubatch_metadata["ubatch_slices"]
+    attn_metadata = async_moe_ubatch_metadata["attn_metadata"]
+    stage_afd_metadata = _build_async_moe_stage_afd_metadata(
+        parent_afd_metadata,
+        ubatch_slices,
+        stage_idx,
+    )
+
+    saved_attrs = {
+        "attn_metadata": _read_forward_context_attr(
+            forward_context,
+            "attn_metadata",
+        ),
+        "additional_kwargs": _read_forward_context_attr(
+            forward_context,
+            "additional_kwargs",
+        ),
+        "afd_metadata": _read_forward_context_attr(
+            forward_context,
+            "afd_metadata",
+        ),
+        "ubatch_idx": _read_forward_context_attr(forward_context, "ubatch_idx"),
+        "num_ubatches": _read_forward_context_attr(
+            forward_context,
+            "num_ubatches",
+        ),
+        "num_tokens": _read_forward_context_attr(forward_context, "num_tokens"),
+    }
+
+    original_kwargs = (
+        forward_context.additional_kwargs
+        if saved_attrs["additional_kwargs"] is not _MISSING_FORWARD_CONTEXT_ATTR
+        else None
+    )
+    stage_kwargs = dict(original_kwargs or {})
+    stage_kwargs["afd_metadata"] = stage_afd_metadata
+
+    try:
+        forward_context.attn_metadata = attn_metadata[stage_idx]
+        forward_context.additional_kwargs = stage_kwargs
+        forward_context.afd_metadata = stage_afd_metadata
+        forward_context.ubatch_idx = stage_idx
+        forward_context.num_ubatches = len(ubatch_slices)
+        forward_context.num_tokens = int(ubatch_slices[stage_idx].num_tokens)
+        yield
+    finally:
+        for name, value in saved_attrs.items():
+            _restore_forward_context_attr(forward_context, name, value)
+
+
+def _build_async_moe_stage_afd_metadata(
+    parent_afd_metadata: object,
+    ubatch_slices: object,
+    stage_idx: int,
+) -> object:
+    ubatch_slice = ubatch_slices[stage_idx]
+    stage_metadata = parent_afd_metadata.clone()
+    stage_metadata.afd_stage_idx = stage_idx
+    stage_metadata.ubatch_idx = stage_idx
+    stage_metadata.num_of_stages = len(ubatch_slices)
+    stage_metadata.afd_tokens_start_loc = [ubatch_slice.token_slice.start]
+    stage_metadata.afd_reqs_start_loc = [ubatch_slice.request_slice.start]
+    stage_metadata.afd_tokens_lens = [ubatch_slice.num_tokens]
+    if len(parent_afd_metadata.afd_tokens_unpadded_lens) > stage_idx:
+        unpadded_len = parent_afd_metadata.afd_tokens_unpadded_lens[stage_idx]
+    else:
+        unpadded_len = ubatch_slice.num_tokens
+    stage_metadata.afd_tokens_unpadded_lens = [int(unpadded_len)]
+    return stage_metadata
+
+
+def _cat_optional_async_moe_stage_outputs(
+    stage_outputs: list[torch.Tensor | None],
+    fallback_outputs: list[torch.Tensor],
+) -> torch.Tensor | None:
+    if all(stage_output is None for stage_output in stage_outputs):
+        return None
+    return torch.cat(
+        [
+            stage_output if stage_output is not None else fallback_output
+            for stage_output, fallback_output in zip(
+                stage_outputs,
+                fallback_outputs,
+                strict=True,
+            )
+        ],
+        dim=0,
+    )
+
+
+def _slice_optional_first_dim(
+    tensor: torch.Tensor | None,
+    token_slice: slice,
+) -> torch.Tensor | None:
+    if tensor is None:
+        return None
+    return tensor[token_slice]
+
+
+def _slice_positions(positions: torch.Tensor, token_slice: slice) -> torch.Tensor:
+    if positions.dim() <= 1:
+        return positions[token_slice]
+    return positions[..., token_slice]
+
+
+def _slice_llama_4_scaling(
+    llama_4_scaling: torch.Tensor | None,
+    token_slice: slice,
+    *,
+    num_tokens: int,
+) -> torch.Tensor | None:
+    if llama_4_scaling is None:
+        return None
+    if llama_4_scaling.shape[0] == num_tokens:
+        return llama_4_scaling[token_slice]
+    if llama_4_scaling.dim() > 1 and llama_4_scaling.shape[1] == num_tokens:
+        return llama_4_scaling[:, token_slice]
+    return llama_4_scaling
+
+
+def _read_forward_context_attr(forward_context: object, name: str) -> object:
+    try:
+        return getattr(forward_context, name)
+    except AttributeError:
+        return _MISSING_FORWARD_CONTEXT_ATTR
+
+
+def _restore_forward_context_attr(
+    forward_context: object,
+    name: str,
+    value: object,
+) -> None:
+    if value is _MISSING_FORWARD_CONTEXT_ATTR:
+        with suppress(AttributeError):
+            delattr(forward_context, name)
+        return
+    setattr(forward_context, name, value)
 
 
 class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
@@ -473,12 +1216,13 @@ class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
                 continue
             if not isinstance(layer, native.DeepseekV2DecoderLayer):
                 continue
+            mlp = layer._modules.get("mlp")
             if (self.afd_role is None or self.afd_role == "ffn") and isinstance(
-                layer.mlp, native.DeepseekV2MoE
+                mlp, native.DeepseekV2MoE
             ):
-                example_moe = layer.mlp
-                self.moe_mlp_layers.append(layer.mlp)
-                self.moe_layers.append(layer.mlp.experts)
+                example_moe = mlp
+                self.moe_mlp_layers.append(mlp)
+                self.moe_layers.append(mlp.experts)
         if self.afd_role == "attention":
             return
         self.extract_moe_parameters(example_moe)
@@ -488,7 +1232,7 @@ class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
         hidden_states: torch.Tensor,
         layer_idx: int,
         **kwargs: Any,
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | AFDFFNOutput:
         return self.model.compute_ffn_output(hidden_states, layer_idx, **kwargs)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
@@ -547,16 +1291,20 @@ class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
                     loaded_params.add(mapped_name)
                     continue
 
-            if self.afd_role == "attention" and self.is_moe_weight(name):
+            if (
+                self.afd_role == "attention"
+                and self.is_moe_weight(name)
+                and (
+                    not self.afd_config.compute_gate_on_attention
+                    or self.is_moe_layer_weight(name)
+                )
+            ):
                 continue
 
             if (
                 self.afd_role == "ffn"
                 and self.afd_config.compute_gate_on_attention
-                and (
-                    "mlp.gate.weight" in name
-                    or "mlp.gate.e_score_correction_bias" in name
-                )
+                and self.is_dense_mlp_weight(name)
             ):
                 continue
 
@@ -693,6 +1441,30 @@ class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
             or "up" in name
             or "down" in name
         )
+
+    def is_moe_layer_weight(self, name: str) -> bool:
+        layer_idx = self.weight_layer_idx(name)
+        return layer_idx is not None and _is_moe_layer(self.config, layer_idx)
+
+    def is_dense_mlp_weight(self, name: str) -> bool:
+        layer_idx = self.weight_layer_idx(name)
+        return (
+            ".mlp." in name
+            and layer_idx is not None
+            and not _is_moe_layer(self.config, layer_idx)
+        )
+
+    @staticmethod
+    def weight_layer_idx(name: str) -> int | None:
+        parts = name.split(".")
+        for idx, part in enumerate(parts[:-1]):
+            if part != "layers":
+                continue
+            try:
+                return int(parts[idx + 1])
+            except ValueError:
+                return None
+        return None
 
     def is_common_weight(self, name):
         return (

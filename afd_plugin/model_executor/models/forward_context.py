@@ -7,10 +7,12 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any
+from typing import Any, Final
 
 import vllm.forward_context as forward_context_module
 from vllm.forward_context import get_forward_context
+
+ASYNC_MOE_UBATCH_METADATA_KEY: Final[str] = "afd_async_moe_ubatch_metadata"
 
 
 def get_afd_metadata_from_forward_context(forward_context: object | None = None) -> Any:
@@ -29,6 +31,20 @@ def get_afd_metadata_from_forward_context(forward_context: object | None = None)
     if metadata is not None:
         return metadata
     return getattr(forward_context, "afd_metadata", None)
+
+
+def get_async_moe_ubatch_metadata_from_forward_context(
+    forward_context: object | None = None,
+) -> Any:
+    """Return async MoE ubatch sidecar metadata from the current context."""
+
+    if forward_context is None:
+        from vllm.forward_context import get_forward_context
+
+        forward_context = get_forward_context()
+
+    additional_kwargs = forward_context.additional_kwargs or {}
+    return additional_kwargs.get(ASYNC_MOE_UBATCH_METADATA_KEY)
 
 
 @contextmanager
@@ -61,6 +77,8 @@ def use_afd_metadata_provider(provider: Any) -> Iterator[None]:
 
 
 __all__ = [
+    "ASYNC_MOE_UBATCH_METADATA_KEY",
     "get_afd_metadata_from_forward_context",
+    "get_async_moe_ubatch_metadata_from_forward_context",
     "use_afd_metadata_provider",
 ]
