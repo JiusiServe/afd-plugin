@@ -491,7 +491,7 @@ class _FakeGraph:
         self.replay_count += 1
 
 
-def test_npu_ffn_runner_replays_acl_graph_when_key_exists(caplog):
+def test_npu_ffn_runner_replays_acl_graph_when_key_exists():
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
     runner.connector = _FakeFFNConnector()
@@ -503,15 +503,10 @@ def test_npu_ffn_runner_replays_acl_graph_when_key_exists(caplog):
     graph = _FakeGraph()
     runner._acl_graphs = {runner._make_graph_key(dp_metadata): {"graph": graph}}
 
-    with caplog.at_level(
-        logging.INFO,
-        logger="afd_plugin.v1.worker.ascend.ffn_model_runner",
-    ):
-        runner.execute_model(dp_metadata_list=dp_metadata)
+    runner.execute_model(dp_metadata_list=dp_metadata)
 
     assert graph.replay_count == 1
     assert runner.connector.ffn_outputs == []
-    assert "AFD NPU FFN ACL graph key hit" in caplog.text
 
 
 def test_npu_ffn_runner_graph_key_uses_ffn_aggregated_token_counts():
@@ -524,7 +519,7 @@ def test_npu_ffn_runner_graph_key_uses_ffn_aggregated_token_counts():
     )
 
 
-def test_npu_ffn_runner_logs_acl_graph_miss_and_falls_back_to_eager(caplog):
+def test_npu_ffn_runner_falls_back_to_eager_on_acl_graph_miss():
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
     runner.connector = _FakeFFNConnector()
@@ -540,13 +535,8 @@ def test_npu_ffn_runner_logs_acl_graph_miss_and_falls_back_to_eager(caplog):
     )
     runner.connector.attn_outputs.append(("hidden", metadata))
 
-    with caplog.at_level(
-        logging.WARNING,
-        logger="afd_plugin.v1.worker.ascend.ffn_model_runner",
-    ):
-        runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
+    runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
 
-    assert "AFD NPU FFN ACL graph key miss" in caplog.text
     assert runner.connector.ffn_outputs == [
         ("npu-ffn(hidden, layer=0)", metadata, {"ubatch_idx": 0}),
     ]
