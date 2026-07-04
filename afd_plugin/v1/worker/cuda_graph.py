@@ -12,6 +12,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
 
 FULL_DECODE_ONLY = "FULL_DECODE_ONLY"
 _SUPPORTED_GRAPH_MODES = {FULL_DECODE_ONLY}
@@ -36,7 +40,7 @@ class AFDCUDAGraphPolicy:
 
 
 def validate_cuda_graph_mode(
-    vllm_config: object,
+    vllm_config: VllmConfig,
     *,
     role: str | None = None,
 ) -> AFDCUDAGraphPolicy:
@@ -81,7 +85,7 @@ def validate_cuda_graph_mode(
     )
 
 
-def cudagraph_mode_name(vllm_config: object) -> str | None:
+def cudagraph_mode_name(vllm_config: VllmConfig) -> str | None:
     compilation_config = getattr(vllm_config, "compilation_config", None)
     mode = getattr(compilation_config, "cudagraph_mode", None)
     if mode is None:

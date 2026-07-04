@@ -19,9 +19,12 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from afd_plugin.config import AFDConfig, parse_afd_config
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +89,7 @@ def apply_engine_core_patch() -> None:
 
     def patched_engine_core_init(
         self: Any,
-        vllm_config: Any,
+        vllm_config: VllmConfig,
         executor_class: type[Any],
         log_stats: bool,
         executor_fail_callback: Callable[..., Any] | None = None,
@@ -124,7 +127,7 @@ def apply_engine_core_patch() -> None:
         with suppress(Exception):
             gc.unfreeze()
 
-    def patched_initialize_kv_caches(self: Any, vllm_config: Any) -> Any:
+    def patched_initialize_kv_caches(self: Any, vllm_config: VllmConfig) -> Any:
         if not _is_afd_ffn_config(vllm_config):
             assert state.engine_core_initialize_kv_caches is not None
             return state.engine_core_initialize_kv_caches(self, vllm_config)
@@ -194,7 +197,7 @@ class _AFDFFNNoopScheduler:
 def _initialize_ffn_engine_core(
     self: Any,
     core_module: Any,
-    vllm_config: Any,
+    vllm_config: VllmConfig,
     executor_class: type[Any],
     log_stats: bool,
     executor_fail_callback: Callable[..., Any] | None,
@@ -250,7 +253,10 @@ def _initialize_ffn_engine_core(
     self.is_ec_consumer = True
 
 
-def _prepare_late_loaded_ffn_engine_core(self: Any, vllm_config: Any) -> None:
+def _prepare_late_loaded_ffn_engine_core(
+    self: Any,
+    vllm_config: VllmConfig,
+) -> None:
     afd_config = _get_afd_config(vllm_config)
     self.afd_config = afd_config
     with suppress(Exception):
@@ -320,12 +326,12 @@ def _is_afd_ffn_engine(self: Any) -> bool:
     return _is_afd_ffn_config(getattr(self, "vllm_config", None))
 
 
-def _is_afd_ffn_config(vllm_config: Any) -> bool:
+def _is_afd_ffn_config(vllm_config: VllmConfig | None) -> bool:
     config = _get_afd_config(vllm_config)
     return config.enabled and config.role == "ffn"
 
 
-def _get_afd_config(vllm_config: Any) -> AFDConfig:
+def _get_afd_config(vllm_config: VllmConfig | None) -> AFDConfig:
     existing = getattr(vllm_config, "afd_config", None)
     if isinstance(existing, AFDConfig):
         return existing

@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from vllm.compilation.cuda_graph import CUDAGraphStat
-from vllm.config import CUDAGraphMode
+from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
 from vllm.distributed.parallel_state import get_dp_group
 from vllm.forward_context import BatchDescriptor, DPMetadata, get_forward_context
@@ -83,7 +83,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
     afd_expected_role = "attention"
 
-    def __init__(self, vllm_config: object, device: object) -> None:
+    def __init__(self, vllm_config: VllmConfig, device: object) -> None:
         afd_config = self.parse_config(vllm_config)
         ensure_vllm_config_has_afd_proxy(vllm_config, afd_config)
         super().__init__(vllm_config, device)
@@ -110,7 +110,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         self.prof = create_afd_npu_profiler("attention")
 
     @staticmethod
-    def parse_config(vllm_config: object) -> AFDConfig:
+    def parse_config(vllm_config: VllmConfig) -> AFDConfig:
         return parse_afd_config(vllm_config, expected_role="attention")
 
     def execute_model(self, *args: Any, **kwargs: Any) -> Any:

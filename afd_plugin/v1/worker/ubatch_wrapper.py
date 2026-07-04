@@ -11,7 +11,7 @@ from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 import torch
-from vllm.config import CUDAGraphMode
+from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.forward_context import DPMetadata, create_forward_context, get_forward_context
 from vllm.model_executor.offloader.base import get_offloader
 from vllm.v1.worker.gpu_ubatch_wrapper import UbatchMetadata, UBatchWrapper
@@ -32,7 +32,9 @@ class AFDUBatchWrapper(UBatchWrapper):
         self._afd_context_provider = provider
 
     @staticmethod
-    def _create_sm_control_context(vllm_config: object) -> AbstractContextManager[Any]:
+    def _create_sm_control_context(
+        vllm_config: VllmConfig,
+    ) -> AbstractContextManager[Any]:
         if parse_afd_config(vllm_config).enabled:
             return nullcontext()
         return UBatchWrapper._create_sm_control_context(vllm_config)
@@ -257,7 +259,7 @@ def build_ubatch_additional_kwargs(
 
 
 def build_ubatch_dp_metadata_list(
-    vllm_config: object,
+    vllm_config: VllmConfig,
     ubatch_slices: Any,
 ) -> list[DPMetadata | AFDDPMetadata]:
     """Create DP metadata for each ubatch.

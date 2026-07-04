@@ -8,9 +8,12 @@ import inspect
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from afd_plugin.config import AFDConfig, parse_afd_config
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
 
 _PATCHES_APPLIED = False
 _ASCEND_PLATFORM_PATCH_ATTR = "_afd_plugin_ascend_platform_patch_state"
@@ -41,14 +44,14 @@ def init_ascend_workspace_for_afd(device: object, *, num_ubatches: int = 1) -> N
     init_workspace_manager(device, int(num_ubatches))
 
 
-def npu_afd_num_ubatches(vllm_config: object) -> int:
+def npu_afd_num_ubatches(vllm_config: VllmConfig) -> int:
     parallel_config = vllm_config.parallel_config
     if parallel_config.use_ubatching:
         return int(parallel_config.num_ubatches)
     return 1
 
 
-def fail_if_unsupported_npu_afd_features(vllm_config: object) -> None:
+def fail_if_unsupported_npu_afd_features(vllm_config: VllmConfig) -> None:
     """Fail fast for NPU AFD settings that are not currently supported."""
 
     afd_config = parse_afd_config(vllm_config)
@@ -106,7 +109,7 @@ def mirror_afd_metadata_on_forward_context(
 @contextmanager
 def ascend_forward_context(
     *,
-    vllm_config: object,
+    vllm_config: VllmConfig,
     afd_metadata: object | None = None,
     model_instance: object | None = None,
     num_tokens: int = 0,
@@ -155,7 +158,7 @@ def ascend_forward_context(
 
 
 def ensure_vllm_config_has_afd_proxy(
-    vllm_config: object,
+    vllm_config: VllmConfig,
     afd_config: AFDConfig | None = None,
 ) -> _AscendAFDConfigProxy | None:
     """Install an instance-local AFD proxy for vLLM-Ascend builds that read it.
@@ -191,7 +194,7 @@ def _apply_afd_ascend_dbo_config_patch() -> None:
 
     original_fix = NPUPlatform._fix_incompatible_config
 
-    def patched_fix_incompatible_config(vllm_config: object) -> Any:
+    def patched_fix_incompatible_config(vllm_config: VllmConfig) -> Any:
         saved = _snapshot_afd_dbo_config(vllm_config)
         result = original_fix(vllm_config)
         if saved is not None:
@@ -202,7 +205,7 @@ def _apply_afd_ascend_dbo_config_patch() -> None:
     setattr(NPUPlatform, _ASCEND_PLATFORM_PATCH_ATTR, original_fix)
 
 
-def _snapshot_afd_dbo_config(vllm_config: object) -> dict[str, bool | int] | None:
+def _snapshot_afd_dbo_config(vllm_config: VllmConfig) -> dict[str, bool | int] | None:
     if not _is_afd_config_enabled(vllm_config):
         return None
     parallel_config = vllm_config.parallel_config
@@ -215,7 +218,7 @@ def _snapshot_afd_dbo_config(vllm_config: object) -> dict[str, bool | int] | Non
 
 
 def _restore_afd_dbo_config(
-    vllm_config: object,
+    vllm_config: VllmConfig,
     saved: dict[str, bool | int],
 ) -> None:
     parallel_config = vllm_config.parallel_config
@@ -229,7 +232,7 @@ def _restore_afd_dbo_config(
     parallel_config.ubatch_size = saved["ubatch_size"]
 
 
-def _is_afd_config_enabled(vllm_config: object) -> bool:
+def _is_afd_config_enabled(vllm_config: VllmConfig) -> bool:
     try:
         return parse_afd_config(vllm_config, validate=False).enabled
     except Exception:
@@ -307,7 +310,7 @@ def _truthy(value: object) -> bool:
     return bool(value)
 
 
-def fix_all2all_backend_for_afd(vllm_config: object) -> None:
+def fix_all2all_backend_for_afd(vllm_config: VllmConfig) -> None:
     """Mirror vllm-ascend's platform.py all2all_backend override.
 
     vllm-ascend sets ``all2all_backend = "flashinfer_all2allv"`` when

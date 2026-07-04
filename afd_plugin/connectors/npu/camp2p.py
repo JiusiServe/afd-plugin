@@ -7,7 +7,7 @@ from __future__ import annotations
 import pickle
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.distributed as dist
@@ -25,6 +25,9 @@ from afd_plugin.connectors.metadata import (
     AFDRecvOutput,
 )
 from afd_plugin.distributed import init_afd_process_group, topology_from_config
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
 
 _CAMP2P_CUSTOM_OPS_REGISTERED = False
 logger = init_logger(__name__)
@@ -89,7 +92,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         self,
         rank: int,
         local_rank: int,
-        vllm_config: object,
+        vllm_config: VllmConfig,
         afd_config: AFDConfig,
     ) -> None:
         super().__init__(rank, local_rank, vllm_config, afd_config)
@@ -616,7 +619,7 @@ def _resolve_aiv_num(afd_config: AFDConfig) -> int:
     return max(1, int(value or 8))
 
 
-def _resolve_num_ubatches(vllm_config: object) -> int:
+def _resolve_num_ubatches(vllm_config: VllmConfig) -> int:
     parallel_config = getattr(vllm_config, "parallel_config", None)
     raw_num_ubatches = getattr(parallel_config, "num_ubatches", 1)
     try:
@@ -626,7 +629,7 @@ def _resolve_num_ubatches(vllm_config: object) -> int:
     return max(1, num_ubatches)
 
 
-def _resolve_int_attr(vllm_config: object, name: str, *, default: int) -> int:
+def _resolve_int_attr(vllm_config: VllmConfig, name: str, *, default: int) -> int:
     model_config = vllm_config.model_config
     hf_config = model_config.hf_config
     if name == "hidden_size":

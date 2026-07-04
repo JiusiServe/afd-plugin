@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from vllm.compilation.monitor import set_cudagraph_capturing_enabled
-from vllm.config import CUDAGraphMode
+from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.config import update_config as update_vllm_config
 from vllm.distributed.parallel_state import get_world_group, graph_capture
 from vllm.forward_context import DPMetadata, get_forward_context, set_forward_context
@@ -51,7 +51,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
 
     afd_expected_role = "ffn"
 
-    def __init__(self, vllm_config: object, device: object) -> None:
+    def __init__(self, vllm_config: VllmConfig, device: object) -> None:
         self.vllm_config = vllm_config
         self.model_config = vllm_config.model_config
         self.load_config = vllm_config.load_config
@@ -85,7 +85,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         self.prof = create_afd_gpu_profiler("ffn")
 
     @staticmethod
-    def parse_config(vllm_config: object) -> AFDConfig:
+    def parse_config(vllm_config: VllmConfig) -> AFDConfig:
         return parse_afd_config(vllm_config, expected_role="ffn")
 
     def get_model(self) -> Any:
@@ -336,7 +336,7 @@ def _resolve_world_ranks() -> tuple[int, int]:
 
 
 @contextmanager
-def _ffn_forward_context(vllm_config: object):
+def _ffn_forward_context(vllm_config: VllmConfig):
     with set_forward_context(attn_metadata=None, vllm_config=vllm_config):
         yield get_forward_context()
 

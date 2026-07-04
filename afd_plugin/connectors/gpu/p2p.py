@@ -4,7 +4,7 @@
 
 import json
 from datetime import timedelta
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import torch
 from torch.distributed.distributed_c10d import _get_default_group
@@ -25,6 +25,9 @@ from afd_plugin.distributed import (
     build_rank_mapping,
     init_afd_process_group,
 )
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
 
 _AFD_COMMUNICATORS: dict[int, Any] = {}
 _AFD_COMM_ID_COUNTER = 0
@@ -49,7 +52,7 @@ class P2PAFDConnector(AFDConnectorBase):
         self,
         rank: int,
         local_rank: int,
-        vllm_config: object,
+        vllm_config: VllmConfig,
         afd_config: AFDConfig,
     ) -> None:
         super().__init__(rank, local_rank, vllm_config, afd_config)

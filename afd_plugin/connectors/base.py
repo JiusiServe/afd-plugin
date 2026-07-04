@@ -17,6 +17,7 @@ from afd_plugin.connectors.metadata import (
 )
 
 if TYPE_CHECKING:
+    from vllm.config import VllmConfig
     from vllm.forward_context import DPMetadata
 
 
@@ -27,7 +28,7 @@ class AFDConnectorBase(ABC):
         self,
         rank: int,
         local_rank: int,
-        vllm_config: object,
+        vllm_config: VllmConfig,
         afd_config: AFDConfig,
     ) -> None:
         self.rank = rank

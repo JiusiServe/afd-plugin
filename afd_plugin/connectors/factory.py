@@ -6,9 +6,13 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors.base import AFDConnectorBase
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
 
 
 class AFDConnectorFactory:
@@ -42,7 +46,7 @@ class AFDConnectorFactory:
         cls,
         rank: int,
         local_rank: int,
-        vllm_config: object,
+        vllm_config: VllmConfig,
         afd_config: AFDConfig | None = None,
     ) -> AFDConnectorBase:
         config = afd_config or parse_afd_config(vllm_config)

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from vllm.compilation.monitor import set_cudagraph_capturing_enabled
-from vllm.config import CUDAGraphMode
+from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.forward_context import DPMetadata
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
@@ -57,7 +57,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
     afd_expected_role = "ffn"
 
-    def __init__(self, vllm_config: object, device: object) -> None:
+    def __init__(self, vllm_config: VllmConfig, device: object) -> None:
         afd_config = self.parse_config(vllm_config)
         ensure_vllm_config_has_afd_proxy(vllm_config, afd_config)
         super().__init__(vllm_config, device)
@@ -83,7 +83,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         self.prof = create_afd_npu_profiler("ffn")
 
     @staticmethod
-    def parse_config(vllm_config: object) -> AFDConfig:
+    def parse_config(vllm_config: VllmConfig) -> AFDConfig:
         return parse_afd_config(vllm_config, expected_role="ffn")
 
     def initialize_afd_connector(self) -> None:
@@ -533,7 +533,7 @@ def _to_dp_level_token_counts(
     return num_tokens_across_dp[indices].contiguous()
 
 
-def _use_npu_aclgraph(vllm_config: object, runner: object) -> bool:
+def _use_npu_aclgraph(vllm_config: VllmConfig, runner: object) -> bool:
     inherited = bool(runner.use_aclgraph)
     if bool(vllm_config.model_config.enforce_eager):
         return False

@@ -13,10 +13,13 @@ import importlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from afd_plugin.compat.vllm import TARGET_VLLM_VERSION
 from afd_plugin.config import parse_afd_config
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +78,7 @@ def apply_config_validation_patch() -> None:
             parallel_config.all2all_backend = original_backend
         return config
 
-    def patched_vllm_config_post_init(self: Any) -> Any:
+    def patched_vllm_config_post_init(self: VllmConfig) -> Any:
         assert state.vllm_config_post_init is not None
         if not _should_relax_vllm_config_backend(self):
             return state.vllm_config_post_init(self)
@@ -121,7 +124,7 @@ def _should_relax_engine_args_backend(engine_args: object) -> bool:
     return backend not in {"deepep_low_latency", "deepep_high_throughput"}
 
 
-def _should_relax_vllm_config_backend(vllm_config: object) -> bool:
+def _should_relax_vllm_config_backend(vllm_config: VllmConfig) -> bool:
     if not _is_target_vllm_compatible():
         return False
     try:
