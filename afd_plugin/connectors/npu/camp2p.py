@@ -125,14 +125,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             "n_routed_experts",
             default=0,
         )
-        self.num_shared_experts = _resolve_int_attr(
-            vllm_config,
-            "n_shared_experts",
-            default=0,
-        )
-        self.mix_placement = bool(
-            afd_config.extra_config.get("mix_placement", False),
-        )
 
     @property
     def is_initialized(self) -> bool:
@@ -326,14 +318,10 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                 f"CAMP2P metadata token count {metadata.total_tokens}",
             )
         connector_data = self._metadata_data_or_default(metadata, hidden_states)
-        topk_ids = kwargs.get("topk_ids")
-        topk_weights = kwargs.get("topk_weights")
         ubatch_idx = int(metadata.stage_idx)
         _set_forward_context_connector_data(connector_data, ubatch_idx=ubatch_idx)
         hidden_states = torch.ops.vllm.afd_camp2p_send_attn_output(
             hidden_states,
-            topk_weights,
-            topk_ids,
             self.hccl_comm_name,
             self.hccl_comm_name2,
             self.hccl_comm_name3,
@@ -481,10 +469,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         k = self.num_experts_per_tok
         moe_experts = self.num_routed_experts
         shared_experts = 0
-        if self.mix_placement:
-            k += self.num_shared_experts
-            moe_experts += self.num_shared_experts
-            shared_experts = self.num_shared_experts
         return CAMP2PAFDConnectorMetadata(
             moe_expert_num=moe_experts,
             shared_expert_num=shared_experts,
@@ -699,8 +683,6 @@ def _register_camp2p_custom_ops() -> None:
 
     def send_attn_output_impl(
         hidden_states: torch.Tensor,
-        topk_weights: torch.Tensor | None,
-        topk_ids: torch.Tensor | None,
         hccl_comm_name: str,
         hccl_comm_name2: str,
         hccl_comm_name3: str,
@@ -730,8 +712,8 @@ def _register_camp2p_custom_ops() -> None:
 
         outputs = torch.ops.afd_ascend.a2e(
             hidden_states,
-            topk_ids,
-            topk_weights,
+            None,
+            None,
             connector_data.batch_size,
             connector_data.h,
             connector_data.k,
@@ -750,8 +732,6 @@ def _register_camp2p_custom_ops() -> None:
 
     def send_attn_output_fake_impl(
         hidden_states: torch.Tensor,
-        topk_weights: torch.Tensor | None,
-        topk_ids: torch.Tensor | None,
         hccl_comm_name: str,
         hccl_comm_name2: str,
         hccl_comm_name3: str,
@@ -824,8 +804,6 @@ def _register_camp2p_custom_ops() -> None:
 
     send_annotations = {
         "hidden_states": torch.Tensor,
-        "topk_weights": torch.Tensor | None,
-        "topk_ids": torch.Tensor | None,
         "hccl_comm_name": str,
         "hccl_comm_name2": str,
         "hccl_comm_name3": str,
