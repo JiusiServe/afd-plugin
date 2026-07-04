@@ -282,8 +282,7 @@ class P2PAFDConnector(AFDConnectorBase):
         )
         if output is None:
             raise RuntimeError(
-                "P2P recv_ffn_output requires ref_tensor when no receive is "
-                "performed",
+                "P2P recv_ffn_output requires ref_tensor when no receive is performed",
             )
         return output
 

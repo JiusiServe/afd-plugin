@@ -113,13 +113,9 @@ def _ensure_afd_dp_metadata(value: Any) -> AFDDPMetadata:
         raise TypeError(
             "AFD DP metadata must expose num_tokens_across_dp_cpu",
         )
-    max_token_count = getattr(value, "max_tokens_across_dp_cpu", None)
-    if max_token_count is None:
-        token_counts_list = _to_int_list(token_counts)
-        max_token_count = max(token_counts_list)
     return AFDDPMetadata(
         num_tokens_across_dp_cpu=token_counts,
-        max_tokens_across_dp_cpu=max_token_count,
+        max_tokens_across_dp_cpu=getattr(value, "max_tokens_across_dp_cpu", None),
     )
 
 
