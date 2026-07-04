@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _PatchState:
-    engine_args_create_engine_config: Callable[..., Any]
-    vllm_config_post_init: Callable[..., Any] | None
+    engine_args_create_engine_config: Callable[..., object]
+    vllm_config_post_init: Callable[..., object] | None
 
 
 _PATCH_ATTR = "_afd_plugin_config_validation_patch_state"
@@ -97,7 +97,7 @@ def apply_config_validation_patch() -> None:
     logger.debug("AFD config validation patch applied")
 
 
-def _should_relax_engine_args_backend(engine_args: Any) -> bool:
+def _should_relax_engine_args_backend(engine_args: object) -> bool:
     if not _is_target_vllm_compatible():
         return False
     try:
@@ -121,7 +121,7 @@ def _should_relax_engine_args_backend(engine_args: Any) -> bool:
     return backend not in {"deepep_low_latency", "deepep_high_throughput"}
 
 
-def _should_relax_vllm_config_backend(vllm_config: Any) -> bool:
+def _should_relax_vllm_config_backend(vllm_config: object) -> bool:
     if not _is_target_vllm_compatible():
         return False
     try:

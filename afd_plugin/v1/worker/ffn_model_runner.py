@@ -27,6 +27,7 @@ from afd_plugin.connectors import (
     AFDConnectorFactory,
     AFDConnectorMetadata,
     AFDRecvOutput,
+    DPMetadataLike,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
     _with_dp_derived_afd_rank,
@@ -74,7 +75,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         self.use_cuda_graph = bool(
             self.afd_cudagraph_policy.enable_ffn_graph_cache,
         )
-        self._cuda_graphs: dict[tuple, dict[str, Any]] = {}
+        self._cuda_graphs: dict[tuple, dict[str, object]] = {}
         self._graph_memory_pool: Any | None = None
         self.prof = create_afd_gpu_profiler("ffn")
 
@@ -88,7 +89,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
     def initialize_afd_connector(self) -> None:
         self.connector.init_afd_connector()
 
-    def load_model(self, *, load_dummy_weights: bool = False, **kwargs: Any) -> None:
+    def load_model(self, *, load_dummy_weights: bool = False, **kwargs: object) -> None:
         """Load the vLLM model."""
 
         model_loader = get_model_loader(self.load_config)
@@ -108,18 +109,18 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
     def profile_run(self) -> None:
         pass
 
-    def get_kv_cache_spec(self) -> dict[str, Any]:
+    def get_kv_cache_spec(self) -> dict[str, object]:
         return {}
 
-    def initialize_kv_cache(self, kv_cache_config: Any) -> None:
+    def initialize_kv_cache(self, kv_cache_config: object) -> None:
         return None
 
     def execute_model(
         self,
-        scheduler_output: Any = None,
-        intermediate_tensors: Any = None,
+        scheduler_output: object = None,
+        intermediate_tensors: object = None,
         *,
-        dp_metadata_list: dict[int, Any] | None = None,
+        dp_metadata_list: dict[int, DPMetadataLike] | None = None,
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
     ) -> None:
@@ -147,10 +148,10 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
     def _ffn_forward(
         self,
         *,
-        dp_metadata_list: dict[int, Any],
+        dp_metadata_list: dict[int, DPMetadataLike],
         is_graph_capturing: bool = False,
         update_connector_state: bool = True,
-    ) -> Any:
+    ) -> torch.Tensor | None:
         if update_connector_state:
             self.connector.update_state_from_dp_metadata(
                 dp_metadata_list,
@@ -186,20 +187,24 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                     self.connector.send_ffn_output(rank_ffn_output, metadata)
         return rank_ffn_output
 
-    def _execute_eager_mode(self, hidden_states: Any, layer_idx: int) -> Any:
+    def _execute_eager_mode(
+        self,
+        hidden_states: torch.Tensor,
+        layer_idx: int,
+    ) -> torch.Tensor:
         model = self.model
         compute = getattr(model, "compute_ffn_output", None)
         if callable(compute):
             return compute(hidden_states, layer_idx)
         return hidden_states
 
-    def _recv_attn_output(self, stage_idx: int) -> Any:
+    def _recv_attn_output(self, stage_idx: int) -> object:
         try:
             return self.connector.recv_attn_output(ubatch_idx=stage_idx)
         except TypeError:
             return self.connector.recv_attn_output()
 
-    def update_config(self, overrides: dict[str, Any]) -> None:
+    def update_config(self, overrides: dict[str, object]) -> None:
         for config_name, config_overrides in overrides.items():
             config = getattr(self, config_name)
             updated_config = update_vllm_config(config, config_overrides)
@@ -212,8 +217,8 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
 
     def _dummy_run(
         self,
-        cudagraph_runtime_mode: Any,
-        dp_metadata_list: dict[int, Any],
+        cudagraph_runtime_mode: object,
+        dp_metadata_list: dict[int, DPMetadataLike],
         is_attn_graph_capturing: bool,
     ) -> None:
         mode_name = getattr(cudagraph_runtime_mode, "name", str(cudagraph_runtime_mode))
@@ -250,7 +255,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
 
     def capture_model(
         self,
-        dp_metadata_list: dict[int, Any] | None = None,
+        dp_metadata_list: dict[int, DPMetadataLike] | None = None,
         is_warmup: bool = False,
         is_attn_graph_capturing: bool = True,
     ) -> int:
@@ -289,10 +294,10 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         cuda_graph_size = start_free_gpu_memory - end_free_gpu_memory
         return int(cuda_graph_size)
 
-    def sample_tokens(self, grammar_output: Any = None) -> Any:
+    def sample_tokens(self, grammar_output: object = None) -> object:
         raise RuntimeError("FFN runners do not sample tokens")
 
-    def add_lora(self, lora_request: Any) -> bool:
+    def add_lora(self, lora_request: object) -> bool:
         return False
 
     def remove_lora(self, lora_id: int) -> bool:
@@ -312,7 +317,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
     def is_pooling_model(self) -> bool:
         return False
 
-    def get_supported_tasks(self) -> tuple[Any, ...]:
+    def get_supported_tasks(self) -> tuple[object, ...]:
         return ()
 
     def shutdown(self) -> None:
@@ -344,11 +349,11 @@ def _set_moe_layer_index(forward_context: object, layer_idx: int) -> None:
 
 
 def _normalize_recv_output(
-    recv_output: Any,
+    recv_output: object,
     *,
     stage_idx: int,
     layer_idx: int,
-) -> tuple[Any, AFDConnectorMetadata, Any]:
+) -> tuple[torch.Tensor, AFDConnectorMetadata, object]:
     if isinstance(recv_output, tuple):
         hidden_states, metadata = recv_output
         return hidden_states, metadata, recv_output

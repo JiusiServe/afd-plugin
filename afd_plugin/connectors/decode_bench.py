@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 from vllm.distributed.kv_transfer.kv_connector.v1 import (
@@ -70,7 +70,7 @@ class AFDDecodeBenchConnector(KVConnectorBase_V1, SupportsHMA):
         assert self.connector_worker is not None
         self.connector_worker.register_kv_caches(kv_caches)
 
-    def start_load_kv(self, forward_context: ForwardContext, **kwargs: Any) -> None:
+    def start_load_kv(self, forward_context: ForwardContext, **kwargs: object) -> None:
         # Keep the original AFD decode-bench behavior: only emulate external KV
         # availability on the scheduler side, without writing dummy values into
         # the worker KV cache.
@@ -83,8 +83,8 @@ class AFDDecodeBenchConnector(KVConnectorBase_V1, SupportsHMA):
         self,
         layer_name: str,
         kv_layer: torch.Tensor,
-        attn_metadata: Any,
-        **kwargs: Any,
+        attn_metadata: object,
+        **kwargs: object,
     ) -> None:
         pass
 
@@ -126,7 +126,7 @@ class AFDDecodeBenchConnector(KVConnectorBase_V1, SupportsHMA):
         self,
         request: Request,
         block_ids: list[int],
-    ) -> tuple[bool, dict[str, Any] | None]:
+    ) -> tuple[bool, dict[str, object] | None]:
         assert self.connector_scheduler is not None
         self.connector_scheduler.request_finished(request)
         return False, None
@@ -135,7 +135,7 @@ class AFDDecodeBenchConnector(KVConnectorBase_V1, SupportsHMA):
         self,
         request: Request,
         block_ids: tuple[list[int], ...],
-    ) -> tuple[bool, dict[str, Any] | None]:
+    ) -> tuple[bool, dict[str, object] | None]:
         assert self.connector_scheduler is not None
         self.connector_scheduler.request_finished(request)
         return False, None

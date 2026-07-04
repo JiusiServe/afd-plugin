@@ -171,7 +171,7 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         else:
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
 
-        attn_kwargs: dict[str, Any] = {
+        attn_kwargs: dict[str, torch.Tensor | None] = {
             "positions": positions,
             "hidden_states": hidden_states,
         }
@@ -215,7 +215,7 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         else:
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
 
-        attn_kwargs: dict[str, Any] = {
+        attn_kwargs: dict[str, torch.Tensor | None] = {
             "positions": positions,
             "hidden_states": hidden_states,
         }

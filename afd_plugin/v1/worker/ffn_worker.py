@@ -55,12 +55,12 @@ class AFDFFNWorker(Worker):
 
         torch.accelerator.empty_cache()
 
-    def get_kv_cache_spec(self) -> dict[str, Any]:
+    def get_kv_cache_spec(self) -> dict[str, object]:
         """FFN workers do not allocate KV cache."""
 
         return {}
 
-    def initialize_from_config(self, kv_cache_config: Any) -> None:
+    def initialize_from_config(self, kv_cache_config: object) -> None:
         """Skip KV cache allocation and start the FFN connector loop."""
 
         self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
@@ -75,7 +75,7 @@ class AFDFFNWorker(Worker):
 
         return 0.0
 
-    def execute_model(self, scheduler_output: Any) -> None:
+    def execute_model(self, scheduler_output: object) -> None:
         """Fail fast if the default scheduler tries to execute FFN work."""
 
         raise RuntimeError(

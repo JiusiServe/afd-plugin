@@ -133,10 +133,10 @@ class AFDUBatchWrapper(UBatchWrapper):
         inputs_embeds: Any,
         intermediate_tensors: Any,
         compute_stream: Any,
-        dp_metadata: list[Any],
+        dp_metadata: list[DPMetadata | AFDDPMetadata],
         batch_descriptor: Any,
         cudagraph_runtime_mode: Any,
-    ) -> list[Any]:
+    ) -> list[UbatchMetadata]:
         parent_forward_context = get_forward_context()
         parent_additional_kwargs = dict(parent_forward_context.additional_kwargs)
         afd_metadata = parent_additional_kwargs.get("afd_metadata")
@@ -195,7 +195,7 @@ class AFDUBatchWrapper(UBatchWrapper):
             ready_barrier=self.ready_barrier,
         )
 
-        ubatch_metadata: list[Any] = []
+        ubatch_metadata: list[UbatchMetadata] = []
         for idx, ubatch_slice in enumerate(ubatch_slices):
             (
                 sliced_input_ids,
@@ -259,7 +259,7 @@ def build_ubatch_additional_kwargs(
 def build_ubatch_dp_metadata_list(
     vllm_config: object,
     ubatch_slices: Any,
-) -> list[Any]:
+) -> list[DPMetadata | AFDDPMetadata]:
     """Create DP metadata for each ubatch.
 
     For DP=1 we use the plugin-owned metadata object to stay independent of

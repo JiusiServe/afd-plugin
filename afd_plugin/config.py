@@ -7,7 +7,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Final, Literal
+from typing import Final, Literal
 
 AFD_ADDITIONAL_CONFIG_KEY: Final[str] = "afd"
 AFDRole = Literal["attention", "ffn"]
@@ -39,7 +39,7 @@ class AFDConfig:
     # Enables the AFD runtime for the selected worker role.
     enabled: bool = False
     # Open connector/plugin extension namespace, aligned with vLLM extra config.
-    extra_config: dict[str, Any] = field(default_factory=dict)
+    extra_config: dict[str, object] = field(default_factory=dict)
     # Connector implementation name used to create the backend data path.
     connector: str = "p2pconnector"
     # Role owned by this process: Attention sends hidden states; FFN receives.
@@ -58,7 +58,7 @@ class AFDConfig:
     compute_gate_on_attention: bool = False
 
     @property
-    def afd_extra_config(self) -> dict[str, Any]:
+    def afd_extra_config(self) -> dict[str, object]:
         return self.extra_config
 
     @property
@@ -124,7 +124,7 @@ def _coerce_int(value: object, *, field_name: str) -> int:
         ) from exc
 
 
-def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, object]:
+def _normalize_mapping(raw: Mapping[str, object]) -> dict[str, object]:
     normalized: dict[str, object] = {}
     valid_fields = set(AFDConfig.__dataclass_fields__)  # type: ignore[attr-defined]
 
@@ -170,7 +170,7 @@ def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, object]:
 
 
 def afd_config_from_mapping(
-    raw: Mapping[str, Any] | None,
+    raw: Mapping[str, object] | None,
     *,
     validate: bool = True,
     expected_role: str | None = None,
@@ -190,7 +190,7 @@ def afd_config_from_mapping(
 
 
 def parse_afd_config(
-    source: Mapping[str, Any] | object | None,
+    source: Mapping[str, object] | object | None,
     *,
     validate: bool = True,
     expected_role: str | None = None,

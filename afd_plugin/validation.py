@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any, Final
+from typing import Final
 
 from afd_plugin.config import AFDConfig, parse_afd_config
 
@@ -30,7 +30,7 @@ def normalize_qualname(value: str) -> str:
     return value.replace(":", ".")
 
 
-def resolve_class_from_qualname(qualname: str, *, role: str = "class") -> type[Any]:
+def resolve_class_from_qualname(qualname: str, *, role: str = "class") -> type[object]:
     """Resolve a dotted or colon-separated class path."""
 
     normalized = normalize_qualname(qualname.strip())

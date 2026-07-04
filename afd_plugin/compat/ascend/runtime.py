@@ -8,7 +8,6 @@ import inspect
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
 
 from afd_plugin.config import AFDConfig, parse_afd_config
 
@@ -191,7 +190,7 @@ def _apply_afd_ascend_dbo_config_patch() -> None:
 
     original_fix = NPUPlatform._fix_incompatible_config
 
-    def patched_fix_incompatible_config(vllm_config: object) -> Any:
+    def patched_fix_incompatible_config(vllm_config: object) -> object:
         saved = _snapshot_afd_dbo_config(vllm_config)
         result = original_fix(vllm_config)
         if saved is not None:
@@ -202,7 +201,7 @@ def _apply_afd_ascend_dbo_config_patch() -> None:
     setattr(NPUPlatform, _ASCEND_PLATFORM_PATCH_ATTR, original_fix)
 
 
-def _snapshot_afd_dbo_config(vllm_config: object) -> dict[str, Any] | None:
+def _snapshot_afd_dbo_config(vllm_config: object) -> dict[str, bool | int] | None:
     if not _is_afd_config_enabled(vllm_config):
         return None
     parallel_config = vllm_config.parallel_config
@@ -214,7 +213,10 @@ def _snapshot_afd_dbo_config(vllm_config: object) -> dict[str, Any] | None:
     }
 
 
-def _restore_afd_dbo_config(vllm_config: object, saved: dict[str, Any]) -> None:
+def _restore_afd_dbo_config(
+    vllm_config: object,
+    saved: dict[str, bool | int],
+) -> None:
     parallel_config = vllm_config.parallel_config
     if not (
         saved["enable_dbo"]
@@ -242,7 +244,7 @@ class _AscendAFDConfigProxy:
         return self._config.enabled
 
     @property
-    def afd_extra_config(self) -> dict[str, Any]:
+    def afd_extra_config(self) -> dict[str, object]:
         return self._config.extra_config
 
     @property
@@ -290,7 +292,7 @@ class _AscendAFDConfigProxy:
         return bool(self._config.extra_config.get("is_ffn_multistream", False))
 
     @property
-    def multistream_info(self) -> dict[str, Any]:
+    def multistream_info(self) -> dict[str, object]:
         value = self._config.extra_config.get("multistream_info", {})
         return value if isinstance(value, dict) else {}
 
@@ -298,13 +300,13 @@ class _AscendAFDConfigProxy:
         return self._config.compute_hash()
 
 
-def _truthy(value: Any) -> bool:
+def _truthy(value: object) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
 
 
-def fix_all2all_backend_for_afd(vllm_config: Any) -> None:
+def fix_all2all_backend_for_afd(vllm_config: object) -> None:
     """Mirror vllm-ascend's platform.py all2all_backend override.
 
     vllm-ascend sets ``all2all_backend = "flashinfer_all2allv"`` when

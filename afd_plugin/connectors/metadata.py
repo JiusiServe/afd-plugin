@@ -8,17 +8,31 @@ import copy
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Protocol
 
 import torch
+
+
+class DPMetadataLike(Protocol):
+    """Token-count fields shared by vLLM and plugin-owned DP metadata."""
+
+    num_tokens_across_dp_cpu: object
+    max_tokens_across_dp_cpu: object | None
+
+
+class WorkHandleLike(Protocol):
+    """Async work handle surface used by connector metadata consumers."""
+
+    def wait(self) -> object:
+        ...
 
 
 @dataclass(slots=True)
 class AFDDPMetadata:
     """Serializable DPMetadata-compatible payload for AFD control traffic."""
 
-    num_tokens_across_dp_cpu: Any
-    max_tokens_across_dp_cpu: Any | None = None
+    num_tokens_across_dp_cpu: torch.Tensor
+    max_tokens_across_dp_cpu: torch.Tensor | None = None
     local_sizes: list[int] | None = None
 
     def __post_init__(self) -> None:
@@ -48,10 +62,8 @@ class AFDDPMetadata:
     def get_chunk_sizes_across_dp_rank(self) -> list[int] | None:
         return self.local_sizes
 
-    def cu_tokens_across_sp(self, sp_size: int) -> Any:
+    def cu_tokens_across_sp(self, sp_size: int) -> torch.Tensor:
         num_tokens = _cpu_int_tensor_or_list(self.num_tokens_across_dp_cpu)
-        if isinstance(num_tokens, list):
-            num_tokens = torch.tensor(num_tokens, dtype=torch.int32, device="cpu")
         num_tokens_across_sp_cpu = (num_tokens - 1 + sp_size) // sp_size
         num_tokens_across_sp_cpu = num_tokens_across_sp_cpu.repeat_interleave(
             sp_size,
@@ -88,12 +100,12 @@ class AFDDPMetadata:
 AFDSingleDPMetadata = AFDDPMetadata
 
 
-def _cpu_int_tensor_or_list(value: Any) -> Any:
+def _cpu_int_tensor_or_list(value: object) -> torch.Tensor:
     values = _to_int_list(value)
     return torch.tensor(values, dtype=torch.int32, device="cpu")
 
 
-def _cpu_scalar_tensor_or_int(value: Any) -> Any:
+def _cpu_scalar_tensor_or_int(value: object) -> torch.Tensor:
     if isinstance(value, (int, float)):
         value = int(value)
     elif isinstance(value, (list, tuple)):
@@ -103,13 +115,15 @@ def _cpu_scalar_tensor_or_int(value: Any) -> Any:
     return torch.tensor(value, dtype=torch.int32, device="cpu")
 
 
-def _max_token_count(value: Any) -> Any:
+def _max_token_count(value: object) -> torch.Tensor:
     if isinstance(value, list):
-        return max(_to_int_list(value))
+        return torch.tensor(max(_to_int_list(value)), dtype=torch.int32, device="cpu")
+    if not isinstance(value, torch.Tensor):
+        value = _cpu_int_tensor_or_list(value)
     return value.max()
 
 
-def _to_int_list(value: Any) -> list[int]:
+def _to_int_list(value: object) -> list[int]:
     if isinstance(value, (int, float)):
         value = [value]
     elif isinstance(value, (list, tuple)):
@@ -120,7 +134,7 @@ def _to_int_list(value: Any) -> list[int]:
 
 
 def _compute_sp_num_tokens(
-    num_tokens_across_dp_cpu: Any,
+    num_tokens_across_dp_cpu: object,
     sequence_parallel_size: int,
 ) -> list[int]:
     if not isinstance(num_tokens_across_dp_cpu, (int, float, list, tuple)):
@@ -149,8 +163,8 @@ class AFDConnectorMetadata:
     layer_idx: int
     stage_idx: int
     seq_lens: list[int]
-    recv_handle_list: list[Any] | None = None
-    connector_data: Any = None
+    recv_handle_list: list[WorkHandleLike] | None = None
+    connector_data: object = None
 
     def __post_init__(self) -> None:
         if not self.seq_lens:
@@ -194,23 +208,42 @@ class AFDConnectorMetadata:
         return len(tensor_shape) > 0 and tensor_shape[0] == self.total_tokens
 
 
+class AFDConnectorLike(Protocol):
+    """Minimal connector surface used by model-visible AFD metadata."""
+
+    def recv_ffn_output(
+        self,
+        handle: object = None,
+        **kwargs: object,
+    ) -> torch.Tensor:
+        ...
+
+    def send_attn_output(
+        self,
+        hidden_states: torch.Tensor,
+        metadata: AFDConnectorMetadata,
+        **kwargs: object,
+    ) -> object:
+        ...
+
+
 @dataclass(slots=True)
 class AFDRecvOutput:
     """Unified Attention -> FFN payload returned by connector recv paths."""
 
-    hidden_states: Any
+    hidden_states: torch.Tensor
     metadata: AFDConnectorMetadata
-    group_list: Any = None
-    topk_weights: Any = None
-    topk_ids: Any = None
-    router_logits: Any = None
-    row_idx: Any = None
-    x_active_mask: Any = None
-    dynamic_scales: Any = None
+    group_list: object = None
+    topk_weights: torch.Tensor | None = None
+    topk_ids: torch.Tensor | None = None
+    router_logits: torch.Tensor | None = None
+    row_idx: torch.Tensor | None = None
+    x_active_mask: torch.Tensor | None = None
+    dynamic_scales: torch.Tensor | None = None
     cam_p2p_ep_name: str | None = None
-    atten_batch_size: Any = None
-    expand_idx: Any = None
-    ep_recv_counts: Any = None
+    atten_batch_size: torch.Tensor | None = None
+    expand_idx: torch.Tensor | None = None
+    ep_recv_counts: torch.Tensor | None = None
 
 
 @dataclass(slots=True)
@@ -220,7 +253,7 @@ class AFDMetadata:
     afd_tokens_start_loc: list[int]
     afd_reqs_start_loc: list[int]
     afd_stage_idx: int
-    afd_connector: Any
+    afd_connector: AFDConnectorLike
     afd_tokens_lens: list[int]
     num_of_stages: int
     ubatch_idx: int = 0
@@ -238,8 +271,11 @@ class AFDMetadata:
 
 __all__ = [
     "AFDConnectorMetadata",
+    "AFDConnectorLike",
     "AFDDPMetadata",
     "AFDMetadata",
     "AFDRecvOutput",
     "AFDSingleDPMetadata",
+    "DPMetadataLike",
+    "WorkHandleLike",
 ]

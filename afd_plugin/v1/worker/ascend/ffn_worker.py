@@ -57,10 +57,10 @@ class AFDNPUFFNWorker(NPUWorker):
         )
         self.model_runner = AFDNPUFFNModelRunner(self.vllm_config, self.device)
 
-    def get_kv_cache_spec(self) -> dict[str, Any]:
+    def get_kv_cache_spec(self) -> dict[str, object]:
         return {}
 
-    def initialize_from_config(self, kv_cache_config: Any) -> None:
+    def initialize_from_config(self, kv_cache_config: object) -> None:
         self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
         self.model_runner.initialize_kv_cache(kv_cache_config)
         self.model_runner.initialize_afd_connector()
@@ -69,7 +69,7 @@ class AFDNPUFFNWorker(NPUWorker):
     def compile_or_warm_up_model(self) -> float:
         return 0.0
 
-    def execute_model(self, scheduler_output: Any) -> None:
+    def execute_model(self, scheduler_output: object) -> None:
         raise RuntimeError(
             "AFD NPU FFN workers are connector-driven; scheduler-driven "
             "execute_model() is not supported.",

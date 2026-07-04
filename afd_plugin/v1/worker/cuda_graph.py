@@ -9,9 +9,9 @@ used by CPU-safe tests.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
 
 FULL_DECODE_ONLY = "FULL_DECODE_ONLY"
 _SUPPORTED_GRAPH_MODES = {FULL_DECODE_ONLY}
@@ -98,7 +98,7 @@ def cudagraph_mode_name(vllm_config: object) -> str | None:
 
 
 def make_ffn_graph_key(
-    dp_metadata_list: dict[int, Any],
+    dp_metadata_list: Mapping[int, object],
     *,
     attention_size: int | None = None,
     ffn_size: int | None = None,
@@ -145,7 +145,7 @@ def graph_run_mode(
     return AFDGraphRunMode.EAGER
 
 
-def _metadata_values_tuple(values: Any) -> tuple[int, ...]:
+def _metadata_values_tuple(values: object) -> tuple[int, ...]:
     tolist = getattr(values, "tolist", None)
     if callable(tolist):
         values = tolist()

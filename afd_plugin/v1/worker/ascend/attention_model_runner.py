@@ -55,7 +55,12 @@ from afd_plugin.compat.ascend.profiler import (
     stop_afd_npu_profiler,
 )
 from afd_plugin.config import AFDConfig, parse_afd_config
-from afd_plugin.connectors import AFDConnectorFactory, AFDDPMetadata, AFDMetadata
+from afd_plugin.connectors import (
+    AFDConnectorFactory,
+    AFDDPMetadata,
+    AFDMetadata,
+    DPMetadataLike,
+)
 from afd_plugin.v1.worker.ascend.npu_ubatch_wrapper import AscendUBatchWrapper
 from afd_plugin.v1.worker.ascend.ubatch_utils import (
     check_enable_ubatch,
@@ -133,7 +138,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         ) = _model_forward_values(args, kwargs)
 
         assert self.model is not None
-        model_inputs: dict[str, Any] = {
+        model_inputs: dict[str, object] = {
             "input_ids": input_ids,
             "positions": positions,
             "intermediate_tensors": intermediate_tensors,
@@ -367,8 +372,9 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                     common_attn_metadata=common_attn_metadata,
                     **extra_attn_metadata_args,
                 )
+                cudagraph_mode = self.vllm_config.compilation_config.cudagraph_mode
                 if (
-                    self.vllm_config.compilation_config.cudagraph_mode.has_full_cudagraphs()
+                    cudagraph_mode.has_full_cudagraphs()
                     and isinstance(builder, GDNAttentionMetadataBuilder)
                     and attn_metadata_i.num_prefills == 0
                     and attn_metadata_i.num_decodes == 0
@@ -1018,7 +1024,11 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             dp_metadata = self._build_capture_dp_metadata(padded_graph_tokens)
         self._send_dp_metadata(dp_metadata, ubatch_slices)
 
-    def _send_dp_metadata(self, dp_metadata: Any, ubatch_slices: Any) -> None:
+    def _send_dp_metadata(
+        self,
+        dp_metadata: DPMetadataLike | None,
+        ubatch_slices: Any,
+    ) -> None:
         if ubatch_slices and len(ubatch_slices) > 1:
             dp_metadata_list = {
                 idx: metadata
@@ -1055,7 +1065,10 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 is_warmup=is_warmup,
             )
 
-    def _ensure_dp_metadata(self, dp_metadata: Any) -> Any:
+    def _ensure_dp_metadata(
+        self,
+        dp_metadata: DPMetadataLike | None,
+    ) -> DPMetadataLike:
         if dp_metadata is not None:
             return dp_metadata
 
@@ -1068,7 +1081,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         num_tokens = int(self._afd_pending_metadata.afd_tokens_lens[0])
         return _make_uniform_dp_metadata(dp_size, num_tokens)
 
-    def _build_capture_dp_metadata(self, num_tokens: int) -> Any:
+    def _build_capture_dp_metadata(self, num_tokens: int) -> DPMetadataLike:
         dp_size = int(self.vllm_config.parallel_config.data_parallel_size)
         return _make_uniform_dp_metadata(dp_size, int(num_tokens))
 
@@ -1123,9 +1136,9 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         num_tokens_padded: int | None = None,
         uniform_decode: bool = False,
         is_draft_model: bool = False,
-        cudagraph_mode: Any = None,
+        cudagraph_mode: CUDAGraphMode | None = None,
         allow_dp_padding: bool = False,
-    ) -> tuple[bool, int, Any | None, Any]:
+    ) -> tuple[bool, int, torch.Tensor | None, CUDAGraphMode]:
         if cudagraph_mode is None:
             cudagraph_mode = CUDAGraphMode.NONE
         if num_tokens_padded is None:
@@ -1291,7 +1304,13 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         force_has_lora: bool | None = None,
         force_num_active_loras: int | None = None,
         num_encoder_reqs: int = 0,
-    ) -> tuple[Any, Any, bool, Any | None, Any | None]:
+    ) -> tuple[
+        CUDAGraphMode,
+        BatchDescriptor,
+        bool,
+        torch.Tensor | None,
+        CUDAGraphStat | None,
+    ]:
         num_tokens_padded = self._pad_for_sequence_parallelism(num_tokens)
         is_all_decode = np.all(self.input_batch.num_computed_tokens_cpu[:num_reqs] > 0)
         uniform_decode = (
@@ -1490,7 +1509,7 @@ def _make_uniform_dp_metadata(dp_size: int, num_tokens: int) -> AFDDPMetadata:
 
 
 def _dp_metadata_debug_key(
-    dp_metadata_list: dict[int, Any],
+    dp_metadata_list: dict[int, DPMetadataLike],
 ) -> tuple[tuple[int, tuple]]:
     key_parts: list[tuple[int, tuple]] = []
     for stage_idx, metadata in sorted(dp_metadata_list.items()):

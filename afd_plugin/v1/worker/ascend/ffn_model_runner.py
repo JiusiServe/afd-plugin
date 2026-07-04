@@ -30,6 +30,7 @@ from afd_plugin.connectors import (
     AFDConnectorMetadata,
     AFDMetadata,
     AFDRecvOutput,
+    DPMetadataLike,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
     _resolve_world_ranks,
@@ -69,7 +70,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         )
         self.num_layers = int(self.model_config.hf_config.num_hidden_layers)
         self.use_aclgraph = _use_npu_aclgraph(vllm_config, self)
-        self._acl_graphs: dict[tuple, dict[str, Any]] = {}
+        self._acl_graphs: dict[tuple, dict[str, object]] = {}
         self.graph_pool = (
             current_platform.get_global_graph_pool() if self.use_aclgraph else None
         )
@@ -82,10 +83,10 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
     def initialize_afd_connector(self) -> None:
         self.connector.init_afd_connector()
 
-    def get_kv_cache_spec(self) -> dict[str, Any]:
+    def get_kv_cache_spec(self) -> dict[str, object]:
         return {}
 
-    def initialize_kv_cache(self, kv_cache_config: Any) -> None:
+    def initialize_kv_cache(self, kv_cache_config: object) -> None:
         return None
 
     def profile_run(self) -> None:
@@ -94,7 +95,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
     def execute_ffn_step(
         self,
         *,
-        dp_metadata_list: dict[int, Any],
+        dp_metadata_list: dict[int, DPMetadataLike],
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
     ) -> None:
@@ -119,10 +120,10 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
     def execute_model(
         self,
-        scheduler_output: Any = None,
-        intermediate_tensors: Any = None,
+        scheduler_output: object = None,
+        intermediate_tensors: object = None,
         *,
-        dp_metadata_list: dict[int, Any] | None = None,
+        dp_metadata_list: dict[int, DPMetadataLike] | None = None,
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
     ) -> None:
@@ -164,7 +165,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         self._ffn_forward(dp_metadata_list=dp_metadata_list)
         return None
 
-    def _make_graph_key(self, dp_metadata_list: dict[int, Any]) -> tuple:
+    def _make_graph_key(self, dp_metadata_list: dict[int, DPMetadataLike]) -> tuple:
         return make_ffn_graph_key(
             dp_metadata_list,
             attention_size=int(self.connector.attn_size),
@@ -175,11 +176,11 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
     def _ffn_forward(
         self,
         *,
-        dp_metadata_list: dict[int, Any],
-        aclgraph_runtime_mode: Any = None,
+        dp_metadata_list: dict[int, DPMetadataLike],
+        aclgraph_runtime_mode: object = None,
         is_graph_capturing: bool = False,
         update_connector_state: bool = True,
-    ) -> Any:
+    ) -> torch.Tensor | None:
         if update_connector_state:
             self.connector.update_state_from_dp_metadata(
                 dp_metadata_list,
@@ -266,7 +267,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
     def capture_model(
         self,
-        dp_metadata_list: dict[int, Any] | None = None,
+        dp_metadata_list: dict[int, DPMetadataLike] | None = None,
         is_warmup: bool = False,
         is_attn_graph_capturing: bool = True,
     ) -> int:
@@ -312,8 +313,8 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
     def _capture_graphs(
         self,
         *,
-        aclgraph_runtime_mode: Any,
-        dp_metadata_list: dict[int, Any],
+        aclgraph_runtime_mode: object,
+        dp_metadata_list: dict[int, DPMetadataLike],
         is_attn_graph_capturing: bool = True,
     ) -> None:
         graph_key = self._make_graph_key(dp_metadata_list)
@@ -350,7 +351,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         }
         logger.debug("AFD NPU FFN captured ACL graph for key=%s", graph_key)
 
-    def _recv_attn_output(self, stage_idx: int, layer_idx: int) -> Any:
+    def _recv_attn_output(self, stage_idx: int, layer_idx: int) -> object:
         logger.debug(
             "AFD NPU FFN recv_attn_output start; stage_idx=%d layer_idx=%d",
             stage_idx,
@@ -376,17 +377,17 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
     def _run_ffn_computation(
         self,
         *,
-        hidden_states: Any,
+        hidden_states: torch.Tensor,
         layer_idx: int,
         group_list: Any = None,
-        dynamic_scales: Any = None,
-        topk_weights: Any = None,
-        topk_ids: Any = None,
-        router_logits: Any = None,
-        row_idx: Any = None,
-        x_active_mask: Any = None,
+        dynamic_scales: torch.Tensor | None = None,
+        topk_weights: torch.Tensor | None = None,
+        topk_ids: torch.Tensor | None = None,
+        router_logits: torch.Tensor | None = None,
+        row_idx: torch.Tensor | None = None,
+        x_active_mask: torch.Tensor | None = None,
         cam_p2p_ep_name: str = "",
-    ) -> Any:
+    ) -> torch.Tensor:
         compute = self.model.compute_ffn_output
         return compute(
             hidden_states=hidden_states,
@@ -401,7 +402,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             cam_p2p_ep_name=cam_p2p_ep_name,
         )
 
-    def sample_tokens(self, grammar_output: Any = None) -> Any:
+    def sample_tokens(self, grammar_output: object = None) -> object:
         raise RuntimeError("AFD NPU FFN runners do not sample tokens")
 
     def shutdown(self) -> None:
@@ -414,11 +415,11 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
 
 def _normalize_recv_output(
-    recv_output: Any,
+    recv_output: object,
     *,
     stage_idx: int,
     layer_idx: int,
-) -> tuple[Any, AFDConnectorMetadata, AFDRecvOutput]:
+) -> tuple[torch.Tensor, AFDConnectorMetadata, AFDRecvOutput]:
     if isinstance(recv_output, tuple):
         hidden_states, metadata = recv_output
         payload = AFDRecvOutput(hidden_states=hidden_states, metadata=metadata)
@@ -441,11 +442,11 @@ def _normalize_recv_output(
 
 def _ffn_token_counts_across_ranks(
     connector: Any,
-    dp_metadata_list: dict[int, Any],
+    dp_metadata_list: dict[int, DPMetadataLike],
     stage_idx: int,
     *,
     fallback: int,
-) -> Any:
+) -> torch.Tensor:
     dp_metadata = dp_metadata_list.get(int(stage_idx))
     if dp_metadata is None:
         values = [max(1, int(fallback))] * int(connector.ffn_size)
@@ -479,7 +480,10 @@ def _ffn_token_counts_across_ranks(
     return torch.tensor(values, dtype=torch.int32, device="cpu")
 
 
-def _ffn_token_count_for_rank(connector: Any, num_tokens_across_dp: Any) -> int:
+def _ffn_token_count_for_rank(
+    connector: Any,
+    num_tokens_across_dp: torch.Tensor,
+) -> int:
     values = _to_int_list(num_tokens_across_dp)
     role_rank = int(connector.topology.role_rank)
     if role_rank >= len(values):
@@ -487,7 +491,7 @@ def _ffn_token_count_for_rank(connector: Any, num_tokens_across_dp: Any) -> int:
     return max(1, int(values[role_rank]))
 
 
-def _to_int_list(value: Any) -> list[int]:
+def _to_int_list(value: object) -> list[int]:
     if value is None:
         return []
     if isinstance(value, (int, float)):
@@ -498,10 +502,10 @@ def _to_int_list(value: Any) -> list[int]:
 
 
 def _to_dp_level_token_counts(
-    num_tokens_across_dp: Any,
+    num_tokens_across_dp: torch.Tensor,
     *,
     dp_size: int,
-) -> Any:
+) -> torch.Tensor:
     """Project AFD-level token counts back to DP-level for vLLM's forward context.
 
     ``num_tokens_across_dp`` has ``ffn_size`` entries (one per AFD role_rank).
