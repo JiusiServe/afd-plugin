@@ -53,7 +53,7 @@ Connector support:
 | Connector | Platform | Status | Notes |
 | --- | --- | --- | --- |
 | `p2pconnector` | CUDA | Supported | FFN ranks are ordered before Attention ranks. `num_attention_ranks` must be greater than or equal to `num_ffn_ranks` and divisible by it. |
-| `camp2pconnector` | Ascend NPU | Supported | Uses HCCL/CAMP2P custom ops. Ascend ops build by default; set `AFD_BUILD_ASCEND_OPS=0` to skip them. |
+| `camp2pconnector` | Ascend NPU | Supported | Uses HCCL/CAMP2P custom ops. Ascend ops build by default on NPU platforms; set `AFD_BUILD_ASCEND_OPS=0` to skip them. |
 
 Connector implementations are grouped by backend package:
 `afd_plugin.connectors.gpu` for GPU-only connectors,
@@ -219,6 +219,12 @@ uv run ruff check .
 Native C/C++ sources are grouped by backend under `csrc/`: Ascend/CANN sources
 live in `csrc/npu`, including the `a2e` and `e2a` ACLNN operators, and
 `csrc/gpu` is reserved for GPU native sources.
+
+Ascend custom ops are built automatically only when the build environment looks
+like an Ascend NPU platform, for example when `torch_npu`, CANN environment
+variables, or the default Ascend toolkit path are present. GPU builds skip
+Ascend ops by default. Set `AFD_BUILD_ASCEND_OPS=1` or
+`AFD_BUILD_ASCEND_OPS=0` to override the auto-detection.
 
 Opt-in GPU E2E tests require a CUDA-capable vLLM environment and a DeepSeekV2
 Lite model path:
