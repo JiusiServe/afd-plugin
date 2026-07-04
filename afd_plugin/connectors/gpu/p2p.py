@@ -2,12 +2,14 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """NCCL-backed P2P AFD connector."""
 
+from __future__ import annotations
+
 import json
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import torch
-from torch.distributed.distributed_c10d import _get_default_group
+from torch.distributed.distributed_c10d import ProcessGroup, _get_default_group
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 from vllm.forward_context import DPMetadata, get_forward_context
@@ -85,11 +87,11 @@ class P2PAFDConnector(AFDConnectorBase):
             tuple[int, int, tuple[int, ...]],
             torch.Tensor,
         ] = {}
-        self.a2e_group: Any | None = None
-        self.e2a_group: Any | None = None
-        self.p2p_pg: Any | None = None
-        self.a2e_pynccl: Any | None = None
-        self.e2a_pynccl: Any | None = None
+        self.a2e_group: StatelessProcessGroup | None = None
+        self.e2a_group: StatelessProcessGroup | None = None
+        self.p2p_pg: ProcessGroup | None = None
+        self.a2e_pynccl: PyNcclCommunicator | None = None
+        self.e2a_pynccl: PyNcclCommunicator | None = None
         self.a2e_comm_id: int | None = None
         self.e2a_comm_id: int | None = None
 
@@ -377,8 +379,8 @@ class P2PAFDConnector(AFDConnectorBase):
         self,
         hidden_states: torch.Tensor,
         dst: int,
-        process_group: Any,
-        communicator: Any,
+        process_group: StatelessProcessGroup | None,
+        communicator: PyNcclCommunicator | None,
     ) -> None:
         if process_group is None or communicator is None:
             raise RuntimeError("P2P connector is not initialized")
@@ -400,8 +402,8 @@ class P2PAFDConnector(AFDConnectorBase):
     def _recv_hidden_states(
         self,
         src: int,
-        process_group: Any,
-        communicator: Any,
+        process_group: StatelessProcessGroup | None,
+        communicator: PyNcclCommunicator | None,
         tensor_metadata: _TensorMetadata,
         *,
         ref_tensor: torch.Tensor | None = None,
@@ -434,7 +436,7 @@ class P2PAFDConnector(AFDConnectorBase):
         torch.ops.vllm.afd_p2p_recv(hidden_states, int(src), int(comm_id))
         return hidden_states
 
-    def _comm_id_for_communicator(self, communicator: Any) -> int:
+    def _comm_id_for_communicator(self, communicator: PyNcclCommunicator) -> int:
         if communicator is self.a2e_pynccl and self.a2e_comm_id is not None:
             return self.a2e_comm_id
         if communicator is self.e2a_pynccl and self.e2a_comm_id is not None:

@@ -11,6 +11,7 @@ import torch
 from torch.distributed import Backend
 from torch.distributed.distributed_c10d import (
     PrefixStore,
+    ProcessGroup,
     _new_process_group_helper,
     _update_default_pg,
     _world,
@@ -23,7 +24,11 @@ from vllm.utils.torch_utils import is_torch_equal_or_newer
 class DefaultProcessGroupSwitcher:
     """Temporarily switch PyTorch's default process group."""
 
-    def __init__(self, default_group: object, new_default_group: object) -> None:
+    def __init__(
+        self,
+        default_group: ProcessGroup,
+        new_default_group: ProcessGroup,
+    ) -> None:
         self.default_group = default_group
         self.new_default_group = new_default_group
 
@@ -43,7 +48,7 @@ def init_afd_process_group(
     group_name: str,
     timeout: timedelta,
     pg_options: Any | None = None,
-) -> object:
+) -> ProcessGroup:
     """Create a plugin-owned process group without patching vLLM source.
 
     The helper keeps process-group setup isolated in the plugin. It relies on
