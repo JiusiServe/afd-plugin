@@ -15,13 +15,15 @@ import torch
 if TYPE_CHECKING:
     from afd_plugin.connectors.base import AFDConnectorBase
 
+TokenCountInput = torch.Tensor | list[int] | tuple[int, ...] | int
+
 
 @dataclass(slots=True)
 class AFDDPMetadata:
     """Serializable DPMetadata-compatible payload for AFD control traffic."""
 
-    num_tokens_across_dp_cpu: torch.Tensor
-    max_tokens_across_dp_cpu: torch.Tensor | None = None
+    num_tokens_across_dp_cpu: TokenCountInput
+    max_tokens_across_dp_cpu: TokenCountInput | None = None
     local_sizes: list[int] | None = None
 
     def __post_init__(self) -> None:
@@ -245,4 +247,5 @@ __all__ = [
     "AFDMetadata",
     "AFDRecvOutput",
     "AFDSingleDPMetadata",
+    "TokenCountInput",
 ]

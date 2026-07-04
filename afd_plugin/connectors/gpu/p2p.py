@@ -411,6 +411,8 @@ class P2PAFDConnector(AFDConnectorBase):
         if process_group is None or communicator is None:
             raise RuntimeError("P2P connector is not initialized")
         if process_group.world_size == 1:
+            if ref_tensor is None:
+                raise RuntimeError("single-rank P2P recv requires a reference tensor")
             return ref_tensor
         if src >= process_group.world_size:
             raise ValueError(f"invalid P2P source rank {src}")
