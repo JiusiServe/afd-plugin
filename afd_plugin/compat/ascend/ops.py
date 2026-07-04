@@ -60,11 +60,10 @@ def _assert_afd_namespace_registered(torch: object) -> None:
 
 
 def _assert_cam_namespace_registered(torch: object) -> None:
-    _dispatch_send = torch.ops.umdk_cam_op_lib.async_dispatch_send
-    _dispatch_recv = torch.ops.umdk_cam_op_lib.async_dispatch_recv
-    _combine_send = torch.ops.umdk_cam_op_lib.async_combine_send
-    _combine_recv = torch.ops.umdk_cam_op_lib.async_combine_recv
-    del _dispatch_send, _dispatch_recv, _combine_send, _combine_recv
+    _ = torch.ops.umdk_cam_op_lib.async_dispatch_send
+    _ = torch.ops.umdk_cam_op_lib.async_dispatch_recv
+    _ = torch.ops.umdk_cam_op_lib.async_combine_send
+    _ = torch.ops.umdk_cam_op_lib.async_combine_recv
 
 
 @lru_cache(maxsize=1)
