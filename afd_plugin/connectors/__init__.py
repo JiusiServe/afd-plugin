@@ -7,6 +7,7 @@ from afd_plugin.connectors.factory import AFDConnectorFactory
 from afd_plugin.connectors.metadata import (
     AFDConnectorMetadata,
     AFDDPMetadata,
+    AFDDPMetadataPayload,
     AFDMetadata,
     AFDRecvOutput,
     AFDSingleDPMetadata,
@@ -17,6 +18,7 @@ __all__ = [
     "AFDConnectorFactory",
     "AFDConnectorMetadata",
     "AFDDPMetadata",
+    "AFDDPMetadataPayload",
     "AFDMetadata",
     "AFDRecvOutput",
     "AFDSingleDPMetadata",

@@ -7,7 +7,7 @@ from __future__ import annotations
 import pickle
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.distributed as dist
@@ -19,8 +19,15 @@ from vllm.utils.torch_utils import direct_register_custom_op
 from afd_plugin.compat.ascend import ensure_afd_ascend_ops_loaded
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
-from afd_plugin.connectors.metadata import AFDConnectorMetadata, AFDRecvOutput
+from afd_plugin.connectors.metadata import (
+    AFDConnectorMetadata,
+    AFDDPMetadataPayload,
+    AFDRecvOutput,
+)
 from afd_plugin.distributed import init_afd_process_group, topology_from_config
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
 
 _CAMP2P_CUSTOM_OPS_REGISTERED = False
 logger = init_logger(__name__)
@@ -85,7 +92,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         self,
         rank: int,
         local_rank: int,
-        vllm_config: object,
+        vllm_config: VllmConfig,
         afd_config: AFDConfig,
     ) -> None:
         super().__init__(rank, local_rank, vllm_config, afd_config)
@@ -227,31 +234,33 @@ class CAMP2PAFDConnector(AFDConnectorBase):
 
     def send_dp_metadata_list(
         self,
-        dp_metadata_list: dict[int, Any],
-        *,
-        is_graph_capturing: bool = False,
-        is_warmup: bool = False,
+        payload: AFDDPMetadataPayload,
     ) -> None:
         if self.p2p_pg is None:
             return
-        payload = (dp_metadata_list, bool(is_graph_capturing), bool(is_warmup))
         for dst in self.dst_list:
             _send_object(payload, dst=dst, group=self.p2p_pg)
 
     def recv_dp_metadata_list(
         self,
         timeout_ms: int | None = None,
-    ) -> tuple[dict[int, Any], bool, bool]:
+    ) -> AFDDPMetadataPayload:
         if self.p2p_pg is None:
             raise RuntimeError("CAMP2P metadata process group is not initialized")
         src = self.p2p_rank % self.min_size + self.ffn_size
         payload = _recv_object(src=src, group=self.p2p_pg)
+        if isinstance(payload, AFDDPMetadataPayload):
+            return payload
         if len(payload) == 3:
             dp_metadata_list, is_graph_capturing, is_warmup = payload
         else:
             dp_metadata_list, is_graph_capturing = payload
             is_warmup = False
-        return dp_metadata_list, bool(is_graph_capturing), bool(is_warmup)
+        return AFDDPMetadataPayload(
+            dp_metadata_list=dp_metadata_list,
+            is_graph_capturing=bool(is_graph_capturing),
+            is_warmup=bool(is_warmup),
+        )
 
     def configure_metadata(
         self,
@@ -304,10 +313,10 @@ class CAMP2PAFDConnector(AFDConnectorBase):
 
     def send_attn_output(
         self,
-        hidden_states: Any,
+        hidden_states: torch.Tensor,
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
-    ) -> Any:
+    ) -> None:
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
         if not _is_torch_compiling() and not metadata.validate_tensor_shape(
@@ -320,7 +329,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         connector_data = self._metadata_data_or_default(metadata, hidden_states)
         ubatch_idx = int(metadata.stage_idx)
         _set_forward_context_connector_data(connector_data, ubatch_idx=ubatch_idx)
-        hidden_states = torch.ops.vllm.afd_camp2p_send_attn_output(
+        torch.ops.vllm.afd_camp2p_send_attn_output(
             hidden_states,
             self.hccl_comm_name,
             self.hccl_comm_name2,
@@ -334,9 +343,9 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             connector_data.aiv_num,
             0,
         )
-        return hidden_states, None
+        return None
 
-    def recv_ffn_output(self, handle: Any = None, **kwargs: Any) -> Any:
+    def recv_ffn_output(self, **kwargs: Any) -> torch.Tensor:
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
         ref_tensor = kwargs.get("ref_tensor")
@@ -363,7 +372,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
 
     def recv_attn_output(
         self,
-        timeout_ms: int | None = None,
         ubatch_idx: int | None = None,
         **kwargs: Any,
     ) -> AFDRecvOutput:
@@ -414,7 +422,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
 
     def send_ffn_output(
         self,
-        ffn_output: Any,
+        ffn_output: torch.Tensor,
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
     ) -> None:
