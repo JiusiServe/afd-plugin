@@ -8,6 +8,7 @@ import inspect
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Any
 
 from afd_plugin.config import AFDConfig, parse_afd_config
 
@@ -156,7 +157,7 @@ def ascend_forward_context(
 def ensure_vllm_config_has_afd_proxy(
     vllm_config: object,
     afd_config: AFDConfig | None = None,
-) -> object | None:
+) -> _AscendAFDConfigProxy | None:
     """Install an instance-local AFD proxy for vLLM-Ascend builds that read it.
 
     The plugin's public config channel remains ``additional_config["afd"]``.
@@ -190,7 +191,7 @@ def _apply_afd_ascend_dbo_config_patch() -> None:
 
     original_fix = NPUPlatform._fix_incompatible_config
 
-    def patched_fix_incompatible_config(vllm_config: object) -> object:
+    def patched_fix_incompatible_config(vllm_config: object) -> Any:
         saved = _snapshot_afd_dbo_config(vllm_config)
         result = original_fix(vllm_config)
         if saved is not None:
@@ -244,7 +245,7 @@ class _AscendAFDConfigProxy:
         return self._config.enabled
 
     @property
-    def afd_extra_config(self) -> dict[str, object]:
+    def afd_extra_config(self) -> dict[str, Any]:
         return self._config.extra_config
 
     @property
@@ -292,7 +293,7 @@ class _AscendAFDConfigProxy:
         return bool(self._config.extra_config.get("is_ffn_multistream", False))
 
     @property
-    def multistream_info(self) -> dict[str, object]:
+    def multistream_info(self) -> dict[str, Any]:
         value = self._config.extra_config.get("multistream_info", {})
         return value if isinstance(value, dict) else {}
 

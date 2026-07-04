@@ -7,7 +7,7 @@ This runtime module depends on vLLM's native ubatching stack.
 
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 import torch
@@ -32,7 +32,7 @@ class AFDUBatchWrapper(UBatchWrapper):
         self._afd_context_provider = provider
 
     @staticmethod
-    def _create_sm_control_context(vllm_config: object) -> object:
+    def _create_sm_control_context(vllm_config: object) -> AbstractContextManager[Any]:
         if parse_afd_config(vllm_config).enabled:
             return nullcontext()
         return UBatchWrapper._create_sm_control_context(vllm_config)

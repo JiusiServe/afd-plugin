@@ -4,11 +4,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from vllm.compilation.monitor import set_cudagraph_capturing_enabled
 from vllm.config import CUDAGraphMode
+from vllm.forward_context import DPMetadata
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm_ascend.worker.model_runner_v1 import NPUModelRunner, graph_capture
@@ -28,9 +29,9 @@ from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
     AFDConnectorFactory,
     AFDConnectorMetadata,
+    AFDDPMetadata,
     AFDMetadata,
     AFDRecvOutput,
-    DPMetadataLike,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
     _resolve_world_ranks,
@@ -42,6 +43,11 @@ from afd_plugin.v1.worker.cuda_graph import (
     make_ffn_graph_key,
 )
 from afd_plugin.v1.worker.ffn_model_runner import _set_moe_layer_index
+
+if TYPE_CHECKING:
+    from vllm.sequence import IntermediateTensors
+    from vllm.v1.core.sched.output import SchedulerOutput
+    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
 
 logger = init_logger(__name__)
 
@@ -70,7 +76,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         )
         self.num_layers = int(self.model_config.hf_config.num_hidden_layers)
         self.use_aclgraph = _use_npu_aclgraph(vllm_config, self)
-        self._acl_graphs: dict[tuple, dict[str, object]] = {}
+        self._acl_graphs: dict[tuple, dict[str, Any]] = {}
         self.graph_pool = (
             current_platform.get_global_graph_pool() if self.use_aclgraph else None
         )
@@ -83,10 +89,10 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
     def initialize_afd_connector(self) -> None:
         self.connector.init_afd_connector()
 
-    def get_kv_cache_spec(self) -> dict[str, object]:
+    def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
         return {}
 
-    def initialize_kv_cache(self, kv_cache_config: object) -> None:
+    def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         return None
 
     def profile_run(self) -> None:
@@ -95,7 +101,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
     def execute_ffn_step(
         self,
         *,
-        dp_metadata_list: dict[int, DPMetadataLike],
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
     ) -> None:
@@ -120,10 +126,10 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
     def execute_model(
         self,
-        scheduler_output: object = None,
-        intermediate_tensors: object = None,
+        scheduler_output: SchedulerOutput | None = None,
+        intermediate_tensors: IntermediateTensors | None = None,
         *,
-        dp_metadata_list: dict[int, DPMetadataLike] | None = None,
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata] | None = None,
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
     ) -> None:
@@ -165,7 +171,10 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         self._ffn_forward(dp_metadata_list=dp_metadata_list)
         return None
 
-    def _make_graph_key(self, dp_metadata_list: dict[int, DPMetadataLike]) -> tuple:
+    def _make_graph_key(
+        self,
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
+    ) -> tuple:
         return make_ffn_graph_key(
             dp_metadata_list,
             attention_size=int(self.connector.attn_size),
@@ -176,8 +185,8 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
     def _ffn_forward(
         self,
         *,
-        dp_metadata_list: dict[int, DPMetadataLike],
-        aclgraph_runtime_mode: object = None,
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
+        aclgraph_runtime_mode: CUDAGraphMode | None = None,
         is_graph_capturing: bool = False,
         update_connector_state: bool = True,
     ) -> torch.Tensor | None:
@@ -267,7 +276,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
     def capture_model(
         self,
-        dp_metadata_list: dict[int, DPMetadataLike] | None = None,
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata] | None = None,
         is_warmup: bool = False,
         is_attn_graph_capturing: bool = True,
     ) -> int:
@@ -313,8 +322,8 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
     def _capture_graphs(
         self,
         *,
-        aclgraph_runtime_mode: object,
-        dp_metadata_list: dict[int, DPMetadataLike],
+        aclgraph_runtime_mode: CUDAGraphMode,
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
         is_attn_graph_capturing: bool = True,
     ) -> None:
         graph_key = self._make_graph_key(dp_metadata_list)
@@ -351,7 +360,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         }
         logger.debug("AFD NPU FFN captured ACL graph for key=%s", graph_key)
 
-    def _recv_attn_output(self, stage_idx: int, layer_idx: int) -> object:
+    def _recv_attn_output(self, stage_idx: int, layer_idx: int) -> Any:
         logger.debug(
             "AFD NPU FFN recv_attn_output start; stage_idx=%d layer_idx=%d",
             stage_idx,
@@ -402,7 +411,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             cam_p2p_ep_name=cam_p2p_ep_name,
         )
 
-    def sample_tokens(self, grammar_output: object = None) -> object:
+    def sample_tokens(self, grammar_output: Any = None) -> Any:
         raise RuntimeError("AFD NPU FFN runners do not sample tokens")
 
     def shutdown(self) -> None:
@@ -415,7 +424,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
 
 def _normalize_recv_output(
-    recv_output: object,
+    recv_output: Any,
     *,
     stage_idx: int,
     layer_idx: int,
@@ -442,7 +451,7 @@ def _normalize_recv_output(
 
 def _ffn_token_counts_across_ranks(
     connector: Any,
-    dp_metadata_list: dict[int, DPMetadataLike],
+    dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
     stage_idx: int,
     *,
     fallback: int,

@@ -8,16 +8,9 @@ import copy
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 import torch
-
-
-class DPMetadataLike(Protocol):
-    """Token-count fields shared by vLLM and plugin-owned DP metadata."""
-
-    num_tokens_across_dp_cpu: object
-    max_tokens_across_dp_cpu: object | None
 
 
 class WorkHandleLike(Protocol):
@@ -213,8 +206,8 @@ class AFDConnectorLike(Protocol):
 
     def recv_ffn_output(
         self,
-        handle: object = None,
-        **kwargs: object,
+        handle: Any = None,
+        **kwargs: Any,
     ) -> torch.Tensor:
         ...
 
@@ -222,8 +215,8 @@ class AFDConnectorLike(Protocol):
         self,
         hidden_states: torch.Tensor,
         metadata: AFDConnectorMetadata,
-        **kwargs: object,
-    ) -> object:
+        **kwargs: Any,
+    ) -> Any:
         ...
 
 
@@ -276,6 +269,5 @@ __all__ = [
     "AFDMetadata",
     "AFDRecvOutput",
     "AFDSingleDPMetadata",
-    "DPMetadataLike",
     "WorkHandleLike",
 ]

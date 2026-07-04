@@ -11,7 +11,6 @@ from afd_plugin.connectors.metadata import (
     AFDMetadata,
     AFDRecvOutput,
     AFDSingleDPMetadata,
-    DPMetadataLike,
     WorkHandleLike,
 )
 
@@ -24,6 +23,5 @@ __all__ = [
     "AFDMetadata",
     "AFDRecvOutput",
     "AFDSingleDPMetadata",
-    "DPMetadataLike",
     "WorkHandleLike",
 ]

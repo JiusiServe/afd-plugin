@@ -30,7 +30,6 @@ from afd_plugin.connectors import (
     AFDConnectorFactory,
     AFDDPMetadata,
     AFDMetadata,
-    DPMetadataLike,
 )
 from afd_plugin.model_executor.models.forward_context import use_afd_metadata_provider
 from afd_plugin.v1.worker.cuda_graph import validate_cuda_graph_mode
@@ -109,7 +108,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
 
     def _send_dp_metadata(
         self,
-        dp_metadata: DPMetadataLike | None,
+        dp_metadata: DPMetadata | AFDDPMetadata | None,
         ubatch_slices: Any,
     ) -> None:
         if ubatch_slices and len(ubatch_slices) > 1:
@@ -167,8 +166,8 @@ class AFDAttentionModelRunner(GPUModelRunner):
 
     def _ensure_dp_metadata(
         self,
-        dp_metadata: DPMetadataLike | None,
-    ) -> DPMetadataLike:
+        dp_metadata: DPMetadata | AFDDPMetadata | None,
+    ) -> DPMetadata | AFDDPMetadata:
         if dp_metadata is not None:
             return dp_metadata
 
@@ -192,7 +191,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
             max_tokens_across_dp_cpu=torch.max(num_tokens_across_dp_cpu),
         )
 
-    def _build_capture_dp_metadata(self, num_tokens: int) -> DPMetadataLike:
+    def _build_capture_dp_metadata(self, num_tokens: int) -> DPMetadata | AFDDPMetadata:
         dp_size = int(self.vllm_config.parallel_config.data_parallel_size)
         num_tokens_across_dp_cpu = torch.full(
             (dp_size,),
@@ -506,9 +505,9 @@ def _with_dp_derived_afd_rank(
 
 
 def _batch_execution_values(
-    args: tuple[object, ...],
-    kwargs: dict[str, object],
-) -> dict[str, object]:
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
     names = [
         "num_tokens",
         "num_reqs",

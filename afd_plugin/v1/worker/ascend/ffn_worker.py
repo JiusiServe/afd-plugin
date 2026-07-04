@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from vllm_ascend.worker.worker import NPUWorker
@@ -21,6 +21,10 @@ from afd_plugin.compat.ascend import (
 )
 from afd_plugin.v1.worker.ascend.ffn_model_runner import AFDNPUFFNModelRunner
 from afd_plugin.validation import NPU_FFN_WORKER_FQCN, assert_compatible_afd_stack
+
+if TYPE_CHECKING:
+    from vllm.v1.core.sched.output import SchedulerOutput
+    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +61,10 @@ class AFDNPUFFNWorker(NPUWorker):
         )
         self.model_runner = AFDNPUFFNModelRunner(self.vllm_config, self.device)
 
-    def get_kv_cache_spec(self) -> dict[str, object]:
+    def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
         return {}
 
-    def initialize_from_config(self, kv_cache_config: object) -> None:
+    def initialize_from_config(self, kv_cache_config: KVCacheConfig) -> None:
         self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
         self.model_runner.initialize_kv_cache(kv_cache_config)
         self.model_runner.initialize_afd_connector()
@@ -69,7 +73,7 @@ class AFDNPUFFNWorker(NPUWorker):
     def compile_or_warm_up_model(self) -> float:
         return 0.0
 
-    def execute_model(self, scheduler_output: object) -> None:
+    def execute_model(self, scheduler_output: SchedulerOutput) -> None:
         raise RuntimeError(
             "AFD NPU FFN workers are connector-driven; scheduler-driven "
             "execute_model() is not supported.",

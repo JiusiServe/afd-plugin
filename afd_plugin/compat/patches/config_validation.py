@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _PatchState:
-    engine_args_create_engine_config: Callable[..., object]
-    vllm_config_post_init: Callable[..., object] | None
+    engine_args_create_engine_config: Callable[..., Any]
+    vllm_config_post_init: Callable[..., Any] | None
 
 
 _PATCH_ATTR = "_afd_plugin_config_validation_patch_state"

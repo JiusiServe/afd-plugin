@@ -5,15 +5,19 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.metadata import (
     AFDConnectorMetadata,
+    AFDDPMetadata,
     AFDRecvOutput,
-    DPMetadataLike,
 )
+
+if TYPE_CHECKING:
+    from vllm.forward_context import DPMetadata
 
 
 class AFDConnectorBase(ABC):
@@ -55,12 +59,12 @@ class AFDConnectorBase(ABC):
         self,
         hidden_states: torch.Tensor,
         metadata: AFDConnectorMetadata,
-        **kwargs: object,
-    ) -> object:
+        **kwargs: Any,
+    ) -> Any:
         raise NotImplementedError
 
     @abstractmethod
-    def recv_ffn_output(self, handle: object = None, **kwargs: object) -> torch.Tensor:
+    def recv_ffn_output(self, handle: Any = None, **kwargs: Any) -> torch.Tensor:
         raise NotImplementedError
 
     @abstractmethod
@@ -68,7 +72,7 @@ class AFDConnectorBase(ABC):
         self,
         timeout_ms: int | None = None,
         ubatch_idx: int | None = None,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> AFDRecvOutput:
         raise NotImplementedError
 
@@ -77,13 +81,13 @@ class AFDConnectorBase(ABC):
         self,
         ffn_output: torch.Tensor,
         metadata: AFDConnectorMetadata,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> None:
         raise NotImplementedError
 
     def update_state_from_dp_metadata(
         self,
-        dp_metadata_list: dict[int, DPMetadataLike],
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
         *,
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
@@ -92,7 +96,7 @@ class AFDConnectorBase(ABC):
 
     def send_dp_metadata_list(
         self,
-        dp_metadata_list: dict[int, DPMetadataLike],
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
         *,
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
@@ -102,10 +106,10 @@ class AFDConnectorBase(ABC):
     def recv_dp_metadata_list(
         self,
         timeout_ms: int | None = None,
-    ) -> tuple[dict[int, DPMetadataLike], bool, bool]:
+    ) -> tuple[dict[int, DPMetadata | AFDDPMetadata], bool, bool]:
         raise NotImplementedError
 
-    def create_recv_metadata(self, **kwargs: object) -> AFDConnectorMetadata:
+    def create_recv_metadata(self, **kwargs: Any) -> AFDConnectorMetadata:
         dp_metadata_list = kwargs.get("dp_metadata_list") or {}
         ubatch_idx = int(kwargs.get("ubatch_idx", 0))
         layer_idx = int(kwargs.get("layer_idx", 0))
@@ -121,7 +125,7 @@ class AFDConnectorBase(ABC):
     def configure_metadata(  # noqa: B027
         self,
         metadata: AFDConnectorMetadata,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> None:
         pass
 
@@ -134,7 +138,7 @@ class AFDConnectorBase(ABC):
 
 
 def _num_tokens_for_stage(
-    dp_metadata_list: dict[int, DPMetadataLike],
+    dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
     stage_idx: int,
 ) -> int:
     dp_metadata = dp_metadata_list.get(int(stage_idx))

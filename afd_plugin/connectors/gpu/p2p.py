@@ -10,7 +10,7 @@ import torch
 from torch.distributed.distributed_c10d import _get_default_group
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
-from vllm.forward_context import get_forward_context
+from vllm.forward_context import DPMetadata, get_forward_context
 from vllm.utils.torch_utils import direct_register_custom_op
 
 from afd_plugin.config import AFDConfig
@@ -19,7 +19,6 @@ from afd_plugin.connectors.metadata import (
     AFDConnectorMetadata,
     AFDDPMetadata,
     AFDRecvOutput,
-    DPMetadataLike,
 )
 from afd_plugin.distributed import (
     DefaultProcessGroupSwitcher,
@@ -75,7 +74,7 @@ class P2PAFDConnector(AFDConnectorBase):
             vllm_config.model_config.hf_config.num_hidden_layers,
         )
         self.hidden_size = int(vllm_config.model_config.hf_config.hidden_size)
-        self.dp_metadata_list: dict[int, DPMetadataLike] = {}
+        self.dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata] = {}
         self.is_graph_capturing = False
         self.is_warmup = False
         self._tensor_metadata_list: dict[int, _TensorMetadata] = {}
@@ -160,7 +159,7 @@ class P2PAFDConnector(AFDConnectorBase):
 
     def update_state_from_dp_metadata(
         self,
-        dp_metadata_list: dict[int, DPMetadataLike],
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
         *,
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
@@ -208,7 +207,7 @@ class P2PAFDConnector(AFDConnectorBase):
 
     def send_dp_metadata_list(
         self,
-        dp_metadata_list: dict[int, DPMetadataLike],
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
         *,
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
@@ -236,7 +235,7 @@ class P2PAFDConnector(AFDConnectorBase):
     def recv_dp_metadata_list(
         self,
         timeout_ms: int | None = None,
-    ) -> tuple[dict[int, DPMetadataLike], bool, bool]:
+    ) -> tuple[dict[int, DPMetadata | AFDDPMetadata], bool, bool]:
         if self.p2p_pg is None:
             raise RuntimeError("P2P DP metadata process group is not initialized")
 
@@ -259,7 +258,7 @@ class P2PAFDConnector(AFDConnectorBase):
         self,
         hidden_states: torch.Tensor,
         metadata: AFDConnectorMetadata,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> None:
         if not _torch_is_compiling() and not metadata.validate_tensor_shape(
             tuple(hidden_states.shape),
@@ -275,7 +274,7 @@ class P2PAFDConnector(AFDConnectorBase):
             self.a2e_pynccl,
         )
 
-    def recv_ffn_output(self, handle: object = None, **kwargs: object) -> torch.Tensor:
+    def recv_ffn_output(self, handle: Any = None, **kwargs: Any) -> torch.Tensor:
         ref_tensor = kwargs.get("ref_tensor")
         ubatch_idx = kwargs.get("ubatch_idx")
         if ubatch_idx is None:
@@ -293,7 +292,7 @@ class P2PAFDConnector(AFDConnectorBase):
         self,
         timeout_ms: int | None = None,
         ubatch_idx: int | None = None,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> AFDRecvOutput:
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
         tensor_metadata = self._tensor_metadata_list[ubatch_idx]
@@ -333,7 +332,7 @@ class P2PAFDConnector(AFDConnectorBase):
         self,
         ffn_output: torch.Tensor,
         metadata: AFDConnectorMetadata,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> None:
         if not _torch_is_compiling() and not metadata.validate_tensor_shape(
             tuple(ffn_output.shape),
@@ -473,7 +472,7 @@ def _to_int(value: object) -> int:
 
 
 def _encode_dp_metadata_payload(
-    dp_metadata_list: dict[int, DPMetadataLike],
+    dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
     *,
     is_graph_capturing: bool,
     is_warmup: bool,
@@ -505,7 +504,7 @@ def _encode_dp_metadata_payload(
 
 def _decode_dp_metadata_payload(
     payload_bytes: bytes,
-) -> tuple[dict[int, DPMetadataLike], bool, bool]:
+) -> tuple[dict[int, DPMetadata | AFDDPMetadata], bool, bool]:
     payload = json.loads(payload_bytes.decode("utf-8"))
     dp_metadata_list = {
         int(stage_idx): AFDDPMetadata(
@@ -573,7 +572,7 @@ def _register_p2p_custom_ops() -> None:
     def afd_p2p_recv_fake(out: torch.Tensor, src: int, comm_id: int) -> None:
         pass
 
-    def register_one(**kwargs: object) -> None:
+    def register_one(**kwargs: Any) -> None:
         try:
             direct_register_custom_op(**kwargs)
         except RuntimeError as exc:

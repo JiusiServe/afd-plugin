@@ -15,7 +15,7 @@ from vllm.compilation.cuda_graph import CUDAGraphStat
 from vllm.config import CUDAGraphMode
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
 from vllm.distributed.parallel_state import get_dp_group
-from vllm.forward_context import BatchDescriptor, get_forward_context
+from vllm.forward_context import BatchDescriptor, DPMetadata, get_forward_context
 from vllm.logger import init_logger
 from vllm.sequence import IntermediateTensors
 from vllm.utils.math_utils import cdiv
@@ -59,7 +59,6 @@ from afd_plugin.connectors import (
     AFDConnectorFactory,
     AFDDPMetadata,
     AFDMetadata,
-    DPMetadataLike,
 )
 from afd_plugin.v1.worker.ascend.npu_ubatch_wrapper import AscendUBatchWrapper
 from afd_plugin.v1.worker.ascend.ubatch_utils import (
@@ -138,7 +137,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         ) = _model_forward_values(args, kwargs)
 
         assert self.model is not None
-        model_inputs: dict[str, object] = {
+        model_inputs: dict[str, Any] = {
             "input_ids": input_ids,
             "positions": positions,
             "intermediate_tensors": intermediate_tensors,
@@ -1026,7 +1025,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
     def _send_dp_metadata(
         self,
-        dp_metadata: DPMetadataLike | None,
+        dp_metadata: DPMetadata | AFDDPMetadata | None,
         ubatch_slices: Any,
     ) -> None:
         if ubatch_slices and len(ubatch_slices) > 1:
@@ -1067,8 +1066,8 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
     def _ensure_dp_metadata(
         self,
-        dp_metadata: DPMetadataLike | None,
-    ) -> DPMetadataLike:
+        dp_metadata: DPMetadata | AFDDPMetadata | None,
+    ) -> DPMetadata | AFDDPMetadata:
         if dp_metadata is not None:
             return dp_metadata
 
@@ -1081,7 +1080,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         num_tokens = int(self._afd_pending_metadata.afd_tokens_lens[0])
         return _make_uniform_dp_metadata(dp_size, num_tokens)
 
-    def _build_capture_dp_metadata(self, num_tokens: int) -> DPMetadataLike:
+    def _build_capture_dp_metadata(self, num_tokens: int) -> DPMetadata | AFDDPMetadata:
         dp_size = int(self.vllm_config.parallel_config.data_parallel_size)
         return _make_uniform_dp_metadata(dp_size, int(num_tokens))
 
@@ -1509,7 +1508,7 @@ def _make_uniform_dp_metadata(dp_size: int, num_tokens: int) -> AFDDPMetadata:
 
 
 def _dp_metadata_debug_key(
-    dp_metadata_list: dict[int, DPMetadataLike],
+    dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
 ) -> tuple[tuple[int, tuple]]:
     key_parts: list[tuple[int, tuple]] = []
     for stage_idx, metadata in sorted(dp_metadata_list.items()):
