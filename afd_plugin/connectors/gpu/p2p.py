@@ -160,19 +160,16 @@ class P2PAFDConnector(AFDConnectorBase):
 
     def update_state_from_dp_metadata(
         self,
-        dp_metadata_list: dict[int, Any],
-        *,
-        is_graph_capturing: bool = False,
-        is_warmup: bool = False,
+        payload: AFDDPMetadataPayload,
     ) -> None:
-        self.dp_metadata_list = dp_metadata_list
-        self.is_graph_capturing = is_graph_capturing
-        self.is_warmup = is_warmup
+        self.dp_metadata_list = payload.dp_metadata_list
+        self.is_graph_capturing = payload.is_graph_capturing
+        self.is_warmup = payload.is_warmup
         self._tensor_metadata_list = {}
         device = torch.device(f"cuda:{self.local_rank}")
         dtype = self.vllm_config.model_config.dtype
         dp_rank = int(self.vllm_config.parallel_config.data_parallel_rank)
-        for stage_idx, dp_metadata in dp_metadata_list.items():
+        for stage_idx, dp_metadata in payload.dp_metadata_list.items():
             token_count = dp_metadata.num_tokens_across_dp_cpu[dp_rank]
             item = getattr(token_count, "item", None)
             num_tokens = int(item() if callable(item) else token_count)

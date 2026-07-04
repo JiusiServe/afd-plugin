@@ -48,12 +48,6 @@ class AFDConnectorBase(ABC):
     def is_initialized(self) -> bool:
         raise NotImplementedError
 
-    def get_connector_rank(self) -> int:
-        return self.rank
-
-    def get_connector_local_rank(self) -> int:
-        return self.local_rank
-
     @abstractmethod
     def send_attn_output(
         self,
@@ -84,12 +78,10 @@ class AFDConnectorBase(ABC):
     ) -> None:
         raise NotImplementedError
 
+    @abstractmethod
     def update_state_from_dp_metadata(
         self,
-        dp_metadata_list: dict[int, Any],
-        *,
-        is_graph_capturing: bool = False,
-        is_warmup: bool = False,
+        payload: AFDDPMetadataPayload,
     ) -> None:
         raise NotImplementedError
 

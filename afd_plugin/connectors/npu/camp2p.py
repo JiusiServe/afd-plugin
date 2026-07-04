@@ -220,14 +220,11 @@ class CAMP2PAFDConnector(AFDConnectorBase):
 
     def update_state_from_dp_metadata(
         self,
-        dp_metadata_list: dict[int, Any],
-        *,
-        is_graph_capturing: bool = False,
-        is_warmup: bool = False,
+        payload: AFDDPMetadataPayload,
     ) -> None:
-        self.dp_metadata_list = dict(dp_metadata_list)
-        self.is_graph_capturing = bool(is_graph_capturing)
-        self.is_warmup = bool(is_warmup)
+        self.dp_metadata_list = dict(payload.dp_metadata_list)
+        self.is_graph_capturing = payload.is_graph_capturing
+        self.is_warmup = payload.is_warmup
 
     def is_attn_top_min_size_rank(self, world_rank: int) -> bool:
         return self.ffn_size <= int(world_rank) < self.ffn_size + self.min_size

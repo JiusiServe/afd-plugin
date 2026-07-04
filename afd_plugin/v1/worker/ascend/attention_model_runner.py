@@ -1036,11 +1036,12 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             dp_metadata_list = {0: dp_metadata}
         is_warmup = bool(self._is_warmup)
         is_graph_capturing = bool(self._afd_is_graph_capturing)
-        self.afd_connector.update_state_from_dp_metadata(
-            dp_metadata_list,
+        payload = AFDDPMetadataPayload(
+            dp_metadata_list=dp_metadata_list,
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,
         )
+        self.afd_connector.update_state_from_dp_metadata(payload)
         should_send = self.afd_connector.is_attn_top_min_size_rank(
             self.afd_connector.world_rank,
         )
@@ -1054,13 +1055,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             is_warmup,
         )
         if should_send:
-            self.afd_connector.send_dp_metadata_list(
-                AFDDPMetadataPayload(
-                    dp_metadata_list=dp_metadata_list,
-                    is_graph_capturing=is_graph_capturing,
-                    is_warmup=is_warmup,
-                ),
-            )
+            self.afd_connector.send_dp_metadata_list(payload)
 
     def _ensure_dp_metadata(self, dp_metadata: Any) -> Any:
         if dp_metadata is not None:
