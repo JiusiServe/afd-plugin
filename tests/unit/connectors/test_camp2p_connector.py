@@ -28,7 +28,7 @@ class _FakeDPMetadata:
         self.num_tokens_across_dp_cpu = values
 
 
-def _vllm_config(*, num_ubatches: int = 1):
+def _vllm_config(*, num_ubatches: int = 1, n_shared_experts: int = 0):
     return SimpleNamespace(
         parallel_config=SimpleNamespace(
             data_parallel_size=1,
@@ -41,13 +41,13 @@ def _vllm_config(*, num_ubatches: int = 1):
                 hidden_size=16,
                 num_experts_per_tok=2,
                 n_routed_experts=4,
-                n_shared_experts=0,
+                n_shared_experts=n_shared_experts,
             ),
         ),
     )
 
 
-def _afd_config(*, role: str, rank: int = 0):
+def _afd_config(*, role: str, rank: int = 0, extra_config: dict | None = None):
     return AFDConfig(
         enabled=True,
         connector="camp2pconnector",
@@ -55,6 +55,7 @@ def _afd_config(*, role: str, rank: int = 0):
         afd_role_rank=rank,
         num_attention_ranks=4,
         num_ffn_ranks=2,
+        extra_config=extra_config or {},
     )
 
 
@@ -123,6 +124,29 @@ def test_camp2p_create_recv_metadata_uses_original_contiguous_af_grouping():
     assert metadata0.connector_data.batch_size == 5
     assert metadata0.connector_data.h == 16
     assert metadata0.connector_data.k == 2
+
+
+def test_camp2p_ignores_mix_placement_for_connector_metadata():
+    connector = CAMP2PAFDConnector(
+        0,
+        0,
+        _vllm_config(n_shared_experts=3),
+        _afd_config(
+            role="ffn",
+            rank=0,
+            extra_config={"mix_placement": True},
+        ),
+    )
+
+    metadata = connector.create_recv_metadata(
+        dp_metadata_list={0: _FakeDPMetadata([2, 3, 5, 7])},
+        ubatch_idx=0,
+        layer_idx=3,
+    )
+
+    assert metadata.connector_data.k == 2
+    assert metadata.connector_data.moe_expert_num == 4
+    assert metadata.connector_data.shared_expert_num == 0
 
 
 def test_camp2p_update_metadata_keeps_original_handle_shape():
@@ -258,8 +282,8 @@ def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
     assert output is hidden_states
     assert handle is None
     assert captured["ubatch_idx"] == 1
-    assert captured["args"][3:6] == ("hccl0", "hccl1", "")
-    assert captured["args"][6] == 3
+    assert captured["args"][1:4] == ("hccl0", "hccl1", "")
+    assert captured["args"][4] == 3
     assert captured["connector_data"].batch_size == 3
 
 
