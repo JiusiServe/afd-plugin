@@ -58,6 +58,7 @@ from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
     AFDConnectorFactory,
     AFDDPMetadata,
+    AFDDPMetadataPayload,
     AFDMetadata,
 )
 from afd_plugin.v1.worker.ascend.npu_ubatch_wrapper import AscendUBatchWrapper
@@ -1040,29 +1041,21 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             dp_metadata_list = {0: dp_metadata}
         is_warmup = bool(self._is_warmup)
         is_graph_capturing = bool(self._afd_is_graph_capturing)
-        self.afd_connector.update_state_from_dp_metadata(
-            dp_metadata_list,
+        payload = AFDDPMetadataPayload(
+            dp_metadata_list=dp_metadata_list,
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,
         )
-        should_send = self.afd_connector.is_attn_top_min_size_rank(
-            self.afd_connector.world_rank,
-        )
+        self.afd_connector.update_state_from_dp_metadata(payload)
         logger.warning(
             "AFD NPU Attention send_dp_metadata decision; world_rank=%d "
-            "key=%s should_send=%s is_graph_capturing=%s is_warmup=%s",
+            "key=%s is_graph_capturing=%s is_warmup=%s",
             self.afd_connector.world_rank,
             _dp_metadata_debug_key(dp_metadata_list),
-            should_send,
             is_graph_capturing,
             is_warmup,
         )
-        if should_send:
-            self.afd_connector.send_dp_metadata_list(
-                dp_metadata_list,
-                is_graph_capturing=is_graph_capturing,
-                is_warmup=is_warmup,
-            )
+        self.afd_connector.send_dp_metadata_list(payload)
 
     def _ensure_dp_metadata(
         self,

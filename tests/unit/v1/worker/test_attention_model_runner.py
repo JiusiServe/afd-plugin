@@ -9,6 +9,7 @@ pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
 from afd_plugin.config import AFDConfig
+from afd_plugin.connectors import AFDDPMetadataPayload
 from afd_plugin.model_executor.models.forward_context import (
     get_afd_metadata_from_forward_context,
 )
@@ -35,6 +36,17 @@ class _UbatchSlice:
         return self.token_slice.stop - self.token_slice.start
 
 
+def _dp_metadata(tokens):
+    return SimpleNamespace(num_tokens_across_dp_cpu=list(tokens))
+
+
+def _tokens(dp_metadata):
+    values = dp_metadata.num_tokens_across_dp_cpu
+    if hasattr(values, "tolist"):
+        return values.tolist()
+    return list(values)
+
+
 class _RecordingConnector:
     world_rank = 1
 
@@ -45,28 +57,19 @@ class _RecordingConnector:
         self.sent_dp_metadata_flags = []
         self.closed = False
 
-    def is_attn_top_min_size_rank(self, world_rank):
-        return world_rank == self.world_rank
+    def update_state_from_dp_metadata(self, payload):
+        assert isinstance(payload, AFDDPMetadataPayload)
+        self.dp_metadata_updates.append(payload.dp_metadata_list)
+        self.dp_metadata_update_flags.append(
+            (payload.is_graph_capturing, payload.is_warmup),
+        )
 
-    def update_state_from_dp_metadata(
-        self,
-        dp_metadata_list,
-        *,
-        is_graph_capturing=False,
-        is_warmup=False,
-    ):
-        self.dp_metadata_updates.append(dp_metadata_list)
-        self.dp_metadata_update_flags.append((is_graph_capturing, is_warmup))
-
-    def send_dp_metadata_list(
-        self,
-        dp_metadata_list,
-        *,
-        is_graph_capturing=False,
-        is_warmup=False,
-    ):
-        self.sent_dp_metadata_lists.append(dp_metadata_list)
-        self.sent_dp_metadata_flags.append((is_graph_capturing, is_warmup))
+    def send_dp_metadata_list(self, payload):
+        assert isinstance(payload, AFDDPMetadataPayload)
+        self.sent_dp_metadata_lists.append(payload.dp_metadata_list)
+        self.sent_dp_metadata_flags.append(
+            (payload.is_graph_capturing, payload.is_warmup),
+        )
 
     def close(self):
         self.closed = True
@@ -141,7 +144,7 @@ def test_attention_runner_installs_afd_metadata_on_forward_context():
     runner._afd_pending_metadata = runner._build_afd_metadata(None, 5)
     forward_context = SimpleNamespace(
         additional_kwargs={"platform_key": "platform_value"},
-        dp_metadata="dp",
+        dp_metadata=_dp_metadata([5]),
         ubatch_slices=None,
     )
 
@@ -149,8 +152,10 @@ def test_attention_runner_installs_afd_metadata_on_forward_context():
 
     assert forward_context.additional_kwargs["platform_key"] == "platform_value"
     assert forward_context.additional_kwargs["afd_metadata"].afd_tokens_lens == [5]
-    assert runner.afd_connector.dp_metadata_updates == [{0: "dp"}]
-    assert runner.afd_connector.sent_dp_metadata_lists == [{0: "dp"}]
+    assert set(runner.afd_connector.dp_metadata_updates[0]) == {0}
+    assert _tokens(runner.afd_connector.dp_metadata_updates[0][0]) == [5]
+    assert set(runner.afd_connector.sent_dp_metadata_lists[0]) == {0}
+    assert _tokens(runner.afd_connector.sent_dp_metadata_lists[0][0]) == [5]
     assert runner.afd_connector.sent_dp_metadata_flags == [(False, False)]
 
 
@@ -165,7 +170,7 @@ def test_attention_runner_initializes_missing_forward_context_kwargs():
     runner._afd_pending_metadata = runner._build_afd_metadata(None, 5)
     forward_context = SimpleNamespace(
         additional_kwargs=None,
-        dp_metadata="dp",
+        dp_metadata=_dp_metadata([5]),
         ubatch_slices=None,
     )
 
@@ -246,7 +251,7 @@ def test_attention_runner_skips_dp_metadata_send_for_ubatch_child_context():
     )
     forward_context = SimpleNamespace(
         additional_kwargs={"afd_metadata": child},
-        dp_metadata="child-dp",
+        dp_metadata=_dp_metadata([5]),
         ubatch_slices=None,
     )
 
@@ -272,7 +277,7 @@ def test_attention_runner_does_not_skip_single_stage_context():
     runner._afd_pending_metadata = runner._build_afd_metadata(None, 5)
     forward_context = SimpleNamespace(
         additional_kwargs={},
-        dp_metadata="dp",
+        dp_metadata=_dp_metadata([5]),
         ubatch_slices=None,
     )
 
@@ -283,7 +288,8 @@ def test_attention_runner_does_not_skip_single_stage_context():
 
     runner._install_afd_metadata_on_forward_context(forward_context)
 
-    assert runner.afd_connector.sent_dp_metadata_lists == [{0: "dp"}]
+    assert set(runner.afd_connector.sent_dp_metadata_lists[0]) == {0}
+    assert _tokens(runner.afd_connector.sent_dp_metadata_lists[0][0]) == [5]
 
 
 def test_ubatch_metadata_clones_parent_and_preserves_additional_kwargs():
@@ -533,7 +539,7 @@ def test_attention_runner_forwards_capture_and_warmup_flags():
     runner._afd_transaction_counter = 0
     runner._afd_pending_metadata = None
 
-    runner._send_dp_metadata("dp", None)
+    runner._send_dp_metadata(_dp_metadata([1]), None)
 
     assert runner.afd_connector.dp_metadata_update_flags == [(True, True)]
     assert runner.afd_connector.sent_dp_metadata_flags == [(True, True)]

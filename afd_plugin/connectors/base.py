@@ -13,6 +13,7 @@ from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.metadata import (
     AFDConnectorMetadata,
     AFDDPMetadata,
+    AFDDPMetadataPayload,
     AFDRecvOutput,
 )
 
@@ -49,29 +50,22 @@ class AFDConnectorBase(ABC):
     def is_initialized(self) -> bool:
         raise NotImplementedError
 
-    def get_connector_rank(self) -> int:
-        return self.rank
-
-    def get_connector_local_rank(self) -> int:
-        return self.local_rank
-
     @abstractmethod
     def send_attn_output(
         self,
         hidden_states: torch.Tensor,
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
-    ) -> Any:
+    ) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def recv_ffn_output(self, handle: Any = None, **kwargs: Any) -> torch.Tensor:
+    def recv_ffn_output(self, **kwargs: Any) -> torch.Tensor:
         raise NotImplementedError
 
     @abstractmethod
     def recv_attn_output(
         self,
-        timeout_ms: int | None = None,
         ubatch_idx: int | None = None,
         **kwargs: Any,
     ) -> AFDRecvOutput:
@@ -86,28 +80,25 @@ class AFDConnectorBase(ABC):
     ) -> None:
         raise NotImplementedError
 
+    @abstractmethod
     def update_state_from_dp_metadata(
         self,
-        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
-        *,
-        is_graph_capturing: bool = False,
-        is_warmup: bool = False,
+        payload: AFDDPMetadataPayload,
     ) -> None:
         raise NotImplementedError
 
+    @abstractmethod
     def send_dp_metadata_list(
         self,
-        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
-        *,
-        is_graph_capturing: bool = False,
-        is_warmup: bool = False,
+        payload: AFDDPMetadataPayload,
     ) -> None:
         raise NotImplementedError
 
+    @abstractmethod
     def recv_dp_metadata_list(
         self,
         timeout_ms: int | None = None,
-    ) -> tuple[dict[int, DPMetadata | AFDDPMetadata], bool, bool]:
+    ) -> AFDDPMetadataPayload:
         raise NotImplementedError
 
     def create_recv_metadata(self, **kwargs: Any) -> AFDConnectorMetadata:

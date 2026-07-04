@@ -20,6 +20,7 @@ from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import (
     AFDConnectorMetadata,
     AFDDPMetadata,
+    AFDDPMetadataPayload,
     AFDRecvOutput,
 )
 from afd_plugin.distributed import (
@@ -164,19 +165,16 @@ class P2PAFDConnector(AFDConnectorBase):
 
     def update_state_from_dp_metadata(
         self,
-        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
-        *,
-        is_graph_capturing: bool = False,
-        is_warmup: bool = False,
+        payload: AFDDPMetadataPayload,
     ) -> None:
-        self.dp_metadata_list = dp_metadata_list
-        self.is_graph_capturing = is_graph_capturing
-        self.is_warmup = is_warmup
+        self.dp_metadata_list = payload.dp_metadata_list
+        self.is_graph_capturing = payload.is_graph_capturing
+        self.is_warmup = payload.is_warmup
         self._tensor_metadata_list = {}
         device = torch.device(f"cuda:{self.local_rank}")
         dtype = self.vllm_config.model_config.dtype
         dp_rank = int(self.vllm_config.parallel_config.data_parallel_rank)
-        for stage_idx, dp_metadata in dp_metadata_list.items():
+        for stage_idx, dp_metadata in payload.dp_metadata_list.items():
             token_count = dp_metadata.num_tokens_across_dp_cpu[dp_rank]
             item = getattr(token_count, "item", None)
             num_tokens = int(item() if callable(item) else token_count)
@@ -207,24 +205,16 @@ class P2PAFDConnector(AFDConnectorBase):
                         device=tensor_metadata.device,
                     )
 
-    def is_attn_top_min_size_rank(self, world_rank: int) -> bool:
-        return self.ffn_size <= world_rank < self.ffn_size + self.min_size
-
     def send_dp_metadata_list(
         self,
-        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
-        *,
-        is_graph_capturing: bool = False,
-        is_warmup: bool = False,
+        payload: AFDDPMetadataPayload,
     ) -> None:
         if self.p2p_pg is None:
             return
+        if not (self.ffn_size <= self.world_rank < self.ffn_size + self.min_size):
+            return
         device = torch.device(f"cuda:{self.local_rank}")
-        object_bytes = _encode_dp_metadata_payload(
-            dp_metadata_list,
-            is_graph_capturing=is_graph_capturing,
-            is_warmup=is_warmup,
-        )
+        object_bytes = _encode_dp_metadata_payload(payload)
         object_tensor_cpu = torch.frombuffer(bytearray(object_bytes), dtype=torch.uint8)
         object_tensor = object_tensor_cpu.to(device)
         size_tensor = torch.tensor(
@@ -240,7 +230,7 @@ class P2PAFDConnector(AFDConnectorBase):
     def recv_dp_metadata_list(
         self,
         timeout_ms: int | None = None,
-    ) -> tuple[dict[int, DPMetadata | AFDDPMetadata], bool, bool]:
+    ) -> AFDDPMetadataPayload:
         if self.p2p_pg is None:
             raise RuntimeError("P2P DP metadata process group is not initialized")
 
@@ -279,7 +269,7 @@ class P2PAFDConnector(AFDConnectorBase):
             self.a2e_pynccl,
         )
 
-    def recv_ffn_output(self, handle: Any = None, **kwargs: Any) -> torch.Tensor:
+    def recv_ffn_output(self, **kwargs: Any) -> torch.Tensor:
         ref_tensor = kwargs.get("ref_tensor")
         ubatch_idx = kwargs.get("ubatch_idx")
         if ubatch_idx is None:
@@ -291,11 +281,14 @@ class P2PAFDConnector(AFDConnectorBase):
             self._tensor_metadata_list[int(ubatch_idx)],
             ref_tensor=ref_tensor,
         )
+        if output is None:
+            raise RuntimeError(
+                "P2P recv_ffn_output requires ref_tensor when no receive is performed",
+            )
         return output
 
     def recv_attn_output(
         self,
-        timeout_ms: int | None = None,
         ubatch_idx: int | None = None,
         **kwargs: Any,
     ) -> AFDRecvOutput:
@@ -479,13 +472,10 @@ def _to_int(value: object) -> int:
 
 
 def _encode_dp_metadata_payload(
-    dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
-    *,
-    is_graph_capturing: bool,
-    is_warmup: bool,
+    payload: AFDDPMetadataPayload,
 ) -> bytes:
     metadata_payload: dict[str, dict[str, int | list[int]]] = {}
-    for stage_idx, dp_metadata in dp_metadata_list.items():
+    for stage_idx, dp_metadata in payload.dp_metadata_list.items():
         token_counts = getattr(dp_metadata, "num_tokens_across_dp_cpu", None)
         if token_counts is None:
             raise TypeError(
@@ -501,17 +491,19 @@ def _encode_dp_metadata_payload(
             "max_tokens_across_dp_cpu": _to_int(max_token_count),
         }
 
-    payload = {
+    wire_payload = {
         "dp_metadata_list": metadata_payload,
-        "is_graph_capturing": bool(is_graph_capturing),
-        "is_warmup": bool(is_warmup),
+        "is_graph_capturing": bool(payload.is_graph_capturing),
+        "is_warmup": bool(payload.is_warmup),
     }
-    return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return json.dumps(wire_payload, separators=(",", ":"), sort_keys=True).encode(
+        "utf-8",
+    )
 
 
 def _decode_dp_metadata_payload(
     payload_bytes: bytes,
-) -> tuple[dict[int, DPMetadata | AFDDPMetadata], bool, bool]:
+) -> AFDDPMetadataPayload:
     payload = json.loads(payload_bytes.decode("utf-8"))
     dp_metadata_list = {
         int(stage_idx): AFDDPMetadata(
@@ -522,10 +514,10 @@ def _decode_dp_metadata_payload(
         )
         for stage_idx, metadata in payload["dp_metadata_list"].items()
     }
-    return (
-        dp_metadata_list,
-        bool(payload.get("is_graph_capturing", False)),
-        bool(payload.get("is_warmup", False)),
+    return AFDDPMetadataPayload(
+        dp_metadata_list=dp_metadata_list,
+        is_graph_capturing=bool(payload.get("is_graph_capturing", False)),
+        is_warmup=bool(payload.get("is_warmup", False)),
     )
 
 

@@ -29,6 +29,7 @@ from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
     AFDConnectorFactory,
     AFDDPMetadata,
+    AFDDPMetadataPayload,
     AFDMetadata,
 )
 from afd_plugin.model_executor.models.forward_context import use_afd_metadata_provider
@@ -123,22 +124,13 @@ class AFDAttentionModelRunner(GPUModelRunner):
             dp_metadata_list = {0: dp_metadata}
         is_warmup = bool(self._is_warmup)
         is_graph_capturing = bool(getattr(self, "_afd_is_graph_capturing", False))
-        self.afd_connector.update_state_from_dp_metadata(
-            dp_metadata_list,
+        payload = AFDDPMetadataPayload(
+            dp_metadata_list=dp_metadata_list,
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,
         )
-
-        should_send = True
-        rank = self.afd_connector.world_rank
-        should_send = bool(self.afd_connector.is_attn_top_min_size_rank(rank))
-
-        if should_send:
-            self.afd_connector.send_dp_metadata_list(
-                dp_metadata_list,
-                is_graph_capturing=is_graph_capturing,
-                is_warmup=is_warmup,
-            )
+        self.afd_connector.update_state_from_dp_metadata(payload)
+        self.afd_connector.send_dp_metadata_list(payload)
 
     def load_model(self, *args: Any, **kwargs: Any) -> Any:
         use_ubatching = bool(self.vllm_config.parallel_config.use_ubatching)

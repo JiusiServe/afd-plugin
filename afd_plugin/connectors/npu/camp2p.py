@@ -21,8 +21,10 @@ from afd_plugin.compat.ascend import ensure_afd_ascend_ops_loaded
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import (
+    AFDConnectorData,
     AFDConnectorMetadata,
     AFDDPMetadata,
+    AFDDPMetadataPayload,
     AFDRecvOutput,
 )
 from afd_plugin.distributed import init_afd_process_group, topology_from_config
@@ -35,7 +37,7 @@ logger = init_logger(__name__)
 
 
 @dataclass(slots=True)
-class CAMP2PAFDConnectorMetadata:
+class CAMP2PAFDConnectorMetadata(AFDConnectorData):
     """CAMP2P payload metadata carried between recv and send phases.
 
     This mirrors ``vllm_ascend.distributed.metadata.CAMP2PAFDConnectorMetadata``
@@ -133,14 +135,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             "n_routed_experts",
             default=0,
         )
-        self.num_shared_experts = _resolve_int_attr(
-            vllm_config,
-            "n_shared_experts",
-            default=0,
-        )
-        self.mix_placement = bool(
-            afd_config.extra_config.get("mix_placement", False),
-        )
 
     @property
     def is_initialized(self) -> bool:
@@ -229,45 +223,43 @@ class CAMP2PAFDConnector(AFDConnectorBase):
 
     def update_state_from_dp_metadata(
         self,
-        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
-        *,
-        is_graph_capturing: bool = False,
-        is_warmup: bool = False,
+        payload: AFDDPMetadataPayload,
     ) -> None:
-        self.dp_metadata_list = dict(dp_metadata_list)
-        self.is_graph_capturing = bool(is_graph_capturing)
-        self.is_warmup = bool(is_warmup)
-
-    def is_attn_top_min_size_rank(self, world_rank: int) -> bool:
-        return self.ffn_size <= int(world_rank) < self.ffn_size + self.min_size
+        self.dp_metadata_list = dict(payload.dp_metadata_list)
+        self.is_graph_capturing = payload.is_graph_capturing
+        self.is_warmup = payload.is_warmup
 
     def send_dp_metadata_list(
         self,
-        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
-        *,
-        is_graph_capturing: bool = False,
-        is_warmup: bool = False,
+        payload: AFDDPMetadataPayload,
     ) -> None:
         if self.p2p_pg is None:
             return
-        payload = (dp_metadata_list, bool(is_graph_capturing), bool(is_warmup))
+        if not self.topology.is_attn_top_min_size_rank:
+            return
         for dst in self.dst_list:
             _send_object(payload, dst=dst, group=self.p2p_pg)
 
     def recv_dp_metadata_list(
         self,
         timeout_ms: int | None = None,
-    ) -> tuple[dict[int, DPMetadata | AFDDPMetadata], bool, bool]:
+    ) -> AFDDPMetadataPayload:
         if self.p2p_pg is None:
             raise RuntimeError("CAMP2P metadata process group is not initialized")
         src = self.p2p_rank % self.min_size + self.ffn_size
         payload = _recv_object(src=src, group=self.p2p_pg)
+        if isinstance(payload, AFDDPMetadataPayload):
+            return payload
         if len(payload) == 3:
             dp_metadata_list, is_graph_capturing, is_warmup = payload
         else:
             dp_metadata_list, is_graph_capturing = payload
             is_warmup = False
-        return dp_metadata_list, bool(is_graph_capturing), bool(is_warmup)
+        return AFDDPMetadataPayload(
+            dp_metadata_list=dp_metadata_list,
+            is_graph_capturing=bool(is_graph_capturing),
+            is_warmup=bool(is_warmup),
+        )
 
     def configure_metadata(
         self,
@@ -323,7 +315,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         hidden_states: torch.Tensor,
         metadata: AFDConnectorMetadata,
         **kwargs: Any,
-    ) -> tuple[torch.Tensor, None]:
+    ) -> None:
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
         if not _is_torch_compiling() and not metadata.validate_tensor_shape(
@@ -334,14 +326,10 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                 f"CAMP2P metadata token count {metadata.total_tokens}",
             )
         connector_data = self._metadata_data_or_default(metadata, hidden_states)
-        topk_ids = kwargs.get("topk_ids")
-        topk_weights = kwargs.get("topk_weights")
         ubatch_idx = int(metadata.stage_idx)
         _set_forward_context_connector_data(connector_data, ubatch_idx=ubatch_idx)
-        hidden_states = torch.ops.vllm.afd_camp2p_send_attn_output(
+        torch.ops.vllm.afd_camp2p_send_attn_output(
             hidden_states,
-            topk_weights,
-            topk_ids,
             self.hccl_comm_name,
             self.hccl_comm_name2,
             self.hccl_comm_name3,
@@ -354,9 +342,9 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             connector_data.aiv_num,
             0,
         )
-        return hidden_states, None
+        return None
 
-    def recv_ffn_output(self, handle: Any = None, **kwargs: Any) -> torch.Tensor:
+    def recv_ffn_output(self, **kwargs: Any) -> torch.Tensor:
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
         ref_tensor = kwargs.get("ref_tensor")
@@ -383,7 +371,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
 
     def recv_attn_output(
         self,
-        timeout_ms: int | None = None,
         ubatch_idx: int | None = None,
         **kwargs: Any,
     ) -> AFDRecvOutput:
@@ -489,10 +476,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         k = self.num_experts_per_tok
         moe_experts = self.num_routed_experts
         shared_experts = 0
-        if self.mix_placement:
-            k += self.num_shared_experts
-            moe_experts += self.num_shared_experts
-            shared_experts = self.num_shared_experts
         return CAMP2PAFDConnectorMetadata(
             moe_expert_num=moe_experts,
             shared_expert_num=shared_experts,
@@ -707,8 +690,6 @@ def _register_camp2p_custom_ops() -> None:
 
     def send_attn_output_impl(
         hidden_states: torch.Tensor,
-        topk_weights: torch.Tensor | None,
-        topk_ids: torch.Tensor | None,
         hccl_comm_name: str,
         hccl_comm_name2: str,
         hccl_comm_name3: str,
@@ -738,8 +719,8 @@ def _register_camp2p_custom_ops() -> None:
 
         outputs = torch.ops.afd_ascend.a2e(
             hidden_states,
-            topk_ids,
-            topk_weights,
+            None,
+            None,
             connector_data.batch_size,
             connector_data.h,
             connector_data.k,
@@ -758,8 +739,6 @@ def _register_camp2p_custom_ops() -> None:
 
     def send_attn_output_fake_impl(
         hidden_states: torch.Tensor,
-        topk_weights: torch.Tensor | None,
-        topk_ids: torch.Tensor | None,
         hccl_comm_name: str,
         hccl_comm_name2: str,
         hccl_comm_name3: str,
@@ -832,8 +811,6 @@ def _register_camp2p_custom_ops() -> None:
 
     send_annotations = {
         "hidden_states": torch.Tensor,
-        "topk_weights": torch.Tensor | None,
-        "topk_ids": torch.Tensor | None,
         "hccl_comm_name": str,
         "hccl_comm_name2": str,
         "hccl_comm_name3": str,

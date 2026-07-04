@@ -8,7 +8,7 @@ import copy
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -91,6 +91,37 @@ class AFDDPMetadata:
 AFDSingleDPMetadata = AFDDPMetadata
 
 
+@dataclass(slots=True)
+class AFDDPMetadataPayload:
+    """Structured DP metadata control-plane payload."""
+
+    dp_metadata_list: dict[int, AFDDPMetadata]
+    is_graph_capturing: bool
+    is_warmup: bool
+
+    def __post_init__(self) -> None:
+        self.dp_metadata_list = {
+            int(stage_idx): _ensure_afd_dp_metadata(dp_metadata)
+            for stage_idx, dp_metadata in self.dp_metadata_list.items()
+        }
+        self.is_graph_capturing = bool(self.is_graph_capturing)
+        self.is_warmup = bool(self.is_warmup)
+
+
+def _ensure_afd_dp_metadata(value: object) -> AFDDPMetadata:
+    if isinstance(value, AFDDPMetadata):
+        return value
+    token_counts = getattr(value, "num_tokens_across_dp_cpu", None)
+    if token_counts is None:
+        raise TypeError(
+            "AFD DP metadata must expose num_tokens_across_dp_cpu",
+        )
+    return AFDDPMetadata(
+        num_tokens_across_dp_cpu=token_counts,
+        max_tokens_across_dp_cpu=getattr(value, "max_tokens_across_dp_cpu", None),
+    )
+
+
 def _cpu_int_tensor_or_list(value: object) -> torch.Tensor:
     values = _to_int_list(value)
     return torch.tensor(values, dtype=torch.int32, device="cpu")
@@ -148,14 +179,18 @@ def _compute_sp_num_tokens(
 
 
 @dataclass(slots=True)
+class AFDConnectorData:
+    """Base class for backend-specific connector metadata payloads."""
+
+
+@dataclass(slots=True)
 class AFDConnectorMetadata:
     """Communication metadata for one AFD Attention/FFN exchange."""
 
     layer_idx: int
     stage_idx: int
     seq_lens: list[int]
-    recv_handle_list: list[Any] | None = None
-    connector_data: object = None
+    connector_data: AFDConnectorData | None = None
 
     def __post_init__(self) -> None:
         if not self.seq_lens:
@@ -242,8 +277,10 @@ class AFDMetadata:
 
 
 __all__ = [
+    "AFDConnectorData",
     "AFDConnectorMetadata",
     "AFDDPMetadata",
+    "AFDDPMetadataPayload",
     "AFDMetadata",
     "AFDRecvOutput",
     "AFDSingleDPMetadata",
