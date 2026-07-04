@@ -6,9 +6,13 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from afd_plugin.config import AFDConfig, afd_config_from_mapping
-from afd_plugin.connectors import AFDConnectorFactory, AFDConnectorMetadata
 
 pytest.importorskip("torch")
+
+from afd_plugin.connectors import (  # noqa: E402
+    AFDConnectorFactory,
+    AFDConnectorMetadata,
+)
 from afd_plugin.connectors.npu import async_cam as async_cam_module  # noqa: E402
 from afd_plugin.connectors.npu.async_cam import (  # noqa: E402
     AFD_ASYNC_CAM_GROUP_NAME,
@@ -104,9 +108,9 @@ def _afd_config(*, role: str, rank: int = 0, extra_config=None):
         enabled=True,
         connector="afdasyncconnector",
         role=role,
-        afd_server_rank=rank,
-        num_attention_servers=4,
-        num_ffn_servers=2,
+        afd_role_rank=rank,
+        num_attention_ranks=4,
+        num_ffn_ranks=2,
         extra_config={} if extra_config is None else dict(extra_config),
     )
 

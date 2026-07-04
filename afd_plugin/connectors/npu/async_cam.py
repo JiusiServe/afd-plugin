@@ -91,7 +91,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         super().__init__(rank, local_rank, vllm_config, afd_config)
         self._initialized = False
         hf_config = vllm_config.model_config.hf_config
-        self._role_rank = int(afd_config.afd_server_rank)
+        self._role_rank = int(afd_config.afd_role_rank)
         self.hidden_size = int(hf_config.hidden_size)
         self.topk = max(1, int(hf_config.num_experts_per_tok))
         self.num_routed_experts = max(1, int(hf_config.n_routed_experts))
@@ -459,9 +459,6 @@ class AFDAsyncConnector(AFDConnectorBase):
             expert_token_nums=expert_token_nums,
             expert_token_nums_shared=expert_token_nums_shared,
         )
-        # print(f"expert_token_nums:{expert_token_nums} sum:{expert_token_nums.sum()}", flush=True)
-        # print(f"expert_token_nums_shared:{expert_token_nums_shared}", flush=True)
-        # print(f"token_nums_rankid_layeridx first5={token_nums_rankid_layeridx[:5]}", flush=True)
         data.expand_x_shared = expand_x_shared
         data.dynamic_scales = dynamic_scales
         data.dynamic_scales_shared = dynamic_scales_shared
@@ -650,9 +647,9 @@ def build_async_topology(
     *,
     num_routed_experts: int | None = None,
 ) -> AFDAsyncTopology:
-    attention_size = int(afd_config.num_attention_servers)
-    expert_rank_size = int(afd_config.num_ffn_servers)
-    role_rank = int(afd_config.afd_server_rank if role_rank is None else role_rank)
+    attention_size = int(afd_config.num_attention_ranks)
+    expert_rank_size = int(afd_config.num_ffn_ranks)
+    role_rank = int(afd_config.afd_role_rank if role_rank is None else role_rank)
     if attention_size <= 0 or expert_rank_size <= 0:
         raise ValueError("AFD async topology sizes must be positive")
     if role_rank < 0:

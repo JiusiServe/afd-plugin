@@ -9,10 +9,10 @@ from contextlib import contextmanager
 from functools import wraps
 from typing import Any, Final
 
-ASYNC_MOE_UBATCH_METADATA_KEY: Final[str] = "afd_async_moe_ubatch_metadata"
-
 import vllm.forward_context as forward_context_module
 from vllm.forward_context import get_forward_context
+
+ASYNC_MOE_UBATCH_METADATA_KEY: Final[str] = "afd_async_moe_ubatch_metadata"
 
 
 def get_afd_metadata_from_forward_context(forward_context: object | None = None) -> Any:

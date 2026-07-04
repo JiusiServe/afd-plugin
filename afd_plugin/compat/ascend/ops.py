@@ -108,7 +108,6 @@ def ensure_cam_async_ops_available() -> None:
     try:
         import torch
         import torch_npu  # noqa: F401
-
         import umdk_cam_op_lib  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(

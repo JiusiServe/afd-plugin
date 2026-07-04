@@ -18,7 +18,7 @@ class OfflineCsvSchedule:
     request_token_counts: tuple[int, ...]
 
     @classmethod
-    def from_csv(cls, path: str, dp_size: int, dp_rank: int) -> "OfflineCsvSchedule":
+    def from_csv(cls, path: str, dp_size: int, dp_rank: int) -> OfflineCsvSchedule:
         if dp_size < 1:
             raise ValueError("offline scheduler dp_size must be >= 1")
         if dp_rank < 0 or dp_rank >= dp_size:
