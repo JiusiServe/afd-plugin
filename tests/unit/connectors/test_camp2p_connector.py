@@ -11,6 +11,7 @@ pytest.importorskip("torch_npu")
 
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
+    AFDConnectorData,
     AFDConnectorFactory,
     AFDConnectorMetadata,
     AFDRecvOutput,
@@ -121,6 +122,7 @@ def test_camp2p_create_recv_metadata_uses_original_contiguous_af_grouping():
     assert metadata0.seq_lens == [5]
     assert metadata1.seq_lens == [12]
     assert isinstance(metadata0.connector_data, CAMP2PAFDConnectorMetadata)
+    assert isinstance(metadata0.connector_data, AFDConnectorData)
     assert metadata0.connector_data.batch_size == 5
     assert metadata0.connector_data.h == 16
     assert metadata0.connector_data.k == 2

@@ -20,6 +20,7 @@ from afd_plugin.compat.ascend import ensure_afd_ascend_ops_loaded
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import (
+    AFDConnectorData,
     AFDConnectorMetadata,
     AFDDPMetadataPayload,
     AFDRecvOutput,
@@ -34,7 +35,7 @@ logger = init_logger(__name__)
 
 
 @dataclass(slots=True)
-class CAMP2PAFDConnectorMetadata:
+class CAMP2PAFDConnectorMetadata(AFDConnectorData):
     """CAMP2P payload metadata carried between recv and send phases.
 
     This mirrors ``vllm_ascend.distributed.metadata.CAMP2PAFDConnectorMetadata``
