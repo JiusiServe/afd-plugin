@@ -22,11 +22,11 @@ _DEFAULT_ASCEND_TOOLKIT_PATH = Path("/usr/local/Ascend/ascend-toolkit/latest")
 
 
 def _env_enabled(value: str) -> bool:
-    return value.lower() in {"1", "true", "yes", "on"}
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _env_disabled(value: str) -> bool:
-    return value.lower() in {"0", "false", "no", "off"}
+    return value.strip().lower() in {"0", "false", "no", "off"}
 
 
 def _running_on_ascend_platform() -> bool:
@@ -39,7 +39,7 @@ def _running_on_ascend_platform() -> bool:
 
 def _should_build_ascend_ops() -> bool:
     requested = os.environ.get("AFD_BUILD_ASCEND_OPS")
-    if requested is not None:
+    if requested is not None and requested.strip() != "":
         if _env_enabled(requested):
             return True
         if _env_disabled(requested):

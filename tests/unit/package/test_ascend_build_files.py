@@ -39,7 +39,7 @@ def _run_setup_py(
     real_path_exists = Path.exists
 
     def fake_path_exists(path: Path) -> bool:
-        if str(path) == "/usr/local/Ascend/ascend-toolkit/latest":
+        if path.as_posix() == "/usr/local/Ascend/ascend-toolkit/latest":
             return has_ascend_toolkit
         return real_path_exists(path)
 
@@ -108,10 +108,12 @@ def test_ascend_ops_build_is_enabled_by_default_on_npu(
     [
         ("1", ["afd_plugin._C_ascend"]),
         ("true", ["afd_plugin._C_ascend"]),
+        (" yes ", ["afd_plugin._C_ascend"]),
         ("yes", ["afd_plugin._C_ascend"]),
         ("on", ["afd_plugin._C_ascend"]),
         ("0", []),
         ("false", []),
+        (" no ", []),
         ("no", []),
         ("off", []),
     ],
@@ -136,6 +138,17 @@ def test_ascend_ops_build_env_rejects_invalid_value(
 ):
     with pytest.raises(RuntimeError, match="AFD_BUILD_ASCEND_OPS"):
         _run_setup_py(monkeypatch, afd_build_ascend_ops="maybe")
+
+
+def test_empty_ascend_ops_build_env_uses_platform_default(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    assert _run_setup_py(monkeypatch, afd_build_ascend_ops="") == []
+    assert _run_setup_py(
+        monkeypatch,
+        afd_build_ascend_ops=" ",
+        has_torch_npu=True,
+    ) == ["afd_plugin._C_ascend"]
 
 
 def test_ascend_ops_use_isolated_namespace_and_vendor_path():
