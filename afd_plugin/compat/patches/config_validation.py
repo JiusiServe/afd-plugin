@@ -20,6 +20,7 @@ from afd_plugin.config import parse_afd_config
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
+    from vllm.engine.arg_utils import EngineArgs
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,11 @@ def apply_config_validation_patch() -> None:
         ),
     )
 
-    def patched_create_engine_config(self: Any, *args: Any, **kwargs: Any) -> Any:
+    def patched_create_engine_config(
+        self: EngineArgs,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
         if not _should_relax_engine_args_backend(self):
             return state.engine_args_create_engine_config(self, *args, **kwargs)
 
@@ -100,7 +105,7 @@ def apply_config_validation_patch() -> None:
     logger.debug("AFD config validation patch applied")
 
 
-def _should_relax_engine_args_backend(engine_args: object) -> bool:
+def _should_relax_engine_args_backend(engine_args: EngineArgs) -> bool:
     if not _is_target_vllm_compatible():
         return False
     try:
