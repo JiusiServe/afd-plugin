@@ -80,7 +80,7 @@ Once the serving stack is up, run:
 export MODEL_PATH=/path/model_weights/DeepSeek-V2-Lite
 export RESULT_DIR=/path/results
 export RESULT_FILENAME=2a2f_graph_dbo_dp1tp2.json
-bash benchmarks/vllm_bench.sh
+bash tools/benchmarks/request_generator.sh
 ```
 
 It fires 1024 random requests (1024 input tokens / 128 output tokens) at
