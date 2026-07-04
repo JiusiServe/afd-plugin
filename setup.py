@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -10,6 +11,44 @@ from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
 
 ROOT = Path(__file__).parent.resolve()
+
+_ASCEND_ENV_VARS = (
+    "ASCEND_HOME_PATH",
+    "ASCEND_OPP_PATH",
+    "ASCEND_TOOLKIT_HOME",
+    "TORCH_NPU_PATH",
+)
+_DEFAULT_ASCEND_TOOLKIT_PATH = Path("/usr/local/Ascend/ascend-toolkit/latest")
+
+
+def _env_enabled(value: str) -> bool:
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _env_disabled(value: str) -> bool:
+    return value.lower() in {"0", "false", "no", "off"}
+
+
+def _running_on_ascend_platform() -> bool:
+    if importlib.util.find_spec("torch_npu") is not None:
+        return True
+    if any(os.environ.get(name) for name in _ASCEND_ENV_VARS):
+        return True
+    return _DEFAULT_ASCEND_TOOLKIT_PATH.exists()
+
+
+def _should_build_ascend_ops() -> bool:
+    requested = os.environ.get("AFD_BUILD_ASCEND_OPS")
+    if requested is not None:
+        if _env_enabled(requested):
+            return True
+        if _env_disabled(requested):
+            return False
+        raise RuntimeError(
+            "AFD_BUILD_ASCEND_OPS must be one of: 1, 0, true, false, yes, no, "
+            "on, off",
+        )
+    return _running_on_ascend_platform()
 
 
 class CMakeExtension(Extension):
@@ -72,7 +111,7 @@ class BuildAscendOps(build_ext):
 
 
 ext_modules = []
-if os.environ.get("AFD_BUILD_ASCEND_OPS", "1") == "1":
+if _should_build_ascend_ops():
     ext_modules.append(
         CMakeExtension("afd_plugin._C_ascend", "csrc/npu/torch_extension"),
     )

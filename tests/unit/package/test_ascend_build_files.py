@@ -1,6 +1,63 @@
 from __future__ import annotations
 
+import importlib.util
+import runpy
 from pathlib import Path
+
+import pytest
+import setuptools
+
+_ASCEND_ENV_VARS = (
+    "ASCEND_HOME_PATH",
+    "ASCEND_OPP_PATH",
+    "ASCEND_TOOLKIT_HOME",
+    "TORCH_NPU_PATH",
+)
+
+
+def _run_setup_py(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    afd_build_ascend_ops: str | None = None,
+    has_torch_npu: bool = False,
+    has_ascend_toolkit: bool = False,
+    ascend_env_var: str | None = None,
+) -> list[str]:
+    root = Path(__file__).resolve().parents[3]
+    captured: dict[str, object] = {}
+
+    def fake_setup(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name: str, *args: object, **kwargs: object) -> object | None:
+        if name == "torch_npu":
+            return object() if has_torch_npu else None
+        return real_find_spec(name, *args, **kwargs)
+
+    real_path_exists = Path.exists
+
+    def fake_path_exists(path: Path) -> bool:
+        if str(path) == "/usr/local/Ascend/ascend-toolkit/latest":
+            return has_ascend_toolkit
+        return real_path_exists(path)
+
+    monkeypatch.setattr(setuptools, "setup", fake_setup)
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    monkeypatch.setattr(Path, "exists", fake_path_exists)
+    monkeypatch.delenv("AFD_BUILD_ASCEND_OPS", raising=False)
+    for name in _ASCEND_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    if afd_build_ascend_ops is not None:
+        monkeypatch.setenv("AFD_BUILD_ASCEND_OPS", afd_build_ascend_ops)
+    if ascend_env_var is not None:
+        monkeypatch.setenv(ascend_env_var, "/opt/ascend")
+
+    runpy.run_path(str(root / "setup.py"))
+
+    ext_modules = captured["ext_modules"]
+    return [ext.name for ext in ext_modules]  # type: ignore[attr-defined]
 
 
 def test_ascend_a2e_e2a_sources_are_vendored():
@@ -24,12 +81,58 @@ def test_ascend_a2e_e2a_sources_are_vendored():
         assert (root / relpath).is_file(), relpath
 
 
-def test_ascend_ops_build_is_enabled_by_default():
-    root = Path(__file__).resolve().parents[3]
-    setup_py = (root / "setup.py").read_text()
+def test_ascend_ops_build_is_disabled_by_default_on_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    assert _run_setup_py(monkeypatch) == []
 
-    assert 'AFD_BUILD_ASCEND_OPS", "1"' in setup_py
-    assert "csrc/npu/build_aclnn.sh" in setup_py
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"has_torch_npu": True}, ["afd_plugin._C_ascend"]),
+        ({"has_ascend_toolkit": True}, ["afd_plugin._C_ascend"]),
+        ({"ascend_env_var": "ASCEND_HOME_PATH"}, ["afd_plugin._C_ascend"]),
+    ],
+)
+def test_ascend_ops_build_is_enabled_by_default_on_npu(
+    monkeypatch: pytest.MonkeyPatch,
+    kwargs: dict[str, object],
+    expected: list[str],
+):
+    assert _run_setup_py(monkeypatch, **kwargs) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1", ["afd_plugin._C_ascend"]),
+        ("true", ["afd_plugin._C_ascend"]),
+        ("yes", ["afd_plugin._C_ascend"]),
+        ("on", ["afd_plugin._C_ascend"]),
+        ("0", []),
+        ("false", []),
+        ("no", []),
+        ("off", []),
+    ],
+)
+def test_ascend_ops_build_env_overrides_platform_default(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+    expected: list[str],
+):
+    assert _run_setup_py(
+        monkeypatch,
+        afd_build_ascend_ops=value,
+        has_torch_npu=value in {"0", "false", "no", "off"},
+    ) == expected
+
+
+def test_ascend_ops_build_env_rejects_invalid_value(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    with pytest.raises(RuntimeError, match="AFD_BUILD_ASCEND_OPS"):
+        _run_setup_py(monkeypatch, afd_build_ascend_ops="maybe")
 
 
 def test_ascend_ops_use_isolated_namespace_and_vendor_path():
