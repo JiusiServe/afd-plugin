@@ -31,18 +31,14 @@ class _RecordingConnector:
         self.dp_metadata_updates = []
         self.sent_dp_metadata_lists = []
 
-    def is_attn_top_min_size_rank(self, world_rank):
-        return world_rank == self.world_rank
-
-    def update_state_from_dp_metadata(
-        self,
-        dp_metadata_list,
-        *,
-        is_graph_capturing=False,
-        is_warmup=False,
-    ):
+    def update_state_from_dp_metadata(self, payload):
+        assert isinstance(payload, AFDDPMetadataPayload)
         self.dp_metadata_updates.append(
-            (dp_metadata_list, is_graph_capturing, is_warmup),
+            (
+                payload.dp_metadata_list,
+                payload.is_graph_capturing,
+                payload.is_warmup,
+            ),
         )
 
     def send_dp_metadata_list(self, payload):
@@ -68,9 +64,18 @@ class _FakeFFNConnector:
         self.world_rank = world_rank
         self.topology = SimpleNamespace(role_rank=role_rank)
 
-    def update_state_from_dp_metadata(self, dp_metadata_list, **kwargs):
-        self.dp_metadata_list = dict(dp_metadata_list)
-        self.updates.append((dict(dp_metadata_list), kwargs))
+    def update_state_from_dp_metadata(self, payload):
+        assert isinstance(payload, AFDDPMetadataPayload)
+        self.dp_metadata_list = dict(payload.dp_metadata_list)
+        self.updates.append(
+            (
+                dict(payload.dp_metadata_list),
+                {
+                    "is_graph_capturing": payload.is_graph_capturing,
+                    "is_warmup": payload.is_warmup,
+                },
+            ),
+        )
 
     def recv_attn_output(self, metadata=None, ubatch_idx=None):
         for item in tuple(self.attn_outputs):
@@ -466,9 +471,10 @@ def test_npu_ffn_runner_executes_eager_ffn_step():
 
     runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
 
-    assert runner.connector.updates == [
-        ({0: runner.connector.dp_metadata_list[0]}, {"is_graph_capturing": False}),
-    ]
+    assert len(runner.connector.updates) == 1
+    update_metadata, update_flags = runner.connector.updates[0]
+    assert update_metadata == {0: runner.connector.dp_metadata_list[0]}
+    assert update_flags == {"is_graph_capturing": False, "is_warmup": False}
     assert runner.connector.ffn_outputs == [
         ("npu-ffn(hidden, layer=0)", metadata, {"ubatch_idx": 0}),
     ]
@@ -631,9 +637,11 @@ def test_npu_ffn_runner_capture_stores_acl_graph_and_skips_duplicate_state_updat
     )
 
     assert runner._make_graph_key(dp_metadata) in runner._acl_graphs
-    assert runner.connector.updates == [
-        (dp_metadata, {"is_graph_capturing": True}),
-    ]
+    assert len(runner.connector.updates) == 1
+    update_metadata, update_flags = runner.connector.updates[0]
+    assert sorted(update_metadata) == [0]
+    assert _tokens(update_metadata[0]) == [1]
+    assert update_flags == {"is_graph_capturing": True, "is_warmup": False}
 
 
 def test_npu_ffn_runner_requires_compute_hook():

@@ -9,7 +9,11 @@ import pytest
 pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
-from afd_plugin.connectors import AFDConnectorMetadata, AFDRecvOutput
+from afd_plugin.connectors import (
+    AFDConnectorMetadata,
+    AFDDPMetadataPayload,
+    AFDRecvOutput,
+)
 from afd_plugin.v1.worker.cuda_graph import make_ffn_graph_key
 from afd_plugin.v1.worker.ffn_model_runner import (
     GPUFFNModelRunner,
@@ -25,8 +29,15 @@ class _FakeConnector:
         self.dp_metadata_updates = []
         self.closed = False
 
-    def update_state_from_dp_metadata(self, dp_metadata_list, is_graph_capturing):
-        self.dp_metadata_updates.append((dict(dp_metadata_list), is_graph_capturing))
+    def update_state_from_dp_metadata(self, payload):
+        assert isinstance(payload, AFDDPMetadataPayload)
+        self.dp_metadata_updates.append(
+            (
+                dict(payload.dp_metadata_list),
+                payload.is_graph_capturing,
+                payload.is_warmup,
+            ),
+        )
 
     def recv_attn_output(self, ubatch_idx=None):
         if ubatch_idx is None:
@@ -95,6 +106,13 @@ class _FakeDPMetadata:
         self.num_tokens_across_dp_cpu = values
 
 
+def _tokens(dp_metadata):
+    values = dp_metadata.num_tokens_across_dp_cpu
+    if hasattr(values, "tolist"):
+        return values.tolist()
+    return list(values)
+
+
 class _FakeGraph:
     def __init__(self):
         self.replay_count = 0
@@ -108,9 +126,16 @@ def test_ffn_runner_executes_model_compute_ffn_output():
     metadata = _metadata()
     runner.connector.attn_outputs.append(("hidden", metadata))
 
-    runner.execute_model(dp_metadata_list={0: "dp"})
+    runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
 
-    assert runner.connector.dp_metadata_updates == [({0: "dp"}, False)]
+    assert len(runner.connector.dp_metadata_updates) == 1
+    dp_metadata_update, is_graph_capturing, is_warmup = (
+        runner.connector.dp_metadata_updates[0]
+    )
+    assert sorted(dp_metadata_update) == [0]
+    assert _tokens(dp_metadata_update[0]) == [1]
+    assert is_graph_capturing is False
+    assert is_warmup is False
     assert runner.connector.ffn_outputs == [
         ("ffn(hidden, layer=0)", metadata),
     ]
@@ -156,7 +181,12 @@ def test_ffn_runner_processes_each_ubatch_for_each_layer():
         ],
     )
 
-    runner.execute_model(dp_metadata_list={0: "dp0", 1: "dp1"})
+    runner.execute_model(
+        dp_metadata_list={
+            0: _FakeDPMetadata([1]),
+            1: _FakeDPMetadata([1]),
+        },
+    )
 
     assert runner.connector.ffn_outputs == [
         ("ffn(hidden-0-l0, layer=0)", metadata_0_layer_0),
@@ -218,7 +248,7 @@ def test_ffn_runner_steps_gpu_profiler():
     runner.prof = _StepProfiler()
     runner.connector.attn_outputs.append(("hidden", _metadata()))
 
-    runner.execute_model(dp_metadata_list={0: "dp"})
+    runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
 
     assert runner.prof.steps == 1
 
@@ -239,7 +269,7 @@ def test_ffn_forward_can_skip_connector_state_update_for_capture():
     runner.connector.attn_outputs.append(("hidden", metadata))
 
     runner._ffn_forward(
-        dp_metadata_list={0: "dp"},
+        dp_metadata_list={0: _FakeDPMetadata([1])},
         is_graph_capturing=True,
         update_connector_state=False,
     )

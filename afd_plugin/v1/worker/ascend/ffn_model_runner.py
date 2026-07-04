@@ -28,6 +28,7 @@ from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
     AFDConnectorFactory,
     AFDConnectorMetadata,
+    AFDDPMetadataPayload,
     AFDMetadata,
     AFDRecvOutput,
 )
@@ -182,8 +183,10 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
     ) -> Any:
         if update_connector_state:
             self.connector.update_state_from_dp_metadata(
-                dp_metadata_list,
-                is_graph_capturing=is_graph_capturing,
+                _make_dp_metadata_payload(
+                    dp_metadata_list,
+                    is_graph_capturing=is_graph_capturing,
+                ),
             )
         num_stages = max(len(dp_metadata_list), 1)
         afd_metadata = AFDMetadata(
@@ -239,11 +242,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                             metadata,
                         )
                         _set_moe_layer_index(forward_context, layer_idx)
-
-                    if metadata.recv_handle_list is not None:
-                        for work in metadata.recv_handle_list:
-                            work.wait()
-                        metadata.recv_handle_list = None
 
                     rank_ffn_output = self._run_ffn_computation(
                         hidden_states=hidden_states,
@@ -328,8 +326,10 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         graph = torch.npu.NPUGraph()
         logger.debug("AFD NPU FFN created NPUGraph for key=%s", graph_key)
         self.connector.update_state_from_dp_metadata(
-            dp_metadata_list,
-            is_graph_capturing=is_attn_graph_capturing,
+            _make_dp_metadata_payload(
+                dp_metadata_list,
+                is_graph_capturing=is_attn_graph_capturing,
+            ),
         )
         logger.debug("AFD NPU FFN updated connector state for key=%s", graph_key)
         with torch.npu.graph(graph, pool=self.graph_pool):
@@ -437,6 +437,19 @@ def _normalize_recv_output(
         )
         recv_output.metadata = metadata
     return hidden_states, metadata, recv_output
+
+
+def _make_dp_metadata_payload(
+    dp_metadata_list: dict[int, Any],
+    *,
+    is_graph_capturing: bool = False,
+    is_warmup: bool = False,
+) -> AFDDPMetadataPayload:
+    return AFDDPMetadataPayload(
+        dp_metadata_list=dp_metadata_list,
+        is_graph_capturing=is_graph_capturing,
+        is_warmup=is_warmup,
+    )
 
 
 def _ffn_token_counts_across_ranks(

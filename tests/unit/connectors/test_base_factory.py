@@ -111,6 +111,9 @@ class _MinimalConnector(AFDConnectorBase):
     def send_ffn_output(self, ffn_output, metadata):
         return None
 
+    def update_state_from_dp_metadata(self, payload):
+        return None
+
     def send_dp_metadata_list(self, payload):
         return None
 

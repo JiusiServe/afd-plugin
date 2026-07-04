@@ -20,6 +20,7 @@ from afd_plugin.compat.ascend import ensure_afd_ascend_ops_loaded
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import (
+    AFDConnectorData,
     AFDConnectorMetadata,
     AFDDPMetadataPayload,
     AFDRecvOutput,
@@ -34,7 +35,7 @@ logger = init_logger(__name__)
 
 
 @dataclass(slots=True)
-class CAMP2PAFDConnectorMetadata:
+class CAMP2PAFDConnectorMetadata(AFDConnectorData):
     """CAMP2P payload metadata carried between recv and send phases.
 
     This mirrors ``vllm_ascend.distributed.metadata.CAMP2PAFDConnectorMetadata``
@@ -220,23 +221,19 @@ class CAMP2PAFDConnector(AFDConnectorBase):
 
     def update_state_from_dp_metadata(
         self,
-        dp_metadata_list: dict[int, Any],
-        *,
-        is_graph_capturing: bool = False,
-        is_warmup: bool = False,
+        payload: AFDDPMetadataPayload,
     ) -> None:
-        self.dp_metadata_list = dict(dp_metadata_list)
-        self.is_graph_capturing = bool(is_graph_capturing)
-        self.is_warmup = bool(is_warmup)
-
-    def is_attn_top_min_size_rank(self, world_rank: int) -> bool:
-        return self.ffn_size <= int(world_rank) < self.ffn_size + self.min_size
+        self.dp_metadata_list = dict(payload.dp_metadata_list)
+        self.is_graph_capturing = payload.is_graph_capturing
+        self.is_warmup = payload.is_warmup
 
     def send_dp_metadata_list(
         self,
         payload: AFDDPMetadataPayload,
     ) -> None:
         if self.p2p_pg is None:
+            return
+        if not self.topology.is_attn_top_min_size_rank:
             return
         for dst in self.dst_list:
             _send_object(payload, dst=dst, group=self.p2p_pg)

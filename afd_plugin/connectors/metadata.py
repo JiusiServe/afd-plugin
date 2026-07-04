@@ -174,14 +174,18 @@ def _compute_sp_num_tokens(
 
 
 @dataclass(slots=True)
+class AFDConnectorData:
+    """Base class for backend-specific connector metadata payloads."""
+
+
+@dataclass(slots=True)
 class AFDConnectorMetadata:
     """Communication metadata for one AFD Attention/FFN exchange."""
 
     layer_idx: int
     stage_idx: int
     seq_lens: list[int]
-    recv_handle_list: list[Any] | None = None
-    connector_data: Any = None
+    connector_data: AFDConnectorData | None = None
 
     def __post_init__(self) -> None:
         if not self.seq_lens:
@@ -268,6 +272,7 @@ class AFDMetadata:
 
 
 __all__ = [
+    "AFDConnectorData",
     "AFDConnectorMetadata",
     "AFDDPMetadata",
     "AFDDPMetadataPayload",

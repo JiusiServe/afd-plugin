@@ -26,6 +26,7 @@ from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
     AFDConnectorFactory,
     AFDConnectorMetadata,
+    AFDDPMetadataPayload,
     AFDRecvOutput,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
@@ -153,8 +154,10 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
     ) -> Any:
         if update_connector_state:
             self.connector.update_state_from_dp_metadata(
-                dp_metadata_list,
-                is_graph_capturing=is_graph_capturing,
+                _make_dp_metadata_payload(
+                    dp_metadata_list,
+                    is_graph_capturing=is_graph_capturing,
+                ),
             )
 
         rank_ffn_output = None
@@ -177,11 +180,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                         )
                         forward_context.additional_kwargs["afd_metadata"] = metadata
                         _set_moe_layer_index(forward_context, layer_idx)
-                    recv_handle_list = metadata.recv_handle_list
-                    if recv_handle_list is not None:
-                        for work in recv_handle_list:
-                            work.wait()
-                        metadata.recv_handle_list = None
                     rank_ffn_output = self._execute_eager_mode(hidden_states, layer_idx)
                     self.connector.send_ffn_output(rank_ffn_output, metadata)
         return rank_ffn_output
@@ -228,8 +226,10 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             # DP metadata receive/update is a control-plane side effect and must
             # complete before CUDA graph capture starts.
             self.connector.update_state_from_dp_metadata(
-                dp_metadata_list,
-                is_graph_capturing=is_attn_graph_capturing,
+                _make_dp_metadata_payload(
+                    dp_metadata_list,
+                    is_graph_capturing=is_attn_graph_capturing,
+                ),
             )
             with torch.cuda.graph(cudagraph, pool=self._graph_memory_pool):
                 output = self._ffn_forward(
@@ -268,8 +268,11 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             with graph_capture(device=self.device):
                 if is_warmup:
                     self.connector.update_state_from_dp_metadata(
-                        dp_metadata_list,
-                        is_graph_capturing=False,
+                        _make_dp_metadata_payload(
+                            dp_metadata_list,
+                            is_graph_capturing=False,
+                            is_warmup=True,
+                        ),
                     )
                     self._ffn_forward(
                         dp_metadata_list=dp_metadata_list,
@@ -341,6 +344,19 @@ def _set_moe_layer_index(forward_context: object, layer_idx: int) -> None:
         if target in f".{layer_name}.":
             forward_context.moe_layer_index = idx
             return
+
+
+def _make_dp_metadata_payload(
+    dp_metadata_list: dict[int, Any],
+    *,
+    is_graph_capturing: bool = False,
+    is_warmup: bool = False,
+) -> AFDDPMetadataPayload:
+    return AFDDPMetadataPayload(
+        dp_metadata_list=dp_metadata_list,
+        is_graph_capturing=is_graph_capturing,
+        is_warmup=is_warmup,
+    )
 
 
 def _normalize_recv_output(
