@@ -1336,8 +1336,8 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
     def initialize_attn_backend(self, *args: Any, **kwargs: Any) -> Any:
         result = super().initialize_attn_backend(*args, **kwargs)
-        if _is_npu_ubatching_enabled(
-            self.vllm_config,
+        if bool(
+            self.vllm_config.parallel_config.use_ubatching,
         ) or async_moe_ubatching_enabled(self.afd_config):
             self._ensure_two_metadata_builders()
         return result
@@ -1767,10 +1767,6 @@ _ATTENTION_METADATA_ARG_NAMES = [
     "num_scheduled_tokens_np",
     "cascade_attn_prefix_lens",
 ]
-
-
-def _is_npu_ubatching_enabled(vllm_config: object) -> bool:
-    return bool(vllm_config.parallel_config.use_ubatching)
 
 
 __all__ = ["AFDNPUAttentionModelRunner"]

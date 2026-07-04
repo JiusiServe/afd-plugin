@@ -175,7 +175,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
     ) -> None:
-        del dp_metadata_list, is_graph_capturing, is_warmup
+        return None
 
     def send_dp_metadata_list(
         self,
@@ -184,13 +184,12 @@ class AFDAsyncConnector(AFDConnectorBase):
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
     ) -> None:
-        del dp_metadata_list, is_graph_capturing, is_warmup
+        return None
 
     def recv_dp_metadata_list(
         self,
         timeout_ms: int | None = None,
     ) -> tuple[DPMetadataMap, bool, bool]:
-        del timeout_ms
         raise RuntimeError(
             "AFDAsyncConnector does not use the DP metadata control plane",
         )
@@ -322,7 +321,6 @@ class AFDAsyncConnector(AFDConnectorBase):
         )
 
     def recv_ffn_output(self, handle: object = None, **kwargs: object) -> Tensor:
-        del handle
         self._require_initialized()
         ref_tensor = kwargs["ref_tensor"]
         metadata = kwargs.get("metadata")
@@ -395,7 +393,6 @@ class AFDAsyncConnector(AFDConnectorBase):
         ubatch_idx: int | None = None,
         **kwargs: object,
     ) -> AFDRecvOutput:
-        del timeout_ms
         self._require_initialized()
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
         metadata = kwargs.get("metadata")

@@ -128,7 +128,6 @@ class _RecordingFakeModel:
 
 class _FakeStructuredFFNModel:
     def compute_ffn_output(self, hidden_states, layer_idx, **kwargs):
-        del kwargs
         return AFDFFNOutput(
             routed_output=f"routed({hidden_states}, layer={layer_idx})",
             shared_output=f"shared({hidden_states}, layer={layer_idx})",

@@ -423,7 +423,6 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         group_list_type: int = 1,
         **kwargs: Any,
     ) -> torch.Tensor | AFDFFNOutput:
-        del kwargs
         if self.compute_gate_on_attention and not self.is_moe_layer:
             raise RuntimeError(
                 "Dense DeepSeek layers are computed on the Attention side "
@@ -945,7 +944,6 @@ class AFDDeepseekV2Model(torch.nn.Module):
             )
 
         def recv_stage_ffn(layer: Any, stage_idx: int, event_prefix: str) -> None:
-            del layer, event_prefix
             stage_hidden_states[stage_idx] = afd_connector.recv_ffn_output(
                 ref_tensor=stage_hidden_states[stage_idx],
                 ubatch_idx=stage_idx,

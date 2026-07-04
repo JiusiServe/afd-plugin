@@ -72,7 +72,9 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         self.num_layers = int(self.model_config.hf_config.num_hidden_layers)
         self.use_aclgraph = _use_npu_aclgraph(vllm_config, self)
         self._acl_graphs: dict[tuple, dict[str, Any]] = {}
-        self.graph_pool = _resolve_graph_pool() if self.use_aclgraph else None
+        self.graph_pool = (
+            current_platform.get_global_graph_pool() if self.use_aclgraph else None
+        )
         self.prof = create_afd_npu_profiler("ffn")
 
     @staticmethod
@@ -471,9 +473,12 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         if bool(getattr(self.connector, "uses_dp_metadata_control_plane", True)):
             recv_metadata_kwargs["dp_metadata_list"] = self.connector.dp_metadata_list
         else:
-            recv_metadata_kwargs["batch_size"] = _connector_driven_batch_size(
-                self.connector,
-                self.max_num_tokens,
+            recv_metadata_kwargs["batch_size"] = max(
+                1,
+                int(
+                    getattr(self.connector, "max_seq_len", self.max_num_tokens)
+                    or self.max_num_tokens,
+                ),
             )
         metadata = self.connector.create_recv_metadata(**recv_metadata_kwargs)
         output = self.connector.recv_attn_output(
@@ -645,10 +650,6 @@ def _send_ffn_output(
     )
 
 
-def _resolve_num_hidden_layers(model_config: object) -> int:
-    return int(model_config.hf_config.num_hidden_layers)
-
-
 def _ffn_layer_indices(runner: AFDNPUFFNModelRunner) -> range | list[int]:
     num_layers = max(int(runner.num_layers or 0), 1)
     afd_config = getattr(runner, "afd_config", None)
@@ -669,13 +670,6 @@ def _is_moe_layer(hf_config: object, layer_idx: int) -> bool:
         and layer_idx >= hf_config.first_k_dense_replace
         and layer_idx % moe_layer_freq == 0
     )
-
-
-def _first_dp_token_counts(dp_metadata_list: dict[int, Any]) -> Any:
-    if not dp_metadata_list:
-        return None
-    first_key = sorted(int(key) for key in dp_metadata_list)[0]
-    return dp_metadata_list[first_key].num_tokens_across_dp_cpu
 
 
 def _ffn_token_counts_across_ranks(
@@ -759,10 +753,6 @@ def _to_dp_level_token_counts(
     return num_tokens_across_dp[indices].contiguous()
 
 
-def _connector_driven_batch_size(connector: Any, fallback: int) -> int:
-    return max(1, int(getattr(connector, "max_seq_len", fallback) or fallback))
-
-
 def _use_npu_aclgraph(vllm_config: object, runner: object) -> bool:
     inherited = bool(runner.use_aclgraph)
     if bool(vllm_config.model_config.enforce_eager):
@@ -813,10 +803,6 @@ def _log_graph_key_lookup(
         graph_exists,
         cached_graph_count,
     )
-
-
-def _resolve_graph_pool() -> Any:
-    return current_platform.get_global_graph_pool()
 
 
 __all__ = ["AFDNPUFFNModelRunner"]

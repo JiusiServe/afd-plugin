@@ -134,15 +134,14 @@ def _coerce_int(value: object, *, field_name: str) -> int:
         ) from exc
 
 
-def _extra_bool(config: AFDConfig, key: str, *, default: bool = False) -> bool:
-    value = (config.extra_config or {}).get(key, default)
-    return _coerce_bool(value, field_name=f"extra_config.{key}")
-
-
 def async_moe_ubatching_enabled(config: AFDConfig) -> bool:
     """Return whether async connector MoE-only request ubatching is enabled."""
 
-    return _extra_bool(config, ASYNC_MOE_UBATCHING_CONFIG_KEY)
+    value = (config.extra_config or {}).get(ASYNC_MOE_UBATCHING_CONFIG_KEY, False)
+    return _coerce_bool(
+        value,
+        field_name=f"extra_config.{ASYNC_MOE_UBATCHING_CONFIG_KEY}",
+    )
 
 
 def async_moe_num_ubatches(config: AFDConfig) -> int:

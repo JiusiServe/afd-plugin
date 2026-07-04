@@ -118,7 +118,6 @@ def _patched_launch_core_engines(
     ) -> Any:
         """Replace launch-time coordinator wave behavior for AFD async-DP."""
 
-        del enable_wave_coordination
         return _original_dp_coordinator(
             parallel_config,
             enable_wave_coordination=False,
