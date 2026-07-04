@@ -185,7 +185,6 @@ class AFDConnectorMetadata:
     layer_idx: int
     stage_idx: int
     seq_lens: list[int]
-    recv_handle_list: list[Any] | None = None
     connector_data: AFDConnectorData | None = None
 
     def __post_init__(self) -> None:

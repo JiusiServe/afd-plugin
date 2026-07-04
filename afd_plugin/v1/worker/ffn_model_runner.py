@@ -180,11 +180,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                         )
                         forward_context.additional_kwargs["afd_metadata"] = metadata
                         _set_moe_layer_index(forward_context, layer_idx)
-                    recv_handle_list = metadata.recv_handle_list
-                    if recv_handle_list is not None:
-                        for work in recv_handle_list:
-                            work.wait()
-                        metadata.recv_handle_list = None
                     rank_ffn_output = self._execute_eager_mode(hidden_states, layer_idx)
                     self.connector.send_ffn_output(rank_ffn_output, metadata)
         return rank_ffn_output
