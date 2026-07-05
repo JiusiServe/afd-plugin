@@ -15,15 +15,13 @@ import torch
 if TYPE_CHECKING:
     from afd_plugin.connectors.base import AFDConnectorBase
 
-TokenCountInput = torch.Tensor | list[int] | tuple[int, ...] | int
-
 
 @dataclass(slots=True)
 class AFDDPMetadata:
     """Serializable DPMetadata-compatible payload for AFD control traffic."""
 
-    num_tokens_across_dp_cpu: TokenCountInput
-    max_tokens_across_dp_cpu: TokenCountInput | None = None
+    num_tokens_across_dp_cpu: torch.Tensor
+    max_tokens_across_dp_cpu: torch.Tensor | None = None
     local_sizes: list[int] | None = None
 
     def __post_init__(self) -> None:
@@ -134,9 +132,14 @@ def _ensure_afd_dp_metadata(value: object) -> AFDDPMetadata:
         raise TypeError(
             "AFD DP metadata must expose num_tokens_across_dp_cpu",
         )
+    max_token_count = getattr(value, "max_tokens_across_dp_cpu", None)
     return AFDDPMetadata(
-        num_tokens_across_dp_cpu=token_counts,
-        max_tokens_across_dp_cpu=getattr(value, "max_tokens_across_dp_cpu", None),
+        num_tokens_across_dp_cpu=_cpu_int_tensor_or_list(token_counts),
+        max_tokens_across_dp_cpu=(
+            None
+            if max_token_count is None
+            else _cpu_scalar_tensor_or_int(max_token_count)
+        ),
     )
 
 
@@ -349,5 +352,4 @@ __all__ = [
     "AFDMetadata",
     "AFDRecvOutput",
     "AFDSingleDPMetadata",
-    "TokenCountInput",
 ]

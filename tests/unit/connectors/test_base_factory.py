@@ -71,7 +71,11 @@ def test_connector_base_builds_default_recv_metadata_from_dp_metadata():
     )
 
     metadata = connector.create_recv_metadata(
-        dp_metadata_list={1: AFDDPMetadata([4])},
+        dp_metadata_list={
+            1: AFDDPMetadata(
+                _cpu_token_tensor([4]),
+            ),
+        },
         ubatch_idx=1,
         layer_idx=3,
     )
@@ -119,7 +123,17 @@ class _MinimalConnector(AFDConnectorBase):
 
     def recv_dp_metadata_list(self, timeout_ms=None):
         return AFDDPMetadataPayload(
-            dp_metadata_list={0: AFDDPMetadata([1])},
+            dp_metadata_list={
+                0: AFDDPMetadata(
+                    _cpu_token_tensor([1]),
+                ),
+            },
             is_graph_capturing=False,
             is_warmup=False,
         )
+
+
+def _cpu_token_tensor(values: list[int]):
+    import torch
+
+    return torch.tensor(values, dtype=torch.int32, device="cpu")

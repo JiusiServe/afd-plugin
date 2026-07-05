@@ -88,7 +88,7 @@ def apply_engine_core_patch() -> None:
     )
 
     def patched_engine_core_init(
-        self: Any,
+        self,
         vllm_config: VllmConfig,
         executor_class: type[Any],
         log_stats: bool,
@@ -115,7 +115,7 @@ def apply_engine_core_patch() -> None:
             executor_fail_callback,
         )
 
-    def patched_engine_core_shutdown(self: Any) -> None:
+    def patched_engine_core_shutdown(self) -> None:
         if not _is_afd_ffn_engine(self):
             state.engine_core_shutdown(self)
             return
@@ -127,7 +127,7 @@ def apply_engine_core_patch() -> None:
         with suppress(Exception):
             gc.unfreeze()
 
-    def patched_initialize_kv_caches(self: Any, vllm_config: VllmConfig) -> Any:
+    def patched_initialize_kv_caches(self, vllm_config: VllmConfig) -> Any:
         if not _is_afd_ffn_config(vllm_config):
             assert state.engine_core_initialize_kv_caches is not None
             return state.engine_core_initialize_kv_caches(self, vllm_config)
@@ -138,13 +138,13 @@ def apply_engine_core_patch() -> None:
             return 0, 0, kv_cache_config
         return kv_cache_config
 
-    def patched_engine_core_proc_run_busy_loop(self: Any) -> Any:
+    def patched_engine_core_proc_run_busy_loop(self) -> Any:
         if not _is_afd_ffn_engine(self):
             assert state.engine_core_proc_run_busy_loop is not None
             return state.engine_core_proc_run_busy_loop(self)
         return _run_ffn_busy_loop(self, core_module)
 
-    def patched_dp_engine_core_proc_run_busy_loop(self: Any) -> Any:
+    def patched_dp_engine_core_proc_run_busy_loop(self) -> Any:
         if not _is_afd_ffn_engine(self):
             assert state.dp_engine_core_proc_run_busy_loop is not None
             return state.dp_engine_core_proc_run_busy_loop(self)
@@ -195,7 +195,7 @@ class _AFDFFNNoopScheduler:
 
 
 def _initialize_ffn_engine_core(
-    self: Any,
+    self,
     core_module: Any,
     vllm_config: VllmConfig,
     executor_class: type[Any],
@@ -254,7 +254,7 @@ def _initialize_ffn_engine_core(
 
 
 def _prepare_late_loaded_ffn_engine_core(
-    self: Any,
+    self,
     vllm_config: VllmConfig,
 ) -> None:
     afd_config = _get_afd_config(vllm_config)
@@ -277,7 +277,7 @@ def _prepare_late_loaded_ffn_engine_core(
             scheduler_config.get_scheduler_cls = lambda: _AFDFFNNoopScheduler
 
 
-def _run_ffn_busy_loop(self: Any, core_module: Any) -> None:
+def _run_ffn_busy_loop(self, core_module: Any) -> None:
     core_logger = getattr(core_module, "logger", logger)
     core_logger.info("AFD FFN EngineCore started; workers run connector loop.")
 
@@ -300,7 +300,7 @@ def _run_ffn_busy_loop(self: Any, core_module: Any) -> None:
     raise SystemExit
 
 
-def _stop_ffn_worker_loop(self: Any) -> None:
+def _stop_ffn_worker_loop(self) -> None:
     model_executor = getattr(self, "model_executor", None)
     if model_executor is None:
         return
@@ -313,7 +313,7 @@ def _stop_ffn_worker_loop(self: Any) -> None:
         )
 
 
-def _is_running(self: Any, core_module: Any) -> bool:
+def _is_running(self, core_module: Any) -> bool:
     shutdown_state = getattr(self, "shutdown_state", None)
     engine_shutdown_state = getattr(core_module, "EngineShutdownState", None)
     running_state = getattr(engine_shutdown_state, "RUNNING", None)
@@ -322,7 +322,7 @@ def _is_running(self: Any, core_module: Any) -> bool:
     return shutdown_state == running_state
 
 
-def _is_afd_ffn_engine(self: Any) -> bool:
+def _is_afd_ffn_engine(self) -> bool:
     return _is_afd_ffn_config(getattr(self, "vllm_config", None))
 
 

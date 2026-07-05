@@ -65,7 +65,7 @@ def apply_config_validation_patch() -> None:
     )
 
     def patched_create_engine_config(
-        self: EngineArgs,
+        self,
         *args: Any,
         **kwargs: Any,
     ) -> Any:
@@ -83,7 +83,7 @@ def apply_config_validation_patch() -> None:
             parallel_config.all2all_backend = original_backend
         return config
 
-    def patched_vllm_config_post_init(self: VllmConfig) -> Any:
+    def patched_vllm_config_post_init(self) -> Any:
         assert state.vllm_config_post_init is not None
         if not _should_relax_vllm_config_backend(self):
             return state.vllm_config_post_init(self)
