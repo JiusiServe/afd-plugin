@@ -59,8 +59,9 @@ def test_deepseek_afd_wrapper_treats_llama_4_scaling_as_optional():
 def test_deepseek_afd_attention_path_can_compute_gate_before_send():
     source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
     executor_source = Path(
-        "afd_plugin/model_executor/models/deepseek_v2_async_cam_forward.py",
+        "afd_plugin/model_executor/models/npu/deepseek_v2_async_cam_forward.py",
     ).read_text()
+    module_imports = source.split("logger = init_logger(__name__)", 1)[0]
     forward_with_afd = source.split("    def forward_with_afd(", 1)[1].split(
         "    def forward_with_afd_v2(",
         1,
@@ -75,10 +76,16 @@ def test_deepseek_afd_attention_path_can_compute_gate_before_send():
     )[1].split("def run_async_moe_ubatch_afd_forward(", 1)[0]
 
     assert 'if self.afd_role == "attention":' in source
+    assert "afd_plugin.model_executor.models.npu" not in module_imports
+    assert "from afd_plugin.model_executor.models.npu import (" in forward_with_afd_v2
+    assert "deepseek_v2_async_cam_forward," in forward_with_afd_v2
     assert "def _forward_attention(" not in source
     assert "return self.forward_with_afd_v3(" in forward_with_afd
     assert "return self.forward_with_afd_v2(" in forward_with_afd
-    assert "return run_attention_gate_afd_forward(" in forward_with_afd_v2
+    assert (
+        "return deepseek_v2_async_cam_forward.run_attention_gate_afd_forward("
+        in forward_with_afd_v2
+    )
     assert "layer.compute_attn_output(" not in forward_with_afd
     assert "layer.compute_attn_output(" in attention_gate_forward
     assert "pending_ffn_recv" in attention_gate_forward
@@ -89,14 +96,18 @@ def test_deepseek_afd_attention_path_can_compute_gate_before_send():
 def test_deepseek_afd_attention_gate_can_force_balanced_topk_ids():
     source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
     gate_source = Path(
-        "afd_plugin/model_executor/models/deepseek_v2_attention_gate.py",
+        "afd_plugin/model_executor/models/npu/deepseek_v2_attention_gate.py",
     ).read_text()
+    module_imports = source.split("logger = init_logger(__name__)", 1)[0]
     compute_attn_output = source.split("    def compute_attn_output(", 1)[1].split(
         "    def compute_ffn_output(",
         1,
     )[0]
 
     assert "compute_attention_gate_topk(" in compute_attn_output
+    assert "afd_plugin.model_executor.models.npu" not in module_imports
+    assert "from afd_plugin.model_executor.models.npu import (" in compute_attn_output
+    assert "deepseek_v2_attention_gate," in compute_attn_output
     assert "force_balanced_topk_ids_enabled" in gate_source
     assert "def _force_balanced_topk_ids(" in gate_source
     assert "topk_ids.copy_(balanced_topk_ids)" in gate_source
@@ -114,7 +125,7 @@ def test_deepseek_afd_attention_gate_can_force_balanced_topk_ids():
 def test_deepseek_afd_gate_on_attention_keeps_dense_layers_local():
     source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
     executor_source = Path(
-        "afd_plugin/model_executor/models/deepseek_v2_async_cam_forward.py",
+        "afd_plugin/model_executor/models/npu/deepseek_v2_async_cam_forward.py",
     ).read_text()
 
     assert "self.is_moe_layer = _is_moe_layer(config, layer_idx)" in source
@@ -123,10 +134,26 @@ def test_deepseek_afd_gate_on_attention_keeps_dense_layers_local():
     assert "self.is_dense_mlp_weight(name)" in source
 
 
+def test_deepseek_compute_gate_on_attention_is_npu_only():
+    source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
+
+    assert 'native.current_platform.device_type != "npu"' in source
+    assert "DeepSeekV2 compute_gate_on_attention is supported only on NPU" in source
+    assert "# NPU-only: non-NPU platforms are rejected before this branch." in source
+    assert (
+        "# NPU-only: Attention-side gate/topk is implemented in the NPU helper."
+        in source
+    )
+    assert (
+        "# NPU-only: gated MoE FFN compute consumes Attention-side topk payloads."
+        in source
+    )
+
+
 def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
     source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
     executor_source = Path(
-        "afd_plugin/model_executor/models/deepseek_v2_async_cam_forward.py",
+        "afd_plugin/model_executor/models/npu/deepseek_v2_async_cam_forward.py",
     ).read_text()
     forward_with_afd_v3 = source.split("    def forward_with_afd_v3(", 1)[1].split(
         "    def compute_ffn_output(",
@@ -141,7 +168,12 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
     )[0]
 
     assert "async_moe_ubatch_metadata" in forward_with_afd_v3
-    assert "return run_async_moe_ubatch_afd_forward(" in forward_with_afd_v3
+    assert (
+        "return deepseek_v2_async_cam_forward.run_async_moe_ubatch_afd_forward("
+        in forward_with_afd_v3
+    )
+    assert "from afd_plugin.model_executor.models.npu import (" in forward_with_afd_v3
+    assert "deepseek_v2_async_cam_forward," in forward_with_afd_v3
     assert "_log_async_moe_forward_step(" not in async_ubatch_forward
     assert "first_moe_layer = int(self.config.first_k_dense_replace)" in (
         async_ubatch_forward
@@ -194,7 +226,7 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
 def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():
     source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
     gate_source = Path(
-        "afd_plugin/model_executor/models/deepseek_v2_attention_gate.py",
+        "afd_plugin/model_executor/models/npu/deepseek_v2_attention_gate.py",
     ).read_text()
     compute_ffn_output = source.split(
         "    def compute_ffn_output(",
@@ -206,6 +238,8 @@ def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():
     )[1].split("\ndef _dequantize_int8_activation(", 1)[0]
 
     assert "compute_attention_gate_moe_ffn(" in compute_ffn_output
+    assert "from afd_plugin.model_executor.models.npu import (" in compute_ffn_output
+    assert "deepseek_v2_attention_gate," in compute_ffn_output
     assert "AFDFFNOutput(" in compute_moe
     assert "MoEMlpComputeInput(" in compute_moe
     assert "unified_apply_mlp(" in compute_moe
@@ -224,7 +258,7 @@ def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():
 def test_deepseek_afd_ffn_compute_omits_stub_io_diagnostics():
     source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
     gate_source = Path(
-        "afd_plugin/model_executor/models/deepseek_v2_attention_gate.py",
+        "afd_plugin/model_executor/models/npu/deepseek_v2_attention_gate.py",
     ).read_text()
     compute_ffn_output = source.split(
         "    def compute_ffn_output(",

@@ -42,14 +42,6 @@ from afd_plugin.model_executor.models import (
     get_afd_metadata_from_forward_context,
     get_async_moe_ubatch_metadata_from_forward_context,
 )
-from afd_plugin.model_executor.models.deepseek_v2_async_cam_forward import (
-    run_async_moe_ubatch_afd_forward,
-    run_attention_gate_afd_forward,
-)
-from afd_plugin.model_executor.models.deepseek_v2_attention_gate import (
-    compute_attention_gate_moe_ffn,
-    compute_attention_gate_topk,
-)
 from afd_plugin.v1.worker.dbo import maybe_apply_dbo_yield
 
 logger = init_logger(__name__)
@@ -97,6 +89,13 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         self.layer_idx = layer_idx
         self.is_moe_layer = _is_moe_layer(config, layer_idx)
         self.compute_gate_on_attention = bool(afd_config.compute_gate_on_attention)
+        if (
+            self.compute_gate_on_attention
+            and native.current_platform.device_type != "npu"
+        ):
+            raise RuntimeError(
+                "DeepSeekV2 compute_gate_on_attention is supported only on NPU",
+            )
         self.top_k = int(config.num_experts_per_tok)
 
         qk_nope_head_dim = getattr(config, "qk_nope_head_dim", 0)
@@ -138,6 +137,7 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 topk_indices_buffer=kwargs.get("topk_indices_buffer"),
             )
 
+            # NPU-only: non-NPU platforms are rejected before this branch.
             if self.compute_gate_on_attention and self.is_moe_layer:
                 self.gate = ReplicatedLinear(
                     config.hidden_size,
@@ -276,10 +276,17 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         topk_weights = None
         topk_ids = None
         router_logits = None
+        # NPU-only: Attention-side gate/topk is implemented in the NPU helper.
         if self.compute_gate_on_attention and self.is_moe_layer:
-            topk_weights, topk_ids, router_logits = compute_attention_gate_topk(
-                self,
-                hidden_states,
+            from afd_plugin.model_executor.models.npu import (
+                deepseek_v2_attention_gate,
+            )
+
+            topk_weights, topk_ids, router_logits = (
+                deepseek_v2_attention_gate.compute_attention_gate_topk(
+                    self,
+                    hidden_states,
+                )
             )
         return hidden_states, residual, topk_weights, topk_ids, router_logits
 
@@ -305,7 +312,12 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 raise RuntimeError(
                     "compute_gate_on_attention FFN MoE compute requires group_list",
                 )
-            output = compute_attention_gate_moe_ffn(
+            # NPU-only: gated MoE FFN compute consumes Attention-side topk payloads.
+            from afd_plugin.model_executor.models.npu import (
+                deepseek_v2_attention_gate,
+            )
+
+            output = deepseek_v2_attention_gate.compute_attention_gate_moe_ffn(
                 self,
                 hidden_states=hidden_states,
                 group_list=group_list,
@@ -535,7 +547,11 @@ class AFDDeepseekV2Model(torch.nn.Module):
         afd_metadata: AFDMetadata,
         llama_4_scaling: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        return run_attention_gate_afd_forward(
+        from afd_plugin.model_executor.models.npu import (
+            deepseek_v2_async_cam_forward,
+        )
+
+        return deepseek_v2_async_cam_forward.run_attention_gate_afd_forward(
             self,
             hidden_states,
             residual,
@@ -564,7 +580,11 @@ class AFDDeepseekV2Model(torch.nn.Module):
                 afd_metadata,
                 llama_4_scaling,
             )
-        return run_async_moe_ubatch_afd_forward(
+        from afd_plugin.model_executor.models.npu import (
+            deepseek_v2_async_cam_forward,
+        )
+
+        return deepseek_v2_async_cam_forward.run_async_moe_ubatch_afd_forward(
             self,
             hidden_states,
             residual,
