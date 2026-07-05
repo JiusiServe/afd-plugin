@@ -165,9 +165,7 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
     assert "forward_context.attn_metadata = attn_metadata[stage_idx]" in executor_source
     assert async_ubatch_forward.index(
         "with _use_async_moe_ubatch_forward_context(",
-    ) < (
-        async_ubatch_forward.index("layer.compute_attn_output(")
-    )
+    ) < (async_ubatch_forward.index("layer.compute_attn_output("))
     assert async_ubatch_forward.index(") = layer.compute_attn_output(") < (
         async_ubatch_forward.index("def send_stage_attention(")
     )
