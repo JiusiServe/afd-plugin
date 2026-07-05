@@ -2,8 +2,6 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """Small DBO helpers used by AFD runtime/model wrappers."""
 
-from typing import Any
-
 import torch
 from vllm.utils.torch_utils import direct_register_custom_op
 from vllm.v1.worker.ubatching import dbo_enabled, dbo_yield
@@ -12,10 +10,10 @@ _AFD_DBO_YIELD_OP_REGISTERED = False
 
 
 def maybe_apply_dbo_yield(
-    tensor: Any,
+    tensor: torch.Tensor,
     *,
     role: str,
-) -> Any:
+) -> torch.Tensor:
     """Yield to the peer ubatch thread when vLLM DBO is active."""
     try:
         register_dbo_yield_custom_op()

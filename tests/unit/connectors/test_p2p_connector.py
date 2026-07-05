@@ -320,3 +320,33 @@ def test_p2p_recv_preserves_dynamic_ref_tensor_first_dim(monkeypatch):
 
     assert output is ref_tensor
     assert calls == [(ref_tensor, 0, 23)]
+
+
+def test_p2p_recv_single_rank_requires_ref_tensor():
+    connector = AFDConnectorFactory.create_connector(
+        0,
+        0,
+        _fake_vllm_config(),
+        AFDConfig(
+            enabled=True,
+            role="attention",
+            connector="p2pconnector",
+            num_attention_ranks=2,
+            num_ffn_ranks=1,
+        ),
+    )
+    connector.e2a_pynccl = object()
+    connector.e2a_comm_id = 23
+    tensor_metadata = SimpleNamespace(
+        device="cuda:0",
+        dtype="bf16",
+        size=(64, 16),
+    )
+
+    with pytest.raises(RuntimeError, match="requires a reference tensor"):
+        connector._recv_hidden_states(
+            0,
+            SimpleNamespace(world_size=1, rank=0),
+            connector.e2a_pynccl,
+            tensor_metadata,
+        )

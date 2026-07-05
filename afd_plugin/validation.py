@@ -5,9 +5,12 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from afd_plugin.config import AFDConfig, parse_afd_config
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
 
 ATTENTION_WORKER_FQCN: Final[str] = "afd_plugin.v1.worker.AFDAttentionWorker"
 FFN_WORKER_FQCN: Final[str] = "afd_plugin.v1.worker.AFDFFNWorker"
@@ -57,7 +60,7 @@ def expected_worker_qualname(role: str) -> str:
 
 
 def assert_compatible_afd_stack(
-    vllm_config: object,
+    vllm_config: VllmConfig,
     *,
     caller: str,
     expected_role: str | None = None,

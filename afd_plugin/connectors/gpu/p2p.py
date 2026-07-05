@@ -2,15 +2,17 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """NCCL-backed P2P AFD connector."""
 
+from __future__ import annotations
+
 import json
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import torch
-from torch.distributed.distributed_c10d import _get_default_group
+from torch.distributed.distributed_c10d import ProcessGroup, _get_default_group
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
-from vllm.forward_context import get_forward_context
+from vllm.forward_context import DPMetadata, get_forward_context
 from vllm.utils.torch_utils import direct_register_custom_op
 
 from afd_plugin.config import AFDConfig
@@ -36,9 +38,9 @@ _AFD_CUSTOM_OPS_REGISTERED = False
 
 
 class _TensorMetadata(NamedTuple):
-    device: Any
-    dtype: Any
-    size: Any
+    device: torch.device
+    dtype: torch.dtype
+    size: torch.Size
 
 
 class P2PAFDConnector(AFDConnectorBase):
@@ -53,7 +55,7 @@ class P2PAFDConnector(AFDConnectorBase):
         self,
         rank: int,
         local_rank: int,
-        vllm_config: "VllmConfig",
+        vllm_config: VllmConfig,
         afd_config: AFDConfig,
     ) -> None:
         super().__init__(rank, local_rank, vllm_config, afd_config)
@@ -78,16 +80,19 @@ class P2PAFDConnector(AFDConnectorBase):
             vllm_config.model_config.hf_config.num_hidden_layers,
         )
         self.hidden_size = int(vllm_config.model_config.hf_config.hidden_size)
-        self.dp_metadata_list: dict[int, Any] = {}
+        self.dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata] = {}
         self.is_graph_capturing = False
         self.is_warmup = False
         self._tensor_metadata_list: dict[int, _TensorMetadata] = {}
-        self._recv_attn_buffers: dict[tuple[int, int, tuple[int, ...]], Any] = {}
-        self.a2e_group: Any | None = None
-        self.e2a_group: Any | None = None
-        self.p2p_pg: Any | None = None
-        self.a2e_pynccl: Any | None = None
-        self.e2a_pynccl: Any | None = None
+        self._recv_attn_buffers: dict[
+            tuple[int, int, tuple[int, ...]],
+            torch.Tensor,
+        ] = {}
+        self.a2e_group: StatelessProcessGroup | None = None
+        self.e2a_group: StatelessProcessGroup | None = None
+        self.p2p_pg: ProcessGroup | None = None
+        self.a2e_pynccl: PyNcclCommunicator | None = None
+        self.e2a_pynccl: PyNcclCommunicator | None = None
         self.a2e_comm_id: int | None = None
         self.e2a_comm_id: int | None = None
 
@@ -289,7 +294,7 @@ class P2PAFDConnector(AFDConnectorBase):
     ) -> AFDRecvOutput:
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
         tensor_metadata = self._tensor_metadata_list[ubatch_idx]
-        hidden_states_list: list[Any] = []
+        hidden_states_list: list[torch.Tensor] = []
 
         for src in range(1, self.group_size):
             ref_tensor = None
@@ -365,10 +370,10 @@ class P2PAFDConnector(AFDConnectorBase):
 
     def _send_hidden_states(
         self,
-        hidden_states: Any,
+        hidden_states: torch.Tensor,
         dst: int,
-        process_group: Any,
-        communicator: Any,
+        process_group: StatelessProcessGroup | None,
+        communicator: PyNcclCommunicator | None,
     ) -> None:
         if process_group is None or communicator is None:
             raise RuntimeError("P2P connector is not initialized")
@@ -390,15 +395,17 @@ class P2PAFDConnector(AFDConnectorBase):
     def _recv_hidden_states(
         self,
         src: int,
-        process_group: Any,
-        communicator: Any,
+        process_group: StatelessProcessGroup | None,
+        communicator: PyNcclCommunicator | None,
         tensor_metadata: _TensorMetadata,
         *,
-        ref_tensor: Any | None = None,
-    ) -> Any:
+        ref_tensor: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if process_group is None or communicator is None:
             raise RuntimeError("P2P connector is not initialized")
         if process_group.world_size == 1:
+            if ref_tensor is None:
+                raise RuntimeError("single-rank P2P recv requires a reference tensor")
             return ref_tensor
         if src >= process_group.world_size:
             raise ValueError(f"invalid P2P source rank {src}")
@@ -424,7 +431,7 @@ class P2PAFDConnector(AFDConnectorBase):
         torch.ops.vllm.afd_p2p_recv(hidden_states, int(src), int(comm_id))
         return hidden_states
 
-    def _comm_id_for_communicator(self, communicator: Any) -> int:
+    def _comm_id_for_communicator(self, communicator: PyNcclCommunicator) -> int:
         if communicator is self.a2e_pynccl and self.a2e_comm_id is not None:
             return self.a2e_comm_id
         if communicator is self.e2a_pynccl and self.e2a_comm_id is not None:
@@ -448,7 +455,7 @@ def _torch_is_compiling() -> bool:
         return False
 
 
-def _to_int_list(value: Any) -> list[int]:
+def _to_int_list(value: object) -> list[int]:
     tolist = getattr(value, "tolist", None)
     if callable(tolist):
         value = tolist()
@@ -459,7 +466,7 @@ def _to_int_list(value: Any) -> list[int]:
     return [int(item) for item in value]
 
 
-def _to_int(value: Any) -> int:
+def _to_int(value: object) -> int:
     item = getattr(value, "item", None)
     return int(item() if callable(item) else value)
 
@@ -467,7 +474,7 @@ def _to_int(value: Any) -> int:
 def _encode_dp_metadata_payload(
     payload: AFDDPMetadataPayload,
 ) -> bytes:
-    metadata_payload: dict[str, dict[str, Any]] = {}
+    metadata_payload: dict[str, dict[str, int | list[int]]] = {}
     for stage_idx, dp_metadata in payload.dp_metadata_list.items():
         token_counts = getattr(dp_metadata, "num_tokens_across_dp_cpu", None)
         if token_counts is None:

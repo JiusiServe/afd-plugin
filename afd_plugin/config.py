@@ -88,7 +88,7 @@ class AFDConfig:
     def compute_hash(self) -> str:
         """Return a stable hash for graph-affecting AFD settings."""
 
-        factors: list[object] = [
+        factors: list[Any] = [
             self.enabled,
             self.connector,
             self.role,
@@ -124,8 +124,8 @@ def _coerce_int(value: object, *, field_name: str) -> int:
         ) from exc
 
 
-def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, object]:
-    normalized: dict[str, object] = {}
+def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
     valid_fields = set(AFDConfig.__dataclass_fields__)  # type: ignore[attr-defined]
 
     for key, value in raw.items():

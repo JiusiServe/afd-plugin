@@ -7,7 +7,10 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
+
+if TYPE_CHECKING:
+    import torch
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +61,7 @@ def afd_gpu_profiler_config(role: AFDGPUProfilerRole) -> AFDGPUProfilerConfig:
     )
 
 
-def create_afd_gpu_profiler(role: AFDGPUProfilerRole) -> Any | None:
+def create_afd_gpu_profiler(role: AFDGPUProfilerRole) -> torch.profiler.profile | None:
     """Create a torch profiler when the plugin-owned env enables it."""
 
     config = afd_gpu_profiler_config(role)
@@ -93,12 +96,12 @@ def create_afd_gpu_profiler(role: AFDGPUProfilerRole) -> Any | None:
     return profiler
 
 
-def step_afd_gpu_profiler(profiler: Any | None) -> None:
+def step_afd_gpu_profiler(profiler: torch.profiler.profile | None) -> None:
     if profiler is not None:
         profiler.step()
 
 
-def stop_afd_gpu_profiler(profiler: Any | None) -> None:
+def stop_afd_gpu_profiler(profiler: torch.profiler.profile | None) -> None:
     if profiler is not None:
         profiler.stop()
 

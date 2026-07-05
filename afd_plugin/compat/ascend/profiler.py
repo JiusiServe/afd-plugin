@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Final, Literal
+from typing import Final, Literal, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,14 @@ class AFDNPUProfilerConfig:
     with_stack: bool
 
 
+class AFDNPUProfiler(Protocol):
+    def step(self) -> None:
+        ...
+
+    def stop(self) -> None:
+        ...
+
+
 def afd_npu_profiler_config(role: AFDNPUProfilerRole) -> AFDNPUProfilerConfig:
     """Read plugin-owned profiler settings for an AFD NPU runner role."""
 
@@ -63,7 +71,7 @@ def afd_npu_profiler_config(role: AFDNPUProfilerRole) -> AFDNPUProfilerConfig:
     )
 
 
-def create_afd_npu_profiler(role: AFDNPUProfilerRole) -> Any | None:
+def create_afd_npu_profiler(role: AFDNPUProfilerRole) -> AFDNPUProfiler | None:
     """Create a torch-npu profiler when the plugin-owned env enables it."""
 
     config = afd_npu_profiler_config(role)
@@ -107,12 +115,12 @@ def create_afd_npu_profiler(role: AFDNPUProfilerRole) -> Any | None:
     return profiler
 
 
-def step_afd_npu_profiler(profiler: Any | None) -> None:
+def step_afd_npu_profiler(profiler: AFDNPUProfiler | None) -> None:
     if profiler is not None:
         profiler.step()
 
 
-def stop_afd_npu_profiler(profiler: Any | None) -> None:
+def stop_afd_npu_profiler(profiler: AFDNPUProfiler | None) -> None:
     if profiler is not None:
         profiler.stop()
 
@@ -145,6 +153,7 @@ def _env_dir(name: str, *, default: str) -> str:
 
 __all__ = [
     "AFDNPUProfilerConfig",
+    "AFDNPUProfiler",
     "afd_npu_profiler_config",
     "create_afd_npu_profiler",
     "step_afd_npu_profiler",

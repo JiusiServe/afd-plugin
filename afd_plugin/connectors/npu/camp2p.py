@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING, Any
 import torch
 import torch.distributed as dist
 import torch_npu  # noqa: F401
-from vllm.forward_context import get_forward_context
+from torch.distributed.distributed_c10d import ProcessGroup
+from vllm.forward_context import DPMetadata, get_forward_context
 from vllm.logger import init_logger
 from vllm.utils.torch_utils import direct_register_custom_op
 
@@ -22,6 +23,7 @@ from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import (
     AFDConnectorData,
     AFDConnectorMetadata,
+    AFDDPMetadata,
     AFDDPMetadataPayload,
     AFDRecvOutput,
 )
@@ -44,15 +46,15 @@ class CAMP2PAFDConnectorMetadata(AFDConnectorData):
 
     moe_expert_num: int = 0
     shared_expert_num: int = 0
-    scale: Any = None
-    handle: Any = None
+    scale: torch.Tensor | None = None
+    handle: list[torch.Tensor | None] | None = None
     quant_mode: int = 0
     aiv_num: int = 8
     batch_size: int = 0
     h: int = 0
     k: int = 1
-    atten_batch_size: Any = None
-    x_active_mask: Any = None
+    atten_batch_size: torch.Tensor | None = None
+    x_active_mask: torch.Tensor | None = None
     group_ep: str = ""
     ffn_group_ep: str = ""
 
@@ -107,15 +109,15 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         self.min_size = self.topology.min_size
         self.ratio = self.attn_size // self.ffn_size
         self.dst_list = list(self.topology.dp_metadata_destinations)
-        self.dp_metadata_list: dict[int, Any] = {}
+        self.dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata] = {}
         self.is_graph_capturing = False
         self.is_warmup = False
         self.scheduler_config = vllm_config.scheduler_config
         self.max_num_reqs = int(vllm_config.scheduler_config.max_num_seqs)
-        self.afd_pg_list: list[Any] = []
-        self.afd_pg: Any | None = None
-        self.p2p_pg: Any | None = None
-        self.ffn_pg: Any | None = None
+        self.afd_pg_list: list[ProcessGroup] = []
+        self.afd_pg: ProcessGroup | None = None
+        self.p2p_pg: ProcessGroup | None = None
+        self.ffn_pg: ProcessGroup | None = None
         self.hccl_comm_name = ""
         self.hccl_comm_name2 = ""
         self.hccl_comm_name3 = ""
@@ -452,7 +454,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
     def _metadata_data_or_default(
         self,
         metadata: AFDConnectorMetadata,
-        hidden_states: Any,
+        hidden_states: torch.Tensor,
     ) -> CAMP2PAFDConnectorMetadata:
         data = metadata.connector_data
         if data is None:
@@ -541,7 +543,7 @@ def build_camp2p_topology(
     )
 
 
-def _send_object(obj: Any, *, dst: int, group: Any) -> None:
+def _send_object(obj: Any, *, dst: int, group: ProcessGroup) -> None:
     object_bytes = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
     object_tensor = torch.frombuffer(bytearray(object_bytes), dtype=torch.uint8)
     size_tensor = torch.tensor([object_tensor.numel()], dtype=torch.long, device="cpu")
@@ -549,7 +551,7 @@ def _send_object(obj: Any, *, dst: int, group: Any) -> None:
     torch.distributed.send(object_tensor, dst=dst, group=group)
 
 
-def _recv_object(*, src: int, group: Any) -> Any:
+def _recv_object(*, src: int, group: ProcessGroup) -> Any:
     size_tensor = torch.empty(1, dtype=torch.long, device="cpu")
     rank_size = torch.distributed.recv(size_tensor, src=src, group=group)
     object_tensor = torch.empty(
@@ -564,7 +566,7 @@ def _recv_object(*, src: int, group: Any) -> Any:
 
 
 def _num_tokens_for_ffn_rank(
-    dp_metadata_list: dict[int, Any],
+    dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
     stage_idx: int,
     *,
     ffn_rank: int,
@@ -601,7 +603,7 @@ def _resolve_aiv_num(afd_config: AFDConfig) -> int:
     return max(1, int(value or 8))
 
 
-def _resolve_num_ubatches(vllm_config: object) -> int:
+def _resolve_num_ubatches(vllm_config: VllmConfig) -> int:
     parallel_config = getattr(vllm_config, "parallel_config", None)
     raw_num_ubatches = getattr(parallel_config, "num_ubatches", 1)
     try:
@@ -611,7 +613,7 @@ def _resolve_num_ubatches(vllm_config: object) -> int:
     return max(1, num_ubatches)
 
 
-def _resolve_int_attr(vllm_config: object, name: str, *, default: int) -> int:
+def _resolve_int_attr(vllm_config: VllmConfig, name: str, *, default: int) -> int:
     model_config = vllm_config.model_config
     hf_config = model_config.hf_config
     if name == "hidden_size":
@@ -625,7 +627,7 @@ def _resolve_int_attr(vllm_config: object, name: str, *, default: int) -> int:
     raise KeyError(name)
 
 
-def _to_int_list(value: Any) -> list[int]:
+def _to_int_list(value: object) -> list[int]:
     if isinstance(value, (int, float)):
         value = [value]
     elif isinstance(value, (list, tuple)):
@@ -875,7 +877,7 @@ def _is_torch_compiling() -> bool:
     return bool(dynamo is not None and dynamo.is_compiling())
 
 
-def _empty_npu_tensor(*, dtype_name: str) -> Any:
+def _empty_npu_tensor(*, dtype_name: str) -> torch.Tensor:
     dtype = {
         "bfloat16": torch.bfloat16,
         "float32": torch.float32,

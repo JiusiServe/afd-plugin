@@ -9,9 +9,13 @@ used by CPU-safe tests.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
 
 FULL_DECODE_ONLY = "FULL_DECODE_ONLY"
 _SUPPORTED_GRAPH_MODES = {FULL_DECODE_ONLY}
@@ -36,7 +40,7 @@ class AFDCUDAGraphPolicy:
 
 
 def validate_cuda_graph_mode(
-    vllm_config: object,
+    vllm_config: VllmConfig,
     *,
     role: str | None = None,
 ) -> AFDCUDAGraphPolicy:
@@ -81,7 +85,7 @@ def validate_cuda_graph_mode(
     )
 
 
-def cudagraph_mode_name(vllm_config: object) -> str | None:
+def cudagraph_mode_name(vllm_config: VllmConfig) -> str | None:
     compilation_config = getattr(vllm_config, "compilation_config", None)
     mode = getattr(compilation_config, "cudagraph_mode", None)
     if mode is None:
@@ -98,7 +102,7 @@ def cudagraph_mode_name(vllm_config: object) -> str | None:
 
 
 def make_ffn_graph_key(
-    dp_metadata_list: dict[int, Any],
+    dp_metadata_list: Mapping[int, object],
     *,
     attention_size: int | None = None,
     ffn_size: int | None = None,
@@ -145,7 +149,7 @@ def graph_run_mode(
     return AFDGraphRunMode.EAGER
 
 
-def _metadata_values_tuple(values: Any) -> tuple[int, ...]:
+def _metadata_values_tuple(values: object) -> tuple[int, ...]:
     tolist = getattr(values, "tolist", None)
     if callable(tolist):
         values = tolist()

@@ -13,10 +13,14 @@ import importlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from afd_plugin.compat.vllm import TARGET_VLLM_VERSION
 from afd_plugin.config import parse_afd_config
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
+    from vllm.engine.arg_utils import EngineArgs
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +64,11 @@ def apply_config_validation_patch() -> None:
         ),
     )
 
-    def patched_create_engine_config(self: Any, *args: Any, **kwargs: Any) -> Any:
+    def patched_create_engine_config(
+        self: EngineArgs,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
         if not _should_relax_engine_args_backend(self):
             return state.engine_args_create_engine_config(self, *args, **kwargs)
 
@@ -75,7 +83,7 @@ def apply_config_validation_patch() -> None:
             parallel_config.all2all_backend = original_backend
         return config
 
-    def patched_vllm_config_post_init(self: Any) -> Any:
+    def patched_vllm_config_post_init(self: VllmConfig) -> Any:
         assert state.vllm_config_post_init is not None
         if not _should_relax_vllm_config_backend(self):
             return state.vllm_config_post_init(self)
@@ -97,7 +105,7 @@ def apply_config_validation_patch() -> None:
     logger.debug("AFD config validation patch applied")
 
 
-def _should_relax_engine_args_backend(engine_args: Any) -> bool:
+def _should_relax_engine_args_backend(engine_args: EngineArgs) -> bool:
     if not _is_target_vllm_compatible():
         return False
     try:
@@ -121,7 +129,7 @@ def _should_relax_engine_args_backend(engine_args: Any) -> bool:
     return backend not in {"deepep_low_latency", "deepep_high_throughput"}
 
 
-def _should_relax_vllm_config_backend(vllm_config: Any) -> bool:
+def _should_relax_vllm_config_backend(vllm_config: VllmConfig) -> bool:
     if not _is_target_vllm_compatible():
         return False
     try:

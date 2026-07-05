@@ -12,12 +12,14 @@ import torch
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.metadata import (
     AFDConnectorMetadata,
+    AFDDPMetadata,
     AFDDPMetadataPayload,
     AFDRecvOutput,
 )
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
+    from vllm.forward_context import DPMetadata
 
 
 class AFDConnectorBase(ABC):
@@ -343,7 +345,10 @@ class AFDConnectorBase(ABC):
         metadata.seq_lens = list(recv_output.metadata.seq_lens)
 
 
-def _num_tokens_for_stage(dp_metadata_list: dict[int, Any], stage_idx: int) -> int:
+def _num_tokens_for_stage(
+    dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
+    stage_idx: int,
+) -> int:
     dp_metadata = dp_metadata_list.get(int(stage_idx))
     if dp_metadata is None:
         return 1

@@ -7,11 +7,11 @@ This runtime module depends on vLLM's native ubatching stack.
 
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 import torch
-from vllm.config import CUDAGraphMode
+from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.forward_context import DPMetadata, create_forward_context, get_forward_context
 from vllm.model_executor.offloader.base import get_offloader
 from vllm.v1.worker.gpu_ubatch_wrapper import UbatchMetadata, UBatchWrapper
@@ -32,7 +32,9 @@ class AFDUBatchWrapper(UBatchWrapper):
         self._afd_context_provider = provider
 
     @staticmethod
-    def _create_sm_control_context(vllm_config: object) -> object:
+    def _create_sm_control_context(
+        vllm_config: VllmConfig,
+    ) -> AbstractContextManager[Any]:
         if parse_afd_config(vllm_config).enabled:
             return nullcontext()
         return UBatchWrapper._create_sm_control_context(vllm_config)
@@ -133,10 +135,10 @@ class AFDUBatchWrapper(UBatchWrapper):
         inputs_embeds: Any,
         intermediate_tensors: Any,
         compute_stream: Any,
-        dp_metadata: list[Any],
+        dp_metadata: list[DPMetadata | AFDDPMetadata],
         batch_descriptor: Any,
         cudagraph_runtime_mode: Any,
-    ) -> list[Any]:
+    ) -> list[UbatchMetadata]:
         parent_forward_context = get_forward_context()
         parent_additional_kwargs = dict(parent_forward_context.additional_kwargs)
         afd_metadata = parent_additional_kwargs.get("afd_metadata")
@@ -195,7 +197,7 @@ class AFDUBatchWrapper(UBatchWrapper):
             ready_barrier=self.ready_barrier,
         )
 
-        ubatch_metadata: list[Any] = []
+        ubatch_metadata: list[UbatchMetadata] = []
         for idx, ubatch_slice in enumerate(ubatch_slices):
             (
                 sliced_input_ids,
@@ -257,9 +259,9 @@ def build_ubatch_additional_kwargs(
 
 
 def build_ubatch_dp_metadata_list(
-    vllm_config: object,
+    vllm_config: VllmConfig,
     ubatch_slices: Any,
-) -> list[Any]:
+) -> list[DPMetadata | AFDDPMetadata]:
     """Create DP metadata for each ubatch.
 
     For DP=1 we use the plugin-owned metadata object to stay independent of

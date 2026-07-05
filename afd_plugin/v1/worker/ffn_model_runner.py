@@ -5,14 +5,14 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from vllm.compilation.monitor import set_cudagraph_capturing_enabled
-from vllm.config import CUDAGraphMode
+from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.config import update_config as update_vllm_config
 from vllm.distributed.parallel_state import get_world_group, graph_capture
-from vllm.forward_context import get_forward_context, set_forward_context
+from vllm.forward_context import DPMetadata, get_forward_context, set_forward_context
 from vllm.model_executor.model_loader import get_model_loader
 from vllm.utils.mem_utils import DeviceMemoryProfiler
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
@@ -26,6 +26,7 @@ from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
     AFDConnectorFactory,
     AFDConnectorMetadata,
+    AFDDPMetadata,
     AFDDPMetadataPayload,
     AFDRecvOutput,
 )
@@ -40,13 +41,18 @@ from afd_plugin.v1.worker.cuda_graph import (
     validate_cuda_graph_mode,
 )
 
+if TYPE_CHECKING:
+    from vllm.sequence import IntermediateTensors
+    from vllm.v1.core.sched.output import SchedulerOutput
+    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
+
 
 class GPUFFNModelRunner(LoRAModelRunnerMixin):
     """FFN model runner for connector-driven AFD GPU execution."""
 
     afd_expected_role = "ffn"
 
-    def __init__(self, vllm_config: object, device: object) -> None:
+    def __init__(self, vllm_config: VllmConfig, device: object) -> None:
         self.vllm_config = vllm_config
         self.model_config = vllm_config.model_config
         self.load_config = vllm_config.load_config
@@ -80,7 +86,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         self.prof = create_afd_gpu_profiler("ffn")
 
     @staticmethod
-    def parse_config(vllm_config: object) -> AFDConfig:
+    def parse_config(vllm_config: VllmConfig) -> AFDConfig:
         return parse_afd_config(vllm_config, expected_role="ffn")
 
     def get_model(self) -> Any:
@@ -109,18 +115,18 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
     def profile_run(self) -> None:
         pass
 
-    def get_kv_cache_spec(self) -> dict[str, Any]:
+    def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
         return {}
 
-    def initialize_kv_cache(self, kv_cache_config: Any) -> None:
+    def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         return None
 
     def execute_model(
         self,
-        scheduler_output: Any = None,
-        intermediate_tensors: Any = None,
+        scheduler_output: SchedulerOutput | None = None,
+        intermediate_tensors: IntermediateTensors | None = None,
         *,
-        dp_metadata_list: dict[int, Any] | None = None,
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata] | None = None,
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
     ) -> None:
@@ -148,10 +154,10 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
     def _ffn_forward(
         self,
         *,
-        dp_metadata_list: dict[int, Any],
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
         is_graph_capturing: bool = False,
         update_connector_state: bool = True,
-    ) -> Any:
+    ) -> torch.Tensor | None:
         if update_connector_state:
             self.connector.update_state_from_dp_metadata(
                 _make_dp_metadata_payload(
@@ -184,7 +190,11 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                     self.connector.send_ffn_output(rank_ffn_output, metadata)
         return rank_ffn_output
 
-    def _execute_eager_mode(self, hidden_states: Any, layer_idx: int) -> Any:
+    def _execute_eager_mode(
+        self,
+        hidden_states: torch.Tensor,
+        layer_idx: int,
+    ) -> torch.Tensor:
         model = self.model
         compute = getattr(model, "compute_ffn_output", None)
         if callable(compute):
@@ -210,8 +220,8 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
 
     def _dummy_run(
         self,
-        cudagraph_runtime_mode: Any,
-        dp_metadata_list: dict[int, Any],
+        cudagraph_runtime_mode: CUDAGraphMode,
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
         is_attn_graph_capturing: bool,
     ) -> None:
         mode_name = getattr(cudagraph_runtime_mode, "name", str(cudagraph_runtime_mode))
@@ -250,7 +260,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
 
     def capture_model(
         self,
-        dp_metadata_list: dict[int, Any] | None = None,
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata] | None = None,
         is_warmup: bool = False,
         is_attn_graph_capturing: bool = True,
     ) -> int:
@@ -329,7 +339,7 @@ def _resolve_world_ranks() -> tuple[int, int]:
 
 
 @contextmanager
-def _ffn_forward_context(vllm_config: object):
+def _ffn_forward_context(vllm_config: VllmConfig):
     with set_forward_context(attn_metadata=None, vllm_config=vllm_config):
         yield get_forward_context()
 
@@ -347,7 +357,7 @@ def _set_moe_layer_index(forward_context: object, layer_idx: int) -> None:
 
 
 def _make_dp_metadata_payload(
-    dp_metadata_list: dict[int, Any],
+    dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
     *,
     is_graph_capturing: bool = False,
     is_warmup: bool = False,
@@ -364,7 +374,7 @@ def _normalize_recv_output(
     *,
     stage_idx: int,
     layer_idx: int,
-) -> tuple[Any, AFDConnectorMetadata, Any]:
+) -> tuple[torch.Tensor, AFDConnectorMetadata, Any]:
     if isinstance(recv_output, tuple):
         hidden_states, metadata = recv_output
         return hidden_states, metadata, recv_output

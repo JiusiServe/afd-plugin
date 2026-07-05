@@ -14,7 +14,7 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-from vllm.config import get_current_vllm_config
+from vllm.config import VllmConfig, get_current_vllm_config
 from vllm.forward_context import get_forward_context
 from vllm.model_executor.layers.fused_moe.shared_fused_moe import (
     SharedFusedMoE,
@@ -171,7 +171,7 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         else:
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
 
-        attn_kwargs: dict[str, Any] = {
+        attn_kwargs: dict[str, torch.Tensor | None] = {
             "positions": positions,
             "hidden_states": hidden_states,
         }
@@ -215,7 +215,7 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         else:
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
 
-        attn_kwargs: dict[str, Any] = {
+        attn_kwargs: dict[str, torch.Tensor | None] = {
             "positions": positions,
             "hidden_states": hidden_states,
         }
@@ -253,7 +253,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
 
     fall_back_to_pt_during_load = False
 
-    def __init__(self, *, vllm_config: object, prefix: str = "") -> None:
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
         super().__init__()
 
         self.vllm_config = vllm_config
@@ -457,7 +457,7 @@ class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
 
     model_cls = AFDDeepseekV2Model
 
-    def __init__(self, *, vllm_config: object, prefix: str = "") -> None:
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
         self.afd_config = parse_afd_config(vllm_config, validate=False)
         self.afd_role = self.afd_config.role if self.afd_config.enabled else None
         super().__init__(vllm_config=vllm_config, prefix=prefix)

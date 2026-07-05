@@ -10,7 +10,7 @@ from typing import Any
 
 import torch
 import vllm.v1.worker.gpu_model_runner as gpu_model_runner
-from vllm.config import CUDAGraphMode
+from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.distributed.parallel_state import (
     get_tensor_model_parallel_rank,
     get_world_group,
@@ -75,7 +75,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
         self.prof = create_afd_gpu_profiler("attention")
 
     @staticmethod
-    def parse_config(vllm_config: object) -> AFDConfig:
+    def parse_config(vllm_config: VllmConfig) -> AFDConfig:
         return parse_afd_config(vllm_config, expected_role="attention")
 
     def _build_afd_metadata(
@@ -107,7 +107,11 @@ class AFDAttentionModelRunner(GPUModelRunner):
             afd_tokens_unpadded_lens=afd_tokens_unpadded_lens,
         )
 
-    def _send_dp_metadata(self, dp_metadata: Any, ubatch_slices: Any) -> None:
+    def _send_dp_metadata(
+        self,
+        dp_metadata: DPMetadata | AFDDPMetadata | None,
+        ubatch_slices: Any,
+    ) -> None:
         if ubatch_slices and len(ubatch_slices) > 1:
             dp_metadata_list = {
                 idx: metadata
@@ -152,7 +156,10 @@ class AFDAttentionModelRunner(GPUModelRunner):
         )
         self.model.configure_afd_context_provider(self)
 
-    def _ensure_dp_metadata(self, dp_metadata: Any) -> Any:
+    def _ensure_dp_metadata(
+        self,
+        dp_metadata: DPMetadata | AFDDPMetadata | None,
+    ) -> DPMetadata | AFDDPMetadata:
         if dp_metadata is not None:
             return dp_metadata
 
@@ -176,7 +183,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
             max_tokens_across_dp_cpu=torch.max(num_tokens_across_dp_cpu),
         )
 
-    def _build_capture_dp_metadata(self, num_tokens: int) -> Any:
+    def _build_capture_dp_metadata(self, num_tokens: int) -> DPMetadata | AFDDPMetadata:
         dp_size = int(self.vllm_config.parallel_config.data_parallel_size)
         num_tokens_across_dp_cpu = torch.full(
             (dp_size,),
@@ -430,7 +437,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
         return f"afd-{counter}"
 
 
-def fail_if_unsupported_ubatching(vllm_config: object) -> None:
+def fail_if_unsupported_ubatching(vllm_config: VllmConfig) -> None:
     parallel_config = vllm_config.parallel_config
     num_ubatches = int(parallel_config.num_ubatches)
     if bool(vllm_config.parallel_config.use_ubatching) and num_ubatches != 2:
@@ -443,7 +450,7 @@ def fail_if_unsupported_ubatching(vllm_config: object) -> None:
 fail_if_ubatching_enabled = fail_if_unsupported_ubatching
 
 
-def fail_if_cuda_graph_enabled(vllm_config: object) -> None:
+def fail_if_cuda_graph_enabled(vllm_config: VllmConfig) -> None:
     validate_cuda_graph_mode(vllm_config)
 
 
@@ -464,7 +471,7 @@ def _is_ubatch_child_afd_context(
 
 
 def _with_dp_derived_afd_rank(
-    vllm_config: object,
+    vllm_config: VllmConfig,
     afd_config: AFDConfig,
 ) -> AFDConfig:
     parallel_config = vllm_config.parallel_config
@@ -510,7 +517,7 @@ def _batch_execution_values(
 
 def _forward_context_num_tokens(
     forward_context: object,
-    vllm_config: object,
+    vllm_config: VllmConfig,
 ) -> int:
     dp_metadata = forward_context.dp_metadata
     dp_rank = int(vllm_config.parallel_config.data_parallel_rank)

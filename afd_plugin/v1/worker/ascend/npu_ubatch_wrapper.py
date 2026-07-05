@@ -9,7 +9,6 @@ implementation plugin-owned.
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 import torch
 import torch_npu  # noqa: F401
@@ -48,7 +47,7 @@ class AscendUbatchMetadata(UbatchMetadata):
 class AscendNPUGraphMetaData:
     aclgraph: torch.npu.NPUGraph
     ubatch_metadata: list[AscendUbatchMetadata]
-    outputs: Any | None = None
+    outputs: torch.Tensor | IntermediateTensors | None = None
 
 
 class AscendUBatchWrapper(UBatchWrapper):
@@ -301,9 +300,9 @@ class AscendUBatchWrapper(UBatchWrapper):
 
     def _merge_outputs(
         self,
-        sorted_results: list[Any],
+        sorted_results: list[torch.Tensor | IntermediateTensors],
         ubatch_metadata: list[AscendUbatchMetadata],
-    ):
+    ) -> torch.Tensor | IntermediateTensors:
         if not get_pp_group().is_last_rank:
             return self._merge_intermediate_tensors(sorted_results)
 
@@ -332,7 +331,7 @@ class AscendUBatchWrapper(UBatchWrapper):
         ubatch_metadata: list[AscendUbatchMetadata],
         model,
     ) -> torch.Tensor | IntermediateTensors:
-        results: list[tuple[int, Any]] = []
+        results: list[tuple[int, torch.Tensor | IntermediateTensors]] = []
         with override_forward_context(None):
             ubatch_threads = []
             for metadata in ubatch_metadata:
@@ -355,8 +354,8 @@ class AscendUBatchWrapper(UBatchWrapper):
         self,
         ubatch_metadata: list[AscendUbatchMetadata],
         model,
-    ) -> torch.Tensor:
-        results: list[tuple[int, Any]] = []
+    ) -> torch.Tensor | IntermediateTensors:
+        results: list[tuple[int, torch.Tensor | IntermediateTensors]] = []
         compute_stream = ubatch_metadata[0].context.compute_stream
         num_tokens = sum(metadata.num_tokens for metadata in ubatch_metadata)
 

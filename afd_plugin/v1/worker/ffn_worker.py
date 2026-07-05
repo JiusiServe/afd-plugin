@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from vllm.v1.worker.gpu_worker import Worker
@@ -14,6 +14,10 @@ from vllm.v1.worker.gpu_worker import Worker
 from afd_plugin.v1.worker.attention_model_runner import fail_if_unsupported_ubatching
 from afd_plugin.v1.worker.ffn_model_runner import GPUFFNModelRunner
 from afd_plugin.validation import assert_compatible_afd_stack
+
+if TYPE_CHECKING:
+    from vllm.v1.core.sched.output import SchedulerOutput
+    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +59,12 @@ class AFDFFNWorker(Worker):
 
         torch.accelerator.empty_cache()
 
-    def get_kv_cache_spec(self) -> dict[str, Any]:
+    def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
         """FFN workers do not allocate KV cache."""
 
         return {}
 
-    def initialize_from_config(self, kv_cache_config: Any) -> None:
+    def initialize_from_config(self, kv_cache_config: KVCacheConfig) -> None:
         """Skip KV cache allocation and start the FFN connector loop."""
 
         self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
@@ -75,7 +79,7 @@ class AFDFFNWorker(Worker):
 
         return 0.0
 
-    def execute_model(self, scheduler_output: Any) -> None:
+    def execute_model(self, scheduler_output: SchedulerOutput) -> None:
         """Fail fast if the default scheduler tries to execute FFN work."""
 
         raise RuntimeError(
