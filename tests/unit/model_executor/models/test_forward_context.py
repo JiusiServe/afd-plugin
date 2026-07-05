@@ -152,21 +152,19 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
     ) < forward_with_afd_v3.index(
         "for moe_layer_offset in range(last_moe_layer_offset):",
     )
-    assert forward_with_afd_v3.index("recv_stage_ffn(current_layer, 0") < (
+    assert forward_with_afd_v3.index("recv_stage_ffn(0)") < (
         forward_with_afd_v3.index(
             "send_stage_attention(\n                current_layer,\n                1",
         )
     )
-    assert forward_with_afd_v3.index("recv_stage_ffn(current_layer, 1") < (
+    assert forward_with_afd_v3.index("recv_stage_ffn(1)") < (
         forward_with_afd_v3.index(
             "send_stage_attention(\n                next_layer,\n                0",
         )
     )
     assert forward_with_afd_v3.index(
         "send_stage_attention(\n            last_layer,\n            1",
-    ) < (
-        forward_with_afd_v3.index("recv_stage_ffn(last_layer, 1, \"final\")")
-    )
+    ) < (forward_with_afd_v3.rindex("recv_stage_ffn(1)"))
 
 
 def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():

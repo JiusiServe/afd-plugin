@@ -10,13 +10,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from afd_plugin.compat.async_dp import is_afd_async_dp
 from afd_plugin.config import (
     ASYNC_MOE_REQUEST_SPLIT,
     AFDConfig,
     async_moe_num_ubatches,
     async_moe_split,
     async_moe_ubatching_enabled,
+    is_afd_async_dp,
     parse_afd_config,
 )
 
@@ -103,12 +103,9 @@ def fail_if_unsupported_npu_afd_features(vllm_config: VllmConfig) -> None:
             "AFD NPU runtime supports exactly two ubatches when DBO is enabled",
         )
 
-    if not bool(vllm_config.model_config.enforce_eager):
-        _npu_aclgraph_mode_name(vllm_config)
-
 
 def _fail_if_unsupported_npu_afd_async_features(
-    vllm_config: object,
+    vllm_config: VllmConfig,
     afd_config: AFDConfig,
 ) -> None:
     extra = afd_config.extra_config or {}
@@ -154,7 +151,7 @@ def _fail_if_unsupported_npu_afd_async_features(
 
 
 def _fail_if_unsupported_npu_async_moe_ubatching_features(
-    vllm_config: object,
+    vllm_config: VllmConfig,
     afd_config: AFDConfig,
 ) -> None:
     parallel_config = vllm_config.parallel_config
@@ -176,13 +173,8 @@ def _fail_if_unsupported_npu_async_moe_ubatching_features(
         )
     if int(parallel_config.decode_context_parallel_size) > 1:
         raise RuntimeError(
-            "async_moe_ubatching does not support decode context parallel "
-            "metadata yet",
+            "async_moe_ubatching does not support decode context parallel metadata yet",
         )
-
-
-def _npu_aclgraph_mode_name(vllm_config: object) -> str:
-    return vllm_config.compilation_config.cudagraph_mode.name
 
 
 def mirror_afd_metadata_on_forward_context(

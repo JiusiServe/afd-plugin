@@ -60,13 +60,11 @@ def _install_fake_vllm_forward_context(monkeypatch: pytest.MonkeyPatch):
             self.num_tokens = num_tokens
 
     @contextmanager
-    def original_set_forward_context(*args, **kwargs):
-        del args, kwargs
+    def original_set_forward_context(*_args, **_kwargs):
         forward_module.original_set_forward_context_called = True
         yield
 
-    def original_coordinate_batch_across_dp(*args, **kwargs):
-        del args, kwargs
+    def original_coordinate_batch_across_dp(*_args, **_kwargs):
         forward_module.original_coordinate_called = True
         return True, "tokens", CUDAGraphMode.NONE
 

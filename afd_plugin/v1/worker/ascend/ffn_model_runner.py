@@ -11,7 +11,6 @@ from vllm.compilation.monitor import set_cudagraph_capturing_enabled
 from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.forward_context import DPMetadata
 from vllm.logger import init_logger
-from vllm.platforms import current_platform
 from vllm_ascend.worker.model_runner_v1 import NPUModelRunner, graph_capture
 
 from afd_plugin.compat.ascend import (
@@ -500,7 +499,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
 
 def _normalize_recv_output(
-    recv_output: Any,
+    recv_output: AFDRecvOutput | tuple[torch.Tensor, AFDConnectorMetadata],
     *,
     stage_idx: int,
     layer_idx: int,
@@ -524,10 +523,11 @@ def _normalize_recv_output(
         recv_output.metadata = metadata
     return hidden_states, metadata, recv_output
 
+
 def _cam_token_nums_rankid_layeridx(
     payload: AFDRecvOutput,
     metadata: AFDConnectorMetadata,
-) -> Any:
+) -> torch.Tensor:
     token_nums_rankid_layeridx = payload.atten_batch_size
     if token_nums_rankid_layeridx is None:
         connector_data = metadata.connector_data
@@ -541,7 +541,7 @@ def _cam_token_nums_rankid_layeridx(
     return token_nums_rankid_layeridx
 
 
-def _cam_metadata_int(token_nums_rankid_layeridx: Any, index: int) -> int:
+def _cam_metadata_int(token_nums_rankid_layeridx: torch.Tensor, index: int) -> int:
     value = token_nums_rankid_layeridx[index]
     if isinstance(value, (int, float)):
         return int(value)
@@ -559,12 +559,12 @@ def _cam_shared_token_count(payload: AFDRecvOutput, fallback: int) -> int:
 
 
 def _slice_cam_payload_to_actual_tokens(
-    hidden_states: Any,
+    hidden_states: torch.Tensor,
     payload: AFDRecvOutput,
     num_tokens: int,
     *,
     shared_num_tokens: int | None = None,
-) -> Any:
+) -> torch.Tensor:
     if shared_num_tokens is None:
         shared_num_tokens = num_tokens
     shared_slice_tokens = shared_num_tokens if shared_num_tokens > 0 else 100
@@ -594,8 +594,8 @@ def _sync_connector_data_with_cam_metadata(
 
 
 def _send_ffn_output(
-    connector: Any,
-    ffn_output: Any,
+    connector: AFDConnectorBase,
+    ffn_output: torch.Tensor | AFDFFNOutput,
     metadata: AFDConnectorMetadata,
     *,
     stage_idx: int,
@@ -608,7 +608,7 @@ def _send_ffn_output(
         )
         return
 
-    kwargs: dict[str, Any] = {"ubatch_idx": stage_idx}
+    kwargs: dict[str, object] = {"ubatch_idx": stage_idx}
     if ffn_output.shared_output is not None:
         kwargs["expand_x_shared"] = ffn_output.shared_output
     connector.send_ffn_output(
@@ -616,10 +616,6 @@ def _send_ffn_output(
         metadata,
         **kwargs,
     )
-
-
-def _resolve_num_hidden_layers(model_config: object) -> int:
-    return int(model_config.hf_config.num_hidden_layers)
 
 
 def _ffn_layer_indices(runner: AFDNPUFFNModelRunner) -> range | list[int]:
@@ -644,13 +640,6 @@ def _is_moe_layer(hf_config: object, layer_idx: int) -> bool:
     )
 
 
-def _first_dp_token_counts(dp_metadata_list: dict[int, Any]) -> Any:
-    if not dp_metadata_list:
-        return None
-    first_key = sorted(int(key) for key in dp_metadata_list)[0]
-    return dp_metadata_list[first_key].num_tokens_across_dp_cpu
-
-
 def _make_dp_metadata_payload(
     dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
     *,
@@ -665,7 +654,7 @@ def _make_dp_metadata_payload(
 
 
 def _ffn_token_counts_across_ranks(
-    connector: Any,
+    connector: AFDConnectorBase,
     dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
     stage_idx: int,
     *,
@@ -748,8 +737,15 @@ def _to_dp_level_token_counts(
     return num_tokens_across_dp[indices].contiguous()
 
 
-def _connector_driven_batch_size(connector: Any, fallback: int) -> int:
+def _connector_driven_batch_size(connector: AFDConnectorBase, fallback: int) -> int:
     return max(1, int(getattr(connector, "max_seq_len", fallback) or fallback))
+
+
+def _resolve_graph_pool() -> object | None:
+    graph_pool_handle = getattr(torch.npu, "graph_pool_handle", None)
+    if graph_pool_handle is None:
+        return None
+    return graph_pool_handle()
 
 
 def _use_npu_aclgraph(vllm_config: VllmConfig, runner: object) -> bool:

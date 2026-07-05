@@ -24,15 +24,28 @@ Future plan:
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, TypeAlias
 
 import vllm.forward_context as forward_context_module
 from vllm.config import CUDAGraphMode
 from vllm.forward_context import DPMetadata
 
-from afd_plugin.compat.async_dp import is_afd_async_dp
 from afd_plugin.compat.vllm import TARGET_VLLM_VERSION
+from afd_plugin.config import is_afd_async_dp
+
+if TYPE_CHECKING:
+    import torch
+    from vllm.config import VllmConfig
+    from vllm.forward_context import BatchDescriptor
+    from vllm.v1.attention.backend import AttentionMetadata
+    from vllm.v1.worker.ubatch_utils import UBatchSlices
+
+    AttentionMetadataMapping: TypeAlias = (
+        dict[str, AttentionMetadata] | list[dict[str, AttentionMetadata]]
+    )
+    SlotMapping: TypeAlias = dict[str, torch.Tensor] | list[dict[str, torch.Tensor]]
 
 _PATCH_APPLIED = False
 
@@ -48,16 +61,16 @@ _FORWARD_CONTEXT_IMPORT_MODULES = (
 
 @contextmanager
 def _patched_set_forward_context(
-    attn_metadata: Any,
-    vllm_config: Any,
+    attn_metadata: AttentionMetadataMapping | None,
+    vllm_config: VllmConfig,
     num_tokens: int | None = None,
-    num_tokens_across_dp: Any | None = None,
+    num_tokens_across_dp: torch.Tensor | None = None,
     cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
-    batch_descriptor: Any | None = None,
-    ubatch_slices: Any | None = None,
-    slot_mapping: dict[str, Any] | list[dict[str, Any]] | None = None,
+    batch_descriptor: BatchDescriptor | None = None,
+    ubatch_slices: UBatchSlices | None = None,
+    slot_mapping: SlotMapping | None = None,
     skip_compiled: bool = False,
-):
+) -> Iterator[None]:
     """Create a forward context without DP metadata for AFD async-DP."""
 
     if not is_afd_async_dp(vllm_config):
@@ -138,9 +151,7 @@ def _patched_set_forward_context(
             ):
                 forward_context_module.last_logging_time = now
                 forward_stats = []
-                for bs, times in (
-                    forward_context_module.batchsize_forward_time.items()
-                ):
+                for bs, times in forward_context_module.batchsize_forward_time.items():
                     if len(times) <= 1:
                         continue
                     medium = forward_context_module.torch.quantile(

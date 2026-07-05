@@ -28,8 +28,9 @@ Future plan:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import vllm.v1.engine.core as engine_core_module
 import vllm.v1.engine.core_client as core_client_module
@@ -38,11 +39,31 @@ from vllm.v1.engine import EngineCoreRequestType
 from vllm.v1.engine.core import EngineCoreProc
 from vllm.v1.engine.core_client import DPAsyncMPClient
 
-from afd_plugin.compat.async_dp import (
+from afd_plugin.compat.vllm import TARGET_VLLM_VERSION
+from afd_plugin.config import (
     is_afd_async_attention_dp,
     is_afd_async_dp,
 )
-from afd_plugin.compat.vllm import TARGET_VLLM_VERSION
+
+if TYPE_CHECKING:
+    from multiprocessing.queues import Queue
+
+    from vllm.config import ParallelConfig, VllmConfig
+    from vllm.v1.engine import EngineCoreRequest
+    from vllm.v1.engine.coordinator import DPCoordinator
+    from vllm.v1.engine.utils import (
+        CoreEngineActorManager,
+        CoreEngineProcManager,
+        EngineZmqAddresses,
+    )
+    from vllm.v1.executor import Executor
+
+    EngineLaunchResult: TypeAlias = tuple[
+        CoreEngineProcManager | CoreEngineActorManager | None,
+        DPCoordinator | None,
+        EngineZmqAddresses,
+        Queue | None,
+    ]
 
 _PATCH_APPLIED = False
 
@@ -91,12 +112,12 @@ def _patched_run_engine_core(
 
 @contextmanager
 def _patched_launch_core_engines(
-    vllm_config: Any,
-    executor_class: type[Any],
+    vllm_config: VllmConfig,
+    executor_class: type[Executor],
     log_stats: bool,
-    addresses: Any,
+    addresses: EngineZmqAddresses,
     num_api_servers: int = 1,
-) -> Any:
+) -> Iterator[EngineLaunchResult]:
     """Disable coordinator wave mode while launching AFD async-DP engines."""
 
     if not is_afd_async_dp(vllm_config):
@@ -113,12 +134,11 @@ def _patched_launch_core_engines(
     original_dp_coordinator = engine_utils_module.DPCoordinator
 
     def build_async_dp_coordinator(
-        parallel_config: Any,
+        parallel_config: ParallelConfig,
         enable_wave_coordination: bool = True,
-    ) -> Any:
+    ) -> DPCoordinator:
         """Replace launch-time coordinator wave behavior for AFD async-DP."""
 
-        del enable_wave_coordination
         return _original_dp_coordinator(
             parallel_config,
             enable_wave_coordination=False,
@@ -138,7 +158,10 @@ def _patched_launch_core_engines(
         engine_utils_module.DPCoordinator = original_dp_coordinator
 
 
-async def _patched_add_request_async(self: Any, request: Any) -> None:
+async def _patched_add_request_async(
+    self: DPAsyncMPClient,
+    request: EngineCoreRequest,
+) -> None:
     """Skip the DP wave ``FIRST_REQ`` notification for AFD async-DP."""
 
     if not is_afd_async_dp(self.vllm_config):

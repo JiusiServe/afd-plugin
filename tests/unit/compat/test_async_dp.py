@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from afd_plugin.compat.async_dp import (
+from afd_plugin.config import (
     is_afd_async_attention_dp,
     is_afd_async_dp,
 )

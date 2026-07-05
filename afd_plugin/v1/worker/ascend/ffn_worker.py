@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from vllm_ascend.worker.worker import NPUWorker
@@ -158,6 +158,7 @@ class AFDNPUFFNWorker(NPUWorker):
     def shutdown(self) -> None:
         self.stop_ffn_server_loop()
         super().shutdown()
+
 
 def _set_npu_device_if_possible(device: object) -> None:
     if device.type != "npu":

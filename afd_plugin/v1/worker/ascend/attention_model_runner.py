@@ -15,12 +15,18 @@ from vllm.compilation.cuda_graph import CUDAGraphStat
 from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
 from vllm.distributed.parallel_state import get_dp_group
-from vllm.forward_context import BatchDescriptor, DPMetadata, get_forward_context
+from vllm.forward_context import (
+    BatchDescriptor,
+    DPMetadata,
+    ForwardContext,
+    get_forward_context,
+)
 from vllm.logger import init_logger
 from vllm.sequence import IntermediateTensors
 from vllm.utils.math_utils import cdiv
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
 from vllm.v1.kv_cache_interface import EncoderOnlyAttentionSpec
+from vllm.v1.worker.ubatch_utils import UBatchSlice
 from vllm_ascend.ascend_forward_context import (
     select_moe_comm_method,
     set_ascend_forward_context,
@@ -54,17 +60,17 @@ from afd_plugin.compat.ascend.profiler import (
     step_afd_npu_profiler,
     stop_afd_npu_profiler,
 )
-from afd_plugin.connectors import (
-    AFDConnectorFactory,
-    AFDDPMetadata,
-    AFDDPMetadataPayload,
-    AFDMetadata,
-)
 from afd_plugin.config import (
     AFDConfig,
     async_moe_num_ubatches,
     async_moe_ubatching_enabled,
     parse_afd_config,
+)
+from afd_plugin.connectors import (
+    AFDConnectorFactory,
+    AFDDPMetadata,
+    AFDDPMetadataPayload,
+    AFDMetadata,
 )
 from afd_plugin.model_executor.models import ASYNC_MOE_UBATCH_METADATA_KEY
 from afd_plugin.v1.worker.ascend.npu_ubatch_wrapper import AscendUBatchWrapper
@@ -242,7 +248,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         if ubatch_slices is None:
             return full_metadata
 
-        logger.warning(
+        logger.debug(
             "AFD NPU async MoE ubatch split; num_reqs=%s num_tokens=%s "
             "num_scheduled_tokens=%s request_slices=%s token_slices=%s "
             "stage_num_tokens=%s",
@@ -332,8 +338,8 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             )
 
         def _build_stage_local_pcp_metadata(
-            common_attn_metadata: Any,
-            ubatch_slice: Any,
+            common_attn_metadata: AscendCommonAttentionMetadata,
+            ubatch_slice: UBatchSlice,
             ubid: int,
             kv_cache_gid: int,
             attn_gid: int,
@@ -546,7 +552,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         def _build_attn_group_metadata(
             kv_cache_gid: int,
             attn_gid: int,
-            common_attn_metadata: Any,
+            common_attn_metadata: AscendCommonAttentionMetadata,
             ubid: int | None = None,
         ) -> None:
             attn_group = self.attn_groups[kv_cache_gid][attn_gid]
@@ -1221,7 +1227,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
     def _install_afd_metadata_on_forward_context(
         self,
-        forward_context: object,
+        forward_context: ForwardContext,
     ) -> None:
         if self._afd_pending_metadata is None:
             self._afd_pending_metadata = self._build_afd_metadata(
@@ -1248,7 +1254,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
     def _install_async_moe_ubatch_metadata_on_forward_context(
         self,
-        forward_context: object,
+        forward_context: ForwardContext,
     ) -> None:
         if self._afd_async_moe_ubatch_metadata is None:
             return
@@ -1341,8 +1347,8 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
     def initialize_attn_backend(self, *args: Any, **kwargs: Any) -> Any:
         result = super().initialize_attn_backend(*args, **kwargs)
-        if _is_npu_ubatching_enabled(
-            self.vllm_config,
+        if bool(
+            self.vllm_config.parallel_config.use_ubatching,
         ) or async_moe_ubatching_enabled(self.afd_config):
             self._ensure_two_metadata_builders()
         return result
@@ -1778,10 +1784,5 @@ _ATTENTION_METADATA_ARG_NAMES = [
     "num_scheduled_tokens_np",
     "cascade_attn_prefix_lens",
 ]
-
-
-def _is_npu_ubatching_enabled(vllm_config: object) -> bool:
-    return bool(vllm_config.parallel_config.use_ubatching)
-
 
 __all__ = ["AFDNPUAttentionModelRunner"]

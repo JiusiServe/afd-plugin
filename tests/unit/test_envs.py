@@ -17,4 +17,3 @@ def test_force_balanced_topk_ids_env_accepts_true_values(monkeypatch):
         monkeypatch.setenv(AFD_FORCE_BALANCED_TOPK_IDS, value)
 
         assert force_balanced_topk_ids_enabled() is True
-

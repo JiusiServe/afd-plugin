@@ -31,6 +31,7 @@ from vllm.model_executor.models.deepseek_v2 import (
     get_spec_layer_idx_from_weight_name,
 )
 from vllm.model_executor.models.utils import is_pp_missing_parameter
+from vllm.v1.worker.ubatch_utils import UBatchSlices
 
 try:
     from vllm_ascend.ascend_config import get_ascend_config
@@ -38,11 +39,12 @@ except ImportError:
     get_ascend_config = None
 
 from afd_plugin.config import parse_afd_config
-from afd_plugin.connectors import AFDConnectorMetadata, AFDFFNOutput
+from afd_plugin.connectors import AFDConnectorMetadata, AFDFFNOutput, AFDMetadata
 from afd_plugin.envs import (
     force_balanced_topk_ids_enabled,
 )
 from afd_plugin.model_executor.models import (
+    AsyncMoeUbatchMetadata,
     get_afd_metadata_from_forward_context,
     get_async_moe_ubatch_metadata_from_forward_context,
 )
@@ -423,7 +425,6 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         group_list_type: int = 1,
         **kwargs: Any,
     ) -> torch.Tensor | AFDFFNOutput:
-        del kwargs
         if self.compute_gate_on_attention and not self.is_moe_layer:
             raise RuntimeError(
                 "Dense DeepSeek layers are computed on the Attention side "
@@ -686,7 +687,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
         positions: torch.Tensor,
-        afd_metadata: object,
+        afd_metadata: AFDMetadata,
         llama_4_scaling: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if self.afd_config.compute_gate_on_attention:
@@ -758,7 +759,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
         positions: torch.Tensor,
-        afd_metadata: object,
+        afd_metadata: AFDMetadata,
         llama_4_scaling: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         afd_connector = afd_metadata.afd_connector
@@ -835,7 +836,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
         positions: torch.Tensor,
-        afd_metadata: object,
+        afd_metadata: AFDMetadata,
         llama_4_scaling: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         forward_context = get_forward_context()
@@ -888,7 +889,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
         moe_layers = list(islice(self.layers, moe_start_layer, self.end_layer))
 
         def compute_stage_attention(
-            layer: Any,
+            layer: AFDDeepseekV2DecoderLayer,
             stage_idx: int,
         ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
             ubatch_slice = ubatch_slices[stage_idx]
@@ -924,7 +925,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
             return topk_weights, topk_ids, router_logits
 
         def send_stage_attention(
-            layer: Any,
+            layer: AFDDeepseekV2DecoderLayer,
             stage_idx: int,
             topk_weights: torch.Tensor,
             topk_ids: torch.Tensor,
@@ -944,8 +945,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
                 router_logits=router_logits,
             )
 
-        def recv_stage_ffn(layer: Any, stage_idx: int, event_prefix: str) -> None:
-            del layer, event_prefix
+        def recv_stage_ffn(stage_idx: int) -> None:
             stage_hidden_states[stage_idx] = afd_connector.recv_ffn_output(
                 ref_tensor=stage_hidden_states[stage_idx],
                 ubatch_idx=stage_idx,
@@ -973,7 +973,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
                 current_layer,
                 1,
             )
-            recv_stage_ffn(current_layer, 0, "wavefront")
+            recv_stage_ffn(0)
             send_stage_attention(
                 current_layer,
                 1,
@@ -986,7 +986,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
                 next_layer,
                 0,
             )
-            recv_stage_ffn(current_layer, 1, "wavefront")
+            recv_stage_ffn(1)
             send_stage_attention(
                 next_layer,
                 0,
@@ -1000,7 +1000,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
             last_layer,
             1,
         )
-        recv_stage_ffn(last_layer, 0, "final")
+        recv_stage_ffn(0)
         send_stage_attention(
             last_layer,
             1,
@@ -1008,7 +1008,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
             topk_ids,
             router_logits,
         )
-        recv_stage_ffn(last_layer, 1, "final")
+        recv_stage_ffn(1)
         output_hidden_states = torch.cat(stage_hidden_states, dim=0)
         return (
             output_hidden_states,
@@ -1052,8 +1052,8 @@ _MISSING_FORWARD_CONTEXT_ATTR = object()
 def _use_async_moe_ubatch_forward_context(
     *,
     forward_context: object,
-    parent_afd_metadata: object,
-    async_moe_ubatch_metadata: dict[str, Any],
+    parent_afd_metadata: AFDMetadata,
+    async_moe_ubatch_metadata: AsyncMoeUbatchMetadata,
     stage_idx: int,
 ) -> Iterator[None]:
     ubatch_slices = async_moe_ubatch_metadata["ubatch_slices"]
@@ -1107,10 +1107,10 @@ def _use_async_moe_ubatch_forward_context(
 
 
 def _build_async_moe_stage_afd_metadata(
-    parent_afd_metadata: object,
-    ubatch_slices: object,
+    parent_afd_metadata: AFDMetadata,
+    ubatch_slices: UBatchSlices,
     stage_idx: int,
-) -> object:
+) -> AFDMetadata:
     ubatch_slice = ubatch_slices[stage_idx]
     stage_metadata = parent_afd_metadata.clone()
     stage_metadata.afd_stage_idx = stage_idx

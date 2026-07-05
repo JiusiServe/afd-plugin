@@ -126,8 +126,7 @@ def assert_compatible_afd_stack(
             else "invalid worker class for AFD runtime stack: "
         )
         raise ValueError(
-            prefix +
-            f"got={worker_fqcn!r} expected={expected_qualname!r}; "
+            prefix + f"got={worker_fqcn!r} expected={expected_qualname!r}; "
             f"pass --worker-cls {expected_qualname}{_ctx()}",
         )
 

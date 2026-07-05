@@ -49,14 +49,12 @@ def _install_fake_vllm_engine(monkeypatch: pytest.MonkeyPatch):
     engine_module.EngineCoreRequestType = SimpleNamespace(ADD="ADD")
 
     class EngineCoreProc:
-        def __init__(self, *args, engine_index=0, **kwargs):
-            del args, kwargs
+        def __init__(self, *_args, engine_index=0, **_kwargs):
             self.kind = "engine"
             self.engine_index = engine_index
 
         @staticmethod
         def run_engine_core(*args, dp_rank=0, local_dp_rank=0, **kwargs):
-            del local_dp_rank
             vllm_config = kwargs["vllm_config"]
             if (
                 vllm_config.parallel_config.data_parallel_size > 1
@@ -80,9 +78,13 @@ def _install_fake_vllm_engine(monkeypatch: pytest.MonkeyPatch):
             self.enable_wave_coordination = enable_wave_coordination
 
     @contextmanager
-    def launch_core_engines(vllm_config, executor_class, log_stats, addresses,
-                            num_api_servers=1):
-        del executor_class, log_stats, addresses, num_api_servers
+    def launch_core_engines(
+        vllm_config,
+        _executor_class,
+        _log_stats,
+        _addresses,
+        _num_api_servers=1,
+    ):
         yield utils_module.DPCoordinator(
             vllm_config.parallel_config,
             enable_wave_coordination=True,

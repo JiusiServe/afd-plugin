@@ -9,7 +9,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, TypeAlias
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 from torch import Tensor
@@ -17,10 +17,17 @@ from torch import Tensor
 from afd_plugin.compat.ascend.ops import ensure_cam_async_ops_available
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
-from afd_plugin.connectors.metadata import AFDConnectorMetadata, AFDRecvOutput
+from afd_plugin.connectors.metadata import (
+    AFDConnectorMetadata,
+    AFDDPMetadataPayload,
+    AFDRecvOutput,
+)
 from afd_plugin.distributed import init_afd_process_group
 
-DPMetadataMap: TypeAlias = dict[int, object]
+if TYPE_CHECKING:
+    from torch.distributed.distributed_c10d import ProcessGroup
+    from vllm.config import VllmConfig
+
 AFD_ASYNC_CAM_GROUP_NAME = "afd_async_cam"
 CAM_COMM_ID = 0
 ATTN_RANKS_PER_DP_CONFIG_KEY = "attn_ranks_per_dp"
@@ -69,12 +76,7 @@ class AFDAsyncTopology:
 
 
 class AFDAsyncConnector(AFDConnectorBase):
-    """CAM-backed async-DP connector for Ascend NPU AFD.
-
-    Phase 1 owns only the connector contract, CAM op call shape, and metadata
-    control-plane bypass. Attention-side top-k and FFN loop integration are
-    added in later phases.
-    """
+    """CAM-backed async-DP connector for Ascend NPU AFD."""
 
     uses_dp_metadata_control_plane = False
     ffn_step_trigger = "connector"
@@ -85,7 +87,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         self,
         rank: int,
         local_rank: int,
-        vllm_config: object,
+        vllm_config: VllmConfig,
         afd_config: AFDConfig,
     ) -> None:
         super().__init__(rank, local_rank, vllm_config, afd_config)
@@ -113,7 +115,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         )
         self.comm_id = CAM_COMM_ID
         self.tp_size = _resolve_cam_tp_size(afd_config)
-        self.cam_pg: Any | None = None
+        self.cam_pg: ProcessGroup | None = None
         self.topology = build_async_topology(
             afd_config,
             self._role_rank,
@@ -170,32 +172,25 @@ class AFDAsyncConnector(AFDConnectorBase):
 
     def update_state_from_dp_metadata(
         self,
-        dp_metadata_list: DPMetadataMap,
-        *,
-        is_graph_capturing: bool = False,
-        is_warmup: bool = False,
+        payload: AFDDPMetadataPayload,
     ) -> None:
-        del dp_metadata_list, is_graph_capturing, is_warmup
+        return None
 
     def send_dp_metadata_list(
         self,
-        dp_metadata_list: DPMetadataMap,
-        *,
-        is_graph_capturing: bool = False,
-        is_warmup: bool = False,
+        payload: AFDDPMetadataPayload,
     ) -> None:
-        del dp_metadata_list, is_graph_capturing, is_warmup
+        return None
 
     def recv_dp_metadata_list(
         self,
         timeout_ms: int | None = None,
-    ) -> tuple[DPMetadataMap, bool, bool]:
-        del timeout_ms
+    ) -> AFDDPMetadataPayload:
         raise RuntimeError(
             "AFDAsyncConnector does not use the DP metadata control plane",
         )
 
-    def select_experts(self, **kwargs: object) -> tuple[Tensor, Tensor]:
+    def select_experts(self, **kwargs: Any) -> tuple[Tensor, Tensor]:
         from vllm_ascend.ops.fused_moe.experts_selector import select_experts
 
         if "global_num_experts" in kwargs:
@@ -210,14 +205,14 @@ class AFDAsyncConnector(AFDConnectorBase):
     def configure_metadata(
         self,
         metadata: AFDConnectorMetadata,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> None:
         metadata.connector_data = self._make_connector_data(
             batch_size=int(kwargs.get("batch_size", metadata.total_tokens)),
             layer_idx=int(metadata.layer_idx),
         )
 
-    def create_recv_metadata(self, **kwargs: object) -> AFDConnectorMetadata:
+    def create_recv_metadata(self, **kwargs: Any) -> AFDConnectorMetadata:
         batch_size = int(kwargs.get("batch_size", kwargs.get("max_num_tokens", 1)) or 1)
         layer_idx = int(kwargs.get("layer_idx", 0) or 0)
         stage_idx = int(kwargs.get("ubatch_idx", 0) or 0)
@@ -256,8 +251,8 @@ class AFDAsyncConnector(AFDConnectorBase):
         self,
         hidden_states: Tensor,
         metadata: AFDConnectorMetadata,
-        **kwargs: object,
-    ) -> Tensor:
+        **kwargs: Any,
+    ) -> None:
         self._require_initialized()
         if not metadata.validate_tensor_shape(tuple(hidden_states.shape)):
             raise ValueError(
@@ -269,9 +264,10 @@ class AFDAsyncConnector(AFDConnectorBase):
         topk_weights = kwargs.get("topk_weights")
         if topk_ids is None or topk_weights is None:
             raise RuntimeError(
-                "AFDAsyncConnector send_attn_output requires "
-                "topk_ids/topk_weights",
+                "AFDAsyncConnector send_attn_output requires topk_ids/topk_weights",
             )
+        topk_ids = cast(Tensor, topk_ids)
+        topk_weights = cast(Tensor, topk_weights)
         _validate_topk_payload(
             topk_ids,
             topk_weights,
@@ -281,8 +277,9 @@ class AFDAsyncConnector(AFDConnectorBase):
         data.topk_ids = topk_ids
         data.topk_weights = topk_weights
         self._queue_attention_payload(metadata, topk_ids, topk_weights)
-        _log_cam_op_inputs(
+        _log_cam_op_values(
             "async_dispatch_send",
+            "inputs",
             hidden_states=hidden_states,
             topk_ids=topk_ids,
             comm_args=self.comm_args,
@@ -301,7 +298,7 @@ class AFDAsyncConnector(AFDConnectorBase):
             dynamic_quant=self.dynamic_quant,
             group_name=self.group_name,
         )
-        return torch.ops.umdk_cam_op_lib.async_dispatch_send(
+        torch.ops.umdk_cam_op_lib.async_dispatch_send(
             hidden_states,
             topk_ids,
             self.comm_args,
@@ -320,11 +317,11 @@ class AFDAsyncConnector(AFDConnectorBase):
             self.dynamic_quant,
             self.group_name,
         )
+        return None
 
-    def recv_ffn_output(self, handle: object = None, **kwargs: object) -> Tensor:
-        del handle
+    def recv_ffn_output(self, **kwargs: Any) -> Tensor:
         self._require_initialized()
-        ref_tensor = kwargs["ref_tensor"]
+        ref_tensor = cast(Tensor, kwargs["ref_tensor"])
         metadata = kwargs.get("metadata")
         topk_ids = kwargs.get("topk_ids")
         topk_weights = kwargs.get("topk_weights")
@@ -340,11 +337,9 @@ class AFDAsyncConnector(AFDConnectorBase):
                 topk_ids = pending_topk_ids
             if topk_weights is None:
                 topk_weights = pending_topk_weights
-        if metadata is None:
-            metadata = self.create_recv_metadata(
-                batch_size=int(ref_tensor.shape[0]),
-                layer_idx=int(kwargs.get("layer_idx", 0) or 0),
-            )
+        metadata = cast(AFDConnectorMetadata, metadata)
+        topk_ids = cast(Tensor, topk_ids)
+        topk_weights = cast(Tensor, topk_weights)
         data = self._metadata_data_or_default(metadata)
         _validate_topk_payload(
             topk_ids,
@@ -353,8 +348,9 @@ class AFDAsyncConnector(AFDConnectorBase):
             topk=data.topk,
         )
         placeholder = ref_tensor.new_empty((1,))
-        _log_cam_op_inputs(
+        _log_cam_op_values(
             "async_combine_recv",
+            "inputs",
             placeholder=placeholder,
             topk_ids=topk_ids,
             topk_weights=topk_weights,
@@ -386,16 +382,14 @@ class AFDAsyncConnector(AFDConnectorBase):
             self.topology.world_size,
             self.group_name,
         )
-        _log_cam_op_outputs("async_combine_recv", output=output)
+        _log_cam_op_values("async_combine_recv", "outputs", output=output)
         return output
 
     def recv_attn_output(
         self,
-        timeout_ms: int | None = None,
         ubatch_idx: int | None = None,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> AFDRecvOutput:
-        del timeout_ms
         self._require_initialized()
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
         metadata = kwargs.get("metadata")
@@ -405,10 +399,12 @@ class AFDAsyncConnector(AFDConnectorBase):
                 batch_size=int(kwargs.get("batch_size", self.max_seq_len) or 1),
                 layer_idx=int(kwargs.get("layer_idx", 0) or 0),
             )
+        metadata = cast(AFDConnectorMetadata, metadata)
         data = _ensure_connector_data(metadata)
         placeholder = kwargs.get("placeholder", self._placeholder)
-        _log_cam_op_inputs(
+        _log_cam_op_values(
             "async_dispatch_recv",
+            "inputs",
             placeholder=placeholder,
             comm_args=self.comm_args,
             comm_id=self.comm_id,
@@ -449,8 +445,9 @@ class AFDAsyncConnector(AFDConnectorBase):
             expert_token_nums,
             expert_token_nums_shared,
         ) = outputs
-        _log_cam_op_outputs(
+        _log_cam_op_values(
             "async_dispatch_recv",
+            "outputs",
             hidden_states=hidden_states,
             expand_x_shared=expand_x_shared,
             dynamic_scales=dynamic_scales,
@@ -482,7 +479,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         self,
         ffn_output: Tensor,
         metadata: AFDConnectorMetadata,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> None:
         self._require_initialized()
         data = _ensure_connector_data(metadata)
@@ -497,8 +494,9 @@ class AFDAsyncConnector(AFDConnectorBase):
                 "AFD async CAM combine send requires "
                 "TokenNums_Rankid_Layeridx from async_dispatch_recv",
             )
-        _log_cam_op_inputs(
+        _log_cam_op_values(
             "async_combine_send",
+            "inputs",
             ffn_output=ffn_output,
             expand_x_shared=expand_x_shared,
             comm_args=self.comm_args,
@@ -633,14 +631,6 @@ def _log_cam_op_values(op_name: str, label: str, **kwargs: object) -> None:
     logger.warning("AFD CAM %s %s:\n%s", op_name, label, formatted_args)
 
 
-def _log_cam_op_inputs(op_name: str, **kwargs: object) -> None:
-    _log_cam_op_values(op_name, "inputs", **kwargs)
-
-
-def _log_cam_op_outputs(op_name: str, **kwargs: object) -> None:
-    _log_cam_op_values(op_name, "outputs", **kwargs)
-
-
 def build_async_topology(
     afd_config: AFDConfig,
     role_rank: int | None = None,
@@ -716,29 +706,30 @@ def _ensure_connector_data(metadata: AFDConnectorMetadata) -> AFDAsyncConnectorD
 
 
 def _validate_topk_payload(
-    topk_ids: object,
-    topk_weights: object | None,
+    topk_ids: Tensor,
+    topk_weights: Tensor | None,
     *,
     batch_size: int,
     topk: int,
     require_weights: bool = True,
 ) -> None:
-    if tuple(getattr(topk_ids, "shape", ())) != (int(batch_size), int(topk)):
+    if tuple(topk_ids.shape) != (int(batch_size), int(topk)):
         raise ValueError(
-            "topk_ids shape must match "
-            f"({batch_size}, {topk}), got {getattr(topk_ids, 'shape', None)!r}",
+            f"topk_ids shape must match ({batch_size}, {topk}), got {topk_ids.shape!r}",
         )
     if not require_weights and topk_weights is None:
         return
-    if tuple(getattr(topk_weights, "shape", ())) != (int(batch_size), int(topk)):
+    if topk_weights is None:
+        raise ValueError("topk_weights is required")
+    if tuple(topk_weights.shape) != (int(batch_size), int(topk)):
         raise ValueError(
             "topk_weights shape must match "
             f"({batch_size}, {topk}), "
-            f"got {getattr(topk_weights, 'shape', None)!r}",
+            f"got {topk_weights.shape!r}",
         )
 
 
-def _hccl_comm_name(group: Any, rank: int) -> str:
+def _hccl_comm_name(group: ProcessGroup, rank: int) -> str:
     backend = group._get_backend(torch.device("npu"))
     return str(backend.get_hccl_comm_name(int(rank)))
 

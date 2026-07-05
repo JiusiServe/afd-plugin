@@ -7,7 +7,10 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
 
 AFD_ADDITIONAL_CONFIG_KEY: Final[str] = "afd"
 AFD_ASYNC_CONNECTOR: Final[str] = "afdasyncconnector"
@@ -284,6 +287,27 @@ def parse_afd_config(
     )
 
 
+def is_afd_async_dp(vllm_config: VllmConfig) -> bool:
+    """Return whether ``vllm_config`` selects AFD's async connector mode."""
+
+    config = parse_afd_config(vllm_config, validate=False)
+    return (
+        config.enabled and config.async_dp and config.connector == AFD_ASYNC_CONNECTOR
+    )
+
+
+def is_afd_async_attention_dp(vllm_config: VllmConfig) -> bool:
+    """Return whether this config is an async-DP Attention-side engine."""
+
+    config = parse_afd_config(vllm_config, validate=False)
+    return (
+        config.enabled
+        and config.async_dp
+        and config.connector == AFD_ASYNC_CONNECTOR
+        and config.role == "attention"
+    )
+
+
 def validate_afd_config(
     config: AFDConfig,
     *,
@@ -356,6 +380,8 @@ __all__ = [
     "async_moe_num_ubatches",
     "async_moe_split",
     "async_moe_ubatching_enabled",
+    "is_afd_async_attention_dp",
+    "is_afd_async_dp",
     "parse_afd_config",
     "validate_afd_config",
 ]

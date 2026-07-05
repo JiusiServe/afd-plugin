@@ -12,6 +12,8 @@ pytest.importorskip("torch")
 from afd_plugin.connectors import (  # noqa: E402
     AFDConnectorFactory,
     AFDConnectorMetadata,
+    AFDDPMetadata,
+    AFDDPMetadataPayload,
 )
 from afd_plugin.connectors.npu import async_cam as async_cam_module  # noqa: E402
 from afd_plugin.connectors.npu.async_cam import (  # noqa: E402
@@ -249,9 +251,14 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
 
 def test_async_connector_disables_dp_metadata_control_plane():
     connector = AFDAsyncConnector(0, 0, _vllm_config(), _afd_config(role="ffn"))
+    payload = AFDDPMetadataPayload(
+        dp_metadata_list={0: AFDDPMetadata([1])},
+        is_graph_capturing=False,
+        is_warmup=False,
+    )
 
-    connector.update_state_from_dp_metadata({0: object()})
-    connector.send_dp_metadata_list({0: object()})
+    connector.update_state_from_dp_metadata(payload)
+    connector.send_dp_metadata_list(payload)
 
     with pytest.raises(RuntimeError, match="does not use the DP metadata"):
         connector.recv_dp_metadata_list()
@@ -290,7 +297,7 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
         ubatch_idx=0,
     )
 
-    assert output is hidden_states
+    assert output is None
     assert combined.shape == (3, 16)
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][0] == "dispatch_send"
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][0] == "combine_recv"
