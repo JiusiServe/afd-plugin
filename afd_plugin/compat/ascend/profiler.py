@@ -45,11 +45,9 @@ class AFDNPUProfilerConfig:
 
 
 class AFDNPUProfiler(Protocol):
-    def step(self) -> None:
-        ...
+    def step(self) -> None: ...
 
-    def stop(self) -> None:
-        ...
+    def stop(self) -> None: ...
 
 
 def afd_npu_profiler_config(role: AFDNPUProfilerRole) -> AFDNPUProfilerConfig:

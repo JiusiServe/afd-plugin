@@ -50,6 +50,8 @@ if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
 
+    from afd_plugin.connectors import AFDConnectorBase
+
 logger = init_logger(__name__)
 
 
@@ -468,7 +470,7 @@ def _ffn_token_counts_across_ranks(
 
 
 def _ffn_token_count_for_rank(
-    connector: Any,
+    connector: AFDConnectorBase,
     num_tokens_across_dp: torch.Tensor,
 ) -> int:
     values = _to_int_list(num_tokens_across_dp)

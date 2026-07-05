@@ -34,7 +34,7 @@ class AFDUBatchWrapper(UBatchWrapper):
     @staticmethod
     def _create_sm_control_context(
         vllm_config: VllmConfig,
-    ) -> AbstractContextManager[Any]:
+    ) -> AbstractContextManager[None]:
         if parse_afd_config(vllm_config).enabled:
             return nullcontext()
         return UBatchWrapper._create_sm_control_context(vllm_config)
