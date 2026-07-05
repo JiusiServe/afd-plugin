@@ -93,7 +93,25 @@ AFDSingleDPMetadata = AFDDPMetadata
 
 @dataclass(slots=True)
 class AFDDPMetadataPayload:
-    """Structured DP metadata control-plane payload."""
+    """Structured DP metadata control-plane payload.
+
+    This object is the envelope used by connector control-plane methods:
+    ``update_state_from_dp_metadata()``, ``send_dp_metadata_list()``, and
+    ``recv_dp_metadata_list()``.
+
+    Attributes:
+        dp_metadata_list: Mapping from stage or ubatch index to DP token
+            metadata. Values are normalized to ``AFDDPMetadata`` in
+            ``__post_init__`` so connector implementations can rely on a stable
+            plugin-owned representation instead of vLLM-internal DP metadata
+            objects.
+        is_graph_capturing: Whether the Attention side is currently executing
+            a graph-capture path. Connectors use this to decide how to prepare
+            local buffers or backend state before data-path operations.
+        is_warmup: Whether the payload belongs to a warmup step. This is
+            separate from graph capture because warmup may prepare state without
+            representing a real serving step.
+    """
 
     dp_metadata_list: dict[int, AFDDPMetadata]
     is_graph_capturing: bool
@@ -185,7 +203,24 @@ class AFDConnectorData:
 
 @dataclass(slots=True)
 class AFDConnectorMetadata:
-    """Communication metadata for one AFD Attention/FFN exchange."""
+    """Communication metadata for one AFD Attention/FFN exchange.
+
+    ``AFDConnectorMetadata`` describes the logical tensor transfer for a single
+    layer/stage pair. It is intentionally backend-neutral, with
+    ``connector_data`` reserved for backend-specific state.
+
+    Attributes:
+        layer_idx: Model layer index associated with this transfer.
+        stage_idx: Stage or ubatch index associated with this transfer.
+        seq_lens: Per-peer or per-split token lengths. The sum of this list is
+            the expected leading dimension for tensors validated against this
+            metadata. For one-to-one transfers this is usually a single-item
+            list; for fan-in/fan-out paths it can describe split sizes.
+        connector_data: Optional backend-specific payload. For example,
+            CAMP2P stores ``CAMP2PAFDConnectorMetadata`` here so receive-time
+            results can be reused by the matching send path. P2P does not
+            currently require connector-specific data.
+    """
 
     layer_idx: int
     stage_idx: int
@@ -236,7 +271,37 @@ class AFDConnectorMetadata:
 
 @dataclass(slots=True)
 class AFDRecvOutput:
-    """Unified Attention -> FFN payload returned by connector recv paths."""
+    """Unified Attention-to-FFN receive payload.
+
+    ``recv_attn_output()`` returns this object on the FFN side. The first two
+    fields are the common contract; the remaining fields carry backend-specific
+    outputs produced by NPU/CAM-style custom ops.
+
+    Attributes:
+        hidden_states: Hidden-state tensor received from the Attention side.
+        metadata: Metadata describing the received transfer. FFN runners pass
+            this metadata through the FFN compute and back into
+            ``send_ffn_output()``.
+        group_list: Optional expert/group token-count payload. CAMP2P and
+            async CAM style connectors use this for MoE routing metadata.
+        topk_weights: Optional top-k routing weights produced or forwarded by
+            the backend receive path.
+        topk_ids: Optional top-k expert ids produced or forwarded by the
+            backend receive path.
+        router_logits: Optional router logits for backends that forward router
+            outputs through the connector payload.
+        row_idx: Optional row-index payload for backend-specific token routing.
+        x_active_mask: Optional active-token mask returned by CAMP2P/CAM ops.
+        dynamic_scales: Optional dynamic quantization scales for routed expert
+            tokens.
+        cam_p2p_ep_name: Optional CAM/HCCL endpoint name associated with the
+            receive path.
+        atten_batch_size: Optional backend-reported Attention batch-size or
+            token-count tensor. CAMP2P stores it in connector data for the
+            matching FFN-to-Attention send.
+        expand_idx: Optional expanded-token index payload for MoE routing.
+        ep_recv_counts: Optional expert-parallel receive counts.
+    """
 
     hidden_states: torch.Tensor
     metadata: AFDConnectorMetadata

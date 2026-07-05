@@ -147,13 +147,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             graph_enabled=graph_enabled,
             graph_exists=graph_info is not None,
         )
-        _log_graph_key_lookup(
-            graph_key=graph_key,
-            graph_enabled=graph_enabled,
-            graph_exists=graph_info is not None,
-            run_mode=run_mode,
-            cached_graph_count=len(acl_graphs),
-        )
         if run_mode is AFDGraphRunMode.REPLAY:
             logger.debug(
                 "AFD NPU FFN replaying ACL graph; key=%s cached_graphs=%d",
@@ -253,7 +246,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                         )
                         _set_moe_layer_index(forward_context, layer_idx)
 
-                    rank_ffn_output = self._run_ffn_computation(
+                    rank_ffn_output = self.model.compute_ffn_output(
                         hidden_states=hidden_states,
                         layer_idx=layer_idx,
                         group_list=payload.group_list,
@@ -382,34 +375,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             layer_idx,
         )
         return output
-
-    def _run_ffn_computation(
-        self,
-        *,
-        hidden_states: torch.Tensor,
-        layer_idx: int,
-        group_list: Any = None,
-        dynamic_scales: torch.Tensor | None = None,
-        topk_weights: torch.Tensor | None = None,
-        topk_ids: torch.Tensor | None = None,
-        router_logits: torch.Tensor | None = None,
-        row_idx: torch.Tensor | None = None,
-        x_active_mask: torch.Tensor | None = None,
-        cam_p2p_ep_name: str = "",
-    ) -> torch.Tensor:
-        compute = self.model.compute_ffn_output
-        return compute(
-            hidden_states=hidden_states,
-            layer_idx=layer_idx,
-            group_list=group_list,
-            dynamic_scales=dynamic_scales,
-            topk_weights=topk_weights,
-            topk_ids=topk_ids,
-            router_logits=router_logits,
-            row_idx=row_idx,
-            x_active_mask=x_active_mask,
-            cam_p2p_ep_name=cam_p2p_ep_name,
-        )
 
     def sample_tokens(self, grammar_output: Any = None) -> Any:
         raise RuntimeError("AFD NPU FFN runners do not sample tokens")
@@ -558,44 +523,6 @@ def _use_npu_aclgraph(vllm_config: VllmConfig, runner: object) -> bool:
         "FULL_DECODE_ONLY",
         "PIECEWISE",
     }
-
-
-def _log_graph_key_lookup(
-    *,
-    graph_key: tuple,
-    graph_enabled: bool,
-    graph_exists: bool,
-    run_mode: AFDGraphRunMode,
-    cached_graph_count: int,
-) -> None:
-    if not graph_enabled:
-        logger.debug("AFD NPU FFN ACL graph disabled; key=%s", graph_key)
-        return
-
-    if run_mode is AFDGraphRunMode.REPLAY:
-        logger.debug(
-            "AFD NPU FFN ACL graph key hit; key=%s cached_graphs=%d",
-            graph_key,
-            cached_graph_count,
-        )
-        return
-
-    if run_mode is AFDGraphRunMode.EAGER:
-        logger.debug(
-            "AFD NPU FFN ACL graph key miss; key=%s cached_graphs=%d, "
-            "falling back to eager",
-            graph_key,
-            cached_graph_count,
-        )
-        return
-
-    logger.debug(
-        "AFD NPU FFN ACL graph key lookup during %s; key=%s hit=%s cached_graphs=%d",
-        run_mode.value,
-        graph_key,
-        graph_exists,
-        cached_graph_count,
-    )
 
 
 __all__ = ["AFDNPUFFNModelRunner"]
