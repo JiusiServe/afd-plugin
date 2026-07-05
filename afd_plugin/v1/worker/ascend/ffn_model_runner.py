@@ -356,7 +356,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     )
                     _set_moe_layer_index(forward_context, layer_idx)
 
-                rank_ffn_output = self._run_ffn_computation(
+                rank_ffn_output = self.model.compute_ffn_output(
                     hidden_states=hidden_states,
                     layer_idx=layer_idx,
                     group_list=payload.group_list,
