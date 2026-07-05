@@ -88,24 +88,26 @@ def test_deepseek_afd_attention_path_can_compute_gate_before_send():
 
 def test_deepseek_afd_attention_gate_can_force_balanced_topk_ids():
     source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
+    gate_source = Path(
+        "afd_plugin/model_executor/models/deepseek_v2_attention_gate.py",
+    ).read_text()
     compute_attn_output = source.split("    def compute_attn_output(", 1)[1].split(
         "    def compute_ffn_output(",
         1,
     )[0]
 
-    assert "force_balanced_topk_ids_enabled" in source
-    assert "def _force_balanced_topk_ids(" in source
-    assert "topk_ids.copy_(balanced_topk_ids)" in source
-    assert "topk_weights, topk_ids = afd_connector.select_experts(" in (
-        compute_attn_output
-    )
-    assert "if force_balanced_topk_ids_enabled():" in compute_attn_output
+    assert "compute_attention_gate_topk(" in compute_attn_output
+    assert "force_balanced_topk_ids_enabled" in gate_source
+    assert "def _force_balanced_topk_ids(" in gate_source
+    assert "topk_ids.copy_(balanced_topk_ids)" in gate_source
+    assert "topk_weights, topk_ids = afd_connector.select_experts(" in (gate_source)
+    assert "if force_balanced_topk_ids_enabled():" in gate_source
     assert (
-        compute_attn_output.index(
+        gate_source.index(
             "topk_weights, topk_ids = afd_connector.select_experts(",
         )
-        < compute_attn_output.index("if force_balanced_topk_ids_enabled():")
-        < compute_attn_output.index("topk_weights = topk_weights.to(torch.float32)")
+        < gate_source.index("if force_balanced_topk_ids_enabled():")
+        < gate_source.index("topk_weights = topk_weights.to(torch.float32)")
     )
 
 
@@ -191,16 +193,19 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
 
 def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():
     source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
+    gate_source = Path(
+        "afd_plugin/model_executor/models/deepseek_v2_attention_gate.py",
+    ).read_text()
     compute_ffn_output = source.split(
         "    def compute_ffn_output(",
         1,
-    )[1].split("    def _compute_moe_with_attention_gate(", 1)[0]
-    compute_moe = source.split(
-        "    def _compute_moe_with_attention_gate(",
-        1,
     )[1].split("\n\n@native.support_torch_compile", 1)[0]
+    compute_moe = gate_source.split(
+        "def compute_attention_gate_moe_ffn(",
+        1,
+    )[1].split("\ndef _dequantize_int8_activation(", 1)[0]
 
-    assert "_compute_moe_with_attention_gate(" in compute_ffn_output
+    assert "compute_attention_gate_moe_ffn(" in compute_ffn_output
     assert "AFDFFNOutput(" in compute_moe
     assert "MoEMlpComputeInput(" in compute_moe
     assert "unified_apply_mlp(" in compute_moe
@@ -218,14 +223,17 @@ def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():
 
 def test_deepseek_afd_ffn_compute_omits_stub_io_diagnostics():
     source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
+    gate_source = Path(
+        "afd_plugin/model_executor/models/deepseek_v2_attention_gate.py",
+    ).read_text()
     compute_ffn_output = source.split(
         "    def compute_ffn_output(",
         1,
-    )[1].split("    def _compute_moe_with_attention_gate(", 1)[0]
-    compute_moe = source.split(
-        "    def _compute_moe_with_attention_gate(",
-        1,
     )[1].split("\n\n@native.support_torch_compile", 1)[0]
+    compute_moe = gate_source.split(
+        "def compute_attention_gate_moe_ffn(",
+        1,
+    )[1].split("\ndef _dequantize_int8_activation(", 1)[0]
 
     assert "camp2p_stub_io_enabled()" not in source
     assert "_log_ffn_compute_step(" not in compute_ffn_output
