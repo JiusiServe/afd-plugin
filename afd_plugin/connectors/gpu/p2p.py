@@ -507,10 +507,16 @@ def _decode_dp_metadata_payload(
     payload = json.loads(payload_bytes.decode("utf-8"))
     dp_metadata_list = {
         int(stage_idx): AFDDPMetadata(
-            num_tokens_across_dp_cpu=[
-                int(value) for value in metadata["num_tokens_across_dp_cpu"]
-            ],
-            max_tokens_across_dp_cpu=int(metadata["max_tokens_across_dp_cpu"]),
+            num_tokens_across_dp_cpu=torch.tensor(
+                [int(value) for value in metadata["num_tokens_across_dp_cpu"]],
+                dtype=torch.int32,
+                device="cpu",
+            ),
+            max_tokens_across_dp_cpu=torch.tensor(
+                int(metadata["max_tokens_across_dp_cpu"]),
+                dtype=torch.int32,
+                device="cpu",
+            ),
         )
         for stage_idx, metadata in payload["dp_metadata_list"].items()
     }
