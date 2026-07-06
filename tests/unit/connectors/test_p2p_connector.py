@@ -134,35 +134,58 @@ def test_p2p_topology_supports_equal_and_integer_multiple_attention_counts(
     assert mapping.dp_metadata_destinations == dsts
 
 
-def test_p2p_ffn_metadata_tracks_each_attention_peer_in_2a1f():
+@pytest.mark.parametrize(
+    (
+        "attention_size",
+        "ffn_size",
+        "ffn_rank",
+        "token_counts",
+        "expected_peer_tokens",
+    ),
+    [
+        (2, 1, 0, [3, 5], [3, 5]),
+        (4, 2, 0, [3, 5, 7, 11], [3, 5]),
+        (4, 2, 1, [3, 5, 7, 0], [7, 1]),
+        (6, 3, 2, [2, 3, 5, 7, 11, 13], [11, 13]),
+    ],
+)
+def test_p2p_ffn_metadata_tracks_each_attention_peer_in_xayf(
+    attention_size,
+    ffn_size,
+    ffn_rank,
+    token_counts,
+    expected_peer_tokens,
+):
     connector = AFDConnectorFactory.create_connector(
-        0,
+        ffn_rank,
         0,
         _fake_vllm_config(),
         AFDConfig(
             enabled=True,
             role="ffn",
             connector="p2pconnector",
-            num_attention_ranks=2,
-            num_ffn_ranks=1,
+            num_attention_ranks=attention_size,
+            num_ffn_ranks=ffn_size,
+            afd_role_rank=ffn_rank,
         ),
     )
 
     connector.update_state_from_dp_metadata(
         AFDDPMetadataPayload(
-            dp_metadata_list={0: AFDDPMetadata([3, 5])},
+            dp_metadata_list={0: AFDDPMetadata(token_counts)},
             is_graph_capturing=False,
             is_warmup=False,
         ),
     )
 
-    assert connector._recv_attn_tensor_metadata_list[(0, 1)].size == torch.Size(
-        [3, 16],
+    for src_rank, expected_tokens in enumerate(expected_peer_tokens, start=1):
+        assert connector._recv_attn_tensor_metadata_list[
+            (0, src_rank)
+        ].size == torch.Size([expected_tokens, 16])
+
+    assert connector._tensor_metadata_list[0].size == torch.Size(
+        [sum(expected_peer_tokens), 16],
     )
-    assert connector._recv_attn_tensor_metadata_list[(0, 2)].size == torch.Size(
-        [5, 16],
-    )
-    assert connector._tensor_metadata_list[0].size == torch.Size([8, 16])
 
 
 def test_p2p_tensor_metadata_clamps_idle_attention_rank_to_dummy_token():
