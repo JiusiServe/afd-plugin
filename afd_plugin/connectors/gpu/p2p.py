@@ -197,9 +197,9 @@ class P2PAFDConnector(AFDConnectorBase):
                             ],
                         ),
                     )
-                    self._recv_attn_tensor_metadata_list[
-                        (stage_idx, src_rank)
-                    ] = tensor_metadata
+                    self._recv_attn_tensor_metadata_list[(stage_idx, src_rank)] = (
+                        tensor_metadata
+                    )
                     peer_metadata.append(tensor_metadata)
                 num_tokens = sum(
                     int(tensor_metadata.size[0]) for tensor_metadata in peer_metadata
