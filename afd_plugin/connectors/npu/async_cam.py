@@ -72,7 +72,6 @@ class AFDAsyncFFNWorkItem:
     layer_idx: int
     stage_idx: int
     num_tokens: int
-    num_tokens_across_dp: Tensor
     total_num_tokens: int
     shared_num_tokens: int
 
@@ -311,7 +310,6 @@ class AFDAsyncConnector(AFDConnectorBase):
             layer_idx=layer_idx,
             stage_idx=stage_idx,
             num_tokens=num_tokens,
-            num_tokens_across_dp=_cam_num_tokens_across_dp(self, num_tokens),
             total_num_tokens=total_num_tokens,
             shared_num_tokens=shared_num_tokens,
         )
@@ -873,18 +871,6 @@ def _sync_connector_data_with_cam_metadata(
     if connector_data is None:
         return
     connector_data.layer_idx = int(layer_idx)
-
-
-def _cam_num_tokens_across_dp(
-    connector: AFDAsyncConnector,
-    num_tokens: int,
-) -> Tensor:
-    rank_count = max(1, int(getattr(connector, "ffn_size", 1)))
-    return torch.tensor(
-        [int(num_tokens)] * rank_count,
-        dtype=torch.int32,
-        device="cpu",
-    )
 
 
 def _send_ffn_output_payload(

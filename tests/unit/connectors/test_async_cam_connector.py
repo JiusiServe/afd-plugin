@@ -429,7 +429,6 @@ def test_async_ffn_work_item_uses_cam_layer_and_token_metadata(monkeypatch):
     assert work_item.recv_output.expand_x_shared == "shared-hidden[:2]"
     assert work_item.recv_output.dynamic_scales_shared == "shared-scales[:2]"
     assert work_item.recv_output.x_active_mask == "active-mask[:5]"
-    assert work_item.num_tokens_across_dp.tolist() == [5, 5]
     assert work_item.metadata.connector_data.layer_idx == 11
 
 

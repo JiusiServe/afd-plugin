@@ -317,7 +317,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 afd_metadata=afd_metadata,
                 model_instance=self.model,
                 num_tokens=num_tokens,
-                num_tokens_across_dp=work_item.num_tokens_across_dp,
             ) as forward_context:
                 if forward_context is not None:
                     forward_context.dp_metadata = None

@@ -691,7 +691,6 @@ def test_npu_ffn_runner_passes_async_shared_payload_to_model():
 
 def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch):
     _require_npu_runtime()
-    torch = pytest.importorskip("torch")
     from afd_plugin.connectors.npu.async_cam import AFDAsyncFFNWorkItem
     from afd_plugin.v1.worker.ascend import ffn_model_runner
 
@@ -735,7 +734,6 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
         layer_idx=7,
         stage_idx=0,
         num_tokens=5,
-        num_tokens_across_dp=torch.tensor([5, 5], dtype=torch.int32, device="cpu"),
         total_num_tokens=7,
         shared_num_tokens=2,
     )
@@ -775,7 +773,6 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
     assert sent_outputs == [(work_item, "npu-ffn(hidden[:5], layer=7)")]
     assert context_calls[0]["num_tokens"] == 5
     assert context_calls[0]["afd_metadata"].afd_tokens_lens == [5]
-    assert context_calls[0]["num_tokens_across_dp"].tolist() == [5, 5]
 
 
 def test_npu_ffn_runner_sends_structured_shared_output():
