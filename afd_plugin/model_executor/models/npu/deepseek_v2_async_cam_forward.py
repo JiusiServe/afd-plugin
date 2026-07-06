@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from itertools import islice
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 from vllm.forward_context import get_forward_context
@@ -18,7 +18,10 @@ from afd_plugin.model_executor.models import AsyncMoeUbatchMetadata
 from afd_plugin.v1.worker.dbo import maybe_apply_dbo_yield
 
 if TYPE_CHECKING:
-    from afd_plugin.model_executor.models.deepseek_v2 import AFDDeepseekV2Model
+    from afd_plugin.model_executor.models.deepseek_v2 import (
+        AFDDeepseekV2DecoderLayer,
+        AFDDeepseekV2Model,
+    )
 
 
 def run_attention_gate_afd_forward(
@@ -151,7 +154,7 @@ def run_async_moe_ubatch_afd_forward(
     moe_layers = list(islice(model.layers, moe_start_layer, model.end_layer))
 
     def compute_stage_attention(
-        layer: Any,
+        layer: AFDDeepseekV2DecoderLayer,
         stage_idx: int,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         ubatch_slice = ubatch_slices[stage_idx]
@@ -187,7 +190,7 @@ def run_async_moe_ubatch_afd_forward(
         return topk_weights, topk_ids, router_logits
 
     def send_stage_attention(
-        layer: Any,
+        layer: AFDDeepseekV2DecoderLayer,
         stage_idx: int,
         topk_weights: torch.Tensor,
         topk_ids: torch.Tensor,

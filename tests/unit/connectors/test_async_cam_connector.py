@@ -168,8 +168,6 @@ def test_async_connector_factory_creates_import_safe_connector():
     assert not connector.is_initialized
     assert connector.uses_dp_metadata_control_plane is False
     assert connector.ffn_step_trigger == "connector"
-    assert connector.requires_eager is True
-    assert connector.required_platform == "ascend"
     assert connector.tp_size == 1
 
 

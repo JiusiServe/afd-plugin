@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from afd_plugin.config import (
-    is_afd_async_attention_dp,
-    is_afd_async_dp,
-)
+from afd_plugin.config import is_afd_async_dp, parse_afd_config
 
 
 def _config(
@@ -31,14 +28,13 @@ def test_async_dp_helper_detects_async_connector():
     config = _config()
 
     assert is_afd_async_dp(config) is True
-    assert is_afd_async_attention_dp(config) is True
+    assert parse_afd_config(config, validate=False).role == "attention"
 
 
 def test_async_dp_helper_rejects_missing_async_flag():
     config = _config(async_dp=False)
 
     assert is_afd_async_dp(config) is False
-    assert is_afd_async_attention_dp(config) is False
 
 
 def test_async_dp_helper_rejects_non_async_connector():
@@ -51,4 +47,4 @@ def test_async_dp_helper_distinguishes_ffn_role():
     config = _config(role="ffn")
 
     assert is_afd_async_dp(config) is True
-    assert is_afd_async_attention_dp(config) is False
+    assert parse_afd_config(config, validate=False).role == "ffn"

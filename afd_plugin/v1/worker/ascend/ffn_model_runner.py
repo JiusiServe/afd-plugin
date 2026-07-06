@@ -11,6 +11,7 @@ from vllm.compilation.monitor import set_cudagraph_capturing_enabled
 from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.forward_context import DPMetadata
 from vllm.logger import init_logger
+from vllm.platforms import current_platform
 from vllm_ascend.worker.model_runner_v1 import NPUModelRunner, graph_capture
 
 from afd_plugin.compat.ascend import (
@@ -80,7 +81,9 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         self.num_layers = int(self.model_config.hf_config.num_hidden_layers)
         self.use_aclgraph = _use_npu_aclgraph(vllm_config, self)
         self._acl_graphs: dict[tuple, dict[str, Any]] = {}
-        self.graph_pool = _resolve_graph_pool() if self.use_aclgraph else None
+        self.graph_pool = (
+            current_platform.get_global_graph_pool() if self.use_aclgraph else None
+        )
         self.prof = create_afd_npu_profiler("ffn")
 
     @staticmethod
@@ -625,13 +628,6 @@ def _to_dp_level_token_counts(
     # Take the first TP slot of each DP group (all TP slots are identical).
     indices = [dp_idx * tp_size for dp_idx in range(dp_size)]
     return num_tokens_across_dp[indices].contiguous()
-
-
-def _resolve_graph_pool() -> object | None:
-    graph_pool_handle = getattr(torch.npu, "graph_pool_handle", None)
-    if graph_pool_handle is None:
-        return None
-    return graph_pool_handle()
 
 
 def _use_npu_aclgraph(vllm_config: VllmConfig, runner: object) -> bool:

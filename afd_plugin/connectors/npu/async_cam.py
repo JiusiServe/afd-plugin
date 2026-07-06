@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import inspect
-import logging
 import os
 from dataclasses import dataclass
 from datetime import timedelta
@@ -13,6 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import torch
 from torch import Tensor
+from vllm.logger import init_logger
 
 from afd_plugin.compat.ascend.ops import ensure_cam_async_ops_available
 from afd_plugin.config import AFDConfig
@@ -33,12 +33,7 @@ AFD_ASYNC_CAM_GROUP_NAME = "afd_async_cam"
 CAM_COMM_ID = 0
 ATTN_RANKS_PER_DP_CONFIG_KEY = "attn_ranks_per_dp"
 
-try:
-    from vllm.logger import init_logger
-except ImportError:
-    logger = logging.getLogger(__name__)
-else:
-    logger = init_logger(__name__)
+logger = init_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -95,8 +90,6 @@ class AFDAsyncConnector(AFDConnectorBase):
 
     uses_dp_metadata_control_plane = False
     ffn_step_trigger = "connector"
-    requires_eager = True
-    required_platform = "ascend"
 
     def __init__(
         self,
@@ -247,7 +240,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         metadata: AFDConnectorMetadata,
         recv_output: AFDRecvOutput,
     ) -> None:
-        data = _ensure_connector_data(metadata)
+        data = self._metadata_data_or_default(metadata)
         data.topk_ids = recv_output.topk_ids
         data.topk_weights = recv_output.topk_weights
         data.expand_idx = recv_output.expand_idx
@@ -287,12 +280,10 @@ class AFDAsyncConnector(AFDConnectorBase):
         total_num_tokens = max(1, _cam_metadata_int(token_nums_rankid_layeridx, 0))
         shared_num_tokens = _cam_shared_token_count(recv_output, total_num_tokens)
         layer_idx = _cam_metadata_int(token_nums_rankid_layeridx, 2)
-        num_tokens = total_num_tokens - shared_num_tokens
+        num_tokens = max(0, total_num_tokens - shared_num_tokens)
 
         metadata.layer_idx = layer_idx
         metadata.stage_idx = stage_idx
-        if num_tokens <= 0:
-            num_tokens = 0
         metadata.seq_lens = [num_tokens]
 
         hidden_states = _slice_cam_payload_to_actual_tokens(
@@ -498,7 +489,7 @@ class AFDAsyncConnector(AFDConnectorBase):
                 layer_idx=int(kwargs.get("layer_idx", 0) or 0),
             )
         metadata = cast(AFDConnectorMetadata, metadata)
-        data = _ensure_connector_data(metadata)
+        data = self._metadata_data_or_default(metadata)
         placeholder = kwargs.get("placeholder", self._placeholder)
         _log_cam_op_values(
             "async_dispatch_recv",
@@ -580,7 +571,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         **kwargs: Any,
     ) -> None:
         self._require_initialized()
-        data = _ensure_connector_data(metadata)
+        data = self._metadata_data_or_default(metadata)
         expand_x_shared = kwargs.get("expand_x_shared")
         if expand_x_shared is None:
             expand_x_shared = ffn_output
@@ -896,13 +887,6 @@ def _send_ffn_output_payload(
         metadata,
         **kwargs,
     )
-
-
-def _ensure_connector_data(metadata: AFDConnectorMetadata) -> AFDAsyncConnectorData:
-    data = metadata.connector_data
-    if not isinstance(data, AFDAsyncConnectorData):
-        raise RuntimeError("AFD async metadata is missing connector_data")
-    return data
 
 
 def _validate_topk_payload(

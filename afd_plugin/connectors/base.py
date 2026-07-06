@@ -43,8 +43,6 @@ class AFDConnectorBase(ABC):
 
     uses_dp_metadata_control_plane = True
     ffn_step_trigger = "dp_metadata"
-    requires_eager = False
-    required_platform: str | None = None
 
     def __init__(
         self,

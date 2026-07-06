@@ -296,18 +296,6 @@ def is_afd_async_dp(vllm_config: VllmConfig) -> bool:
     )
 
 
-def is_afd_async_attention_dp(vllm_config: VllmConfig) -> bool:
-    """Return whether this config is an async-DP Attention-side engine."""
-
-    config = parse_afd_config(vllm_config, validate=False)
-    return (
-        config.enabled
-        and config.async_dp
-        and config.connector == AFD_ASYNC_CONNECTOR
-        and config.role == "attention"
-    )
-
-
 def validate_afd_config(
     config: AFDConfig,
     *,
@@ -380,7 +368,6 @@ __all__ = [
     "async_moe_num_ubatches",
     "async_moe_split",
     "async_moe_ubatching_enabled",
-    "is_afd_async_attention_dp",
     "is_afd_async_dp",
     "parse_afd_config",
     "validate_afd_config",

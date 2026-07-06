@@ -40,10 +40,7 @@ from vllm.v1.engine.core import EngineCoreProc
 from vllm.v1.engine.core_client import DPAsyncMPClient
 
 from afd_plugin.compat.vllm import TARGET_VLLM_VERSION
-from afd_plugin.config import (
-    is_afd_async_attention_dp,
-    is_afd_async_dp,
-)
+from afd_plugin.config import is_afd_async_dp, parse_afd_config
 
 if TYPE_CHECKING:
     from multiprocessing.queues import Queue
@@ -82,7 +79,8 @@ def _patched_run_engine_core(
     """Replace MoE DP proc selection for AFD async Attention engines."""
 
     vllm_config = kwargs["vllm_config"]
-    if not is_afd_async_attention_dp(vllm_config):
+    afd_config = parse_afd_config(vllm_config, validate=False)
+    if not is_afd_async_dp(vllm_config) or afd_config.role != "attention":
         return _original_run_engine_core(
             *args,
             dp_rank=dp_rank,

@@ -257,7 +257,17 @@ def clone_pcp_metadata(pcp_metadata: Any) -> Any:
     if pcp_metadata is None:
         return None
     cloned = copy.copy(pcp_metadata)
-    for name, value in vars(pcp_metadata).items():
+    attrs: dict[str, Any] = {}
+    if hasattr(pcp_metadata, "__dict__"):
+        attrs.update(vars(pcp_metadata))
+    slots = getattr(pcp_metadata, "__slots__", ())
+    if isinstance(slots, str):
+        slots = (slots,)
+    for slot in slots:
+        if hasattr(pcp_metadata, slot):
+            attrs.setdefault(slot, getattr(pcp_metadata, slot))
+
+    for name, value in attrs.items():
         if hasattr(value, "clone"):
             setattr(cloned, name, value.clone())
         elif isinstance(value, list):
