@@ -94,12 +94,16 @@ def register_afd() -> None:
 
     try:
         from afd_plugin.compat.patches import (
+            apply_async_dp_engine_patch,
+            apply_async_dp_forward_context_patch,
             apply_config_validation_patch,
             apply_engine_core_patch,
         )
 
         apply_config_validation_patch()
         apply_engine_core_patch()
+        apply_async_dp_engine_patch()
+        apply_async_dp_forward_context_patch()
     except Exception:
         _logger.debug(
             "AFD plugin: compatibility patches could not be applied",
@@ -123,27 +127,6 @@ def register_afd() -> None:
     except Exception:
         _logger.debug(
             "AFD plugin: Ascend compatibility patches could not be applied",
-            exc_info=True,
-        )
-
-    try:
-        from vllm.distributed.kv_transfer.kv_connector.factory import (
-            KVConnectorFactory,
-        )
-
-        try:
-            KVConnectorFactory.register_connector(
-                "AFDDecodeBenchConnector",
-                "afd_plugin.connectors.decode_bench",
-                "AFDDecodeBenchConnector",
-            )
-        except ValueError:
-            _logger.debug(
-                "AFD plugin: AFDDecodeBenchConnector was already registered",
-            )
-    except Exception:
-        _logger.debug(
-            "AFD plugin: decode benchmark KV connector could not be registered",
             exc_info=True,
         )
 

@@ -4,7 +4,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from afd_plugin.config import AFDConfig, afd_config_from_mapping, parse_afd_config
+from afd_plugin.config import (
+    AFDConfig,
+    afd_config_from_mapping,
+    async_moe_num_ubatches,
+    async_moe_split,
+    async_moe_ubatching_enabled,
+    parse_afd_config,
+)
 
 
 def test_parse_empty_additional_config_returns_disabled_default():
@@ -52,6 +59,73 @@ def test_parse_vllm_like_config_object():
 
     assert config.enabled
     assert config.is_attention_server
+
+
+def test_compute_gate_on_attention_can_come_from_extra_config():
+    config = parse_afd_config(
+        {
+            "afd": {
+                "enabled": True,
+                "role": "ffn",
+                "extra_config": {"compute_gate_on_attention": "true"},
+            },
+        },
+        expected_role="ffn",
+    )
+
+    assert config.compute_gate_on_attention is True
+
+
+def test_async_moe_ubatching_helpers_read_extra_config():
+    config = parse_afd_config(
+        {
+            "afd": {
+                "enabled": True,
+                "connector": "afdasyncconnector",
+                "role": "attention",
+                "extra_config": {
+                    "async_moe_ubatching": "true",
+                    "async_moe_num_ubatches": "2",
+                    "async_moe_split": "Request",
+                    "compute_gate_on_attention": True,
+                },
+            },
+        },
+        expected_role="attention",
+    )
+
+    assert async_moe_ubatching_enabled(config) is True
+    assert async_moe_num_ubatches(config) == 2
+    assert async_moe_split(config) == "request"
+
+
+def test_parse_async_dp_config_from_async_alias():
+    config = parse_afd_config(
+        {
+            "afd": {
+                "enabled": True,
+                "connector": "afdasyncconnector",
+                "role": "attention",
+                "async": "true",
+            },
+        },
+    )
+
+    assert config.async_dp is True
+
+
+def test_async_dp_requires_async_connector():
+    with pytest.raises(ValueError, match="requires connector='afdasyncconnector'"):
+        parse_afd_config(
+            {
+                "afd": {
+                    "enabled": True,
+                    "connector": "camp2pconnector",
+                    "role": "attention",
+                    "async": True,
+                },
+            },
+        )
 
 
 def test_original_afd_field_aliases_are_supported():

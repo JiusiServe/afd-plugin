@@ -5,35 +5,41 @@ End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
 
 ## Prerequisites
 
-- Install [LMCache](https://github.com/LMCache/LMCache). You can simply run `pip install lmcache`.
 - Install [NIXL](https://github.com/ai-dynamo/nixl).
-- At least 3 GPUs(A/H-class, tested against L20X).
+- At least 4 GPUs(A/H-class, tested against L20X).
 - vLLM `v0.19.1` and the `afd-plugin` package installed in the same
   environment (see repository root `AGENTS.md`).
 - DeepSeek-V2-Lite weights on disk. All scripts default to
   `/path/model_weights/DeepSeek-V2-Lite`; override with
   `MODEL_PATH=...` when launching.
-- A free TCP port `6269` on `127.0.0.1` for the AFD p2p connector, a free TCP port `7500` on `127.0.0.1` for the disaggregation proxy and
-  ports `18301`/`18302`/`18305` for the vLLM HTTP servers.
+- A free TCP port `6269` on `127.0.0.1` for the AFD p2p connector, and
+  ports `18301`/`18302`/`18303`/`18305` for the vLLM HTTP servers.
 
 ## Directory layout
 
 ```
 .
-├── benchmark.sh                          # online serving benchmark client
 ├── prefill_decode_disaggregation/        # prefill_decode_disaggregation, 2P1A1F topology
 │   ├── 2p1a1f_eager_dbo.sh
 │   ├── 2p1a1f_graph_dbo.sh
-│   ├── disagg_proxy_server.py
-│   └── lmcache/                          # LMCacheConnectorV1 config 
-│       ├── decode.yaml
-│       └── prefill.yaml
 └── prefill_decode_colocation/             # prefill_decode_colocation, 2A2F topology
     ├── 2a2f_eager_dbo_dp1tp2.sh
     ├── 2a2f_eager_dbo_dp2tp1.sh
     ├── 2a2f_graph_dbo_dp1tp2.sh
     └── 2a2f_graph_dbo_dp2tp1.sh
 ```
+### 1. Prefill/Decode Disaggregation — `1a1f`
+
+4 processes:
+
+| GPUs   | Role              | Worker class           | Port  |
+|--------|-------------------|------------------------|-------|
+| 0   | Prefill (Colocated)    | `AFDAttentionWorker`   | 18301 |
+| 1   | Prefill (Colocated)   | `AFDAttentionWorker`   | 18302 |
+| 2   | Decode (Attention)    | `AFDAttentionWorker`   | 18303 |
+| 3   | Decode (FFN)          | `AFDFFNWorker`         | 18304 |
+| /   | Proxy Server          | /         | 18305 |
+
 
 ### 2. Prefill/Decode Colocation — `2a2f`
 
@@ -69,15 +75,11 @@ before sending traffic.
 
 ```bash
 export MODEL_PATH=/path/model_weights/DeepSeek-V2-Lite
-bash recipe/gpu/deepseek_v2_lite/prefill_decode_disaggregation/1p1a1f_graph_dbo.sh
+bash recipe/gpu/deepseek_v2_lite/prefill_decode_disaggregation/2p1a1f_graph_dbo.sh
 ```
 
 Wait for `attn.log` to print the `Application startup complete` line
 before sending traffic.
-
-```bash
-uv run python3 ../vllm/examples/others/lmcache/disagg_prefill_lmcache_v1/disagg_proxy_server.py --host 0.0.0.0 --port 18305     --prefiller-host 127.0.0.1 --prefiller-port 18301     --decoder-host 127.0.0.1   --decoder-port 18302
-```
 
 ### Running the benchmark
 
@@ -87,7 +89,7 @@ Once the serving stack is up, run:
 export MODEL_PATH=/path/model_weights/DeepSeek-V2-Lite
 export RESULT_DIR=/path/results
 export RESULT_FILENAME=2a2f_graph_dbo_dp1tp2.json
-bash recipe/gpu/deepseek_v2_lite/benchmark.sh
+bash tools/benchmarks/request_generator.sh
 ```
 
 It fires 1024 random requests (1024 input tokens / 128 output tokens) at

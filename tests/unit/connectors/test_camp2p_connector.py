@@ -188,7 +188,7 @@ def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
     calls = []
 
     monkeypatch.setitem(sys.modules, "torch_npu", ModuleType("torch_npu"))
-    monkeypatch.setattr(camp2p_module, "ensure_afd_ascend_ops_loaded", lambda: None)
+    monkeypatch.setattr(camp2p_module, "ensure_cam_p2p_ops_available", lambda: None)
     monkeypatch.setattr(camp2p_module, "_register_camp2p_custom_ops", lambda: None)
 
     def fake_init_afd_process_group(**kwargs):

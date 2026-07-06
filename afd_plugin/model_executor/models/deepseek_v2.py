@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 from vllm.config import VllmConfig, get_current_vllm_config
 from vllm.forward_context import get_forward_context
+from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe.shared_fused_moe import (
     SharedFusedMoE,
 )
@@ -36,11 +37,23 @@ except ImportError:
     get_ascend_config = None
 
 from afd_plugin.config import parse_afd_config
-from afd_plugin.connectors import AFDConnectorMetadata
+from afd_plugin.connectors import AFDConnectorMetadata, AFDFFNOutput, AFDMetadata
 from afd_plugin.model_executor.models import (
     get_afd_metadata_from_forward_context,
+    get_async_moe_ubatch_metadata_from_forward_context,
 )
 from afd_plugin.v1.worker.dbo import maybe_apply_dbo_yield
+
+logger = init_logger(__name__)
+
+
+def _is_moe_layer(config: object, layer_idx: int) -> bool:
+    moe_layer_freq = getattr(config, "moe_layer_freq", 1)
+    return (
+        config.n_routed_experts is not None
+        and layer_idx >= config.first_k_dense_replace
+        and layer_idx % moe_layer_freq == 0
+    )
 
 
 class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
@@ -66,12 +79,24 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         quant_config = vllm_config.quant_config
         parallel_config = vllm_config.parallel_config
 
+        self.vllm_config = vllm_config
+        self.config = config
+        self.afd_config = afd_config
         self.hidden_size = config.hidden_size
         max_position_embeddings = getattr(config, "max_position_embeddings", 8192)
-        moe_layer_freq = getattr(config, "moe_layer_freq", 1)
         prefix = args[1] if len(args) > 1 else kwargs.get("prefix", "")
         layer_idx = int(prefix.split(sep=".")[-1])
         self.layer_idx = layer_idx
+        self.is_moe_layer = _is_moe_layer(config, layer_idx)
+        self.compute_gate_on_attention = bool(afd_config.compute_gate_on_attention)
+        if (
+            self.compute_gate_on_attention
+            and native.current_platform.device_type != "npu"
+        ):
+            raise RuntimeError(
+                "DeepSeekV2 compute_gate_on_attention is supported only on NPU",
+            )
+        self.top_k = int(config.num_experts_per_tok)
 
         qk_nope_head_dim = getattr(config, "qk_nope_head_dim", 0)
         qk_rope_head_dim = getattr(config, "qk_rope_head_dim", 0)
@@ -84,7 +109,7 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         self.routed_scaling_factor = getattr(config, "routed_scaling_factor", 1.0)
         self.afd_role = afd_role
 
-        # Create only the modules needed for this role
+        # Create only the modules needed for this role.
         if afd_role == "attention":
             attn_cls = (
                 native.DeepseekAttention
@@ -112,10 +137,8 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 topk_indices_buffer=kwargs.get("topk_indices_buffer"),
             )
 
-            if (
-                getattr(afd_config, "compute_gate_on_attention", False)
-                and layer_idx >= config.first_k_dense_replace
-            ):
+            # NPU-only: non-NPU platforms are rejected before this branch.
+            if self.compute_gate_on_attention and self.is_moe_layer:
                 self.gate = ReplicatedLinear(
                     config.hidden_size,
                     config.n_routed_experts,
@@ -130,12 +153,19 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 else:
                     self.gate.e_score_correction_bias = None
 
+            if self.compute_gate_on_attention and not self.is_moe_layer:
+                self.mlp = native.DeepseekV2MLP(
+                    hidden_size=config.hidden_size,
+                    intermediate_size=config.intermediate_size,
+                    hidden_act=config.hidden_act,
+                    quant_config=quant_config,
+                    prefix=f"{prefix}.mlp",
+                )
+
         elif afd_role == "ffn":
-            if (
-                config.n_routed_experts is not None
-                and layer_idx >= config.first_k_dense_replace
-                and layer_idx % moe_layer_freq == 0
-            ):
+            if self.compute_gate_on_attention and not self.is_moe_layer:
+                pass
+            elif self.is_moe_layer:
                 self.mlp = native.DeepseekV2MoE(
                     config=config,
                     parallel_config=parallel_config,
@@ -191,7 +221,9 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
             hidden_states,
             residual,
         )
-        if self.afd_role == "attention":
+        if self.afd_role == "attention" and not (
+            self.compute_gate_on_attention and not self.is_moe_layer
+        ):
             return hidden_states, residual
 
         hidden_states = self.mlp(hidden_states)
@@ -208,7 +240,13 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
         llama_4_scaling: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+    ]:
         if residual is None:
             residual = hidden_states.clone()
             hidden_states = self.input_layernorm(hidden_states)
@@ -235,9 +273,61 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
             hidden_states,
             residual,
         )
-        return hidden_states, residual
+        topk_weights = None
+        topk_ids = None
+        router_logits = None
+        # NPU-only: Attention-side gate/topk is implemented in the NPU helper.
+        if self.compute_gate_on_attention and self.is_moe_layer:
+            from afd_plugin.model_executor.models.npu import (
+                deepseek_v2_attention_gate,
+            )
 
-    def compute_ffn_output(self, hidden_states: torch.Tensor) -> torch.Tensor:
+            topk_weights, topk_ids, router_logits = (
+                deepseek_v2_attention_gate.compute_attention_gate_topk(
+                    self,
+                    hidden_states,
+                )
+            )
+        return hidden_states, residual, topk_weights, topk_ids, router_logits
+
+    def compute_ffn_output(
+        self,
+        hidden_states: torch.Tensor,
+        *,
+        group_list: torch.Tensor | None = None,
+        dynamic_scales: torch.Tensor | None = None,
+        expand_x_shared: torch.Tensor | None = None,
+        dynamic_scales_shared: torch.Tensor | None = None,
+        topk_scales: torch.Tensor | None = None,
+        group_list_type: int = 1,
+        **kwargs: Any,
+    ) -> torch.Tensor | AFDFFNOutput:
+        if self.compute_gate_on_attention and not self.is_moe_layer:
+            raise RuntimeError(
+                "Dense DeepSeek layers are computed on the Attention side "
+                "when compute_gate_on_attention=true",
+            )
+        if self.compute_gate_on_attention:
+            if group_list is None:
+                raise RuntimeError(
+                    "compute_gate_on_attention FFN MoE compute requires group_list",
+                )
+            # NPU-only: gated MoE FFN compute consumes Attention-side topk payloads.
+            from afd_plugin.model_executor.models.npu import (
+                deepseek_v2_attention_gate,
+            )
+
+            output = deepseek_v2_attention_gate.compute_attention_gate_moe_ffn(
+                self,
+                hidden_states=hidden_states,
+                group_list=group_list,
+                dynamic_scales=dynamic_scales,
+                expand_x_shared=expand_x_shared,
+                dynamic_scales_shared=dynamic_scales_shared,
+                topk_scales=topk_scales,
+                group_list_type=group_list_type,
+            )
+            return output
         hidden_states = self.mlp(hidden_states)
         if (
             isinstance(self.mlp, native.DeepseekV2MLP)
@@ -261,6 +351,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
 
         config = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
+        self.afd_config = parse_afd_config(vllm_config, validate=False)
         self.config = config
         self.device = native.current_platform.device_type
 
@@ -381,9 +472,30 @@ class AFDDeepseekV2Model(torch.nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
         positions: torch.Tensor,
-        afd_metadata: object,
+        afd_metadata: AFDMetadata,
         llama_4_scaling: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        if self.afd_config.compute_gate_on_attention:
+            forward_context = get_forward_context()
+            if (
+                get_async_moe_ubatch_metadata_from_forward_context(forward_context)
+                is not None
+            ):
+                return self.forward_with_afd_v3(
+                    hidden_states,
+                    residual,
+                    positions,
+                    afd_metadata,
+                    llama_4_scaling,
+                )
+            return self.forward_with_afd_v2(
+                hidden_states,
+                residual,
+                positions,
+                afd_metadata,
+                llama_4_scaling,
+            )
+
         afd_connector = afd_metadata.afd_connector
         forward_context = get_forward_context()
         stage_idx = int(
@@ -427,14 +539,71 @@ class AFDDeepseekV2Model(torch.nn.Module):
         )
         return hidden_states, residual
 
+    def forward_with_afd_v2(
+        self,
+        hidden_states: torch.Tensor,
+        residual: torch.Tensor | None,
+        positions: torch.Tensor,
+        afd_metadata: AFDMetadata,
+        llama_4_scaling: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        from afd_plugin.model_executor.models.npu import (
+            deepseek_v2_async_cam_forward,
+        )
+
+        return deepseek_v2_async_cam_forward.run_attention_gate_afd_forward(
+            self,
+            hidden_states,
+            residual,
+            positions,
+            afd_metadata,
+            llama_4_scaling,
+        )
+
+    def forward_with_afd_v3(
+        self,
+        hidden_states: torch.Tensor,
+        residual: torch.Tensor | None,
+        positions: torch.Tensor,
+        afd_metadata: AFDMetadata,
+        llama_4_scaling: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        forward_context = get_forward_context()
+        async_moe_ubatch_metadata = get_async_moe_ubatch_metadata_from_forward_context(
+            forward_context
+        )
+        if async_moe_ubatch_metadata is None:
+            return self.forward_with_afd_v2(
+                hidden_states,
+                residual,
+                positions,
+                afd_metadata,
+                llama_4_scaling,
+            )
+        from afd_plugin.model_executor.models.npu import (
+            deepseek_v2_async_cam_forward,
+        )
+
+        return deepseek_v2_async_cam_forward.run_async_moe_ubatch_afd_forward(
+            self,
+            hidden_states,
+            residual,
+            positions,
+            afd_metadata,
+            async_moe_ubatch_metadata,
+            llama_4_scaling,
+        )
+
     def compute_ffn_output(
         self,
         hidden_states: torch.Tensor,
         layer_idx: int,
         **kwargs: Any,
-    ) -> torch.Tensor:
-        output = self.layers[layer_idx].compute_ffn_output(hidden_states)
-        return output
+    ) -> torch.Tensor | AFDFFNOutput:
+        return self.layers[layer_idx].compute_ffn_output(
+            hidden_states,
+            **kwargs,
+        )
 
     def _get_llama_4_scaling(
         self,
@@ -473,12 +642,13 @@ class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
                 continue
             if not isinstance(layer, native.DeepseekV2DecoderLayer):
                 continue
+            mlp = layer._modules.get("mlp")
             if (self.afd_role is None or self.afd_role == "ffn") and isinstance(
-                layer.mlp, native.DeepseekV2MoE
+                mlp, native.DeepseekV2MoE
             ):
-                example_moe = layer.mlp
-                self.moe_mlp_layers.append(layer.mlp)
-                self.moe_layers.append(layer.mlp.experts)
+                example_moe = mlp
+                self.moe_mlp_layers.append(mlp)
+                self.moe_layers.append(mlp.experts)
         if self.afd_role == "attention":
             return
         self.extract_moe_parameters(example_moe)
@@ -488,7 +658,7 @@ class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
         hidden_states: torch.Tensor,
         layer_idx: int,
         **kwargs: Any,
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | AFDFFNOutput:
         return self.model.compute_ffn_output(hidden_states, layer_idx, **kwargs)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
@@ -547,16 +717,20 @@ class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
                     loaded_params.add(mapped_name)
                     continue
 
-            if self.afd_role == "attention" and self.is_moe_weight(name):
+            if (
+                self.afd_role == "attention"
+                and self.is_moe_weight(name)
+                and (
+                    not self.afd_config.compute_gate_on_attention
+                    or self.is_moe_layer_weight(name)
+                )
+            ):
                 continue
 
             if (
                 self.afd_role == "ffn"
                 and self.afd_config.compute_gate_on_attention
-                and (
-                    "mlp.gate.weight" in name
-                    or "mlp.gate.e_score_correction_bias" in name
-                )
+                and self.is_dense_mlp_weight(name)
             ):
                 continue
 
@@ -693,6 +867,30 @@ class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
             or "up" in name
             or "down" in name
         )
+
+    def is_moe_layer_weight(self, name: str) -> bool:
+        layer_idx = self.weight_layer_idx(name)
+        return layer_idx is not None and _is_moe_layer(self.config, layer_idx)
+
+    def is_dense_mlp_weight(self, name: str) -> bool:
+        layer_idx = self.weight_layer_idx(name)
+        return (
+            ".mlp." in name
+            and layer_idx is not None
+            and not _is_moe_layer(self.config, layer_idx)
+        )
+
+    @staticmethod
+    def weight_layer_idx(name: str) -> int | None:
+        parts = name.split(".")
+        for idx, part in enumerate(parts[:-1]):
+            if part != "layers":
+                continue
+            try:
+                return int(parts[idx + 1])
+            except ValueError:
+                return None
+        return None
 
     def is_common_weight(self, name):
         return (
