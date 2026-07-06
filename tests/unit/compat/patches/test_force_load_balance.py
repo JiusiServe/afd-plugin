@@ -22,9 +22,7 @@ def _install_fake_modules(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
         def __init__(self, *args: object, **kwargs: object) -> None:
             del args, kwargs
 
-    def build_fused_experts_input(
-        *args: object, **kwargs: object
-    ) -> torch.Tensor:
+    def build_fused_experts_input(*args: object, **kwargs: object) -> torch.Tensor:
         """Fake builder: returns the possibly swapped topk_ids."""
 
         del args
