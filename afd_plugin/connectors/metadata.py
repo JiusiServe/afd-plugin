@@ -315,10 +315,21 @@ class AFDRecvOutput:
     row_idx: torch.Tensor | None = None
     x_active_mask: torch.Tensor | None = None
     dynamic_scales: torch.Tensor | None = None
+    expand_x_shared: torch.Tensor | None = None
+    dynamic_scales_shared: torch.Tensor | None = None
     cam_p2p_ep_name: str | None = None
     atten_batch_size: torch.Tensor | None = None
     expand_idx: torch.Tensor | None = None
     ep_recv_counts: torch.Tensor | None = None
+    ep_recv_counts_shared: torch.Tensor | None = None
+
+
+@dataclass(slots=True)
+class AFDFFNOutput:
+    """Unified FFN -> Attention payload for separated routed/shared outputs."""
+
+    routed_output: torch.Tensor
+    shared_output: torch.Tensor | None = None
 
 
 @dataclass(slots=True)
@@ -349,6 +360,7 @@ __all__ = [
     "AFDConnectorMetadata",
     "AFDDPMetadata",
     "AFDDPMetadataPayload",
+    "AFDFFNOutput",
     "AFDMetadata",
     "AFDRecvOutput",
     "AFDSingleDPMetadata",

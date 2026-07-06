@@ -111,9 +111,13 @@ class AFDNPUFFNWorker(NPUWorker):
         if event is None:
             return
 
-        if self.device.type == "npu":
-            torch.npu.set_device(self.device)
+        torch.npu.set_device(self.device)
         while not event.is_set():
+            if self.model_runner.connector.ffn_step_trigger == "connector":
+                self.model_runner.execute_connector_driven_step()
+                torch.npu.synchronize()
+                continue
+
             try:
                 payload = self.model_runner.connector.recv_dp_metadata_list(
                     timeout_ms=100,
@@ -129,8 +133,7 @@ class AFDNPUFFNWorker(NPUWorker):
                 is_graph_capturing=is_attn_graph_capturing,
                 is_warmup=is_warmup,
             )
-            if self.device.type == "npu":
-                torch.npu.synchronize()
+            torch.npu.synchronize()
 
     def raise_ffn_loop_error_if_any(self) -> None:
         error = self._ffn_loop_error

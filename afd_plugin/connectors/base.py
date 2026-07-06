@@ -41,6 +41,9 @@ class AFDConnectorBase(ABC):
     common runtime contract shared by those implementations.
     """
 
+    uses_dp_metadata_control_plane = True
+    ffn_step_trigger = "dp_metadata"
+
     def __init__(
         self,
         rank: int,

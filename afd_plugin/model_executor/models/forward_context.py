@@ -7,13 +7,25 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any
+from typing import Any, Final, TypedDict, cast
 
 import vllm.forward_context as forward_context_module
-from vllm.forward_context import get_forward_context
+from vllm.forward_context import ForwardContext, get_forward_context
+from vllm.v1.worker.ubatch_utils import UBatchSlices
+
+from afd_plugin.connectors import AFDMetadata
+
+ASYNC_MOE_UBATCH_METADATA_KEY: Final[str] = "afd_async_moe_ubatch_metadata"
 
 
-def get_afd_metadata_from_forward_context(forward_context: object | None = None) -> Any:
+class AsyncMoeUbatchMetadata(TypedDict):
+    attn_metadata: object
+    ubatch_slices: UBatchSlices
+
+
+def get_afd_metadata_from_forward_context(
+    forward_context: ForwardContext | None = None,
+) -> AFDMetadata | None:
     """Return AFD metadata from vLLM ``ForwardContext.additional_kwargs``.
 
     Model wrappers use this helper so AFD metadata stays outside vLLM's
@@ -27,8 +39,23 @@ def get_afd_metadata_from_forward_context(forward_context: object | None = None)
     additional_kwargs = forward_context.additional_kwargs or {}
     metadata = additional_kwargs.get("afd_metadata")
     if metadata is not None:
-        return metadata
-    return getattr(forward_context, "afd_metadata", None)
+        return cast(AFDMetadata, metadata)
+    return cast(AFDMetadata | None, getattr(forward_context, "afd_metadata", None))
+
+
+def get_async_moe_ubatch_metadata_from_forward_context(
+    forward_context: ForwardContext | None = None,
+) -> AsyncMoeUbatchMetadata | None:
+    """Return async MoE ubatch sidecar metadata from the current context."""
+
+    if forward_context is None:
+        from vllm.forward_context import get_forward_context
+
+        forward_context = get_forward_context()
+
+    additional_kwargs = forward_context.additional_kwargs or {}
+    metadata = additional_kwargs.get(ASYNC_MOE_UBATCH_METADATA_KEY)
+    return cast(AsyncMoeUbatchMetadata | None, metadata)
 
 
 @contextmanager
@@ -48,7 +75,7 @@ def use_afd_metadata_provider(provider: Any) -> Iterator[None]:
     install = provider._install_afd_metadata_on_forward_context
 
     @wraps(original_create)
-    def create_forward_context_with_afd(*args: Any, **kwargs: Any) -> Any:
+    def create_forward_context_with_afd(*args: Any, **kwargs: Any) -> ForwardContext:
         forward_context = original_create(*args, **kwargs)
         install(forward_context)
         return forward_context
@@ -61,6 +88,8 @@ def use_afd_metadata_provider(provider: Any) -> Iterator[None]:
 
 
 __all__ = [
+    "ASYNC_MOE_UBATCH_METADATA_KEY",
     "get_afd_metadata_from_forward_context",
+    "get_async_moe_ubatch_metadata_from_forward_context",
     "use_afd_metadata_provider",
 ]

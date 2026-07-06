@@ -110,6 +110,8 @@ def _parallel_config(**overrides):
     values = {
         "data_parallel_size": 1,
         "data_parallel_rank": 0,
+        "prefill_context_parallel_size": 1,
+        "tensor_parallel_size": 1,
         "use_ubatching": False,
         "num_ubatches": 1,
         "dbo_decode_token_threshold": 32,
@@ -592,6 +594,7 @@ def _parallel_config_with_tp(
     values = {
         "data_parallel_size": dp_size,
         "data_parallel_rank": dp_rank,
+        "prefill_context_parallel_size": 1,
         "tensor_parallel_size": tp_size,
         "use_ubatching": False,
         "num_ubatches": 1,
@@ -624,6 +627,35 @@ def test_afd_rank_derives_from_tp_rank_dp1_tp2(monkeypatch):
     ranked = _with_dp_derived_afd_rank(vllm_config, config)
 
     # role_rank = base(0) + dp_rank(0) * tp_size(2) + tp_rank(1) = 1
+    assert ranked.afd_role_rank == 1
+
+
+def test_afd_rank_derives_from_pcp_rank_dp1_pcp2(monkeypatch):
+    """DP=1, PCP=2, TP=1: each PCP worker gets a unique role_rank."""
+    monkeypatch.setattr(
+        sys.modules["vllm.distributed.parallel_state"],
+        "get_pcp_group",
+        lambda: SimpleNamespace(rank_in_group=1),
+    )
+    config = AFDConfig(
+        enabled=True,
+        role="attention",
+        connector="p2pconnector",
+        num_attention_ranks=2,
+        num_ffn_ranks=2,
+        afd_role_rank=0,
+    )
+    vllm_config = SimpleNamespace(
+        parallel_config=_parallel_config_with_tp(
+            dp_size=1,
+            tp_size=1,
+            prefill_context_parallel_size=2,
+        ),
+    )
+
+    ranked = _with_dp_derived_afd_rank(vllm_config, config)
+
+    # role_rank = base(0) + (dp_rank(0) * pcp_size(2) + pcp_rank(1)) = 1
     assert ranked.afd_role_rank == 1
 
 

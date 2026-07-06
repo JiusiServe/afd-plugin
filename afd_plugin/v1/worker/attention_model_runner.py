@@ -476,22 +476,31 @@ def _with_dp_derived_afd_rank(
 ) -> AFDConfig:
     parallel_config = vllm_config.parallel_config
     dp_size = int(parallel_config.data_parallel_size)
+    pcp_size = int(getattr(parallel_config, "prefill_context_parallel_size", 1))
     tp_size = int(parallel_config.tensor_parallel_size)
-    if dp_size <= 1 and tp_size <= 1:
+    if dp_size <= 1 and pcp_size <= 1 and tp_size <= 1:
         return afd_config
     dp_rank = int(parallel_config.data_parallel_rank) if dp_size > 1 else 0
+    if pcp_size > 1:
+        from vllm.distributed.parallel_state import get_pcp_group
+
+        pcp_rank = int(get_pcp_group().rank_in_group)
+    else:
+        pcp_rank = 0
     tp_rank = get_tensor_model_parallel_rank() if tp_size > 1 else 0
     role_size = (
         afd_config.num_attention_ranks
         if afd_config.role == "attention"
         else afd_config.num_ffn_ranks
     )
-    role_rank = afd_config.afd_role_rank + dp_rank * tp_size + tp_rank
+    role_rank = afd_config.afd_role_rank + (
+        (dp_rank * pcp_size + pcp_rank) * tp_size + tp_rank
+    )
     if role_rank >= role_size:
         raise ValueError(
             "AFD role rank derived from distributed ranks is out of range: "
             f"base={afd_config.afd_role_rank}, dp_rank={dp_rank}, "
-            f"tp_rank={tp_rank}, role_size={role_size}",
+            f"pcp_rank={pcp_rank}, tp_rank={tp_rank}, role_size={role_size}",
         )
     return replace(afd_config, afd_role_rank=role_rank)
 

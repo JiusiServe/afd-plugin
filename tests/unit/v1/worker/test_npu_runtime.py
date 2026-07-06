@@ -3,8 +3,9 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+import threading
 from collections import deque
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -19,6 +20,7 @@ from afd_plugin.compat.ascend import runtime as ascend_runtime
 from afd_plugin.connectors import (
     AFDConnectorMetadata,
     AFDDPMetadataPayload,
+    AFDFFNOutput,
     AFDMetadata,
     AFDRecvOutput,
 )
@@ -26,6 +28,7 @@ from afd_plugin.connectors import (
 
 class _RecordingConnector:
     world_rank = 0
+    uses_dp_metadata_control_plane = True
 
     def __init__(self):
         self.dp_metadata_updates = []
@@ -50,6 +53,14 @@ class _RecordingConnector:
                 payload.is_warmup,
             ),
         )
+
+
+class _AsyncRecordingConnector(_RecordingConnector):
+    uses_dp_metadata_control_plane = False
+    ffn_step_trigger = "connector"
+
+    def __init__(self):
+        super().__init__()
 
 
 class _FakeFFNConnector:
@@ -79,8 +90,13 @@ class _FakeFFNConnector:
 
     def recv_attn_output(self, metadata=None, ubatch_idx=None):
         for item in tuple(self.attn_outputs):
-            if item[1].stage_idx == ubatch_idx:
+            item_metadata = (
+                item.metadata if isinstance(item, AFDRecvOutput) else item[1]
+            )
+            if item_metadata.stage_idx == ubatch_idx:
                 self.attn_outputs.remove(item)
+                if isinstance(item, AFDRecvOutput):
+                    return item
                 return AFDRecvOutput(hidden_states=item[0], metadata=item[1])
         raise IndexError(ubatch_idx)
 
@@ -106,6 +122,23 @@ class _FakeModel:
         return f"npu-ffn({hidden_states}, layer={layer_idx})"
 
 
+class _RecordingFakeModel:
+    def __init__(self):
+        self.calls = []
+
+    def compute_ffn_output(self, hidden_states, layer_idx, **kwargs):
+        self.calls.append((hidden_states, layer_idx, kwargs))
+        return f"npu-ffn({hidden_states}, layer={layer_idx})"
+
+
+class _FakeStructuredFFNModel:
+    def compute_ffn_output(self, hidden_states, layer_idx, **_kwargs):
+        return AFDFFNOutput(
+            routed_output=f"routed({hidden_states}, layer={layer_idx})",
+            shared_output=f"shared({hidden_states}, layer={layer_idx})",
+        )
+
+
 class _FakeDPMetadata:
     def __init__(self, values):
         self.num_tokens_across_dp_cpu = values
@@ -129,13 +162,21 @@ def _parallel_config(**overrides):
     return SimpleNamespace(**values)
 
 
-def _vllm_config(*, role="attention", extra_config=None, **parallel_overrides):
+def _vllm_config(
+    *,
+    role="attention",
+    connector="camp2pconnector",
+    extra_config=None,
+    **parallel_overrides,
+):
+    async_dp = bool(parallel_overrides.pop("async_dp", False))
     return SimpleNamespace(
         additional_config={
             "afd": {
                 "enabled": True,
                 "role": role,
-                "connector": "camp2pconnector",
+                "connector": connector,
+                "async": async_dp,
                 "extra_config": extra_config or {},
             },
         },
@@ -198,6 +239,35 @@ def test_npu_attention_runner_builds_and_mirrors_metadata():
     assert metadata.afd_tokens_lens == [1]
     assert len(runner.afd_connector.dp_metadata_updates) == 1
     assert len(runner.afd_connector.sent_dp_metadata_lists) == 1
+
+
+def test_npu_attention_async_connector_skips_dp_metadata_control_plane():
+    runner = _new_attention_runner()
+    runner.vllm_config = _vllm_config(
+        role="attention",
+        connector="afdasyncconnector",
+        async_dp=True,
+        data_parallel_size=2,
+    )
+    runner.afd_connector = _AsyncRecordingConnector()
+    runner._is_warmup = False
+    runner._afd_is_graph_capturing = False
+    runner._afd_pending_metadata = None
+    runner._afd_transaction_counter = 0
+    forward_context = SimpleNamespace(
+        additional_kwargs={},
+        dp_metadata=None,
+        ubatch_slices=None,
+        batch_descriptor=SimpleNamespace(num_tokens=3),
+    )
+
+    runner._install_afd_metadata_on_forward_context(forward_context)
+
+    metadata = forward_context.additional_kwargs["afd_metadata"]
+    assert forward_context.afd_metadata is metadata
+    assert metadata.afd_tokens_lens == [3]
+    assert runner.afd_connector.dp_metadata_updates == []
+    assert runner.afd_connector.sent_dp_metadata_lists == []
 
 
 def test_npu_attention_runner_builds_dp_fallback():
@@ -372,6 +442,95 @@ def test_npu_attention_metadata_positional_args_and_padded_slices():
     assert normalized[-1].token_slice == slice(4, 8)
 
 
+def test_npu_request_boundary_ubatch_slices_balance_tokens(monkeypatch):
+    np = pytest.importorskip("numpy")
+    fake_torch = ModuleType("torch")
+    fake_torch.Tensor = object
+    fake_vllm = ModuleType("vllm")
+    fake_vllm_config = ModuleType("vllm.config")
+    fake_vllm_config.VllmConfig = object
+    fake_vllm_v1 = ModuleType("vllm.v1")
+    fake_vllm_worker = ModuleType("vllm.v1.worker")
+    fake_vllm_ubatch_utils = ModuleType("vllm.v1.worker.ubatch_utils")
+
+    class UBatchSlice:
+        def __init__(self, request_slice, token_slice):
+            self.request_slice = request_slice
+            self.token_slice = token_slice
+
+        @property
+        def num_tokens(self):
+            return self.token_slice.stop - self.token_slice.start
+
+        def is_empty(self):
+            return self.num_tokens <= 0
+
+    fake_vllm_ubatch_utils.UBatchSlice = UBatchSlice
+    fake_vllm_ubatch_utils.UBatchSlices = list
+    fake_vllm_ubatch_utils.check_ubatch_thresholds = lambda *_args, **_kwargs: False
+    fake_vllm_ascend = ModuleType("vllm_ascend")
+    fake_forward_context = ModuleType("vllm_ascend.ascend_forward_context")
+    fake_forward_context.MoECommType = SimpleNamespace()
+    fake_attention = ModuleType("vllm_ascend.attention")
+    fake_attention_utils = ModuleType("vllm_ascend.attention.utils")
+    fake_attention_utils.AscendCommonAttentionMetadata = object
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "vllm", fake_vllm)
+    monkeypatch.setitem(sys.modules, "vllm.config", fake_vllm_config)
+    monkeypatch.setitem(sys.modules, "vllm.v1", fake_vllm_v1)
+    monkeypatch.setitem(sys.modules, "vllm.v1.worker", fake_vllm_worker)
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm.v1.worker.ubatch_utils",
+        fake_vllm_ubatch_utils,
+    )
+    monkeypatch.setitem(sys.modules, "vllm_ascend", fake_vllm_ascend)
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_ascend.ascend_forward_context",
+        fake_forward_context,
+    )
+    monkeypatch.setitem(sys.modules, "vllm_ascend.attention", fake_attention)
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_ascend.attention.utils",
+        fake_attention_utils,
+    )
+
+    module_name = "afd_plugin.v1.worker.ascend.ubatch_utils"
+    original_module = sys.modules.pop(module_name, None)
+    try:
+        ubatch_utils = importlib.import_module(module_name)
+        slices = ubatch_utils.create_request_boundary_ubatch_slices(
+            np.array([2, 3, 5, 7], dtype=np.int32),
+        )
+
+        assert slices[0].request_slice == slice(0, 3)
+        assert slices[0].token_slice == slice(0, 10)
+        assert slices[1].request_slice == slice(3, 4)
+        assert slices[1].token_slice == slice(10, 17)
+
+        slices = ubatch_utils.create_request_boundary_ubatch_slices(
+            np.array([824, 846, 16], dtype=np.int32),
+        )
+
+        assert slices[0].request_slice == slice(0, 1)
+        assert slices[0].token_slice == slice(0, 824)
+        assert slices[1].request_slice == slice(1, 3)
+        assert slices[1].token_slice == slice(824, 1686)
+        assert (
+            ubatch_utils.create_request_boundary_ubatch_slices(
+                np.array([17], dtype=np.int32),
+            )
+            is None
+        )
+    finally:
+        sys.modules.pop(module_name, None)
+        if original_module is not None:
+            sys.modules[module_name] = original_module
+
+
 def test_npu_create_ascend_forward_context_marks_current_ubatch(monkeypatch):
     _require_npu_runtime()
     from afd_plugin.v1.worker.ascend import forward_context as forward_context_module
@@ -481,6 +640,187 @@ def test_npu_ffn_runner_executes_eager_ffn_step():
     assert runner.connector.metadata_updates == [
         (metadata, AFDRecvOutput(hidden_states="hidden", metadata=metadata)),
     ]
+
+
+def test_npu_ffn_runner_passes_async_shared_payload_to_model():
+    runner = _new_ffn_runner()
+    runner.vllm_config = _vllm_config(role="ffn")
+    runner.connector = _FakeFFNConnector()
+    runner.model = _RecordingFakeModel()
+    runner.num_layers = 1
+    runner.max_num_tokens = 1
+    runner.use_aclgraph = False
+    runner._acl_graphs = {}
+    metadata = AFDConnectorMetadata.create_attention_metadata(
+        layer_idx=0,
+        stage_idx=0,
+        seq_len=1,
+    )
+    runner.connector.attn_outputs.append(
+        AFDRecvOutput(
+            hidden_states="hidden",
+            metadata=metadata,
+            group_list="groups",
+            dynamic_scales="scales",
+            expand_x_shared="shared-hidden",
+            dynamic_scales_shared="shared-scales",
+        ),
+    )
+
+    runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
+
+    assert runner.model.calls == [
+        (
+            "hidden",
+            0,
+            {
+                "group_list": "groups",
+                "dynamic_scales": "scales",
+                "expand_x_shared": "shared-hidden",
+                "dynamic_scales_shared": "shared-scales",
+                "topk_weights": None,
+                "topk_ids": None,
+                "router_logits": None,
+                "row_idx": None,
+                "x_active_mask": None,
+                "cam_p2p_ep_name": "",
+            },
+        ),
+    ]
+
+
+def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch):
+    _require_npu_runtime()
+    from afd_plugin.connectors.npu.async_cam import AFDAsyncFFNWorkItem
+    from afd_plugin.v1.worker.ascend import ffn_model_runner
+
+    context_calls = []
+    sent_outputs = []
+
+    @contextmanager
+    def fake_ascend_forward_context(**kwargs):
+        context_calls.append(kwargs)
+        yield SimpleNamespace(additional_kwargs={}, dp_metadata="dp")
+
+    monkeypatch.setattr(
+        ffn_model_runner,
+        "ascend_forward_context",
+        fake_ascend_forward_context,
+    )
+    runner = _new_ffn_runner()
+    runner.vllm_config = _vllm_config(role="ffn")
+    runner.connector = SimpleNamespace(uses_dp_metadata_control_plane=False)
+    runner.model = _RecordingFakeModel()
+    runner.num_layers = 1
+    runner.max_num_tokens = 16
+    metadata = AFDConnectorMetadata.create_ffn_metadata(
+        layer_idx=7,
+        stage_idx=0,
+        seq_lens=[5],
+    )
+    recv_output = AFDRecvOutput(
+        hidden_states="recv-hidden",
+        metadata=metadata,
+        group_list="groups",
+        dynamic_scales="scales[:5]",
+        expand_x_shared="shared-hidden[:2]",
+        dynamic_scales_shared="shared-scales[:2]",
+        x_active_mask="active-mask[:5]",
+    )
+    work_item = AFDAsyncFFNWorkItem(
+        hidden_states="hidden[:5]",
+        metadata=metadata,
+        recv_output=recv_output,
+        layer_idx=7,
+        stage_idx=0,
+        num_tokens=5,
+        total_num_tokens=7,
+        shared_num_tokens=2,
+    )
+
+    def recv_ffn_work_item(*, stage_idx, max_num_tokens):
+        assert stage_idx == 0
+        assert max_num_tokens == 16
+        return work_item
+
+    def send_ffn_work_item_output(sent_work_item, ffn_output):
+        sent_outputs.append((sent_work_item, ffn_output))
+        return ffn_output
+
+    runner.connector.recv_ffn_work_item = recv_ffn_work_item
+    runner.connector.send_ffn_work_item_output = send_ffn_work_item_output
+
+    runner._ffn_forward_connector_driven()
+
+    assert runner.model.calls == [
+        (
+            "hidden[:5]",
+            7,
+            {
+                "group_list": "groups",
+                "dynamic_scales": "scales[:5]",
+                "expand_x_shared": "shared-hidden[:2]",
+                "dynamic_scales_shared": "shared-scales[:2]",
+                "topk_weights": None,
+                "topk_ids": None,
+                "router_logits": None,
+                "row_idx": None,
+                "x_active_mask": "active-mask[:5]",
+                "cam_p2p_ep_name": "",
+            },
+        ),
+    ]
+    assert sent_outputs == [(work_item, "npu-ffn(hidden[:5], layer=7)")]
+    assert context_calls[0]["num_tokens"] == 5
+    assert context_calls[0]["afd_metadata"].afd_tokens_lens == [5]
+
+
+def test_npu_ffn_runner_sends_structured_shared_output():
+    runner = _new_ffn_runner()
+    runner.vllm_config = _vllm_config(role="ffn")
+    runner.connector = _FakeFFNConnector()
+    runner.model = _FakeStructuredFFNModel()
+    runner.num_layers = 1
+    runner.max_num_tokens = 1
+    runner.use_aclgraph = False
+    runner._acl_graphs = {}
+    metadata = AFDConnectorMetadata.create_attention_metadata(
+        layer_idx=0,
+        stage_idx=0,
+        seq_len=1,
+    )
+    runner.connector.attn_outputs.append(("hidden", metadata))
+
+    runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
+
+    assert runner.connector.ffn_outputs == [
+        (
+            "routed(hidden, layer=0)",
+            metadata,
+            {
+                "ubatch_idx": 0,
+                "expand_x_shared": "shared(hidden, layer=0)",
+            },
+        ),
+    ]
+
+
+def test_npu_ffn_runner_filters_dense_layers_when_gate_runs_on_attention():
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.ascend.ffn_model_runner import _ffn_layer_indices
+
+    runner = _new_ffn_runner()
+    runner.num_layers = 5
+    runner.afd_config = SimpleNamespace(compute_gate_on_attention=True)
+    runner.model_config = SimpleNamespace(
+        hf_config=SimpleNamespace(
+            n_routed_experts=8,
+            first_k_dense_replace=2,
+            moe_layer_freq=2,
+        ),
+    )
+
+    assert _ffn_layer_indices(runner) == [2, 4]
 
 
 class _FakeGraph:
@@ -692,6 +1032,27 @@ def test_npu_ffn_worker_loop_error_is_propagated(caplog):
     assert "AFD NPU FFN worker loop failed" in caplog.text
 
 
+def test_npu_ffn_worker_uses_connector_driven_loop_for_async_connector():
+    worker = _new_ffn_worker()
+    event = threading.Event()
+    calls = []
+
+    def execute_connector_driven_step():
+        calls.append("step")
+        event.set()
+
+    worker._ffn_shutdown_event = event
+    worker.device = SimpleNamespace(type="cpu")
+    worker.model_runner = SimpleNamespace(
+        connector=_AsyncRecordingConnector(),
+        execute_connector_driven_step=execute_connector_driven_step,
+    )
+
+    worker._run_ffn_server_loop()
+
+    assert calls == ["step"]
+
+
 def test_npu_feature_validation_rejects_unsupported_switches():
     for extra_config, message in [
         ({"compute_gate_on_attention": True}, "compute_gate_on_attention"),
@@ -728,6 +1089,137 @@ def test_npu_feature_validation_allows_two_ubatches_only():
     config = _vllm_config()
     config.model_config.enforce_eager = False
     fail_if_unsupported_npu_afd_features(config)
+
+
+def test_npu_async_feature_validation_requires_async_config_and_eager():
+    with pytest.raises(RuntimeError, match="async=true"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(connector="afdasyncconnector", async_dp=False),
+        )
+
+    config = _vllm_config(connector="afdasyncconnector", async_dp=True)
+    config.model_config.enforce_eager = False
+    with pytest.raises(RuntimeError, match="only eager"):
+        fail_if_unsupported_npu_afd_features(config)
+
+
+def test_npu_async_feature_validation_rejects_ubatching_and_multistream():
+    with pytest.raises(RuntimeError, match="ubatching"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(
+                connector="afdasyncconnector",
+                async_dp=True,
+                use_ubatching=True,
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="multistream"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(
+                connector="afdasyncconnector",
+                async_dp=True,
+                extra_config={"multistream_info": {"ffn_enable": "true"}},
+            ),
+        )
+
+
+def test_npu_async_feature_validation_allows_quant_zero_or_one():
+    fail_if_unsupported_npu_afd_features(
+        _vllm_config(
+            connector="afdasyncconnector",
+            async_dp=True,
+            extra_config={"quant_mode": 1},
+        ),
+    )
+    fail_if_unsupported_npu_afd_features(
+        _vllm_config(
+            connector="afdasyncconnector",
+            async_dp=True,
+            extra_config={"dynamicQuant": "1"},
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="quant_mode"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(
+                connector="afdasyncconnector",
+                async_dp=True,
+                extra_config={"dynamicQuant": 2},
+            ),
+        )
+
+
+def test_npu_async_moe_ubatching_validation_requires_supported_shape():
+    fail_if_unsupported_npu_afd_features(
+        _vllm_config(
+            connector="afdasyncconnector",
+            async_dp=True,
+            extra_config={
+                "async_moe_ubatching": True,
+                "compute_gate_on_attention": True,
+            },
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="compute_gate_on_attention"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(
+                connector="afdasyncconnector",
+                async_dp=True,
+                extra_config={"async_moe_ubatching": True},
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="exactly two"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(
+                connector="afdasyncconnector",
+                async_dp=True,
+                extra_config={
+                    "async_moe_ubatching": True,
+                    "compute_gate_on_attention": True,
+                    "async_moe_num_ubatches": 3,
+                },
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="request-boundary"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(
+                connector="afdasyncconnector",
+                async_dp=True,
+                extra_config={
+                    "async_moe_ubatching": True,
+                    "compute_gate_on_attention": True,
+                    "async_moe_split": "token",
+                },
+            ),
+        )
+
+    fail_if_unsupported_npu_afd_features(
+        _vllm_config(
+            connector="afdasyncconnector",
+            async_dp=True,
+            prefill_context_parallel_size=2,
+            extra_config={
+                "async_moe_ubatching": True,
+                "compute_gate_on_attention": True,
+            },
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="decode context parallel"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(
+                connector="afdasyncconnector",
+                async_dp=True,
+                decode_context_parallel_size=2,
+                extra_config={
+                    "async_moe_ubatching": True,
+                    "compute_gate_on_attention": True,
+                },
+            ),
+        )
 
 
 def test_npu_ubatch_allows_mc2_comm_when_thresholds_are_met(monkeypatch):

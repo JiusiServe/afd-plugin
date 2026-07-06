@@ -31,6 +31,7 @@ from afd_plugin.connectors import (
     AFDConnectorMetadata,
     AFDDPMetadata,
     AFDDPMetadataPayload,
+    AFDFFNOutput,
     AFDMetadata,
     AFDRecvOutput,
 )
@@ -125,6 +126,16 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             )
             return None
         self.execute_model(dp_metadata_list=dp_metadata_list)
+        return None
+
+    def execute_connector_driven_step(self) -> None:
+        if bool(getattr(self.connector, "uses_dp_metadata_control_plane", True)):
+            raise RuntimeError(
+                "execute_connector_driven_step requires a connector-driven "
+                "AFD connector",
+            )
+        step_afd_npu_profiler(self.prof)
+        self._ffn_forward_connector_driven()
         return None
 
     def execute_model(
@@ -229,7 +240,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             num_tokens_across_dp=dp_num_tokens_across_dp,
             aclgraph_runtime_mode=aclgraph_runtime_mode,
         ) as forward_context:
-            for layer_idx in range(max(int(self.num_layers or 0), 1)):
+            for layer_idx in _ffn_layer_indices(self):
                 for stage_idx in stage_ids:
                     recv_output = self._recv_attn_output(stage_idx, layer_idx)
                     hidden_states, metadata, payload = _normalize_recv_output(
@@ -253,6 +264,8 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                         layer_idx=layer_idx,
                         group_list=payload.group_list,
                         dynamic_scales=payload.dynamic_scales,
+                        expand_x_shared=payload.expand_x_shared,
+                        dynamic_scales_shared=payload.dynamic_scales_shared,
                         topk_weights=payload.topk_weights,
                         topk_ids=payload.topk_ids,
                         router_logits=payload.router_logits,
@@ -260,11 +273,77 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                         x_active_mask=payload.x_active_mask,
                         cam_p2p_ep_name=payload.cam_p2p_ep_name or "",
                     )
-                    self.connector.send_ffn_output(
+                    _send_ffn_output(
+                        self.connector,
                         rank_ffn_output,
                         metadata,
-                        ubatch_idx=stage_idx,
+                        stage_idx=stage_idx,
                     )
+        return rank_ffn_output
+
+    def _ffn_forward_connector_driven(self) -> Any:
+        stage_idx = 0
+        rank_ffn_output = None
+        recv_work_item = getattr(self.connector, "recv_ffn_work_item", None)
+        send_work_item_output = getattr(
+            self.connector,
+            "send_ffn_work_item_output",
+            None,
+        )
+        if not callable(recv_work_item) or not callable(send_work_item_output):
+            raise RuntimeError(
+                "connector-driven NPU FFN requires async connector work item APIs",
+            )
+
+        for _ in _ffn_layer_indices(self):
+            work_item = recv_work_item(
+                stage_idx=stage_idx,
+                max_num_tokens=self.max_num_tokens,
+            )
+            hidden_states = work_item.hidden_states
+            metadata = work_item.metadata
+            payload = work_item.recv_output
+            layer_idx = work_item.layer_idx
+            num_tokens = work_item.num_tokens
+            afd_metadata = AFDMetadata(
+                afd_tokens_start_loc=[0],
+                afd_reqs_start_loc=[0],
+                afd_stage_idx=stage_idx,
+                afd_connector=self.connector,
+                afd_tokens_lens=[num_tokens],
+                num_of_stages=1,
+                afd_tokens_unpadded_lens=[num_tokens],
+            )
+
+            with ascend_forward_context(
+                vllm_config=self.vllm_config,
+                afd_metadata=afd_metadata,
+                model_instance=self.model,
+                num_tokens=num_tokens,
+            ) as forward_context:
+                if forward_context is not None:
+                    forward_context.dp_metadata = None
+                    mirror_afd_metadata_on_forward_context(
+                        forward_context,
+                        metadata,
+                    )
+                    _set_moe_layer_index(forward_context, layer_idx)
+
+                rank_ffn_output = self.model.compute_ffn_output(
+                    hidden_states=hidden_states,
+                    layer_idx=layer_idx,
+                    group_list=payload.group_list,
+                    dynamic_scales=payload.dynamic_scales,
+                    expand_x_shared=payload.expand_x_shared,
+                    dynamic_scales_shared=payload.dynamic_scales_shared,
+                    topk_weights=payload.topk_weights,
+                    topk_ids=payload.topk_ids,
+                    router_logits=payload.router_logits,
+                    row_idx=payload.row_idx,
+                    x_active_mask=payload.x_active_mask,
+                    cam_p2p_ep_name=payload.cam_p2p_ep_name or "",
+                )
+                rank_ffn_output = send_work_item_output(work_item, rank_ffn_output)
         return rank_ffn_output
 
     def capture_model(
@@ -356,25 +435,16 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         logger.debug("AFD NPU FFN captured ACL graph for key=%s", graph_key)
 
     def _recv_attn_output(self, stage_idx: int, layer_idx: int) -> Any:
-        logger.debug(
-            "AFD NPU FFN recv_attn_output start; stage_idx=%d layer_idx=%d",
-            stage_idx,
-            layer_idx,
-        )
-        metadata = self.connector.create_recv_metadata(
-            dp_metadata_list=self.connector.dp_metadata_list,
-            ubatch_idx=stage_idx,
-            layer_idx=layer_idx,
-            max_num_tokens=self.max_num_tokens,
-        )
+        recv_metadata_kwargs = {
+            "ubatch_idx": stage_idx,
+            "layer_idx": layer_idx,
+            "max_num_tokens": self.max_num_tokens,
+            "dp_metadata_list": self.connector.dp_metadata_list,
+        }
+        metadata = self.connector.create_recv_metadata(**recv_metadata_kwargs)
         output = self.connector.recv_attn_output(
             metadata=metadata,
             ubatch_idx=stage_idx,
-        )
-        logger.debug(
-            "AFD NPU FFN recv_attn_output end; stage_idx=%d layer_idx=%d",
-            stage_idx,
-            layer_idx,
         )
         return output
 
@@ -391,7 +461,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
 
 def _normalize_recv_output(
-    recv_output: Any,
+    recv_output: AFDRecvOutput | tuple[torch.Tensor, AFDConnectorMetadata],
     *,
     stage_idx: int,
     layer_idx: int,
@@ -416,6 +486,53 @@ def _normalize_recv_output(
     return hidden_states, metadata, recv_output
 
 
+def _send_ffn_output(
+    connector: AFDConnectorBase,
+    ffn_output: torch.Tensor | AFDFFNOutput,
+    metadata: AFDConnectorMetadata,
+    *,
+    stage_idx: int,
+) -> None:
+    if not isinstance(ffn_output, AFDFFNOutput):
+        connector.send_ffn_output(
+            ffn_output,
+            metadata,
+            ubatch_idx=stage_idx,
+        )
+        return
+
+    kwargs: dict[str, object] = {"ubatch_idx": stage_idx}
+    if ffn_output.shared_output is not None:
+        kwargs["expand_x_shared"] = ffn_output.shared_output
+    connector.send_ffn_output(
+        ffn_output.routed_output,
+        metadata,
+        **kwargs,
+    )
+
+
+def _ffn_layer_indices(runner: AFDNPUFFNModelRunner) -> range | list[int]:
+    num_layers = max(int(runner.num_layers or 0), 1)
+    afd_config = getattr(runner, "afd_config", None)
+    if afd_config is None or not bool(afd_config.compute_gate_on_attention):
+        return range(num_layers)
+    hf_config = runner.model_config.hf_config
+    return [
+        layer_idx
+        for layer_idx in range(num_layers)
+        if _is_moe_layer(hf_config, layer_idx)
+    ]
+
+
+def _is_moe_layer(hf_config: object, layer_idx: int) -> bool:
+    moe_layer_freq = getattr(hf_config, "moe_layer_freq", 1)
+    return (
+        hf_config.n_routed_experts is not None
+        and layer_idx >= hf_config.first_k_dense_replace
+        and layer_idx % moe_layer_freq == 0
+    )
+
+
 def _make_dp_metadata_payload(
     dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
     *,
@@ -430,7 +547,7 @@ def _make_dp_metadata_payload(
 
 
 def _ffn_token_counts_across_ranks(
-    connector: Any,
+    connector: AFDConnectorBase,
     dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
     stage_idx: int,
     *,
