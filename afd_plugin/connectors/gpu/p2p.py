@@ -139,7 +139,6 @@ class P2PAFDConnector(AFDConnectorBase):
                 world_size=len(self.mapping.subgroup_ranks),
             )
             self.e2a_group = self.a2e_group
-            self.group_size = len(self.mapping.subgroup_ranks)
             self.a2e_pynccl = PyNcclCommunicator(
                 group=self.a2e_group,
                 device=self.local_rank,
@@ -227,12 +226,7 @@ class P2PAFDConnector(AFDConnectorBase):
             ), tensor_metadata in self._recv_attn_tensor_metadata_list.items():
                 buffer_key = (stage_idx, src_rank, tuple(tensor_metadata.size))
                 existing = self._recv_attn_buffers.get(buffer_key)
-                if (
-                    existing is not None
-                    and getattr(existing, "shape", None) == tensor_metadata.size
-                    and getattr(existing, "dtype", None) == tensor_metadata.dtype
-                    and getattr(existing, "device", None) == tensor_metadata.device
-                ):
+                if existing is not None:
                     continue
                 self._recv_attn_buffers[buffer_key] = torch.empty(
                     tuple(tensor_metadata.size),
