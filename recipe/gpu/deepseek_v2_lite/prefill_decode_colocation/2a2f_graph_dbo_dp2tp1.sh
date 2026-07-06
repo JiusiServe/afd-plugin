@@ -63,3 +63,5 @@ CUDA_VISIBLE_DEVICES=2,3 uv run vllm serve "$MODEL_PATH" \
     --host 127.0.0.1 \
     --port 18305 \
     --trust-remote-code > ffn.log 2>&1 &
+
+wait

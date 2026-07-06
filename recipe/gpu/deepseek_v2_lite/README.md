@@ -21,7 +21,7 @@ End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
 .
 ├── prefill_decode_disaggregation/        # prefill_decode_disaggregation, 2P1A1F topology
 │   ├── 2p1a1f_eager_dbo.sh
-│   ├── 2p1a1f_graph_dbo.sh
+│   └── 2p1a1f_graph_dbo.sh
 └── prefill_decode_colocation/             # prefill_decode_colocation, 2A2F topology
     ├── 2a2f_eager_dbo_dp1tp2.sh
     ├── 2a2f_eager_dbo_dp2tp1.sh
@@ -30,7 +30,7 @@ End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
 ```
 ### 1. Prefill/Decode Disaggregation — `1a1f`
 
-4 processes:
+5 processes, 4 GPU workers + 1 proxy server:
 
 | GPUs   | Role              | Worker class           | Port  |
 |--------|-------------------|------------------------|-------|
@@ -60,7 +60,10 @@ The four variants cover the TP/DP cross product:
 ## Running
 
 Pick a script and execute it from the repository root. Each script
-backgrounds its workers and writes per-worker logs (`afd_prefill0.log`, `attn.log`, `ffn.log`) in the current directory.
+backgrounds its workers and writes per-worker logs (`afd_prefill0.log`, `afd_prefill1.log`, `attn.log`, `ffn.log`) in the current directory.
+
+Wait for `attn.log` (and `afd_prefill0.log`, `afd_prefill1.log` in disaggregation) to print the `Application startup complete` line
+before sending traffic.
 
 ### prefill_decode_colocation
 ```bash
@@ -68,18 +71,12 @@ export MODEL_PATH=/path/model_weights/DeepSeek-V2-Lite
 bash recipe/gpu/deepseek_v2_lite/prefill_decode_colocation/2a2f_graph_dbo_dp1tp2.sh
 ```
 
-Wait for `attn.log` to print the `Application startup complete` line
-before sending traffic.
-
 ### prefill_decode_disaggregation
 
 ```bash
 export MODEL_PATH=/path/model_weights/DeepSeek-V2-Lite
 bash recipe/gpu/deepseek_v2_lite/prefill_decode_disaggregation/2p1a1f_graph_dbo.sh
 ```
-
-Wait for `attn.log` to print the `Application startup complete` line
-before sending traffic.
 
 ### Running the benchmark
 
