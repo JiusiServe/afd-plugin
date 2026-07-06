@@ -15,7 +15,7 @@ from vllm.distributed.parallel_state import (
     get_tensor_model_parallel_rank,
     get_world_group,
 )
-from vllm.forward_context import DPMetadata, get_forward_context
+from vllm.forward_context import BatchDescriptor, DPMetadata, get_forward_context
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.gpu_ubatch_wrapper import UBatchWrapper
 from vllm.v1.worker.ubatch_utils import check_ubatch_thresholds
@@ -523,8 +523,8 @@ def _batch_execution_values(
 
 
 def _ubatch_split_within_real_tokens(
-    vllm_config: object,
-    batch_descriptor: object,
+    vllm_config: VllmConfig,
+    batch_descriptor: BatchDescriptor | None,
     values: dict[str, Any],
 ) -> bool:
     """Return True if a 2+-way ubatch split stays inside the real tokens.
