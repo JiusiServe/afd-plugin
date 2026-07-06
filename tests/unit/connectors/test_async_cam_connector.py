@@ -14,6 +14,8 @@ from afd_plugin.connectors import (  # noqa: E402
     AFDConnectorMetadata,
     AFDDPMetadata,
     AFDDPMetadataPayload,
+    AFDFFNOutput,
+    AFDRecvOutput,
 )
 from afd_plugin.connectors.npu import async_cam as async_cam_module  # noqa: E402
 from afd_plugin.connectors.npu.async_cam import (  # noqa: E402
@@ -23,6 +25,24 @@ from afd_plugin.connectors.npu.async_cam import (  # noqa: E402
     AFDAsyncConnectorData,
     build_async_topology,
 )
+
+
+class _FakeScalar:
+    def __init__(self, value):
+        self._value = int(value)
+
+    def item(self):
+        return self._value
+
+
+class _FakeTensorLike:
+    def __init__(self, name):
+        self.name = name
+
+    def __getitem__(self, item):
+        start = "" if item.start is None else item.start
+        stop = "" if item.stop is None else item.stop
+        return f"{self.name}[{start}:{stop}]"
 
 
 class _FakeTensor:
@@ -364,6 +384,156 @@ def test_async_combine_send_requires_dispatch_recv_token_metadata(monkeypatch):
 
     with pytest.raises(RuntimeError, match="TokenNums_Rankid_Layeridx"):
         connector.send_ffn_output(_FakeTensor((4, 16)), metadata)
+
+
+def test_async_ffn_work_item_uses_cam_layer_and_token_metadata(monkeypatch):
+    connector = AFDAsyncConnector(
+        0,
+        0,
+        _vllm_config(),
+        _afd_config(role="ffn"),
+    )
+    connector.ffn_size = 2
+
+    def fake_recv_attn_output(*, metadata, ubatch_idx):
+        assert ubatch_idx == 0
+        return AFDRecvOutput(
+            hidden_states=_FakeTensorLike("hidden"),
+            metadata=metadata,
+            atten_batch_size=[
+                _FakeScalar(7),
+                _FakeScalar(0),
+                _FakeScalar(11),
+            ],
+            group_list="groups",
+            dynamic_scales=_FakeTensorLike("scales"),
+            expand_x_shared=_FakeTensorLike("shared-hidden"),
+            dynamic_scales_shared=_FakeTensorLike("shared-scales"),
+            ep_recv_counts_shared=[_FakeScalar(2)],
+            x_active_mask=_FakeTensorLike("active-mask"),
+        )
+
+    monkeypatch.setattr(connector, "recv_attn_output", fake_recv_attn_output)
+
+    work_item = connector.recv_ffn_work_item(stage_idx=0, max_num_tokens=16)
+
+    assert work_item.layer_idx == 11
+    assert work_item.stage_idx == 0
+    assert work_item.total_num_tokens == 7
+    assert work_item.shared_num_tokens == 2
+    assert work_item.num_tokens == 5
+    assert work_item.hidden_states == "hidden[:5]"
+    assert work_item.metadata.layer_idx == 11
+    assert work_item.metadata.seq_lens == [5]
+    assert work_item.recv_output.dynamic_scales == "scales[:5]"
+    assert work_item.recv_output.expand_x_shared == "shared-hidden[:2]"
+    assert work_item.recv_output.dynamic_scales_shared == "shared-scales[:2]"
+    assert work_item.recv_output.x_active_mask == "active-mask[:5]"
+    assert work_item.num_tokens_across_dp.tolist() == [5, 5]
+    assert work_item.metadata.connector_data.layer_idx == 11
+
+
+def test_async_cam_shared_token_count_uses_expert_tokens_shared_directly():
+    metadata = AFDConnectorMetadata.create_ffn_metadata(
+        layer_idx=0,
+        stage_idx=0,
+        seq_lens=[10],
+    )
+    payload = AFDRecvOutput(
+        hidden_states=_FakeTensorLike("hidden"),
+        metadata=metadata,
+        atten_batch_size=[
+            _FakeScalar(10),
+            _FakeScalar(0),
+            _FakeScalar(7),
+        ],
+        ep_recv_counts=[_FakeScalar(12), _FakeScalar(15)],
+        ep_recv_counts_shared=[_FakeScalar(9)],
+    )
+
+    assert async_cam_module._cam_shared_token_count(payload, fallback=10) == 9
+
+
+def test_async_slice_cam_payload_shared_tensors_fallback_to_100_tokens():
+    payload = AFDRecvOutput(
+        hidden_states=_FakeTensorLike("hidden"),
+        metadata=AFDConnectorMetadata.create_ffn_metadata(
+            layer_idx=0,
+            stage_idx=0,
+            seq_lens=[10],
+        ),
+        dynamic_scales=_FakeTensorLike("scales"),
+        expand_x_shared=_FakeTensorLike("shared-hidden"),
+        dynamic_scales_shared=_FakeTensorLike("shared-scales"),
+    )
+
+    async_cam_module._slice_cam_payload_to_actual_tokens(
+        payload.hidden_states,
+        payload,
+        num_tokens=5,
+        shared_num_tokens=0,
+    )
+
+    assert payload.dynamic_scales == "scales[:5]"
+    assert payload.expand_x_shared == "shared-hidden[:100]"
+    assert payload.dynamic_scales_shared == "shared-scales[:100]"
+
+
+def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
+    monkeypatch,
+):
+    connector = AFDAsyncConnector(
+        0,
+        0,
+        _vllm_config(),
+        _afd_config(role="ffn"),
+    )
+    sent_outputs = []
+
+    def fake_send_ffn_output(ffn_output, metadata, **kwargs):
+        sent_outputs.append((ffn_output, metadata, kwargs))
+
+    monkeypatch.setattr(connector, "send_ffn_output", fake_send_ffn_output)
+
+    def fake_recv_attn_output(*, metadata, ubatch_idx):
+        return AFDRecvOutput(
+            hidden_states=_FakeTensorLike("hidden"),
+            metadata=metadata,
+            atten_batch_size=[
+                _FakeScalar(5),
+                _FakeScalar(0),
+                _FakeScalar(7),
+            ],
+            expand_x_shared=_FakeTensorLike("shared-hidden"),
+            dynamic_scales_shared=_FakeTensorLike("shared-scales"),
+            ep_recv_counts_shared=[_FakeScalar(5)],
+        )
+
+    monkeypatch.setattr(connector, "recv_attn_output", fake_recv_attn_output)
+
+    work_item = connector.recv_ffn_work_item(stage_idx=0, max_num_tokens=16)
+    sent_output = connector.send_ffn_work_item_output(
+        work_item,
+        AFDFFNOutput(
+            routed_output="computed-routed",
+            shared_output="computed-shared",
+        ),
+    )
+
+    assert work_item.num_tokens == 0
+    assert work_item.hidden_states == "hidden[:0]"
+    assert work_item.metadata.seq_lens == [5]
+    assert sent_output == AFDFFNOutput(
+        routed_output=work_item.recv_output.hidden_states,
+        shared_output="computed-shared",
+    )
+    assert sent_outputs == [
+        (
+            work_item.recv_output.hidden_states,
+            work_item.metadata,
+            {"ubatch_idx": 0, "expand_x_shared": "computed-shared"},
+        ),
+    ]
 
 
 def test_async_select_experts_maps_legacy_global_num_experts(monkeypatch):

@@ -144,22 +144,6 @@ class _FakeDPMetadata:
         self.num_tokens_across_dp_cpu = values
 
 
-class _FakeScalar:
-    def __init__(self, value):
-        self._value = int(value)
-
-    def item(self):
-        return self._value
-
-
-class _FakeTensorLike:
-    def __init__(self, name):
-        self.name = name
-
-    def __getitem__(self, item):
-        return f"{self.name}[{item.start or ''}:{item.stop or ''}]"
-
-
 def _parallel_config(**overrides):
     values = {
         "data_parallel_size": 1,
@@ -707,9 +691,12 @@ def test_npu_ffn_runner_passes_async_shared_payload_to_model():
 
 def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch):
     _require_npu_runtime()
+    torch = pytest.importorskip("torch")
+    from afd_plugin.connectors.npu.async_cam import AFDAsyncFFNWorkItem
     from afd_plugin.v1.worker.ascend import ffn_model_runner
 
     context_calls = []
+    sent_outputs = []
 
     @contextmanager
     def fake_ascend_forward_context(**kwargs):
@@ -723,39 +710,50 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
     )
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
-    runner.connector = _FakeFFNConnector(ffn_size=2)
-    runner.connector.uses_dp_metadata_control_plane = False
+    runner.connector = SimpleNamespace(uses_dp_metadata_control_plane=False)
     runner.model = _RecordingFakeModel()
     runner.num_layers = 1
     runner.max_num_tokens = 16
     metadata = AFDConnectorMetadata.create_ffn_metadata(
-        layer_idx=0,
+        layer_idx=7,
         stage_idx=0,
-        seq_lens=[16],
+        seq_lens=[5],
     )
-    token_nums_rankid_layeridx = [
-        _FakeScalar(5),
-        _FakeScalar(0),
-        _FakeScalar(7),
-    ]
-    runner.connector.attn_outputs.append(
-        AFDRecvOutput(
-            hidden_states=_FakeTensorLike("hidden"),
-            metadata=metadata,
-            atten_batch_size=token_nums_rankid_layeridx,
-            group_list="groups",
-            dynamic_scales=_FakeTensorLike("scales"),
-            expand_x_shared=_FakeTensorLike("shared-hidden"),
-            dynamic_scales_shared=_FakeTensorLike("shared-scales"),
-            ep_recv_counts_shared=[_FakeScalar(2)],
-            x_active_mask=_FakeTensorLike("active-mask"),
-        ),
+    recv_output = AFDRecvOutput(
+        hidden_states="recv-hidden",
+        metadata=metadata,
+        group_list="groups",
+        dynamic_scales="scales[:5]",
+        expand_x_shared="shared-hidden[:2]",
+        dynamic_scales_shared="shared-scales[:2]",
+        x_active_mask="active-mask[:5]",
     )
+    work_item = AFDAsyncFFNWorkItem(
+        hidden_states="hidden[:5]",
+        metadata=metadata,
+        recv_output=recv_output,
+        layer_idx=7,
+        stage_idx=0,
+        num_tokens=5,
+        num_tokens_across_dp=torch.tensor([5, 5], dtype=torch.int32, device="cpu"),
+        total_num_tokens=7,
+        shared_num_tokens=2,
+    )
+
+    def recv_ffn_work_item(*, stage_idx, max_num_tokens):
+        assert stage_idx == 0
+        assert max_num_tokens == 16
+        return work_item
+
+    def send_ffn_work_item_output(sent_work_item, ffn_output):
+        sent_outputs.append((sent_work_item, ffn_output))
+        return ffn_output
+
+    runner.connector.recv_ffn_work_item = recv_ffn_work_item
+    runner.connector.send_ffn_work_item_output = send_ffn_work_item_output
 
     runner._ffn_forward_connector_driven()
 
-    assert metadata.layer_idx == 7
-    assert metadata.seq_lens == [5]
     assert runner.model.calls == [
         (
             "hidden[:5]",
@@ -774,81 +772,10 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
             },
         ),
     ]
-    assert runner.connector.ffn_outputs == [
-        ("npu-ffn(hidden[:5], layer=7)", metadata, {"ubatch_idx": 0}),
-    ]
+    assert sent_outputs == [(work_item, "npu-ffn(hidden[:5], layer=7)")]
     assert context_calls[0]["num_tokens"] == 5
     assert context_calls[0]["afd_metadata"].afd_tokens_lens == [5]
     assert context_calls[0]["num_tokens_across_dp"].tolist() == [5, 5]
-
-
-def test_cam_shared_token_count_uses_expert_tokens_shared_directly():
-    _require_npu_runtime()
-    from afd_plugin.v1.worker.ascend.ffn_model_runner import _cam_shared_token_count
-
-    metadata = AFDConnectorMetadata.create_ffn_metadata(
-        layer_idx=0,
-        stage_idx=0,
-        seq_lens=[10],
-    )
-    token_nums_rankid_layeridx = [
-        _FakeScalar(10),
-        _FakeScalar(0),
-        _FakeScalar(7),
-        _FakeScalar(0),
-        _FakeScalar(2),
-        _FakeScalar(100),
-        _FakeScalar(200),
-        _FakeScalar(300),
-        _FakeScalar(4),
-        _FakeScalar(1),
-        _FakeScalar(2),
-        _FakeScalar(6),
-        _FakeScalar(3),
-        _FakeScalar(4),
-        _FakeScalar(8),
-        _FakeScalar(5),
-        _FakeScalar(6),
-    ]
-    payload = AFDRecvOutput(
-        hidden_states=_FakeTensorLike("hidden"),
-        metadata=metadata,
-        atten_batch_size=token_nums_rankid_layeridx,
-        ep_recv_counts=[_FakeScalar(12), _FakeScalar(15)],
-        ep_recv_counts_shared=[_FakeScalar(9)],
-    )
-
-    assert _cam_shared_token_count(payload, fallback=10) == 9
-
-
-def test_slice_cam_payload_shared_tensors_fallback_to_100_tokens():
-    _require_npu_runtime()
-    from afd_plugin.v1.worker.ascend.ffn_model_runner import (
-        _slice_cam_payload_to_actual_tokens,
-    )
-
-    payload = AFDRecvOutput(
-        hidden_states=_FakeTensorLike("hidden"),
-        metadata=AFDConnectorMetadata.create_ffn_metadata(
-            layer_idx=0,
-            stage_idx=0,
-            seq_lens=[10],
-        ),
-        dynamic_scales=_FakeTensorLike("scales"),
-        expand_x_shared=_FakeTensorLike("shared-hidden"),
-        dynamic_scales_shared=_FakeTensorLike("shared-scales"),
-    )
-
-    _slice_cam_payload_to_actual_tokens(
-        payload.hidden_states,
-        payload,
-        num_tokens=5,
-        shared_num_tokens=0,
-    )
-
-    assert payload.dynamic_scales == "scales[:5]"
-    assert payload.expand_x_shared == "shared-hidden[:100]"
-    assert payload.dynamic_scales_shared == "shared-scales[:100]"
 
 
 def test_npu_ffn_runner_sends_structured_shared_output():

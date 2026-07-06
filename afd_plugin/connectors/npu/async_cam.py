@@ -20,6 +20,7 @@ from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import (
     AFDConnectorMetadata,
     AFDDPMetadataPayload,
+    AFDFFNOutput,
     AFDRecvOutput,
 )
 from afd_plugin.distributed import init_afd_process_group
@@ -59,6 +60,21 @@ class AFDAsyncConnectorData:
     atten_batch_size: Tensor | None = None
     x_active_mask: Tensor | None = None
     expand_x_shared: Tensor | None = None
+
+
+@dataclass(slots=True)
+class AFDAsyncFFNWorkItem:
+    """Normalized FFN-side work item produced by async CAM dispatch recv."""
+
+    hidden_states: Tensor
+    metadata: AFDConnectorMetadata
+    recv_output: AFDRecvOutput
+    layer_idx: int
+    stage_idx: int
+    num_tokens: int
+    num_tokens_across_dp: Tensor
+    total_num_tokens: int
+    shared_num_tokens: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +262,90 @@ class AFDAsyncConnector(AFDConnectorBase):
         data.atten_batch_size = recv_output.atten_batch_size
         data.token_nums_rankid_layeridx = recv_output.atten_batch_size
         data.x_active_mask = recv_output.x_active_mask
+
+    def recv_ffn_work_item(
+        self,
+        *,
+        stage_idx: int,
+        max_num_tokens: int,
+    ) -> AFDAsyncFFNWorkItem:
+        stage_idx = int(stage_idx)
+        metadata = self.create_recv_metadata(
+            ubatch_idx=stage_idx,
+            layer_idx=0,
+            batch_size=_connector_driven_batch_size(self, max_num_tokens),
+        )
+        recv_output = self.recv_attn_output(
+            metadata=metadata,
+            ubatch_idx=stage_idx,
+        )
+        self.update_metadata(metadata, recv_output)
+
+        token_nums_rankid_layeridx = _cam_token_nums_rankid_layeridx(
+            recv_output,
+            metadata,
+        )
+        total_num_tokens = max(1, _cam_metadata_int(token_nums_rankid_layeridx, 0))
+        shared_num_tokens = _cam_shared_token_count(recv_output, total_num_tokens)
+        layer_idx = _cam_metadata_int(token_nums_rankid_layeridx, 2)
+        num_tokens = total_num_tokens - shared_num_tokens
+
+        metadata.layer_idx = layer_idx
+        metadata.stage_idx = stage_idx
+        if num_tokens <= 0:
+            num_tokens = 0
+        metadata.seq_lens = [num_tokens]
+
+        hidden_states = _slice_cam_payload_to_actual_tokens(
+            recv_output.hidden_states,
+            recv_output,
+            num_tokens,
+            shared_num_tokens=shared_num_tokens,
+        )
+        _sync_connector_data_with_cam_metadata(metadata, layer_idx=layer_idx)
+
+        return AFDAsyncFFNWorkItem(
+            hidden_states=hidden_states,
+            metadata=metadata,
+            recv_output=recv_output,
+            layer_idx=layer_idx,
+            stage_idx=stage_idx,
+            num_tokens=num_tokens,
+            num_tokens_across_dp=_cam_num_tokens_across_dp(self, num_tokens),
+            total_num_tokens=total_num_tokens,
+            shared_num_tokens=shared_num_tokens,
+        )
+
+    def send_ffn_work_item_output(
+        self,
+        work_item: AFDAsyncFFNWorkItem,
+        ffn_output: Tensor | AFDFFNOutput,
+    ) -> Tensor | AFDFFNOutput:
+        if int(work_item.num_tokens) > 0:
+            _send_ffn_output_payload(
+                self,
+                ffn_output,
+                work_item.metadata,
+                stage_idx=work_item.stage_idx,
+            )
+            return ffn_output
+
+        recv_hidden_states = work_item.recv_output.hidden_states
+        if isinstance(ffn_output, AFDFFNOutput):
+            ffn_output = AFDFFNOutput(
+                routed_output=recv_hidden_states,
+                shared_output=ffn_output.shared_output,
+            )
+        else:
+            ffn_output = recv_hidden_states
+        work_item.metadata.seq_lens = [work_item.total_num_tokens]
+        _send_ffn_output_payload(
+            self,
+            ffn_output,
+            work_item.metadata,
+            stage_idx=work_item.stage_idx,
+        )
+        return ffn_output
 
     def send_attn_output(
         self,
@@ -698,6 +798,120 @@ def _resolve_cam_tp_size(afd_config: AFDConfig) -> int:
     return size
 
 
+def _connector_driven_batch_size(
+    connector: AFDAsyncConnector,
+    fallback: int,
+) -> int:
+    return max(1, int(getattr(connector, "max_seq_len", fallback) or fallback))
+
+
+def _cam_token_nums_rankid_layeridx(
+    payload: AFDRecvOutput,
+    metadata: AFDConnectorMetadata,
+) -> Tensor:
+    token_nums_rankid_layeridx = payload.atten_batch_size
+    if token_nums_rankid_layeridx is None:
+        connector_data = metadata.connector_data
+        if connector_data is not None:
+            token_nums_rankid_layeridx = getattr(
+                connector_data,
+                "token_nums_rankid_layeridx",
+                None,
+            )
+    if token_nums_rankid_layeridx is None:
+        raise RuntimeError(
+            "AFD async CAM FFN work item requires "
+            "TokenNums_Rankid_Layeridx from async_dispatch_recv",
+        )
+    return token_nums_rankid_layeridx
+
+
+def _cam_metadata_int(token_nums_rankid_layeridx: Tensor, index: int) -> int:
+    value = token_nums_rankid_layeridx[index]
+    if isinstance(value, (int, float)):
+        return int(value)
+    return int(value.item())
+
+
+def _cam_shared_token_count(payload: AFDRecvOutput, fallback: int) -> int:
+    expert_token_nums_shared = payload.ep_recv_counts_shared
+    if expert_token_nums_shared is None:
+        return max(1, int(fallback))
+    return max(1, _cam_metadata_int(expert_token_nums_shared, 0))
+
+
+def _slice_cam_payload_to_actual_tokens(
+    hidden_states: Tensor,
+    payload: AFDRecvOutput,
+    num_tokens: int,
+    *,
+    shared_num_tokens: int | None = None,
+) -> Tensor:
+    if shared_num_tokens is None:
+        shared_num_tokens = num_tokens
+    shared_slice_tokens = shared_num_tokens if shared_num_tokens > 0 else 100
+    hidden_states = hidden_states[:num_tokens]
+    if payload.expand_x_shared is not None:
+        payload.expand_x_shared = payload.expand_x_shared[:shared_slice_tokens]
+    if payload.dynamic_scales is not None:
+        payload.dynamic_scales = payload.dynamic_scales[:num_tokens]
+    if payload.dynamic_scales_shared is not None:
+        payload.dynamic_scales_shared = payload.dynamic_scales_shared[
+            :shared_slice_tokens
+        ]
+    if payload.x_active_mask is not None:
+        payload.x_active_mask = payload.x_active_mask[:num_tokens]
+    return hidden_states
+
+
+def _sync_connector_data_with_cam_metadata(
+    metadata: AFDConnectorMetadata,
+    *,
+    layer_idx: int,
+) -> None:
+    connector_data = metadata.connector_data
+    if connector_data is None:
+        return
+    connector_data.layer_idx = int(layer_idx)
+
+
+def _cam_num_tokens_across_dp(
+    connector: AFDAsyncConnector,
+    num_tokens: int,
+) -> Tensor:
+    rank_count = max(1, int(getattr(connector, "ffn_size", 1)))
+    return torch.tensor(
+        [int(num_tokens)] * rank_count,
+        dtype=torch.int32,
+        device="cpu",
+    )
+
+
+def _send_ffn_output_payload(
+    connector: AFDAsyncConnector,
+    ffn_output: Tensor | AFDFFNOutput,
+    metadata: AFDConnectorMetadata,
+    *,
+    stage_idx: int,
+) -> None:
+    if not isinstance(ffn_output, AFDFFNOutput):
+        connector.send_ffn_output(
+            ffn_output,
+            metadata,
+            ubatch_idx=stage_idx,
+        )
+        return
+
+    kwargs: dict[str, object] = {"ubatch_idx": stage_idx}
+    if ffn_output.shared_output is not None:
+        kwargs["expand_x_shared"] = ffn_output.shared_output
+    connector.send_ffn_output(
+        ffn_output.routed_output,
+        metadata,
+        **kwargs,
+    )
+
+
 def _ensure_connector_data(metadata: AFDConnectorMetadata) -> AFDAsyncConnectorData:
     data = metadata.connector_data
     if not isinstance(data, AFDAsyncConnectorData):
@@ -738,6 +952,7 @@ __all__ = [
     "AFD_ASYNC_CAM_GROUP_NAME",
     "AFDAsyncConnector",
     "AFDAsyncConnectorData",
+    "AFDAsyncFFNWorkItem",
     "AFDAsyncTopology",
     "ATTN_RANKS_PER_DP_CONFIG_KEY",
     "CAM_COMM_ID",
