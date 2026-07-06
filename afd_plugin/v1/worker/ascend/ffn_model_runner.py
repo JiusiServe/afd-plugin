@@ -298,14 +298,26 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 payload,
                 metadata,
             )
-            num_tokens = max(1, _cam_metadata_int(token_nums_rankid_layeridx, 0))
-            shared_num_tokens = _cam_shared_token_count(payload, num_tokens)
+            total_num_tokens = max(1, _cam_metadata_int(token_nums_rankid_layeridx, 0))
+            shared_num_tokens = _cam_shared_token_count(payload, total_num_tokens)
             layer_idx = _cam_metadata_int(token_nums_rankid_layeridx, 2)
 
-            num_tokens -= shared_num_tokens
+            num_tokens = total_num_tokens - shared_num_tokens
 
             metadata.layer_idx = layer_idx
             metadata.stage_idx = stage_idx
+            if num_tokens <= 0:
+                rank_ffn_output = self._handle_all_shared_connector_driven_output(
+                    hidden_states=hidden_states,
+                    payload=payload,
+                    metadata=metadata,
+                    layer_idx=layer_idx,
+                    stage_idx=stage_idx,
+                    total_num_tokens=total_num_tokens,
+                    shared_num_tokens=shared_num_tokens,
+                )
+                continue
+
             metadata.seq_lens = [num_tokens]
             hidden_states = _slice_cam_payload_to_actual_tokens(
                 hidden_states,
@@ -376,6 +388,106 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     metadata,
                     stage_idx=stage_idx,
                 )
+        return rank_ffn_output
+
+    # TODO: This is a temporary workaround for the CAM combine kernel failing
+    # when routed FFN output has zero rows while CAM metadata still reports all
+    # tokens. Prefer fixing async_combine_send to handle the all-shared case
+    # directly, then remove this routed-output passthrough.
+    def _handle_all_shared_connector_driven_output(
+        self,
+        *,
+        hidden_states: torch.Tensor,
+        payload: AFDRecvOutput,
+        metadata: AFDConnectorMetadata,
+        layer_idx: int,
+        stage_idx: int,
+        total_num_tokens: int,
+        shared_num_tokens: int,
+    ) -> torch.Tensor | AFDFFNOutput:
+        recv_hidden_states = hidden_states
+        routed_num_tokens = 0
+        metadata.seq_lens = [routed_num_tokens]
+        hidden_states = _slice_cam_payload_to_actual_tokens(
+            hidden_states,
+            payload,
+            routed_num_tokens,
+            shared_num_tokens=shared_num_tokens,
+        )
+        _sync_connector_data_with_cam_metadata(
+            metadata,
+            layer_idx=layer_idx,
+        )
+        num_tokens_across_dp = torch.tensor(
+            [routed_num_tokens] * max(1, int(getattr(self.connector, "ffn_size", 1))),
+            dtype=torch.int32,
+            device="cpu",
+        )
+        afd_metadata = AFDMetadata(
+            afd_tokens_start_loc=[0],
+            afd_reqs_start_loc=[0],
+            afd_stage_idx=stage_idx,
+            afd_connector=self.connector,
+            afd_tokens_lens=[routed_num_tokens],
+            num_of_stages=1,
+            afd_tokens_unpadded_lens=[routed_num_tokens],
+        )
+        logger.debug(
+            "AFD NPU FFN connector-driven all-shared routed passthrough; "
+            "stage_idx=%d layer_idx=%d total_num_tokens=%d "
+            "shared_num_tokens=%d routed_hidden_states_shape=%s "
+            "recv_hidden_states_shape=%s",
+            stage_idx,
+            layer_idx,
+            total_num_tokens,
+            shared_num_tokens,
+            tuple(hidden_states.shape),
+            tuple(recv_hidden_states.shape),
+        )
+        with ascend_forward_context(
+            vllm_config=self.vllm_config,
+            afd_metadata=afd_metadata,
+            model_instance=self.model,
+            num_tokens=routed_num_tokens,
+            num_tokens_across_dp=num_tokens_across_dp,
+        ) as forward_context:
+            if forward_context is not None:
+                forward_context.dp_metadata = None
+                mirror_afd_metadata_on_forward_context(
+                    forward_context,
+                    metadata,
+                )
+                _set_moe_layer_index(forward_context, layer_idx)
+
+            computed_ffn_output = self.model.compute_ffn_output(
+                hidden_states=hidden_states,
+                layer_idx=layer_idx,
+                group_list=payload.group_list,
+                dynamic_scales=payload.dynamic_scales,
+                expand_x_shared=payload.expand_x_shared,
+                dynamic_scales_shared=payload.dynamic_scales_shared,
+                topk_weights=payload.topk_weights,
+                topk_ids=payload.topk_ids,
+                router_logits=payload.router_logits,
+                row_idx=payload.row_idx,
+                x_active_mask=payload.x_active_mask,
+                cam_p2p_ep_name=payload.cam_p2p_ep_name or "",
+            )
+
+        if isinstance(computed_ffn_output, AFDFFNOutput):
+            rank_ffn_output = AFDFFNOutput(
+                routed_output=recv_hidden_states,
+                shared_output=computed_ffn_output.shared_output,
+            )
+        else:
+            rank_ffn_output = recv_hidden_states
+        metadata.seq_lens = [total_num_tokens]
+        _send_ffn_output(
+            self.connector,
+            rank_ffn_output,
+            metadata,
+            stage_idx=stage_idx,
+        )
         return rank_ffn_output
 
     def capture_model(
