@@ -7,26 +7,34 @@ from types import SimpleNamespace
 
 import pytest
 
-pytest.importorskip("torch")
+torch = pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
-from afd_plugin.config import AFDConfig, afd_config_from_mapping
-from afd_plugin.connectors import (
+from afd_plugin.config import AFDConfig, afd_config_from_mapping  # noqa: E402
+from afd_plugin.connectors import (  # noqa: E402
     AFDConnectorFactory,
     AFDDPMetadata,
     AFDDPMetadataPayload,
 )
-from afd_plugin.distributed import build_rank_mapping
+from afd_plugin.distributed import build_rank_mapping  # noqa: E402
 
 
-def _fake_vllm_config():
+def _fake_vllm_config(
+    *,
+    data_parallel_size=1,
+    data_parallel_rank=0,
+    enforce_eager=True,
+):
     return SimpleNamespace(
         model_config=SimpleNamespace(
-            dtype="bf16",
-            enforce_eager=True,
+            dtype=torch.bfloat16,
+            enforce_eager=enforce_eager,
             hf_config=SimpleNamespace(hidden_size=16, num_hidden_layers=2),
         ),
-        parallel_config=SimpleNamespace(data_parallel_size=1, data_parallel_rank=0),
+        parallel_config=SimpleNamespace(
+            data_parallel_size=data_parallel_size,
+            data_parallel_rank=data_parallel_rank,
+        ),
     )
 
 
@@ -126,6 +134,83 @@ def test_p2p_topology_supports_equal_and_integer_multiple_attention_counts(
     assert mapping.dp_metadata_destinations == dsts
 
 
+def test_p2p_ffn_metadata_tracks_each_attention_peer_in_2a1f():
+    connector = AFDConnectorFactory.create_connector(
+        0,
+        0,
+        _fake_vllm_config(),
+        AFDConfig(
+            enabled=True,
+            role="ffn",
+            connector="p2pconnector",
+            num_attention_ranks=2,
+            num_ffn_ranks=1,
+        ),
+    )
+
+    connector.update_state_from_dp_metadata(
+        AFDDPMetadataPayload(
+            dp_metadata_list={0: AFDDPMetadata([3, 5])},
+            is_graph_capturing=False,
+            is_warmup=False,
+        ),
+    )
+
+    assert connector._recv_attn_tensor_metadata_list[(0, 1)].size == torch.Size(
+        [3, 16],
+    )
+    assert connector._recv_attn_tensor_metadata_list[(0, 2)].size == torch.Size(
+        [5, 16],
+    )
+    assert connector._tensor_metadata_list[0].size == torch.Size([8, 16])
+
+
+def test_p2p_tensor_metadata_clamps_idle_attention_rank_to_dummy_token():
+    ffn_connector = AFDConnectorFactory.create_connector(
+        0,
+        0,
+        _fake_vllm_config(),
+        AFDConfig(
+            enabled=True,
+            role="ffn",
+            connector="p2pconnector",
+            num_attention_ranks=2,
+            num_ffn_ranks=1,
+        ),
+    )
+    payload = AFDDPMetadataPayload(
+        dp_metadata_list={0: AFDDPMetadata([0, 4])},
+        is_graph_capturing=False,
+        is_warmup=False,
+    )
+
+    ffn_connector.update_state_from_dp_metadata(payload)
+
+    assert ffn_connector._recv_attn_tensor_metadata_list[(0, 1)].size == torch.Size(
+        [1, 16],
+    )
+    assert ffn_connector._recv_attn_tensor_metadata_list[(0, 2)].size == torch.Size(
+        [4, 16],
+    )
+    assert ffn_connector._tensor_metadata_list[0].size == torch.Size([5, 16])
+
+    attention_connector = AFDConnectorFactory.create_connector(
+        1,
+        1,
+        _fake_vllm_config(data_parallel_size=2, data_parallel_rank=0),
+        AFDConfig(
+            enabled=True,
+            role="attention",
+            connector="p2pconnector",
+            num_attention_ranks=2,
+            num_ffn_ranks=1,
+        ),
+    )
+    attention_connector.update_state_from_dp_metadata(payload)
+
+    assert attention_connector._tensor_metadata_list[0].size == torch.Size([1, 16])
+
+
 @pytest.mark.parametrize(
     ("raw", "message"),
     [
@@ -204,10 +289,11 @@ def test_p2p_custom_ops_register_send_recv_with_fake_impls(monkeypatch):
     utils_module.torch_utils = torch_utils_module
     vllm_module.utils = utils_module
 
-    monkeypatch.setitem(sys.modules, "torch", torch_module)
     monkeypatch.setitem(sys.modules, "vllm", vllm_module)
     monkeypatch.setitem(sys.modules, "vllm.utils", utils_module)
     monkeypatch.setitem(sys.modules, "vllm.utils.torch_utils", torch_utils_module)
+    monkeypatch.setattr(module, "torch", torch_module)
+    monkeypatch.setattr(module, "direct_register_custom_op", direct_register_custom_op)
     monkeypatch.setattr(module, "_AFD_CUSTOM_OPS_REGISTERED", False)
 
     module._register_p2p_custom_ops()
@@ -223,6 +309,7 @@ def test_p2p_custom_ops_register_send_recv_with_fake_impls(monkeypatch):
 
 
 def test_p2p_hidden_state_send_uses_registered_custom_op(monkeypatch):
+    module = importlib.import_module("afd_plugin.connectors.gpu.p2p")
     connector = AFDConnectorFactory.create_connector(
         0,
         0,
@@ -248,7 +335,7 @@ def test_p2p_hidden_state_send_uses_registered_custom_op(monkeypatch):
             ),
         ),
     )
-    monkeypatch.setitem(sys.modules, "torch", torch_module)
+    monkeypatch.setattr(module, "torch", torch_module)
 
     hidden_states = SimpleNamespace(
         is_cpu=False,
@@ -268,6 +355,7 @@ def test_p2p_hidden_state_send_uses_registered_custom_op(monkeypatch):
 
 
 def test_p2p_recv_preserves_dynamic_ref_tensor_first_dim(monkeypatch):
+    module = importlib.import_module("afd_plugin.connectors.gpu.p2p")
     connector = AFDConnectorFactory.create_connector(
         0,
         0,
@@ -296,7 +384,7 @@ def test_p2p_recv_preserves_dynamic_ref_tensor_first_dim(monkeypatch):
     torch_module.empty = lambda *_args, **_kwargs: pytest.fail(
         "recv should reuse the dynamic ref tensor",
     )
-    monkeypatch.setitem(sys.modules, "torch", torch_module)
+    monkeypatch.setattr(module, "torch", torch_module)
 
     ref_tensor = SimpleNamespace(
         is_cpu=False,

@@ -75,6 +75,7 @@ class P2PAFDConnector(AFDConnectorBase):
         self.ffn_size = self.mapping.ffn_size
         self.min_size = self.mapping.min_size
         self.ratio = self.mapping.ratio
+        self.group_size = len(self.mapping.subgroup_ranks)
         self.dst_list = list(self.mapping.dp_metadata_destinations)
         self.num_hidden_layers = int(
             vllm_config.model_config.hf_config.num_hidden_layers,
@@ -84,6 +85,10 @@ class P2PAFDConnector(AFDConnectorBase):
         self.is_graph_capturing = False
         self.is_warmup = False
         self._tensor_metadata_list: dict[int, _TensorMetadata] = {}
+        self._recv_attn_tensor_metadata_list: dict[
+            tuple[int, int],
+            _TensorMetadata,
+        ] = {}
         self._recv_attn_buffers: dict[
             tuple[int, int, tuple[int, ...]],
             torch.Tensor,
@@ -134,7 +139,6 @@ class P2PAFDConnector(AFDConnectorBase):
                 world_size=len(self.mapping.subgroup_ranks),
             )
             self.e2a_group = self.a2e_group
-            self.rank_in_group = self.mapping.rank_in_subgroup
             self.group_size = len(self.mapping.subgroup_ranks)
             self.a2e_pynccl = PyNcclCommunicator(
                 group=self.a2e_group,
@@ -171,39 +175,70 @@ class P2PAFDConnector(AFDConnectorBase):
         self.is_graph_capturing = payload.is_graph_capturing
         self.is_warmup = payload.is_warmup
         self._tensor_metadata_list = {}
+        self._recv_attn_tensor_metadata_list = {}
         device = torch.device(f"cuda:{self.local_rank}")
         dtype = self.vllm_config.model_config.dtype
-        dp_rank = int(self.vllm_config.parallel_config.data_parallel_rank)
         for stage_idx, dp_metadata in payload.dp_metadata_list.items():
-            token_count = dp_metadata.num_tokens_across_dp_cpu[dp_rank]
-            item = getattr(token_count, "item", None)
-            num_tokens = int(item() if callable(item) else token_count)
-            self._tensor_metadata_list[int(stage_idx)] = _TensorMetadata(
+            stage_idx = int(stage_idx)
+            if self.afd_config.role == "ffn":
+                peer_metadata: list[_TensorMetadata] = []
+                for src_rank in range(1, self.group_size):
+                    attention_rank = self._attention_rank_for_subgroup_rank(src_rank)
+                    tensor_metadata = _TensorMetadata(
+                        device,
+                        dtype,
+                        torch.Size(
+                            [
+                                _num_tokens_for_attention_rank(
+                                    dp_metadata,
+                                    attention_rank=attention_rank,
+                                    attention_size=self.attn_size,
+                                ),
+                                self.hidden_size,
+                            ],
+                        ),
+                    )
+                    self._recv_attn_tensor_metadata_list[
+                        (stage_idx, src_rank)
+                    ] = tensor_metadata
+                    peer_metadata.append(tensor_metadata)
+                num_tokens = sum(
+                    int(tensor_metadata.size[0]) for tensor_metadata in peer_metadata
+                )
+            else:
+                num_tokens = _num_tokens_for_attention_rank(
+                    dp_metadata,
+                    attention_rank=self.mapping.role_rank,
+                    attention_size=self.attn_size,
+                )
+            self._tensor_metadata_list[stage_idx] = _TensorMetadata(
                 device,
                 dtype,
-                torch.Size([num_tokens, self.hidden_size]),
+                torch.Size([max(1, num_tokens), self.hidden_size]),
             )
 
         if (
             self.afd_config.role == "ffn"
             and not self.vllm_config.model_config.enforce_eager
         ):
-            for stage_idx, tensor_metadata in self._tensor_metadata_list.items():
-                for src_rank in range(1, self.group_size):
-                    buffer_key = (stage_idx, src_rank, tuple(tensor_metadata.size))
-                    existing = self._recv_attn_buffers.get(buffer_key)
-                    if (
-                        existing is not None
-                        and getattr(existing, "shape", None) == tensor_metadata.size
-                        and getattr(existing, "dtype", None) == tensor_metadata.dtype
-                        and getattr(existing, "device", None) == tensor_metadata.device
-                    ):
-                        continue
-                    self._recv_attn_buffers[buffer_key] = torch.empty(
-                        tuple(tensor_metadata.size),
-                        dtype=tensor_metadata.dtype,
-                        device=tensor_metadata.device,
-                    )
+            for (
+                stage_idx,
+                src_rank,
+            ), tensor_metadata in self._recv_attn_tensor_metadata_list.items():
+                buffer_key = (stage_idx, src_rank, tuple(tensor_metadata.size))
+                existing = self._recv_attn_buffers.get(buffer_key)
+                if (
+                    existing is not None
+                    and getattr(existing, "shape", None) == tensor_metadata.size
+                    and getattr(existing, "dtype", None) == tensor_metadata.dtype
+                    and getattr(existing, "device", None) == tensor_metadata.device
+                ):
+                    continue
+                self._recv_attn_buffers[buffer_key] = torch.empty(
+                    tuple(tensor_metadata.size),
+                    dtype=tensor_metadata.dtype,
+                    device=tensor_metadata.device,
+                )
 
     def send_dp_metadata_list(
         self,
@@ -293,10 +328,13 @@ class P2PAFDConnector(AFDConnectorBase):
         **kwargs: Any,
     ) -> AFDRecvOutput:
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
-        tensor_metadata = self._tensor_metadata_list[ubatch_idx]
         hidden_states_list: list[torch.Tensor] = []
 
         for src in range(1, self.group_size):
+            tensor_metadata = self._recv_attn_tensor_metadata_list.get(
+                (ubatch_idx, src),
+                self._tensor_metadata_list[ubatch_idx],
+            )
             ref_tensor = None
             if not self.vllm_config.model_config.enforce_eager:
                 ref_tensor = self._recv_attn_buffers.get(
@@ -431,6 +469,11 @@ class P2PAFDConnector(AFDConnectorBase):
         torch.ops.vllm.afd_p2p_recv(hidden_states, int(src), int(comm_id))
         return hidden_states
 
+    def _attention_rank_for_subgroup_rank(self, subgroup_rank: int) -> int:
+        if subgroup_rank <= 0 or subgroup_rank >= self.group_size:
+            raise ValueError(f"invalid Attention subgroup rank {subgroup_rank}")
+        return self.mapping.subgroup_index * self.ratio + (int(subgroup_rank) - 1)
+
     def _comm_id_for_communicator(self, communicator: PyNcclCommunicator) -> int:
         if communicator is self.a2e_pynccl and self.a2e_comm_id is not None:
             return self.a2e_comm_id
@@ -469,6 +512,26 @@ def _to_int_list(value: object) -> list[int]:
 def _to_int(value: object) -> int:
     item = getattr(value, "item", None)
     return int(item() if callable(item) else value)
+
+
+def _num_tokens_for_attention_rank(
+    dp_metadata: DPMetadata | AFDDPMetadata,
+    *,
+    attention_rank: int,
+    attention_size: int,
+    fallback: int = 1,
+) -> int:
+    counts = _to_int_list(dp_metadata.num_tokens_across_dp_cpu)
+    if not counts:
+        return max(1, int(fallback))
+    attention_size = int(attention_size)
+    if len(counts) < attention_size and attention_size % len(counts) == 0:
+        tp_size = attention_size // len(counts)
+        counts = [counts[idx // tp_size] for idx in range(attention_size)]
+    attention_rank = int(attention_rank)
+    if 0 <= attention_rank < len(counts):
+        return max(1, int(counts[attention_rank]))
+    return max(1, int(fallback))
 
 
 def _encode_dp_metadata_payload(
