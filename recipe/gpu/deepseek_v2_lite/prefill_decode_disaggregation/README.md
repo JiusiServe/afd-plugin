@@ -1,4 +1,4 @@
-# Prefill/Decode Disaggregation — 2P1A1F (LMCache PD + proxy)
+# Prefill/Decode Disaggregation — 2P1A1F
 
 End-to-end prefill/decode (PD) disaggregation for DeepSeek-V2-Lite on the AFD
 plugin. Two prefill producers compute KV and push it over NIXL into the decode
