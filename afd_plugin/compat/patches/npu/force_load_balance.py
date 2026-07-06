@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 import torch
 from vllm.config import VllmConfig
@@ -27,7 +26,6 @@ from vllm_ascend.quantization.methods.w8a8_dynamic import (
     build_fused_experts_input,
 )
 from vllm_ascend.quantization.quant_type import QuantType
-
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +56,7 @@ class ForceLoadBalanceConfig:
 
 
 def _get_force_lb_max_tokens(vllm_config: VllmConfig) -> int:
-    max_tokens = getattr(
-        vllm_config.scheduler_config, "max_num_batched_tokens", None
-    )
+    max_tokens = getattr(vllm_config.scheduler_config, "max_num_batched_tokens", None)
     if not isinstance(max_tokens, int):
         max_tokens = 128
     return max(max_tokens, 1)
@@ -68,10 +64,10 @@ def _get_force_lb_max_tokens(vllm_config: VllmConfig) -> int:
 
 def _get_force_lb_config(layer: object) -> ForceLoadBalanceConfig:
     return ForceLoadBalanceConfig(
-        n_routed_experts=int(getattr(layer, "n_routed_experts")),
-        ep_size=int(getattr(layer, "ep_size")),
-        top_k=int(getattr(layer, "top_k")),
-        topn_per_rank=int(getattr(layer, "force_load_balance_topn_per_rank")),
+        n_routed_experts=int(layer.n_routed_experts),
+        ep_size=int(layer.ep_size),
+        top_k=int(layer.top_k),
+        topn_per_rank=int(layer.force_load_balance_topn_per_rank),
     )
 
 
@@ -79,9 +75,7 @@ def _validate_force_lb_config(config: ForceLoadBalanceConfig) -> None:
     if config.topn_per_rank == 0:
         return
 
-    assert config.topn_per_rank > 0, (
-        "force_load_balance_topn_per_rank must be >= 0"
-    )
+    assert config.topn_per_rank > 0, "force_load_balance_topn_per_rank must be >= 0"
     assert config.ep_size > 0, "ep_size must be positive"
     assert config.n_routed_experts % config.ep_size == 0, (
         "force_load_balance_topn_per_rank requires n_routed_experts to be"
@@ -90,8 +84,7 @@ def _validate_force_lb_config(config: ForceLoadBalanceConfig) -> None:
 
     local_routed_experts = config.n_routed_experts // config.ep_size
     assert config.topn_per_rank <= local_routed_experts, (
-        "force_load_balance_topn_per_rank exceeds routed experts on each"
-        " FFN rank"
+        "force_load_balance_topn_per_rank exceeds routed experts on each FFN rank"
     )
     assert config.top_k <= config.topn_per_rank * config.ep_size, (
         "top_k must be <= force_load_balance_topn_per_rank * ep_size"
@@ -145,8 +138,8 @@ def _init_force_lb_buffer(
     _validate_force_lb_config(config)
     buffer = _build_topk_buffer(config, max_tokens, device)
 
-    setattr(layer, "force_lb_fake_topk_buffer", buffer)
-    setattr(layer, "max_force_lb_tokens", max_tokens)
+    layer.force_lb_fake_topk_buffer = buffer
+    layer.max_force_lb_tokens = max_tokens
 
     logger.info(
         "AFD force load balance buffer initialized: ep_size=%s top_k=%s"
@@ -164,9 +157,7 @@ def _get_force_lb_topk_ids(
     batch_tokens: int,
     device: torch.device,
 ) -> torch.Tensor:
-    buffer: Optional[torch.Tensor] = getattr(
-        layer, "force_lb_fake_topk_buffer", None
-    )
+    buffer: torch.Tensor | None = getattr(layer, "force_lb_fake_topk_buffer", None)
     if buffer is None:
         raise RuntimeError("force_lb_fake_topk_buffer is not initialized")
 
@@ -178,46 +169,39 @@ def _get_force_lb_topk_ids(
             new_max_tokens,
         )
         _init_force_lb_buffer(layer, new_max_tokens, device)
-        buffer = getattr(layer, "force_lb_fake_topk_buffer")
+        buffer = layer.force_lb_fake_topk_buffer
 
     if buffer.device != device:
         buffer = buffer.to(device, non_blocking=True)
-        setattr(layer, "force_lb_fake_topk_buffer", buffer)
+        layer.force_lb_fake_topk_buffer = buffer
 
-    top_k = int(getattr(layer, "top_k"))
+    top_k = int(layer.top_k)
     return buffer[:batch_tokens, :top_k]
 
 
 def _fused_moe_init(self: object, *args: object, **kwargs: object) -> None:
     _origin_fused_moe_init(self, *args, **kwargs)
 
-    vllm_config = getattr(self, "vllm_config")
+    vllm_config = self.vllm_config
     additional_config = getattr(vllm_config, "additional_config", None)
     if not isinstance(additional_config, dict):
         additional_config = {}
 
-    setattr(self, "n_routed_experts", int(kwargs["num_experts"]))
-    setattr(
-        self,
-        "enable_force_load_balance",
-        bool(additional_config.get("enable_force_load_balance", False)),
+    self.n_routed_experts = int(kwargs["num_experts"])
+    self.enable_force_load_balance = bool(
+        additional_config.get("enable_force_load_balance", False)
     )
-    setattr(
-        self,
-        "force_load_balance_topn_per_rank",
-        int(additional_config.get("force_load_balance_topn_per_rank", 0)),
+    self.force_load_balance_topn_per_rank = int(
+        additional_config.get("force_load_balance_topn_per_rank", 0)
     )
-    setattr(self, "max_force_lb_tokens", _get_force_lb_max_tokens(vllm_config))
-    setattr(self, "force_lb_fake_topk_buffer", None)
+    self.max_force_lb_tokens = _get_force_lb_max_tokens(vllm_config)
+    self.force_lb_fake_topk_buffer = None
 
-    if (
-        getattr(self, "enable_force_load_balance")
-        and getattr(self, "quant_type") == QuantType.W8A8
-    ):
+    if self.enable_force_load_balance and self.quant_type == QuantType.W8A8:
         _init_force_lb_buffer(
             self,
-            int(getattr(self, "max_force_lb_tokens")),
-            getattr(self, "w13_weight").device,
+            int(self.max_force_lb_tokens),
+            self.w13_weight.device,
         )
 
 
