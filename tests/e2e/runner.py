@@ -365,7 +365,7 @@ def decode_bench_connector_config() -> str:
     return json.dumps(
         {
             "kv_connector": "AFDDecodeBenchConnector",
-            "kv_connector_module_path": "afd_plugin.connectors.decode_bench",
+            "kv_connector_module_path": "tools.benchmarks.decode_bench",
             "kv_role": "kv_both",
             "kv_connector_extra_config": {
                 "fill_mean": 0.015,

@@ -130,27 +130,6 @@ def register_afd() -> None:
             exc_info=True,
         )
 
-    try:
-        from vllm.distributed.kv_transfer.kv_connector.factory import (
-            KVConnectorFactory,
-        )
-
-        try:
-            KVConnectorFactory.register_connector(
-                "AFDDecodeBenchConnector",
-                "afd_plugin.connectors.decode_bench",
-                "AFDDecodeBenchConnector",
-            )
-        except ValueError:
-            _logger.debug(
-                "AFD plugin: AFDDecodeBenchConnector was already registered",
-            )
-    except Exception:
-        _logger.debug(
-            "AFD plugin: decode benchmark KV connector could not be registered",
-            exc_info=True,
-        )
-
     from vllm.model_executor.models import ModelRegistry
 
     for model_arch, model_cls in _DEEPSEEK_MODEL_REGISTRATIONS.items():

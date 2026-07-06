@@ -18,7 +18,6 @@ End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
 
 ```
 .
-├── benchmark.sh                          # online serving benchmark client
 ├── prefill_decode_disaggregation/        # prefill_decode_disaggregation, 1P1A1F topology
 │   ├── 1p1a1f_eager_dbo.sh
 │   └── 1p1a1f_graph_dbo.sh
@@ -81,7 +80,7 @@ Once the serving stack is up, run:
 export MODEL_PATH=/path/model_weights/DeepSeek-V2-Lite
 export RESULT_DIR=/path/results
 export RESULT_FILENAME=2a2f_graph_dbo_dp1tp2.json
-bash recipe/gpu/deepseek_v2_lite/benchmark.sh
+bash tools/benchmarks/request_generator.sh
 ```
 
 It fires 1024 random requests (1024 input tokens / 128 output tokens) at

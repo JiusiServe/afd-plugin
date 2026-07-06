@@ -87,7 +87,7 @@ def test_runner_uses_plugin_decode_bench_connector():
 
     assert kv_transfer_config["kv_connector"] == "AFDDecodeBenchConnector"
     assert kv_transfer_config["kv_connector_module_path"] == (
-        "afd_plugin.connectors.decode_bench"
+        "tools.benchmarks.decode_bench"
     )
 
 
