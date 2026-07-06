@@ -1,0 +1,286 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+"""Patch vllm-ascend W8A8 MoE to support force load balance.
+
+This module patches only the Ascend W8A8 FusedMoE path. When
+``enable_force_load_balance`` is set in ``additional_config``, routed
+``topk_ids`` are replaced with deterministic fake expert ids before
+``build_fused_experts_input``. This keeps routed-token volume evenly balanced
+across EP ranks for communication profiling.
+
+Force load balance changes model outputs. It is a benchmark/profiling switch,
+not a production correctness feature.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from typing import Optional
+
+import torch
+from vllm.config import VllmConfig
+from vllm_ascend.ops.fused_moe.fused_moe import AscendFusedMoE
+from vllm_ascend.quantization.methods import w8a8_dynamic
+from vllm_ascend.quantization.methods.w8a8_dynamic import (
+    AscendW8A8DynamicFusedMoEMethod,
+    build_fused_experts_input,
+)
+from vllm_ascend.quantization.quant_type import QuantType
+
+
+logger = logging.getLogger(__name__)
+
+_PATCH_ATTR = "_afd_plugin_force_load_balance_applied"
+_FORCE_LB_DETERMINISTIC_SEED = 1024
+
+_origin_fused_moe_init = AscendFusedMoE.__init__
+_origin_w8a8_apply = AscendW8A8DynamicFusedMoEMethod.apply
+_origin_build_fused_experts_input = build_fused_experts_input
+
+
+@dataclass(frozen=True)
+class ForceLoadBalanceConfig:
+    """Force-load-balance parameters for one AscendFusedMoE layer.
+
+    Args:
+        n_routed_experts: Number of routed experts in the MoE layer.
+        ep_size: Number of expert-parallel ranks.
+        top_k: Number of routed experts selected for each token.
+        topn_per_rank: Number of local experts per EP rank used by the fake
+            routing cycle. A value of 0 means all routed experts participate.
+    """
+
+    n_routed_experts: int
+    ep_size: int
+    top_k: int
+    topn_per_rank: int
+
+
+def _get_force_lb_max_tokens(vllm_config: VllmConfig) -> int:
+    max_tokens = getattr(
+        vllm_config.scheduler_config, "max_num_batched_tokens", None
+    )
+    if not isinstance(max_tokens, int):
+        max_tokens = 128
+    return max(max_tokens, 1)
+
+
+def _get_force_lb_config(layer: object) -> ForceLoadBalanceConfig:
+    return ForceLoadBalanceConfig(
+        n_routed_experts=int(getattr(layer, "n_routed_experts")),
+        ep_size=int(getattr(layer, "ep_size")),
+        top_k=int(getattr(layer, "top_k")),
+        topn_per_rank=int(getattr(layer, "force_load_balance_topn_per_rank")),
+    )
+
+
+def _validate_force_lb_config(config: ForceLoadBalanceConfig) -> None:
+    if config.topn_per_rank == 0:
+        return
+
+    assert config.topn_per_rank > 0, (
+        "force_load_balance_topn_per_rank must be >= 0"
+    )
+    assert config.ep_size > 0, "ep_size must be positive"
+    assert config.n_routed_experts % config.ep_size == 0, (
+        "force_load_balance_topn_per_rank requires n_routed_experts to be"
+        " divisible by ep_size"
+    )
+
+    local_routed_experts = config.n_routed_experts // config.ep_size
+    assert config.topn_per_rank <= local_routed_experts, (
+        "force_load_balance_topn_per_rank exceeds routed experts on each"
+        " FFN rank"
+    )
+    assert config.top_k <= config.topn_per_rank * config.ep_size, (
+        "top_k must be <= force_load_balance_topn_per_rank * ep_size"
+    )
+
+
+def _build_expert_cycle(
+    config: ForceLoadBalanceConfig,
+    device: torch.device,
+) -> torch.Tensor:
+    if config.topn_per_rank > 0:
+        local_routed_experts = config.n_routed_experts // config.ep_size
+        per_rank_cycles = [
+            torch.arange(
+                rank * local_routed_experts,
+                rank * local_routed_experts + config.topn_per_rank,
+                device=device,
+                dtype=torch.int32,
+            )
+            for rank in range(config.ep_size)
+        ]
+        return torch.cat(per_rank_cycles, dim=0)
+
+    generator = torch.Generator()
+    generator.manual_seed(_FORCE_LB_DETERMINISTIC_SEED)
+    return torch.randperm(
+        config.n_routed_experts,
+        generator=generator,
+        dtype=torch.int32,
+    ).to(device=device, non_blocking=True)
+
+
+def _build_topk_buffer(
+    config: ForceLoadBalanceConfig,
+    max_tokens: int,
+    device: torch.device,
+) -> torch.Tensor:
+    expert_cycle = _build_expert_cycle(config, device)
+    total_needed = max_tokens * config.top_k
+    repeat_times = (total_needed + expert_cycle.numel() - 1) // expert_cycle.numel()
+    expanded = expert_cycle.repeat(repeat_times)[:total_needed]
+    return expanded.reshape(max_tokens, config.top_k)
+
+
+def _init_force_lb_buffer(
+    layer: object,
+    max_tokens: int,
+    device: torch.device,
+) -> None:
+    config = _get_force_lb_config(layer)
+    _validate_force_lb_config(config)
+    buffer = _build_topk_buffer(config, max_tokens, device)
+
+    setattr(layer, "force_lb_fake_topk_buffer", buffer)
+    setattr(layer, "max_force_lb_tokens", max_tokens)
+
+    logger.info(
+        "AFD force load balance buffer initialized: ep_size=%s top_k=%s"
+        " topn_per_rank=%s shape=%s preview=%s",
+        config.ep_size,
+        config.top_k,
+        config.topn_per_rank,
+        tuple(buffer.shape),
+        buffer[: min(8, max_tokens)].cpu().tolist(),
+    )
+
+
+def _get_force_lb_topk_ids(
+    layer: object,
+    batch_tokens: int,
+    device: torch.device,
+) -> torch.Tensor:
+    buffer: Optional[torch.Tensor] = getattr(
+        layer, "force_lb_fake_topk_buffer", None
+    )
+    if buffer is None:
+        raise RuntimeError("force_lb_fake_topk_buffer is not initialized")
+
+    if batch_tokens > buffer.size(0):
+        new_max_tokens = max(batch_tokens, buffer.size(0) * 2)
+        logger.warning(
+            "Growing AFD force load balance buffer: old_tokens=%s new_tokens=%s",
+            buffer.size(0),
+            new_max_tokens,
+        )
+        _init_force_lb_buffer(layer, new_max_tokens, device)
+        buffer = getattr(layer, "force_lb_fake_topk_buffer")
+
+    if buffer.device != device:
+        buffer = buffer.to(device, non_blocking=True)
+        setattr(layer, "force_lb_fake_topk_buffer", buffer)
+
+    top_k = int(getattr(layer, "top_k"))
+    return buffer[:batch_tokens, :top_k]
+
+
+def _fused_moe_init(self: object, *args: object, **kwargs: object) -> None:
+    _origin_fused_moe_init(self, *args, **kwargs)
+
+    vllm_config = getattr(self, "vllm_config")
+    additional_config = getattr(vllm_config, "additional_config", None)
+    if not isinstance(additional_config, dict):
+        additional_config = {}
+
+    setattr(self, "n_routed_experts", int(kwargs["num_experts"]))
+    setattr(
+        self,
+        "enable_force_load_balance",
+        bool(additional_config.get("enable_force_load_balance", False)),
+    )
+    setattr(
+        self,
+        "force_load_balance_topn_per_rank",
+        int(additional_config.get("force_load_balance_topn_per_rank", 0)),
+    )
+    setattr(self, "max_force_lb_tokens", _get_force_lb_max_tokens(vllm_config))
+    setattr(self, "force_lb_fake_topk_buffer", None)
+
+    if (
+        getattr(self, "enable_force_load_balance")
+        and getattr(self, "quant_type") == QuantType.W8A8
+    ):
+        _init_force_lb_buffer(
+            self,
+            int(getattr(self, "max_force_lb_tokens")),
+            getattr(self, "w13_weight").device,
+        )
+
+
+def _replace_topk_ids(
+    layer: object,
+    topk_ids: torch.Tensor,
+    routed_top_k: int | None,
+) -> torch.Tensor:
+    fake_topk_ids = _get_force_lb_topk_ids(
+        layer,
+        batch_tokens=topk_ids.shape[0],
+        device=topk_ids.device,
+    ).to(topk_ids.dtype)
+
+    if getattr(layer, "mix_placement", False) and routed_top_k is not None:
+        shared_topk_ids = topk_ids[:, routed_top_k:]
+        return torch.cat([fake_topk_ids, shared_topk_ids], dim=1)
+    return fake_topk_ids
+
+
+def _w8a8_apply(
+    self: object,
+    layer: object,
+    *args: object,
+    **kwargs: object,
+) -> object:
+    if not (
+        getattr(layer, "enable_force_load_balance", False)
+        and getattr(layer, "force_lb_fake_topk_buffer", None) is not None
+    ):
+        return _origin_w8a8_apply(self, layer, *args, **kwargs)
+
+    routed_top_k = kwargs.get("top_k")
+    routed_top_k = routed_top_k if isinstance(routed_top_k, int) else None
+
+    def _build_fused_experts_input(
+        *inner_args: object,
+        **inner_kwargs: object,
+    ) -> object:
+        topk_ids = inner_kwargs.get("topk_ids")
+        if topk_ids is not None:
+            inner_kwargs["topk_ids"] = _replace_topk_ids(
+                layer,
+                topk_ids,
+                routed_top_k,
+            )
+        return _origin_build_fused_experts_input(*inner_args, **inner_kwargs)
+
+    old_build_fused_experts_input = w8a8_dynamic.build_fused_experts_input
+    w8a8_dynamic.build_fused_experts_input = _build_fused_experts_input
+    try:
+        return _origin_w8a8_apply(self, layer, *args, **kwargs)
+    finally:
+        w8a8_dynamic.build_fused_experts_input = old_build_fused_experts_input
+
+
+def apply_force_load_balance_patch() -> None:
+    if getattr(AscendFusedMoE, _PATCH_ATTR, False):
+        return
+
+    AscendFusedMoE.__init__ = _fused_moe_init
+    AscendW8A8DynamicFusedMoEMethod.apply = _w8a8_apply
+    setattr(AscendFusedMoE, _PATCH_ATTR, True)
+
+
+__all__ = ["apply_force_load_balance_patch"]

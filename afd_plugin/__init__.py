@@ -124,6 +124,12 @@ def register_afd() -> None:
         from afd_plugin.compat.ascend import apply_afd_ascend_patches_if_needed
 
         apply_afd_ascend_patches_if_needed()
+        if importlib.util.find_spec("vllm_ascend") is not None:
+            from afd_plugin.compat.patches.npu.force_load_balance import (
+                apply_force_load_balance_patch,
+            )
+
+            apply_force_load_balance_patch()
     except Exception:
         _logger.debug(
             "AFD plugin: Ascend compatibility patches could not be applied",
