@@ -521,7 +521,6 @@ def _batch_execution_values(
     return values
 
 
-
 def _ubatch_split_within_real_tokens(
     vllm_config: VllmConfig,
     batch_descriptor: BatchDescriptor | None,

@@ -284,7 +284,10 @@ class SharedProxyScheduler:
         pool = self._pool(role)
         entry = pool.servers[key]
         entry.heap_seq += 1
-        heapq.heappush(pool.heap, (self._priority(role, entry, key), entry.ordinal, entry.heap_seq, key))
+        heapq.heappush(
+            pool.heap,
+            (self._priority(role, entry, key), entry.ordinal, entry.heap_seq, key),
+        )
         if len(pool.heap) > 2 * len(pool.servers):
             self._reset_heap(role)
 
@@ -305,7 +308,9 @@ class SharedProxyScheduler:
         for key, entry in pool.servers.items():
             if bump_seq:
                 entry.heap_seq += 1
-            heap.append((self._priority(role, entry, key), entry.ordinal, entry.heap_seq, key))
+            heap.append(
+                (self._priority(role, entry, key), entry.ordinal, entry.heap_seq, key)
+            )
         heapq.heapify(heap)
         pool.heap = heap
 
@@ -323,11 +328,15 @@ class SharedProxyScheduler:
             return {
                 "prefill_instances": [
                     {"host": e.host, "port": e.port}
-                    for _, e in sorted(self.prefillers.items(), key=lambda item: item[1].ordinal)
+                    for _, e in sorted(
+                        self.prefillers.items(), key=lambda item: item[1].ordinal
+                    )
                 ],
                 "decode_instances": [
                     {"host": e.host, "port": e.port}
-                    for _, e in sorted(self.decoders.items(), key=lambda item: item[1].ordinal)
+                    for _, e in sorted(
+                        self.decoders.items(), key=lambda item: item[1].ordinal
+                    )
                 ],
             }
 
@@ -418,15 +427,21 @@ class SharedProxyScheduler:
     ) -> None:
         with self._lock:
             if release_prefill_kv:
-                self._release_load(ServerRole.PREFILL, prefiller_key, prefiller_load, kv_cache=True)
-            self._release_load(ServerRole.DECODE, decoder_key, decoder_load, active_tokens=True)
+                self._release_load(
+                    ServerRole.PREFILL, prefiller_key, prefiller_load, kv_cache=True
+                )
+            self._release_load(
+                ServerRole.DECODE, decoder_key, decoder_load, active_tokens=True
+            )
             self.request_num = max(0, self.request_num - 1)
 
     def get_waiting_nodes(self) -> dict[str, tuple[str, tuple[str, int], int]]:
         with self._lock:
             return dict(self.waiting_nodes)
 
-    def add_instances(self, role: ServerRole, instances: list[tuple[str, int]]) -> list[str]:
+    def add_instances(
+        self, role: ServerRole, instances: list[tuple[str, int]]
+    ) -> list[str]:
         waiting_nodes: list[str] = []
         with self._lock:
             servers = self._pool(role).servers
@@ -461,7 +476,9 @@ class SharedProxyScheduler:
         with self._lock:
             self.waiting_nodes.pop(key, None)
 
-    def remove_instances(self, role: ServerRole, instances: list[tuple[str, int]]) -> bool:
+    def remove_instances(
+        self, role: ServerRole, instances: list[tuple[str, int]]
+    ) -> bool:
         if not instances:
             return False
         keys = {server_key(host, port) for host, port in instances}
@@ -470,7 +487,9 @@ class SharedProxyScheduler:
             if self.request_num > 0:
                 pool.tainted.update(keys)
                 self._reset_heap(role, bump_seq=True)
-                logger.warning("Start to taint %s instances %s.", role.value, sorted(keys))
+                logger.warning(
+                    "Start to taint %s instances %s.", role.value, sorted(keys)
+                )
                 return True
 
             removed = False
@@ -535,16 +554,20 @@ class WorkerRuntime:
         snapshot = self.scheduler.get_snapshot()
         role_targets = {
             ServerRole.PREFILL: {
-                server_key(s["host"], s["port"]): (s["host"], s["port"]) for s in snapshot["prefill_instances"]
+                server_key(s["host"], s["port"]): (s["host"], s["port"])
+                for s in snapshot["prefill_instances"]
             },
             ServerRole.DECODE: {
-                server_key(s["host"], s["port"]): (s["host"], s["port"]) for s in snapshot["decode_instances"]
+                server_key(s["host"], s["port"]): (s["host"], s["port"])
+                for s in snapshot["decode_instances"]
             },
         }
         for role, targets in role_targets.items():
             await self._sync_clients(role, targets)
 
-    async def _sync_clients(self, role: ServerRole, targets: dict[str, tuple[str, int]]) -> None:
+    async def _sync_clients(
+        self, role: ServerRole, targets: dict[str, tuple[str, int]]
+    ) -> None:
         clients = self._clients[role]
         for key in [key for key in clients if key not in targets]:
             await clients.pop(key).aclose()
@@ -554,7 +577,9 @@ class WorkerRuntime:
             clients[key] = httpx.AsyncClient(
                 timeout=None,
                 base_url=build_base_url(host, port),
-                limits=httpx.Limits(max_connections=100000, max_keepalive_connections=100000),
+                limits=httpx.Limits(
+                    max_connections=100000, max_keepalive_connections=100000
+                ),
             )
 
     async def close(self) -> None:
@@ -579,13 +604,17 @@ class NodeListener:
     def _run(self) -> None:
         while True:
             args = get_global_args()
-            for key, (instance_type, server, retries) in list(self.scheduler.get_waiting_nodes().items()):
+            for key, (instance_type, server, retries) in list(
+                self.scheduler.get_waiting_nodes().items()
+            ):
                 host, port = server
                 is_valid = asyncio.run(self.check_instance_status(host, port))
                 print(f"Checking instance {key}...")
                 retries += 1
                 if is_valid:
-                    self.scheduler.activate_waiting_instance(ServerRole(instance_type), host, port)
+                    self.scheduler.activate_waiting_instance(
+                        ServerRole(instance_type), host, port
+                    )
                 elif retries >= args.max_waiting_retries:
                     print(f"Instance {key} was not added to the proxy.")
                     self.scheduler.drop_waiting_instance(key)
@@ -600,7 +629,9 @@ class NodeListener:
         endpoint = "/models"
         headers = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"}
         try:
-            async with httpx.AsyncClient(timeout=5.0, base_url=build_base_url(host, port)) as client:
+            async with httpx.AsyncClient(
+                timeout=5.0, base_url=build_base_url(host, port)
+            ) as client:
                 response = await client.get(endpoint, headers=headers)
                 response.raise_for_status()
                 return True
@@ -612,7 +643,9 @@ def manager_config_path(proxy_port: int) -> Path:
     return Path(tempfile.gettempdir()) / f"vllm_lb_proxy_manager_{proxy_port}.json"
 
 
-def write_manager_config(proxy_port: int, host: str, manager_port: int, authkey: bytes) -> None:
+def write_manager_config(
+    proxy_port: int, host: str, manager_port: int, authkey: bytes
+) -> None:
     manager_config_path(proxy_port).write_text(
         json.dumps(
             {
@@ -647,12 +680,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prefiller-ports", type=int, nargs="+", default=[8001])
     parser.add_argument("--decoder-hosts", type=str, nargs="+", default=["localhost"])
     parser.add_argument("--decoder-ports", type=int, nargs="+", default=[8002])
-    parser.add_argument("--max-retries", type=int, default=3, help="Maximum number of retries for HTTP requests")
     parser.add_argument(
-        "--retry-delay", type=float, default=0.001, help="Base delay (seconds) for exponential backoff retries"
+        "--max-retries",
+        type=int,
+        default=3,
+        help="Maximum number of retries for HTTP requests",
     )
     parser.add_argument(
-        "--max-waiting-retries", type=int, default=3, help="Maximum number of retries for waiting nodes to be started"
+        "--retry-delay",
+        type=float,
+        default=0.001,
+        help="Base delay (seconds) for exponential backoff retries",
+    )
+    parser.add_argument(
+        "--max-waiting-retries",
+        type=int,
+        default=3,
+        help="Maximum number of retries for waiting nodes to be started",
     )
     parser.add_argument(
         "--waiting-retry-interval",
@@ -675,7 +719,9 @@ def parse_args() -> argparse.Namespace:
     )
     args = parser.parse_args()
     if len(args.prefiller_hosts) != len(args.prefiller_ports):
-        raise ValueError("Number of prefiller hosts must match number of prefiller ports")
+        raise ValueError(
+            "Number of prefiller hosts must match number of prefiller ports"
+        )
     if len(args.decoder_hosts) != len(args.decoder_ports):
         raise ValueError("Number of decoder hosts must match number of decoder ports")
     args.prefiller_instances = list(zip(args.prefiller_hosts, args.prefiller_ports))
@@ -706,7 +752,9 @@ def bootstrap_parent_process(args: argparse.Namespace) -> None:
     if args.workers <= 1:
         return
 
-    shared_scheduler = SharedProxyScheduler(args.prefiller_instances, args.decoder_instances)
+    shared_scheduler = SharedProxyScheduler(
+        args.prefiller_instances, args.decoder_instances
+    )
     NodeListener(shared_scheduler)
 
     authkey = os.urandom(16)
@@ -722,7 +770,9 @@ def _ensure_scheduler(args) -> SharedProxyScheduler:
     global shared_scheduler
     if shared_scheduler is not None:
         return shared_scheduler
-    shared_scheduler = SharedProxyScheduler(args.prefiller_instances, args.decoder_instances)
+    shared_scheduler = SharedProxyScheduler(
+        args.prefiller_instances, args.decoder_instances
+    )
     NodeListener(shared_scheduler)
     return shared_scheduler
 
@@ -770,7 +820,9 @@ def with_cancellation(handler_func):
         request = kwargs["request"]
         handler_task = asyncio.create_task(handler_func(*args, **kwargs))
         cancellation_task = asyncio.create_task(listen_for_disconnect(request))
-        done, pending = await asyncio.wait([handler_task, cancellation_task], return_when=asyncio.FIRST_COMPLETED)
+        done, pending = await asyncio.wait(
+            [handler_task, cancellation_task], return_when=asyncio.FIRST_COMPLETED
+        )
         for task in pending:
             task.cancel()
         if handler_task in done:
@@ -843,7 +895,9 @@ async def stream_service_response_with_retry(
     headers = auth_headers(request_id)
     for attempt in range(1, max_retries + 1):
         try:
-            async with client.stream("POST", endpoint, json=req_data, headers=headers) as response:
+            async with client.stream(
+                "POST", endpoint, json=req_data, headers=headers
+            ) as response:
                 response.raise_for_status()
                 first_chunk_sent = False
                 async for chunk in response.aiter_bytes():
@@ -852,20 +906,30 @@ async def stream_service_response_with_retry(
                 return
         except (httpx.RequestError, httpx.HTTPStatusError) as exc:
             if attempt < max_retries:
-                logger.warning("Attempt %s failed for streaming %s: %s", attempt, endpoint, exc)
+                logger.warning(
+                    "Attempt %s failed for streaming %s: %s", attempt, endpoint, exc
+                )
                 await asyncio.sleep(base_delay * (2 ** (attempt - 1)))
             else:
-                logger.error("All %s attempts failed for streaming %s.", max_retries, endpoint)
+                logger.error(
+                    "All %s attempts failed for streaming %s.", max_retries, endpoint
+                )
                 raise exc
         except Exception as exc:
             if "first_chunk_sent" in locals() and first_chunk_sent:
-                logger.error("Streaming to client interrupted after response started: %s", exc)
+                logger.error(
+                    "Streaming to client interrupted after response started: %s", exc
+                )
                 return
             if attempt < max_retries:
-                logger.warning("Attempt %s failed for streaming %s: %s", attempt, endpoint, exc)
+                logger.warning(
+                    "Attempt %s failed for streaming %s: %s", attempt, endpoint, exc
+                )
                 await asyncio.sleep(base_delay * (2 ** (attempt - 1)))
             else:
-                logger.error("All %s attempts failed for streaming %s.", max_retries, endpoint)
+                logger.error(
+                    "All %s attempts failed for streaming %s.", max_retries, endpoint
+                )
                 raise exc
 
 
@@ -877,12 +941,21 @@ async def _abort_prefill_selection(
     is_initial_request: bool,
 ) -> None:
     if is_initial_request:
-        await runtime.schedule("finish_request", prefiller_key, prefiller_score, None, 0.0, release_prefill_kv=True)
+        await runtime.schedule(
+            "finish_request",
+            prefiller_key,
+            prefiller_score,
+            None,
+            0.0,
+            release_prefill_kv=True,
+        )
     else:
         await runtime.schedule("release_prefill_kv", prefiller_key, prefiller_score)
 
 
-async def _finish_instance(runtime: WorkerRuntime, info: InstanceInfo, *, release_prefill_kv: bool) -> None:
+async def _finish_instance(
+    runtime: WorkerRuntime, info: InstanceInfo, *, release_prefill_kv: bool
+) -> None:
     await runtime.schedule(
         "finish_request",
         info.prefiller_key,
@@ -919,7 +992,12 @@ async def assign_instances(
             base_delay=args.retry_delay,
         )
     except Exception:
-        await _abort_prefill_selection(runtime, prefiller_key, prefiller_score, is_initial_request=is_initial_request)
+        await _abort_prefill_selection(
+            runtime,
+            prefiller_key,
+            prefiller_score,
+            is_initial_request=is_initial_request,
+        )
         raise
 
     kv_transfer_params = response.json().get("kv_transfer_params", {})
@@ -929,7 +1007,12 @@ async def assign_instances(
     try:
         decoder = await runtime.schedule("pick_decoder", decoder_score)
     except Exception:
-        await _abort_prefill_selection(runtime, prefiller_key, prefiller_score, is_initial_request=is_initial_request)
+        await _abort_prefill_selection(
+            runtime,
+            prefiller_key,
+            prefiller_score,
+            is_initial_request=is_initial_request,
+        )
         raise
 
     prefiller_client = await runtime.get_client(ServerRole.PREFILL, prefiller_key)
@@ -953,9 +1036,19 @@ async def reassign_instances(
     previous_instance: InstanceInfo,
 ) -> InstanceInfo:
     runtime = get_runtime()
-    await runtime.schedule("release_prefill_kv", previous_instance.prefiller_key, previous_instance.prefiller_score)
-    await runtime.schedule("release_decoder", previous_instance.decoder_key, previous_instance.decoder_score)
-    return await assign_instances(api, req_data, request_length, is_initial_request=False)
+    await runtime.schedule(
+        "release_prefill_kv",
+        previous_instance.prefiller_key,
+        previous_instance.prefiller_score,
+    )
+    await runtime.schedule(
+        "release_decoder",
+        previous_instance.decoder_key,
+        previous_instance.decoder_score,
+    )
+    return await assign_instances(
+        api, req_data, request_length, is_initial_request=False
+    )
 
 
 async def handle_completions_impl(api: str, request: Request):
@@ -966,7 +1059,9 @@ async def handle_completions_impl(api: str, request: Request):
         req_data = await request.json()
         req_body = await request.body()
         request_length = len(req_body)
-        instance_info = await assign_instances(api, req_data, request_length, is_initial_request=True)
+        instance_info = await assign_instances(
+            api, req_data, request_length, is_initial_request=True
+        )
         stream_flag = bool(req_data.get("stream", False))
         chat_flag = "messages" in req_data
 
@@ -992,14 +1087,18 @@ async def handle_completions_impl(api: str, request: Request):
                 nonlocal released_kv
                 if not released_kv:
                     await runtime.schedule(
-                        "release_prefill_kv", instance_info.prefiller_key, instance_info.prefiller_score
+                        "release_prefill_kv",
+                        instance_info.prefiller_key,
+                        instance_info.prefiller_score,
                     )
                     released_kv = True
 
             try:
                 while retry:
                     retry = False
-                    decoder_client = await runtime.get_client(ServerRole.DECODE, instance_info.decoder_key)
+                    decoder_client = await runtime.get_client(
+                        ServerRole.DECODE, instance_info.decoder_key
+                    )
                     async for chunk in stream_service_response_with_retry(
                         decoder_client,
                         api,
@@ -1034,7 +1133,12 @@ async def handle_completions_impl(api: str, request: Request):
                         choice = choices[0]
                         delta = choice.get("delta") or {}
                         message = choice.get("message") or {}
-                        content = delta.get("content") or message.get("content") or choice.get("text") or ""
+                        content = (
+                            delta.get("content")
+                            or message.get("content")
+                            or choice.get("text")
+                            or ""
+                        )
                         generated_token += content
 
                         stop_reason = choice.get("stop_reason")
@@ -1051,9 +1155,15 @@ async def handle_completions_impl(api: str, request: Request):
                                 messages[0]["content"] = origin_prompt + generated_token
                             else:
                                 req_data["prompt"] = origin_prompt + generated_token
-                            req_data["max_tokens"] = origin_max_tokens - completion_tokens + retry_count
-                            tmp_request_length = len(json.dumps(req_data).encode("utf-8"))
-                            instance_info = await reassign_instances(api, req_data, tmp_request_length, instance_info)
+                            req_data["max_tokens"] = (
+                                origin_max_tokens - completion_tokens + retry_count
+                            )
+                            tmp_request_length = len(
+                                json.dumps(req_data).encode("utf-8")
+                            )
+                            instance_info = await reassign_instances(
+                                api, req_data, tmp_request_length, instance_info
+                            )
                             released_kv = False
                             break
                         if retry_count > 0 and not stream_flag:
@@ -1080,11 +1190,15 @@ async def handle_completions_impl(api: str, request: Request):
                     instance_info.request_id,
                 )
             finally:
-                await _finish_instance(runtime, instance_info, release_prefill_kv=not released_kv)
+                await _finish_instance(
+                    runtime, instance_info, release_prefill_kv=not released_kv
+                )
                 released_kv = True
                 request_released = True
 
-        media_type = "text/event-stream; charset=utf-8" if stream_flag else "application/json"
+        media_type = (
+            "text/event-stream; charset=utf-8" if stream_flag else "application/json"
+        )
         return StreamingResponse(generate_stream(), media_type=media_type)
     except Exception:
         import traceback
@@ -1134,13 +1248,22 @@ async def adjust_instances_impl(adjust_mode: str, request: Request):
     snapshot = scheduler.get_snapshot()
     return {
         "message": all_msg,
-        "current_prefill_instances": [f"{server['host']}:{server['port']}" for server in snapshot["prefill_instances"]],
-        "current_decode_instances": [f"{server['host']}:{server['port']}" for server in snapshot["decode_instances"]],
+        "current_prefill_instances": [
+            f"{server['host']}:{server['port']}"
+            for server in snapshot["prefill_instances"]
+        ],
+        "current_decode_instances": [
+            f"{server['host']}:{server['port']}"
+            for server in snapshot["decode_instances"]
+        ],
     }
 
 
 def parse_server_addresses(instances: list[str]) -> list[tuple[str, int]]:
-    return [(host, int(port)) for host, port in (instance.split(":") for instance in instances)]
+    return [
+        (host, int(port))
+        for host, port in (instance.split(":") for instance in instances)
+    ]
 
 
 @app.post("/v1/completions")
@@ -1161,14 +1284,16 @@ async def reset_prefix_cache(request: Request):
     runtime = get_runtime()
     await runtime.sync_clients()
     snapshot = runtime.scheduler.get_snapshot()
-    backend_instances = [(ServerRole.PREFILL, server) for server in snapshot["prefill_instances"]] + [
-        (ServerRole.DECODE, server) for server in snapshot["decode_instances"]
-    ]
+    backend_instances = [
+        (ServerRole.PREFILL, server) for server in snapshot["prefill_instances"]
+    ] + [(ServerRole.DECODE, server) for server in snapshot["decode_instances"]]
     failures: list[str] = []
     for role, server in backend_instances:
         base_url = build_server_url(server["host"], server["port"])
         try:
-            client = await runtime.get_client(role, server_key(server["host"], server["port"]))
+            client = await runtime.get_client(
+                role, server_key(server["host"], server["port"])
+            )
             resp = await client.post(f"{base_url}/reset_prefix_cache", params=params)
             resp.raise_for_status()
         except Exception as e:
