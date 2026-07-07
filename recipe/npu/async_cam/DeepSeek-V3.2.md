@@ -41,14 +41,12 @@ pip install afd_plugin/connectors/npu/bin/umdk_cam_op_lib-208.1.0b1-cp311-cp311-
 - Because of device-count limits, the experiment uses a reduced model with the
   first 10 layers only: 3 dense layers and 7 MoE layers.
 
-### Dataset
-
-The benchmark uses a custom token-id dataset cp8sp50k_custom_dataset_token_ids.jsonl:
-
-- Download URL: `[TBD](https://example.com/to-be-filled)`.
-
 ### Benchmark
 
+Dataset:
+
+- File: `cp8sp50k_custom_dataset_token_ids.jsonl`
+- Download URL: `[TBD](https://example.com/to-be-filled)`.
 
 ```bash
 vllm bench serve \
