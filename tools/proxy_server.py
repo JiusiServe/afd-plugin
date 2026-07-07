@@ -182,7 +182,7 @@ class BackendServer:
 
 @dataclass
 class RolePools:
-    """Per-role scheduling state: live servers, priority heap, and drain-isolated keys."""
+    """Per-role scheduling state: live servers, priority heap, drain-isolated keys."""
 
     servers: dict[str, BackendServer] = field(default_factory=dict)
     heap: list[tuple[float, int, int, str]] = field(default_factory=list)
@@ -394,7 +394,7 @@ class SharedProxyScheduler:
         self._push_heap(role, key)
 
     def begin_request(self, load: float) -> dict[str, Any]:
-        """Pick a prefiller, reserve KV pressure, and count this as an active request."""
+        """Pick a prefiller, reserve KV pressure, and count it as an active request."""
         with self._lock:
             picked = self._pick_server(ServerRole.PREFILL, load, kv_cache=True)
             self.request_num += 1
@@ -663,7 +663,8 @@ def read_manager_config(proxy_port: int) -> dict[str, Any]:
     if not path.is_file():
         raise RuntimeError(
             f"Manager config not found at {path}. "
-            "Start the proxy from __main__ with --workers > 1 before worker processes connect."
+            "Start the proxy from __main__ with --workers > 1 "
+            "before worker processes connect."
         )
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -708,7 +709,10 @@ def parse_args() -> argparse.Namespace:
         "--workers",
         type=int,
         default=1,
-        help="Number of uvicorn worker processes. Scheduling state is shared across workers.",
+        help=(
+            "Number of uvicorn worker processes. "
+            "Scheduling state is shared across workers."
+        ),
     )
     parser.add_argument(
         "--log-level",
@@ -724,8 +728,12 @@ def parse_args() -> argparse.Namespace:
         )
     if len(args.decoder_hosts) != len(args.decoder_ports):
         raise ValueError("Number of decoder hosts must match number of decoder ports")
-    args.prefiller_instances = list(zip(args.prefiller_hosts, args.prefiller_ports))
-    args.decoder_instances = list(zip(args.decoder_hosts, args.decoder_ports))
+    args.prefiller_instances = list(
+        zip(args.prefiller_hosts, args.prefiller_ports, strict=False)
+    )
+    args.decoder_instances = list(
+        zip(args.decoder_hosts, args.decoder_ports, strict=False)
+    )
     return args
 
 
@@ -747,7 +755,7 @@ def connect_shared_scheduler(proxy_port: int):
 
 
 def bootstrap_parent_process(args: argparse.Namespace) -> None:
-    """Initialize cross-worker shared state in the parent process before uvicorn spawns workers."""
+    """Initialize cross-worker shared state before uvicorn spawns workers."""
     global shared_scheduler
     if args.workers <= 1:
         return
@@ -881,7 +889,7 @@ async def send_request_to_service(
                 await asyncio.sleep(base_delay * (2 ** (attempt - 1)))
             else:
                 logger.error("All %s attempts failed for %s.", max_retries, endpoint)
-                raise last_exc
+                raise last_exc from exc
 
 
 async def stream_service_response_with_retry(
@@ -1175,7 +1183,8 @@ async def handle_completions_impl(api: str, request: Request):
                         yield chunk
             except asyncio.CancelledError:
                 logger.warning(
-                    "Streaming from decoder %s:%s was cancelled; releasing request %s resources",
+                    "Streaming from decoder %s:%s was cancelled; "
+                    "releasing request %s resources",
                     instance_info.decoder_host,
                     instance_info.decoder_port,
                     instance_info.request_id,
@@ -1183,7 +1192,8 @@ async def handle_completions_impl(api: str, request: Request):
                 raise
             except Exception as exc:
                 logger.error(
-                    "Error during streaming from decoder %s:%s: %s while handling request %s; releasing prefiller KV",
+                    "Error during streaming from decoder %s:%s: %s "
+                    "while handling request %s; releasing prefiller KV",
                     instance_info.decoder_host,
                     instance_info.decoder_port,
                     exc,
@@ -1219,7 +1229,8 @@ async def adjust_instances_impl(adjust_mode: str, request: Request):
     if isinstance(instances, str):
         instances = [instances]
     parsed_instances = parse_server_addresses(instances)
-    all_msg = f"{adjust_mode} {instance_type} instances: {[f'{host}:{port}' for host, port in parsed_instances]}."
+    addresses = [f"{host}:{port}" for host, port in parsed_instances]
+    all_msg = f"{adjust_mode} {instance_type} instances: {addresses}."
 
     try:
         role = ServerRole(instance_type)
@@ -1227,7 +1238,8 @@ async def adjust_instances_impl(adjust_mode: str, request: Request):
         return {
             "error": (
                 f"Instance type {instance_type!r} is not supported. "
-                f"Only '{ServerRole.PREFILL.value}' and '{ServerRole.DECODE.value}' are allowed."
+                f"Only '{ServerRole.PREFILL.value}' and "
+                f"'{ServerRole.DECODE.value}' are allowed."
             )
         }
 
