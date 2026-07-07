@@ -323,9 +323,10 @@ class AFDAsyncConnector(AFDConnectorBase):
         # dispatch-recv buffer as routed output. When this FFN rank has no
         # routed tokens, send one fake bf16 routed token instead of reusing the
         # dynamicQuant int8 input buffer.
-        fake_routed_output = _make_fake_empty_rank_routed_output(
-            ffn_output,
-            work_item.recv_output.hidden_states,
+        fake_routed_output = torch.zeros(
+            (1, int(work_item.recv_output.hidden_states.shape[-1])),
+            dtype=torch.bfloat16,
+            device=work_item.recv_output.hidden_states.device,
         )
         if isinstance(ffn_output, AFDFFNOutput):
             ffn_output = AFDFFNOutput(
@@ -893,19 +894,6 @@ def _send_ffn_output_payload(
         ffn_output.routed_output,
         metadata,
         **kwargs,
-    )
-
-
-def _make_fake_empty_rank_routed_output(
-    ffn_output: Tensor | AFDFFNOutput,
-    recv_hidden_states: Tensor,
-) -> Tensor:
-    del ffn_output
-    hidden_size = int(recv_hidden_states.shape[-1])
-    return torch.zeros(
-        (1, hidden_size),
-        dtype=torch.bfloat16,
-        device=recv_hidden_states.device,
     )
 
 
