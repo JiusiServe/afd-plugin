@@ -902,8 +902,7 @@ def _make_fake_empty_rank_routed_output(
 ) -> Tensor:
     reference = (
         ffn_output.shared_output
-        if isinstance(ffn_output, AFDFFNOutput)
-        and ffn_output.shared_output is not None
+        if isinstance(ffn_output, AFDFFNOutput) and ffn_output.shared_output is not None
         else recv_hidden_states
     )
     hidden_size = int(recv_hidden_states.shape[-1])
@@ -915,8 +914,12 @@ def _make_fake_empty_rank_routed_output(
         )
     except Exception:
         fake_output = reference.new_zeros((1, hidden_size))
-        return fake_output if fake_output.dtype == torch.bfloat16 else fake_output.to(
-            torch.bfloat16,
+        return (
+            fake_output
+            if fake_output.dtype == torch.bfloat16
+            else fake_output.to(
+                torch.bfloat16,
+            )
         )
 
 
