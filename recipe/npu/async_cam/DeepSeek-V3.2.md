@@ -370,4 +370,9 @@ vllm serve /path/to/DeepSeek-V3.2 \
 
 ## Experiment Results
 
-TBD.
+![Text-matched dataset median TTFT comparison](text_matched_dp_afd_median_ttft.png)
+
+On the text-matched dataset, AFD async CAM consistently reduces Median/P50 TTFT
+compared with the `DP4PCP8 TP1` baseline across the measured request rates. The
+gap becomes more visible at higher load: at 10 RPS and 12 RPS, AFD is about
+7.2s faster than the baseline, with 12 RPS improving from 15.1s to 8.0s.
