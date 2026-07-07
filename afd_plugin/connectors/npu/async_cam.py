@@ -105,18 +105,9 @@ class AFDAsyncConnector(AFDConnectorBase):
         self.hidden_size = int(hf_config.hidden_size)
         self.topk = max(1, int(hf_config.num_experts_per_tok))
         self.num_routed_experts = max(1, int(hf_config.n_routed_experts))
-        dynamic_quant = afd_config.extra_config.get(
-            "dynamicQuant",
-            afd_config.extra_config.get("quant_mode", 0),
-        )
+        dynamic_quant = afd_config.extra_config.get("dynamicQuant", 0)
         self.dynamic_quant = 1 if int(dynamic_quant or 0) == 1 else 0
-        self.group_name = str(
-            afd_config.extra_config.get(
-                "groupName",
-                afd_config.extra_config.get("group_name", ""),
-            )
-            or "",
-        )
+        self.group_name = ""
         self.max_seq_len = max(
             1,
             int(vllm_config.scheduler_config.max_num_batched_tokens),
@@ -759,9 +750,7 @@ def build_async_topology(
     else:
         raise ValueError(f"unknown AFD role {afd_config.role!r}")
 
-    expert_count = int(
-        num_routed_experts or afd_config.extra_config.get("num_experts", 1),
-    )
+    expert_count = int(num_routed_experts or 1)
     expert_per_rank = max(1, (expert_count + expert_rank_size - 1) // expert_rank_size)
     return AFDAsyncTopology(
         role=afd_config.role,

@@ -291,7 +291,7 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
         _vllm_config(pcp_size=3),
         _afd_config(
             role="attention",
-            extra_config={"comm_id": 99, "attn_ranks_per_dp": 3},
+            extra_config={"attn_ranks_per_dp": 3},
         ),
     )
     connector._initialized = True
