@@ -8,6 +8,8 @@ import pytest
 pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
+from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import AFDDPMetadataPayload
 from afd_plugin.model_executor.models.forward_context import (
@@ -346,65 +348,225 @@ def test_phase5_allows_two_way_ubatching_but_rejects_other_counts():
         )
 
 
-def test_attention_runner_enables_ubatching_for_afd_dp1_thresholds():
+def _ubatch_runner(uniform_decode, **parallel_overrides):
     runner = object.__new__(AFDAttentionModelRunner)
     runner.vllm_config = SimpleNamespace(
-        parallel_config=SimpleNamespace(
-            data_parallel_size=1,
-            use_ubatching=True,
-            num_ubatches=2,
-            dbo_decode_token_threshold=2,
-            dbo_prefill_token_threshold=4,
-        ),
+        parallel_config=_parallel_config(**parallel_overrides),
     )
     runner.uniform_decode_query_len = 1
-    runner._is_uniform_decode = lambda **_kwargs: False
-
-    assert runner._should_ubatch_without_vllm_dp(
-        num_tokens=4,
-        num_reqs=1,
-        num_scheduled_tokens_np=[4],
-        max_num_scheduled_tokens=4,
-        use_cascade_attn=False,
-    )
-
-    assert not runner._should_ubatch_without_vllm_dp(
-        num_tokens=3,
-        num_reqs=1,
-        num_scheduled_tokens_np=[3],
-        max_num_scheduled_tokens=3,
-        use_cascade_attn=False,
-    )
+    runner._is_uniform_decode = lambda **_kwargs: uniform_decode
+    return runner
 
 
-def test_attention_runner_enables_decode_ubatching_for_afd_dp1_thresholds():
-    runner = object.__new__(AFDAttentionModelRunner)
-    runner.vllm_config = SimpleNamespace(
-        parallel_config=SimpleNamespace(
-            data_parallel_size=1,
-            use_ubatching=True,
-            num_ubatches=2,
-            dbo_decode_token_threshold=2,
-            dbo_prefill_token_threshold=4,
+@pytest.mark.parametrize(
+    (
+        "parallel_overrides",
+        "uniform_decode",
+        "num_tokens",
+        "padded_num_tokens",
+        "allow_microbatching",
+        "expected",
+    ),
+    [
+        pytest.param(
+            {"use_ubatching": False, "num_ubatches": 2},
+            True,
+            64,
+            64,
+            True,
+            False,
+            id="ubatching-disabled",
         ),
+        pytest.param(
+            {"use_ubatching": True, "num_ubatches": 2},
+            True,
+            64,
+            64,
+            False,
+            False,
+            id="microbatching-disallowed",
+        ),
+        pytest.param(
+            {"use_ubatching": True, "num_ubatches": 2},
+            True,
+            16,
+            16,
+            True,
+            False,
+            id="decode-below-threshold",
+        ),
+        pytest.param(
+            {"use_ubatching": True, "num_ubatches": 2},
+            True,
+            32,
+            32,
+            True,
+            True,
+            id="decode-at-threshold",
+        ),
+        pytest.param(
+            {"use_ubatching": True, "num_ubatches": 2},
+            False,
+            256,
+            256,
+            True,
+            False,
+            id="prefill-below-threshold",
+        ),
+        pytest.param(
+            {"use_ubatching": True, "num_ubatches": 2},
+            False,
+            512,
+            512,
+            True,
+            True,
+            id="prefill-at-threshold",
+        ),
+        pytest.param(
+            {
+                "use_ubatching": True,
+                "num_ubatches": 2,
+                "dbo_decode_token_threshold": 1,
+            },
+            True,
+            1,
+            1,
+            True,
+            False,
+            id="fewer-tokens-than-ubatches",
+        ),
+        pytest.param(
+            {
+                "use_ubatching": True,
+                "num_ubatches": 2,
+                "dbo_decode_token_threshold": 2,
+            },
+            True,
+            2,
+            64,
+            True,
+            False,
+            id="cudagraph-pad-empties-last-ubatch",
+        ),
+        pytest.param(
+            {"use_ubatching": True, "num_ubatches": 2},
+            True,
+            32,
+            64,
+            True,
+            False,
+            id="cudagraph-pad-split-at-real-boundary",
+        ),
+        pytest.param(
+            {"use_ubatching": True, "num_ubatches": 2},
+            True,
+            33,
+            64,
+            True,
+            True,
+            id="cudagraph-pad-split-inside-real",
+        ),
+        pytest.param(
+            {"use_ubatching": True, "num_ubatches": 2},
+            True,
+            48,
+            None,
+            True,
+            True,
+            id="no-batch-descriptor-uses-real-tokens",
+        ),
+    ],
+)
+def test_should_ubatch_single_rank(
+    parallel_overrides,
+    uniform_decode,
+    num_tokens,
+    padded_num_tokens,
+    allow_microbatching,
+    expected,
+):
+    runner = _ubatch_runner(uniform_decode, **parallel_overrides)
+    batch_descriptor = (
+        SimpleNamespace(num_tokens=padded_num_tokens)
+        if padded_num_tokens is not None
+        else None
     )
-    runner.uniform_decode_query_len = 1
-    runner._is_uniform_decode = lambda **_kwargs: True
 
-    assert runner._should_ubatch_without_vllm_dp(
-        num_tokens=2,
-        num_reqs=2,
-        num_scheduled_tokens_np=[1, 1],
+    assert (
+        runner._should_ubatch_single_rank(
+            batch_descriptor,
+            (),
+            {
+                "num_tokens": num_tokens,
+                "num_reqs": num_tokens,
+                "num_scheduled_tokens_np": [1] * num_tokens,
+                "max_num_scheduled_tokens": 1,
+                "use_cascade_attn": False,
+                "allow_microbatching": allow_microbatching,
+            },
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "dp_size",
+        "parent_should_ubatch",
+        "num_tokens",
+        "padded_num_tokens",
+        "expected",
+    ),
+    [
+        pytest.param(1, False, 48, 64, True, id="dp1-enables-local-dbo"),
+        pytest.param(1, False, 2, 64, False, id="dp1-rejects-empty-last-ubatch"),
+        pytest.param(2, True, 2, 64, True, id="dp2-keeps-coordinated-true"),
+        pytest.param(2, False, 48, 64, False, id="dp2-keeps-coordinated-false"),
+    ],
+)
+def test_determine_batch_execution_overrides_ubatch_only_for_dp1(
+    monkeypatch,
+    dp_size,
+    parent_should_ubatch,
+    num_tokens,
+    padded_num_tokens,
+    expected,
+):
+    runner = _ubatch_runner(
+        True,
+        data_parallel_size=dp_size,
+        use_ubatching=True,
+        num_ubatches=2,
+        dbo_decode_token_threshold=2,
+    )
+    batch_descriptor = SimpleNamespace(num_tokens=padded_num_tokens)
+    parent_result = (
+        "cudagraph-mode",
+        batch_descriptor,
+        parent_should_ubatch,
+        "num-tokens-across-dp",
+        "cudagraph-stats",
+    )
+    monkeypatch.setattr(
+        GPUModelRunner,
+        "_determine_batch_execution_and_padding",
+        lambda _self, *_args, **_kwargs: parent_result,
+    )
+
+    result = runner._determine_batch_execution_and_padding(
+        num_tokens=num_tokens,
+        num_reqs=num_tokens,
+        num_scheduled_tokens_np=[1] * num_tokens,
         max_num_scheduled_tokens=1,
         use_cascade_attn=False,
     )
 
-    assert not runner._should_ubatch_without_vllm_dp(
-        num_tokens=1,
-        num_reqs=1,
-        num_scheduled_tokens_np=[1],
-        max_num_scheduled_tokens=1,
-        use_cascade_attn=False,
+    assert result == (
+        "cudagraph-mode",
+        batch_descriptor,
+        expected,
+        "num-tokens-across-dp",
+        "cudagraph-stats",
     )
 
 

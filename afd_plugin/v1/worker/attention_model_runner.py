@@ -15,10 +15,13 @@ from vllm.distributed.parallel_state import (
     get_tensor_model_parallel_rank,
     get_world_group,
 )
-from vllm.forward_context import DPMetadata, get_forward_context
+from vllm.forward_context import BatchDescriptor, DPMetadata, get_forward_context
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.gpu_ubatch_wrapper import UBatchWrapper
-from vllm.v1.worker.ubatch_utils import check_ubatch_thresholds
+from vllm.v1.worker.ubatch_utils import (
+    check_ubatch_thresholds,
+    is_last_ubatch_empty,
+)
 
 from afd_plugin.compat.profiler import (
     create_afd_gpu_profiler,
@@ -246,29 +249,25 @@ class AFDAttentionModelRunner(GPUModelRunner):
         return super()._build_attention_metadata(*args, **kwargs)
 
     def _determine_batch_execution_and_padding(self, *args: Any, **kwargs: Any) -> Any:
-        result = super()._determine_batch_execution_and_padding(*args, **kwargs)
         (
             cudagraph_mode,
             batch_descriptor,
             should_ubatch,
             num_tokens_across_dp,
             cudagraph_stats,
-        ) = result
-        values = _batch_execution_values(args, kwargs)
-        num_ubatches = int(self.vllm_config.parallel_config.num_ubatches)
-        num_tokens = int(values.get("num_tokens", 0))
-        if should_ubatch and num_tokens < max(num_ubatches, 1):
-            should_ubatch = False
-            return (
-                cudagraph_mode,
+        ) = super()._determine_batch_execution_and_padding(*args, **kwargs)
+        # vLLM only decides ubatching inside the DP all-reduce coordination
+        # and hardcodes should_ubatch=False when data_parallel_size == 1, so
+        # AFD attention instances running without vLLM DP would never get DBO.
+        # Replicate the same decision pipeline rank-locally instead. When
+        # DP > 1 the coordinated result is an all-or-none contract across
+        # ranks and must not be overridden per-rank.
+        if self.vllm_config.parallel_config.data_parallel_size == 1:
+            should_ubatch = self._should_ubatch_single_rank(
                 batch_descriptor,
-                should_ubatch,
-                num_tokens_across_dp,
-                cudagraph_stats,
+                args,
+                kwargs,
             )
-        if should_ubatch:
-            return result
-        should_ubatch = self._should_ubatch_without_vllm_dp(*args, **kwargs)
         return (
             cudagraph_mode,
             batch_descriptor,
@@ -277,30 +276,51 @@ class AFDAttentionModelRunner(GPUModelRunner):
             cudagraph_stats,
         )
 
-    def _should_ubatch_without_vllm_dp(self, *args: Any, **kwargs: Any) -> bool:
+    def _should_ubatch_single_rank(
+        self,
+        batch_descriptor: BatchDescriptor,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> bool:
+        """Rank-local replica of vLLM's DP-coordinated ubatch decision.
+
+        Mirrors ``coordinate_batch_across_dp`` + ``_post_process_ubatch`` for
+        a single rank: preconditions, then thresholds, then the empty-ubatch
+        guard. The guard matters because ``split_attn_metadata`` splits on the
+        padded token count (``batch_descriptor.num_tokens``, padded up to the
+        cudagraph capture size for a FULL_DECODE graph) while the attention
+        metadata only covers the real requests; if the last split point lands
+        at/past the real token count the trailing ubatch starts outside every
+        real request and vLLM asserts "Token slice start outside of first
+        request" (e.g. 2 real tokens padded to capture size 64, split at 32).
+        """
         parallel_config = self.vllm_config.parallel_config
-        if int(parallel_config.data_parallel_size) > 1:
-            return False
         if not bool(parallel_config.use_ubatching):
             return False
-        if not bool(kwargs.get("allow_microbatching", True)):
-            return False
-
         values = _batch_execution_values(args, kwargs)
+        if not bool(values.get("allow_microbatching", True)):
+            return False
+        num_tokens = values["num_tokens"]
+        num_ubatches = parallel_config.num_ubatches
+        # Not covered by is_last_ubatch_empty: with no cudagraph padding,
+        # fewer tokens than ubatches empties the *first* ubatch instead.
+        if num_tokens < max(num_ubatches, 1):
+            return False
         uniform_decode = self._is_uniform_decode(
             max_num_scheduled_tokens=values["max_num_scheduled_tokens"],
             uniform_decode_query_len=self.uniform_decode_query_len,
-            num_tokens=values["num_tokens"],
+            num_tokens=num_tokens,
             num_reqs=values["num_reqs"],
             force_uniform_decode=values.get("force_uniform_decode"),
         )
-        num_tokens = int(values["num_tokens"])
-        num_ubatches = int(parallel_config.num_ubatches)
-        if num_tokens < max(num_ubatches, 1):
+        if not check_ubatch_thresholds(
+            parallel_config,
+            num_tokens,
+            bool(uniform_decode),
+        ):
             return False
-        return bool(
-            check_ubatch_thresholds(parallel_config, num_tokens, bool(uniform_decode)),
-        )
+        padded_tokens = batch_descriptor.num_tokens
+        return not is_last_ubatch_empty(num_tokens, padded_tokens, num_ubatches)
 
     def _model_forward(self, *args: Any, **kwargs: Any) -> Any:
         forward_context = get_forward_context()
