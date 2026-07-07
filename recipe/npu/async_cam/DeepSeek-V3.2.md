@@ -380,7 +380,7 @@ attention and FFN commands so all workers join the same async CAM group.
 | `connector` | Selects the AFD connector implementation. Use `afdasyncconnector` for async CAM. |
 | `async` | Enables async-DP execution, which is required by `afdasyncconnector`. |
 | `role` | Worker role in the AFD split. Use `attention` for prefill attention workers and `ffn` for expert workers. |
-| `host` / `port` | Rendezvous address for the async CAM HCCL process group. All attention and FFN workers must use the same values. |
+| `host` / `port` | Rendezvous address for the async CAM HCCL process group. Set `host` to the IP address of the node that owns attention rank 0; all attention and FFN workers must use the same `host` and `port`. |
 | `num_attention_ranks` | Total attention-side ranks in the AFD topology. In this recipe, `DP3PCP8` gives `3 * 8 = 24`. |
 | `num_ffn_ranks` | Total FFN-side ranks in the AFD topology. In this recipe, `EP8` gives `8`. |
 | `afd_role_rank` | Role-local starting rank for the process. The worker expands this with the local DP/PCP or EP layout. |
@@ -404,7 +404,7 @@ and with the reduced 10-layer model described above.**
 
 ![Text-matched dataset median TTFT comparison](text_matched_dp_afd_median_ttft.png)
 
-On the text-matched dataset, AFD async CAM consistently reduces Median/P50 TTFT
+On the dataset mentioned above, AFD async CAM consistently reduces Median/P50 TTFT
 compared with the `DP4PCP8 TP1` baseline across the measured request rates. The
 gap becomes more visible at higher load: at 10 RPS and 12 RPS, AFD is about
 7.2s faster than the baseline, with 12 RPS improving from 15.1s to 8.0s.
