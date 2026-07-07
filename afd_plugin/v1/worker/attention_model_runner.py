@@ -262,7 +262,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
         # Replicate the same decision pipeline rank-locally instead. When
         # DP > 1 the coordinated result is an all-or-none contract across
         # ranks and must not be overridden per-rank.
-        if int(self.vllm_config.parallel_config.data_parallel_size) == 1:
+        if self.vllm_config.parallel_config.data_parallel_size == 1:
             should_ubatch = self._should_ubatch_single_rank(
                 batch_descriptor,
                 args,
@@ -278,7 +278,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
 
     def _should_ubatch_single_rank(
         self,
-        batch_descriptor: BatchDescriptor | None,
+        batch_descriptor: BatchDescriptor,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> bool:
@@ -300,8 +300,8 @@ class AFDAttentionModelRunner(GPUModelRunner):
         values = _batch_execution_values(args, kwargs)
         if not bool(values.get("allow_microbatching", True)):
             return False
-        num_tokens = int(values["num_tokens"])
-        num_ubatches = int(parallel_config.num_ubatches)
+        num_tokens = values["num_tokens"]
+        num_ubatches = parallel_config.num_ubatches
         # Not covered by is_last_ubatch_empty: with no cudagraph padding,
         # fewer tokens than ubatches empties the *first* ubatch instead.
         if num_tokens < max(num_ubatches, 1):
@@ -319,8 +319,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
             bool(uniform_decode),
         ):
             return False
-        padded = getattr(batch_descriptor, "num_tokens", None)
-        padded_tokens = int(padded) if padded is not None else num_tokens
+        padded_tokens = batch_descriptor.num_tokens
         return not is_last_ubatch_empty(num_tokens, padded_tokens, num_ubatches)
 
     def _model_forward(self, *args: Any, **kwargs: Any) -> Any:
