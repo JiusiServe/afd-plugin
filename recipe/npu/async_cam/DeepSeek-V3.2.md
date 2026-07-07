@@ -399,6 +399,9 @@ attention and FFN commands so all workers join the same async CAM group.
 
 ## Experiment Results
 
+**Note: The results below were measured with forced expert balancing enabled
+and with the reduced 10-layer model described above.**
+
 ![Text-matched dataset median TTFT comparison](text_matched_dp_afd_median_ttft.png)
 
 On the text-matched dataset, AFD async CAM consistently reduces Median/P50 TTFT
