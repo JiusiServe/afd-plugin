@@ -319,15 +319,22 @@ class AFDAsyncConnector(AFDConnectorBase):
             )
             return ffn_output
 
-        recv_hidden_states = work_item.recv_output.hidden_states
+        # Temporary NPU workaround: CAM combine-send does not accept the int8
+        # dispatch-recv buffer as routed output. When this FFN rank has no
+        # routed tokens, send one fake bf16 routed token instead of reusing the
+        # dynamicQuant int8 input buffer.
+        fake_routed_output = _make_fake_empty_rank_routed_output(
+            ffn_output,
+            work_item.recv_output.hidden_states,
+        )
         if isinstance(ffn_output, AFDFFNOutput):
             ffn_output = AFDFFNOutput(
-                routed_output=recv_hidden_states,
+                routed_output=fake_routed_output,
                 shared_output=ffn_output.shared_output,
             )
         else:
-            ffn_output = recv_hidden_states
-        work_item.metadata.seq_lens = [work_item.total_num_tokens]
+            ffn_output = fake_routed_output
+        work_item.metadata.seq_lens = [1]
         _send_ffn_output_payload(
             self,
             ffn_output,
@@ -887,6 +894,30 @@ def _send_ffn_output_payload(
         metadata,
         **kwargs,
     )
+
+
+def _make_fake_empty_rank_routed_output(
+    ffn_output: Tensor | AFDFFNOutput,
+    recv_hidden_states: Tensor,
+) -> Tensor:
+    reference = (
+        ffn_output.shared_output
+        if isinstance(ffn_output, AFDFFNOutput)
+        and ffn_output.shared_output is not None
+        else recv_hidden_states
+    )
+    hidden_size = int(recv_hidden_states.shape[-1])
+    try:
+        return torch.zeros(
+            (1, hidden_size),
+            dtype=torch.bfloat16,
+            device=recv_hidden_states.device,
+        )
+    except Exception:
+        fake_output = reference.new_zeros((1, hidden_size))
+        return fake_output if fake_output.dtype == torch.bfloat16 else fake_output.to(
+            torch.bfloat16,
+        )
 
 
 def _validate_topk_payload(
