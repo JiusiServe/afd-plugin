@@ -1123,14 +1123,7 @@ def test_npu_async_feature_validation_rejects_ubatching_and_multistream():
         )
 
 
-def test_npu_async_feature_validation_allows_quant_zero_or_one():
-    fail_if_unsupported_npu_afd_features(
-        _vllm_config(
-            connector="afdasyncconnector",
-            async_dp=True,
-            extra_config={"quant_mode": 1},
-        ),
-    )
+def test_npu_async_feature_validation_allows_dynamic_quant_zero_or_one():
     fail_if_unsupported_npu_afd_features(
         _vllm_config(
             connector="afdasyncconnector",
@@ -1139,7 +1132,7 @@ def test_npu_async_feature_validation_allows_quant_zero_or_one():
         ),
     )
 
-    with pytest.raises(RuntimeError, match="quant_mode"):
+    with pytest.raises(RuntimeError, match="dynamicQuant"):
         fail_if_unsupported_npu_afd_features(
             _vllm_config(
                 connector="afdasyncconnector",

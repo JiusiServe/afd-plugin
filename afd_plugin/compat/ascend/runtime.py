@@ -143,10 +143,10 @@ def _fail_if_unsupported_npu_afd_async_features(
                     "AFDAsyncConnector does not support multistream_info enabled",
                 )
 
-    quant_mode = extra.get("dynamicQuant", extra.get("quant_mode", 0))
+    quant_mode = extra.get("dynamicQuant", 0)
     if quant_mode not in (None, "", 0, "0", 1, "1"):
         raise RuntimeError(
-            "AFDAsyncConnector currently supports only quant_mode/dynamicQuant 0 or 1",
+            "AFDAsyncConnector currently supports only dynamicQuant 0 or 1",
         )
 
 
