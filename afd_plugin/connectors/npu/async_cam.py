@@ -900,27 +900,13 @@ def _make_fake_empty_rank_routed_output(
     ffn_output: Tensor | AFDFFNOutput,
     recv_hidden_states: Tensor,
 ) -> Tensor:
-    reference = (
-        ffn_output.shared_output
-        if isinstance(ffn_output, AFDFFNOutput) and ffn_output.shared_output is not None
-        else recv_hidden_states
-    )
+    del ffn_output
     hidden_size = int(recv_hidden_states.shape[-1])
-    try:
-        return torch.zeros(
-            (1, hidden_size),
-            dtype=torch.bfloat16,
-            device=recv_hidden_states.device,
-        )
-    except Exception:
-        fake_output = reference.new_zeros((1, hidden_size))
-        return (
-            fake_output
-            if fake_output.dtype == torch.bfloat16
-            else fake_output.to(
-                torch.bfloat16,
-            )
-        )
+    return torch.zeros(
+        (1, hidden_size),
+        dtype=torch.bfloat16,
+        device=recv_hidden_states.device,
+    )
 
 
 def _validate_topk_payload(
