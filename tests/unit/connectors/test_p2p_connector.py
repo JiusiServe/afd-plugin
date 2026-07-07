@@ -267,20 +267,20 @@ def test_p2p_module_exports_connector_class():
 
 
 def test_p2p_dp_metadata_serialization_uses_json_payload():
-    module = importlib.import_module("afd_plugin.connectors.gpu.p2p")
+    module = importlib.import_module("afd_plugin.connectors.metadata")
     metadata = SimpleNamespace(
         num_tokens_across_dp_cpu=[3, 5],
         max_tokens_across_dp_cpu=5,
     )
 
-    payload = module._encode_dp_metadata_payload(
+    payload = module.encode_dp_metadata_payload(
         AFDDPMetadataPayload(
             dp_metadata_list={7: metadata},
             is_graph_capturing=True,
             is_warmup=False,
         ),
     )
-    decoded_payload = module._decode_dp_metadata_payload(payload)
+    decoded_payload = module.decode_dp_metadata_payload(payload)
     decoded = decoded_payload.dp_metadata_list
 
     assert payload.startswith(b"{")

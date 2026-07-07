@@ -5,7 +5,8 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterator
+import json
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -13,6 +14,8 @@ from typing import TYPE_CHECKING
 import torch
 
 if TYPE_CHECKING:
+    from torch.distributed.distributed_c10d import ProcessGroup
+
     from afd_plugin.connectors.base import AFDConnectorBase
 
 
@@ -38,7 +41,7 @@ class AFDDPMetadata:
             )
 
     @contextmanager
-    def sp_local_sizes(self, sequence_parallel_size: int) -> Iterator[list[int]]:
+    def sp_local_sizes(self, sequence_parallel_size: int) -> Generator[list[int]]:
         self.local_sizes = _compute_sp_num_tokens(
             self.num_tokens_across_dp_cpu,
             sequence_parallel_size,
@@ -65,7 +68,7 @@ class AFDDPMetadata:
         sequence_parallel_size: int,
         max_chunk_size_per_rank: int,
         chunk_idx: int,
-    ) -> Iterator[list[int]]:
+    ) -> Generator[list[int]]:
         sp_tokens = _compute_sp_num_tokens(
             self.num_tokens_across_dp_cpu,
             sequence_parallel_size,
@@ -355,6 +358,117 @@ class AFDMetadata:
         return cloned
 
 
+def _to_int(value: object) -> int:
+    item = getattr(value, "item", None)
+    return int(item() if callable(item) else value)
+
+
+def encode_dp_metadata_payload(payload: AFDDPMetadataPayload) -> bytes:
+    """Serialize an ``AFDDPMetadataPayload`` to a compact JSON byte string.
+
+    Only ``num_tokens_across_dp_cpu`` / ``max_tokens_across_dp_cpu`` per stage
+    and the graph-capturing / warmup flags are carried; these are the fields the
+    FFN-side connectors read back after decode. Serializing to a plugin-owned
+    minimal schema keeps the wire format decoupled from vLLM-internal DP
+    metadata objects.
+    """
+    metadata_payload: dict[str, dict[str, int | list[int]]] = {}
+    for stage_idx, dp_metadata in payload.dp_metadata_list.items():
+        token_counts = getattr(dp_metadata, "num_tokens_across_dp_cpu", None)
+        if token_counts is None:
+            raise TypeError(
+                "AFD DP metadata must expose num_tokens_across_dp_cpu "
+                "for JSON serialization",
+            )
+        token_counts_list = _to_int_list(token_counts)
+        max_token_count = getattr(dp_metadata, "max_tokens_across_dp_cpu", None)
+        if max_token_count is None:
+            max_token_count = max(token_counts_list)
+        metadata_payload[str(int(stage_idx))] = {
+            "num_tokens_across_dp_cpu": token_counts_list,
+            "max_tokens_across_dp_cpu": _to_int(max_token_count),
+        }
+
+    wire_payload = {
+        "dp_metadata_list": metadata_payload,
+        "is_graph_capturing": bool(payload.is_graph_capturing),
+        "is_warmup": bool(payload.is_warmup),
+    }
+    return json.dumps(wire_payload, separators=(",", ":"), sort_keys=True).encode(
+        "utf-8",
+    )
+
+
+def decode_dp_metadata_payload(payload_bytes: bytes) -> AFDDPMetadataPayload:
+    """Rebuild an ``AFDDPMetadataPayload`` from ``encode_dp_metadata_payload``."""
+    payload = json.loads(payload_bytes.decode("utf-8"))
+    dp_metadata_list = {
+        int(stage_idx): AFDDPMetadata(
+            num_tokens_across_dp_cpu=torch.tensor(
+                [int(value) for value in metadata["num_tokens_across_dp_cpu"]],
+                dtype=torch.int32,
+                device="cpu",
+            ),
+            max_tokens_across_dp_cpu=torch.tensor(
+                int(metadata["max_tokens_across_dp_cpu"]),
+                dtype=torch.int32,
+                device="cpu",
+            ),
+        )
+        for stage_idx, metadata in payload["dp_metadata_list"].items()
+    }
+    return AFDDPMetadataPayload(
+        dp_metadata_list=dp_metadata_list,
+        is_graph_capturing=bool(payload.get("is_graph_capturing", False)),
+        is_warmup=bool(payload.get("is_warmup", False)),
+    )
+
+
+def send_dp_metadata_payload(
+    payload: AFDDPMetadataPayload,
+    *,
+    dst: int,
+    group: ProcessGroup,
+    device: torch.device,
+) -> None:
+    """Encode and send a DP-metadata payload to ``dst`` over ``group``.
+
+    The payload is sent as two messages: a ``long`` size tensor followed by the
+    ``uint8`` object tensor, both staged on ``device`` so the caller controls
+    whether the backend transport sees CUDA/NPU or CPU tensors.
+    """
+    object_bytes = encode_dp_metadata_payload(payload)
+    object_tensor_cpu = torch.frombuffer(bytearray(object_bytes), dtype=torch.uint8)
+    object_tensor = object_tensor_cpu.to(device)
+    size_tensor = torch.tensor(
+        [object_tensor.numel()],
+        dtype=torch.long,
+        device=device,
+    )
+    torch.distributed.send(size_tensor, dst=dst, group=group)
+    torch.distributed.send(object_tensor, dst=dst, group=group)
+
+
+def recv_dp_metadata_payload(
+    *,
+    src: int,
+    group: ProcessGroup,
+    device: torch.device,
+) -> AFDDPMetadataPayload:
+    """Receive and decode a DP-metadata payload from ``src`` over ``group``."""
+    size_tensor = torch.empty(1, dtype=torch.long, device=device)
+    rank_size = torch.distributed.recv(size_tensor, src=src, group=group)
+    object_tensor = torch.empty(
+        int(size_tensor.item()),
+        dtype=torch.uint8,
+        device=device,
+    )
+    rank_object = torch.distributed.recv(object_tensor, src=src, group=group)
+    if rank_object != rank_size:
+        raise RuntimeError("received AFD DP metadata fragments from different ranks")
+    return decode_dp_metadata_payload(object_tensor.cpu().numpy().tobytes())
+
+
 __all__ = [
     "AFDConnectorData",
     "AFDConnectorMetadata",
@@ -364,4 +478,8 @@ __all__ = [
     "AFDMetadata",
     "AFDRecvOutput",
     "AFDSingleDPMetadata",
+    "decode_dp_metadata_payload",
+    "encode_dp_metadata_payload",
+    "recv_dp_metadata_payload",
+    "send_dp_metadata_payload",
 ]
