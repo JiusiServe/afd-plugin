@@ -319,15 +319,23 @@ class AFDAsyncConnector(AFDConnectorBase):
             )
             return ffn_output
 
-        recv_hidden_states = work_item.recv_output.hidden_states
+        # Temporary NPU workaround: CAM combine-send does not accept the int8
+        # dispatch-recv buffer as routed output. When this FFN rank has no
+        # routed tokens, send one fake bf16 routed token instead of reusing the
+        # dynamicQuant int8 input buffer.
+        fake_routed_output = torch.zeros(
+            (1, int(work_item.recv_output.hidden_states.shape[-1])),
+            dtype=torch.bfloat16,
+            device=work_item.recv_output.hidden_states.device,
+        )
         if isinstance(ffn_output, AFDFFNOutput):
             ffn_output = AFDFFNOutput(
-                routed_output=recv_hidden_states,
+                routed_output=fake_routed_output,
                 shared_output=ffn_output.shared_output,
             )
         else:
-            ffn_output = recv_hidden_states
-        work_item.metadata.seq_lens = [work_item.total_num_tokens]
+            ffn_output = fake_routed_output
+        work_item.metadata.seq_lens = [1]
         _send_ffn_output_payload(
             self,
             ffn_output,
