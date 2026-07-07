@@ -368,6 +368,35 @@ vllm serve /path/to/DeepSeek-V3.2 \
 
 </details>
 
+### AFD Config Explanation
+
+The AFD runtime is enabled through the `afd` object passed to
+`--additional-config`. The same topology-level values must be used by the
+attention and FFN commands so all workers join the same async CAM group.
+
+| Field | Meaning |
+|-------|---------|
+| `enabled` | Enables the AFD runtime path for this vLLM process. |
+| `connector` | Selects the AFD connector implementation. Use `afdasyncconnector` for async CAM. |
+| `async` | Enables async-DP execution, which is required by `afdasyncconnector`. |
+| `role` | Worker role in the AFD split. Use `attention` for prefill attention workers and `ffn` for expert workers. |
+| `host` / `port` | Rendezvous address for the async CAM HCCL process group. All attention and FFN workers must use the same values. |
+| `num_attention_ranks` | Total attention-side ranks in the AFD topology. In this recipe, `DP3PCP8` gives `3 * 8 = 24`. |
+| `num_ffn_ranks` | Total FFN-side ranks in the AFD topology. In this recipe, `EP8` gives `8`. |
+| `afd_role_rank` | Role-local starting rank for the process. The worker expands this with the local DP/PCP or EP layout. |
+| `compute_gate_on_attention` | Runs MoE routing/gating on the attention side before dispatching activations to FFN ranks. |
+
+`extra_config` carries async CAM specific knobs:
+
+| Field | Meaning |
+|-------|---------|
+| `quant_mode` | CAM operator quantization mode. `0` keeps the base non-quantized CAM path. |
+| `dynamicQuant` | Enables dynamic quantization metadata for CAM dispatch/combine. |
+| `async_moe_ubatching` | Enables AFD-managed MoE ubatching instead of vLLM native DBO. |
+| `async_moe_num_ubatches` | Number of async MoE stages. Current async CAM setup uses `2`. |
+| `async_moe_split` | Split policy for async MoE ubatches. This recipe uses request-level splitting. |
+| `attn_ranks_per_dp` | Number of attention ranks per DP replica. With `PCP8`, this value is `8`. |
+
 ## Experiment Results
 
 ![Text-matched dataset median TTFT comparison](text_matched_dp_afd_median_ttft.png)
