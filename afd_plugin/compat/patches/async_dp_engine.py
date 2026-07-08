@@ -45,7 +45,7 @@ from afd_plugin.config import is_afd_async_dp, parse_afd_config
 if TYPE_CHECKING:
     from multiprocessing.queues import Queue
 
-    from vllm.config import ParallelConfig, VllmConfig
+    from vllm.config import VllmConfig
     from vllm.v1.engine import EngineCoreRequest
     from vllm.v1.engine.coordinator import DPCoordinator
     from vllm.v1.engine.utils import (
@@ -62,54 +62,111 @@ if TYPE_CHECKING:
         Queue | None,
     ]
 
-_PATCH_APPLIED = False
 
-_original_run_engine_core = EngineCoreProc.run_engine_core
-_original_launch_core_engines = engine_utils_module.launch_core_engines
-_original_dp_coordinator = engine_utils_module.DPCoordinator
-_original_add_request_async = DPAsyncMPClient.add_request_async
-
-
-def _patched_run_engine_core(
+def run_engine_core(
     *args: Any,
     dp_rank: int = 0,
     local_dp_rank: int = 0,
     **kwargs: Any,
-) -> Any:
+):
     """Replace MoE DP proc selection for AFD async Attention engines."""
 
-    vllm_config = kwargs["vllm_config"]
-    afd_config = parse_afd_config(vllm_config, validate=False)
-    if not is_afd_async_dp(vllm_config) or afd_config.role != "attention":
-        return _original_run_engine_core(
-            *args,
-            dp_rank=dp_rank,
-            local_dp_rank=local_dp_rank,
-            **kwargs,
-        )
+    engine_core_module.maybe_register_config_serialize_by_value()
 
-    original_dp_engine_core_proc = engine_core_module.DPEngineCoreProc
-
-    def build_async_attention_engine_core(
-        *engine_args: Any,
-        **engine_kwargs: Any,
-    ) -> EngineCoreProc:
-        return EngineCoreProc(*engine_args, engine_index=dp_rank, **engine_kwargs)
-
-    engine_core_module.DPEngineCoreProc = build_async_attention_engine_core
+    engine_core = None
+    signal_callback = None
     try:
-        return _original_run_engine_core(
-            *args,
-            dp_rank=dp_rank,
-            local_dp_rank=local_dp_rank,
-            **kwargs,
+        vllm_config = kwargs["vllm_config"]
+        parallel_config = vllm_config.parallel_config
+        data_parallel = parallel_config.data_parallel_size > 1 or dp_rank > 0
+        if data_parallel:
+            parallel_config.data_parallel_rank_local = local_dp_rank
+            process_title = f"EngineCore_DP{dp_rank}"
+        else:
+            process_title = "EngineCore"
+        engine_core_module.set_process_title(process_title)
+        engine_core_module.maybe_init_worker_tracer(
+            "vllm.engine_core",
+            "engine_core",
+            process_title,
         )
+        engine_core_module.decorate_logs()
+
+        if data_parallel and vllm_config.kv_transfer_config is not None:
+            vllm_config.kv_transfer_config.engine_id = (
+                f"{vllm_config.kv_transfer_config.engine_id}_dp{local_dp_rank}"
+            )
+            engine_core_module.logger.debug(
+                "Setting kv_transfer_config.engine_id to %s",
+                vllm_config.kv_transfer_config.engine_id,
+            )
+
+        parallel_config.data_parallel_index = dp_rank
+        if data_parallel and vllm_config.model_config.is_moe:
+            parallel_config.data_parallel_rank = dp_rank
+            # ### PATCH START: AFD async-DP Attention engine selection
+            # Async-DP Attention ranks are connector-driven, so use the regular
+            # EngineCoreProc instead of DPEngineCoreProc while keeping the
+            # original DP rank metadata.
+            if _is_afd_async_attention_config(vllm_config):
+                engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+            else:
+                engine_core = engine_core_module.DPEngineCoreProc(*args, **kwargs)
+            # ### PATCH END: AFD async-DP Attention engine selection
+        else:
+            parallel_config.data_parallel_size = 1
+            parallel_config.data_parallel_size_local = 1
+            parallel_config.data_parallel_rank = 0
+            engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+
+        def wakeup_engine() -> None:
+            engine_core.input_queue.put_nowait((EngineCoreRequestType.WAKEUP, None))
+
+        signal_callback = engine_core_module.SignalCallback(wakeup_engine)
+
+        def signal_handler(signum: int, frame: object) -> None:
+            del signum, frame
+            engine_core.shutdown_state = engine_core_module.EngineShutdownState.REQUESTED
+            signal_callback.trigger()
+
+        engine_core_module.signal.signal(
+            engine_core_module.signal.SIGTERM,
+            signal_handler,
+        )
+        engine_core_module.signal.signal(
+            engine_core_module.signal.SIGINT,
+            signal_handler,
+        )
+
+        engine_core.run_busy_loop()
+
+    except SystemExit:
+        engine_core_module.logger.debug("EngineCore exiting.")
+        raise
+    except Exception as exc:
+        if engine_core is None:
+            engine_core_module.logger.exception("EngineCore failed to start.")
+        else:
+            engine_core_module.logger.exception("EngineCore encountered a fatal error.")
+            engine_core._send_engine_dead()
+        raise exc
     finally:
-        engine_core_module.DPEngineCoreProc = original_dp_engine_core_proc
+        engine_core_module.signal.signal(
+            engine_core_module.signal.SIGTERM,
+            engine_core_module.signal.SIG_DFL,
+        )
+        engine_core_module.signal.signal(
+            engine_core_module.signal.SIGINT,
+            engine_core_module.signal.SIG_DFL,
+        )
+        if signal_callback is not None:
+            signal_callback.stop()
+        if engine_core is not None:
+            engine_core.shutdown()
 
 
 @contextmanager
-def _patched_launch_core_engines(
+def launch_core_engines(
     vllm_config: VllmConfig,
     executor_class: type[Executor],
     log_stats: bool,
@@ -118,53 +175,165 @@ def _patched_launch_core_engines(
 ) -> Iterator[EngineLaunchResult]:
     """Disable coordinator wave mode while launching AFD async-DP engines."""
 
-    if not is_afd_async_dp(vllm_config):
-        with _original_launch_core_engines(
-            vllm_config,
-            executor_class,
-            log_stats,
-            addresses,
-            num_api_servers,
-        ) as launch_result:
-            yield launch_result
-        return
+    parallel_config = vllm_config.parallel_config
+    dp_size = parallel_config.data_parallel_size
+    local_engine_count = parallel_config.data_parallel_size_local
+    local_start_index = parallel_config.data_parallel_rank_local
+    dp_rank = parallel_config.data_parallel_rank
+    host = parallel_config.data_parallel_master_ip
+    local_engines_only = parallel_config.local_engines_only
 
-    original_dp_coordinator = engine_utils_module.DPCoordinator
+    offline_mode = local_start_index is not None
 
-    def build_async_dp_coordinator(
-        parallel_config: ParallelConfig,
-        enable_wave_coordination: bool = True,
-    ) -> DPCoordinator:
-        """Replace launch-time coordinator wave behavior for AFD async-DP."""
+    tensor_queue = None
+    multimodal_config = vllm_config.model_config.multimodal_config
+    if multimodal_config is not None and multimodal_config.mm_tensor_ipc == "torch_shm":
+        tensor_queue = engine_utils_module.get_mp_context().Queue()
 
-        return _original_dp_coordinator(
+    run_coordinator = (
+        vllm_config.needs_dp_coordinator and not offline_mode and dp_rank == 0
+    )
+
+    if run_coordinator:
+        coordinator = engine_utils_module.DPCoordinator(
             parallel_config,
-            enable_wave_coordination=False,
+            # ### PATCH START: AFD async-DP coordinator wave mode
+            # Keep DP coordinator stats, but disable wave coordination for
+            # connector-driven async-DP.
+            enable_wave_coordination=(
+                vllm_config.model_config.is_moe and not is_afd_async_dp(vllm_config)
+            ),
+            # ### PATCH END: AFD async-DP coordinator wave mode
         )
 
-    engine_utils_module.DPCoordinator = build_async_dp_coordinator
-    try:
-        with _original_launch_core_engines(
-            vllm_config,
-            executor_class,
-            log_stats,
+        addresses.coordinator_input, addresses.coordinator_output = (
+            coordinator.get_engine_socket_addresses()
+        )
+        addresses.frontend_stats_publish_address = (
+            coordinator.get_stats_publish_address()
+        )
+
+        engine_utils_module.logger.info(
+            "Started DP Coordinator process (PID: %d)",
+            coordinator.proc.pid,
+        )
+    else:
+        coordinator = None
+
+    if parallel_config.data_parallel_backend == "ray":
+        engine_utils_module.logger.info("Starting ray-based data parallel backend")
+
+        engine_actor_manager = engine_utils_module.CoreEngineActorManager(
+            vllm_config=vllm_config,
+            addresses=addresses,
+            executor_class=executor_class,
+            log_stats=log_stats,
+        )
+
+        yield engine_actor_manager, coordinator, addresses, tensor_queue
+        return
+
+    if offline_mode:
+        assert local_engine_count == 1
+        engines_to_handshake = [
+            engine_utils_module.CoreEngine(index=dp_rank, local=True),
+        ]
+    elif dp_rank == 0:
+        engines_to_handshake = [
+            engine_utils_module.CoreEngine(index=i, local=(i < local_engine_count))
+            for i in range(dp_size)
+        ]
+    else:
+        assert local_engines_only, (
+            "Attempting to launch core_engines from dp_rank > 0, but "
+            "found internal DPLB, which is incompatible."
+        )
+        engines_to_handshake = [
+            engine_utils_module.CoreEngine(index=i, local=True)
+            for i in range(dp_rank, dp_rank + local_engine_count)
+        ]
+
+    handshake_local_only = offline_mode or local_engine_count == dp_size
+    if parallel_config.enable_elastic_ep:
+        handshake_local_only = False
+
+    handshake_address = engine_utils_module.get_engine_client_zmq_addr(
+        handshake_local_only,
+        host,
+        parallel_config.data_parallel_rpc_port,
+    )
+
+    if local_engines_only and dp_rank > 0:
+        assert not handshake_local_only
+        local_handshake_address = engine_utils_module.get_open_zmq_ipc_path()
+        client_handshake_address = local_handshake_address
+    else:
+        local_handshake_address = handshake_address
+        client_handshake_address = None
+
+    with engine_utils_module.zmq_socket_ctx(
+        local_handshake_address,
+        engine_utils_module.zmq.ROUTER,
+        bind=True,
+    ) as handshake_socket:
+        if local_engine_count:
+            local_engine_manager = engine_utils_module.CoreEngineProcManager(
+                vllm_config=vllm_config,
+                executor_class=executor_class,
+                log_stats=log_stats,
+                handshake_address=handshake_address,
+                client_handshake_address=client_handshake_address,
+                local_client=True,
+                local_engine_count=local_engine_count,
+                start_index=dp_rank,
+                local_start_index=local_start_index or 0,
+                tensor_queue=tensor_queue,
+            )
+        else:
+            local_engine_manager = None
+
+        yield local_engine_manager, coordinator, addresses, tensor_queue
+
+        engine_utils_module.wait_for_engine_startup(
+            handshake_socket,
             addresses,
-            num_api_servers,
-        ) as launch_result:
-            yield launch_result
-    finally:
-        engine_utils_module.DPCoordinator = original_dp_coordinator
+            engines_to_handshake,
+            parallel_config,
+            dp_size > 1 and vllm_config.model_config.is_moe,
+            vllm_config.cache_config,
+            local_engine_manager,
+            coordinator.proc if coordinator else None,
+        )
 
 
-async def _patched_add_request_async(
-    self: DPAsyncMPClient,
+async def add_request_async(
+    self,
     request: EngineCoreRequest,
 ) -> None:
     """Skip the DP wave ``FIRST_REQ`` notification for AFD async-DP."""
 
     if not is_afd_async_dp(self.vllm_config):
-        return await _original_add_request_async(self, request)
+        self._ensure_stats_update_task()
 
+        request.current_wave = self.current_wave
+        request.client_index = self.client_index
+
+        chosen_engine = self.get_core_engine_for_request(request)
+        to_await = self._send_input(EngineCoreRequestType.ADD, request, chosen_engine)
+        if not self.engines_running:
+            req_msg = core_client_module.msgspec.msgpack.encode(
+                ("FIRST_REQ", chosen_engine),
+            )
+            await self.first_req_send_socket.send(req_msg)
+
+        await to_await
+
+        self._ensure_output_queue_task()
+        return None
+
+    # ### PATCH START: AFD async-DP request wakeup
+    # Async-DP engines step independently, so skip the coordinator FIRST_REQ
+    # wakeup while preserving normal routing.
     self._ensure_stats_update_task()
 
     request.current_wave = self.current_wave
@@ -175,22 +344,20 @@ async def _patched_add_request_async(
     await to_await
 
     self._ensure_output_queue_task()
+    # ### PATCH END: AFD async-DP request wakeup
 
 
-def apply_async_dp_engine_patch() -> None:
-    """Apply AFD async-DP engine patches once per process."""
+def _is_afd_async_attention_config(vllm_config: VllmConfig) -> bool:
+    afd_config = parse_afd_config(vllm_config, validate=False)
+    return is_afd_async_dp(vllm_config) and afd_config.role == "attention"
 
-    global _PATCH_APPLIED
-    if _PATCH_APPLIED:
-        return
-    if not _is_target_vllm_compatible():
-        return
-    _PATCH_APPLIED = True
 
-    EngineCoreProc.run_engine_core = staticmethod(_patched_run_engine_core)
-    engine_utils_module.launch_core_engines = _patched_launch_core_engines
-    core_client_module.launch_core_engines = _patched_launch_core_engines
-    DPAsyncMPClient.add_request_async = _patched_add_request_async
+def _patch_async_dp_engine() -> None:
+    """Patch AFD async-DP engine scheduling when this module is imported."""
+    EngineCoreProc.run_engine_core = staticmethod(run_engine_core)
+    engine_utils_module.launch_core_engines = launch_core_engines
+    core_client_module.launch_core_engines = launch_core_engines
+    DPAsyncMPClient.add_request_async = add_request_async
     engine_core_module.logger.debug("AFD async-DP engine patch applied")
 
 
@@ -207,4 +374,8 @@ def _is_target_vllm_compatible() -> bool:
     return version_text.startswith(TARGET_VLLM_VERSION)
 
 
-__all__ = ["apply_async_dp_engine_patch"]
+if _is_target_vllm_compatible():
+    _patch_async_dp_engine()
+
+
+__all__: list[str] = []
