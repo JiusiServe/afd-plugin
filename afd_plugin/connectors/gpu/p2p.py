@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -22,6 +21,8 @@ from afd_plugin.connectors.metadata import (
     AFDDPMetadata,
     AFDDPMetadataPayload,
     AFDRecvOutput,
+    recv_dp_metadata_payload,
+    send_dp_metadata_payload,
 )
 from afd_plugin.distributed import (
     DefaultProcessGroupSwitcher,
@@ -242,19 +243,14 @@ class P2PAFDConnector(AFDConnectorBase):
             return
         if not (self.ffn_size <= self.world_rank < self.ffn_size + self.min_size):
             return
+        # NCCL transport requires the wire tensors to live on the CUDA device.
         device = torch.device(f"cuda:{self.local_rank}")
-        object_bytes = _encode_dp_metadata_payload(payload)
-        object_tensor_cpu = torch.frombuffer(bytearray(object_bytes), dtype=torch.uint8)
-        object_tensor = object_tensor_cpu.to(device)
-        size_tensor = torch.tensor(
-            [object_tensor.numel()],
-            dtype=torch.long,
+        send_dp_metadata_payload(
+            payload,
+            dst=self.dst_list,
+            group=self.p2p_pg,
             device=device,
         )
-
-        for dst in self.dst_list:
-            torch.distributed.send(size_tensor, dst=dst, group=self.p2p_pg)
-            torch.distributed.send(object_tensor, dst=dst, group=self.p2p_pg)
 
     def recv_dp_metadata_list(
         self,
@@ -265,18 +261,7 @@ class P2PAFDConnector(AFDConnectorBase):
 
         src = self.p2p_rank % self.min_size + self.ffn_size
         device = torch.device(f"cuda:{self.local_rank}")
-        size_tensor = torch.empty(1, dtype=torch.long, device=device)
-        rank_size = torch.distributed.recv(size_tensor, src=src, group=self.p2p_pg)
-        object_tensor = torch.empty(
-            int(size_tensor.item()),
-            dtype=torch.uint8,
-            device=device,
-        )
-        rank_object = torch.distributed.recv(object_tensor, src=src, group=self.p2p_pg)
-        if rank_object != rank_size:
-            raise RuntimeError("received AFD metadata fragments from different ranks")
-
-        return _decode_dp_metadata_payload(object_tensor.cpu().numpy().tobytes())
+        return recv_dp_metadata_payload(src=src, group=self.p2p_pg, device=device)
 
     def send_attn_output(
         self,
@@ -503,11 +488,6 @@ def _to_int_list(value: object) -> list[int]:
     return [int(item) for item in value]
 
 
-def _to_int(value: object) -> int:
-    item = getattr(value, "item", None)
-    return int(item() if callable(item) else value)
-
-
 def _num_tokens_for_attention_rank(
     dp_metadata: DPMetadata | AFDDPMetadata,
     *,
@@ -526,62 +506,6 @@ def _num_tokens_for_attention_rank(
     if 0 <= attention_rank < len(counts):
         return max(1, int(counts[attention_rank]))
     return max(1, int(fallback))
-
-
-def _encode_dp_metadata_payload(
-    payload: AFDDPMetadataPayload,
-) -> bytes:
-    metadata_payload: dict[str, dict[str, int | list[int]]] = {}
-    for stage_idx, dp_metadata in payload.dp_metadata_list.items():
-        token_counts = getattr(dp_metadata, "num_tokens_across_dp_cpu", None)
-        if token_counts is None:
-            raise TypeError(
-                "AFD DP metadata must expose num_tokens_across_dp_cpu "
-                "for JSON serialization",
-            )
-        token_counts_list = _to_int_list(token_counts)
-        max_token_count = getattr(dp_metadata, "max_tokens_across_dp_cpu", None)
-        if max_token_count is None:
-            max_token_count = max(token_counts_list)
-        metadata_payload[str(int(stage_idx))] = {
-            "num_tokens_across_dp_cpu": token_counts_list,
-            "max_tokens_across_dp_cpu": _to_int(max_token_count),
-        }
-
-    wire_payload = {
-        "dp_metadata_list": metadata_payload,
-        "is_graph_capturing": bool(payload.is_graph_capturing),
-        "is_warmup": bool(payload.is_warmup),
-    }
-    return json.dumps(wire_payload, separators=(",", ":"), sort_keys=True).encode(
-        "utf-8",
-    )
-
-
-def _decode_dp_metadata_payload(
-    payload_bytes: bytes,
-) -> AFDDPMetadataPayload:
-    payload = json.loads(payload_bytes.decode("utf-8"))
-    dp_metadata_list = {
-        int(stage_idx): AFDDPMetadata(
-            num_tokens_across_dp_cpu=torch.tensor(
-                [int(value) for value in metadata["num_tokens_across_dp_cpu"]],
-                dtype=torch.int32,
-                device="cpu",
-            ),
-            max_tokens_across_dp_cpu=torch.tensor(
-                int(metadata["max_tokens_across_dp_cpu"]),
-                dtype=torch.int32,
-                device="cpu",
-            ),
-        )
-        for stage_idx, metadata in payload["dp_metadata_list"].items()
-    }
-    return AFDDPMetadataPayload(
-        dp_metadata_list=dp_metadata_list,
-        is_graph_capturing=bool(payload.get("is_graph_capturing", False)),
-        is_warmup=bool(payload.get("is_warmup", False)),
-    )
 
 
 def _register_comm(communicator: Any) -> int:

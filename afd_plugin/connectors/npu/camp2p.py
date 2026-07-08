@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import pickle
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
@@ -26,6 +25,8 @@ from afd_plugin.connectors.metadata import (
     AFDDPMetadata,
     AFDDPMetadataPayload,
     AFDRecvOutput,
+    recv_dp_metadata_payload,
+    send_dp_metadata_payload,
 )
 from afd_plugin.distributed import init_afd_process_group, topology_from_config
 
@@ -237,8 +238,15 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             return
         if not self.topology.is_attn_top_min_size_rank:
             return
-        for dst in self.dst_list:
-            _send_object(payload, dst=dst, group=self.p2p_pg)
+        # The CAMP2P DP-metadata group runs on gloo, so the wire tensors stay on
+        # CPU rather than the NPU device.
+        device = torch.device("cpu")
+        send_dp_metadata_payload(
+            payload,
+            dst=self.dst_list,
+            group=self.p2p_pg,
+            device=device,
+        )
 
     def recv_dp_metadata_list(
         self,
@@ -247,18 +255,10 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         if self.p2p_pg is None:
             raise RuntimeError("CAMP2P metadata process group is not initialized")
         src = self.p2p_rank % self.min_size + self.ffn_size
-        payload = _recv_object(src=src, group=self.p2p_pg)
-        if isinstance(payload, AFDDPMetadataPayload):
-            return payload
-        if len(payload) == 3:
-            dp_metadata_list, is_graph_capturing, is_warmup = payload
-        else:
-            dp_metadata_list, is_graph_capturing = payload
-            is_warmup = False
-        return AFDDPMetadataPayload(
-            dp_metadata_list=dp_metadata_list,
-            is_graph_capturing=bool(is_graph_capturing),
-            is_warmup=bool(is_warmup),
+        return recv_dp_metadata_payload(
+            src=src,
+            group=self.p2p_pg,
+            device=torch.device("cpu"),
         )
 
     def configure_metadata(
@@ -541,28 +541,6 @@ def build_camp2p_topology(
         min_size=min_size,
         dp_metadata_destinations=tuple(destinations),
     )
-
-
-def _send_object(obj: Any, *, dst: int, group: ProcessGroup) -> None:
-    object_bytes = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
-    object_tensor = torch.frombuffer(bytearray(object_bytes), dtype=torch.uint8)
-    size_tensor = torch.tensor([object_tensor.numel()], dtype=torch.long, device="cpu")
-    torch.distributed.send(size_tensor, dst=dst, group=group)
-    torch.distributed.send(object_tensor, dst=dst, group=group)
-
-
-def _recv_object(*, src: int, group: ProcessGroup) -> Any:
-    size_tensor = torch.empty(1, dtype=torch.long, device="cpu")
-    rank_size = torch.distributed.recv(size_tensor, src=src, group=group)
-    object_tensor = torch.empty(
-        int(size_tensor.item()),
-        dtype=torch.uint8,
-        device="cpu",
-    )
-    rank_object = torch.distributed.recv(object_tensor, src=src, group=group)
-    if rank_object != rank_size:
-        raise RuntimeError("received CAMP2P object fragments from different ranks")
-    return pickle.loads(object_tensor.cpu().numpy().tobytes())
 
 
 def _num_tokens_for_ffn_rank(
