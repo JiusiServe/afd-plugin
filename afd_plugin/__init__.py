@@ -94,14 +94,13 @@ def register_afd() -> None:
 
     try:
         import afd_plugin.compat.patches.async_dp_engine  # noqa: F401
+        import afd_plugin.compat.patches.config_validation  # noqa: F401
 
         from afd_plugin.compat.patches import (
             apply_async_dp_forward_context_patch,
-            apply_config_validation_patch,
             apply_engine_core_patch,
         )
 
-        apply_config_validation_patch()
         apply_engine_core_patch()
         apply_async_dp_forward_context_patch()
     except Exception:

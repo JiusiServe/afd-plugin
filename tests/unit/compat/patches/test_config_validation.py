@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 from types import SimpleNamespace
-
-from afd_plugin.compat.patches.config_validation import apply_config_validation_patch
 
 
 def _install_fake_vllm_config(monkeypatch):
@@ -25,7 +24,8 @@ def _install_fake_vllm_config(monkeypatch):
             self.post_init_backend = self.parallel_config.all2all_backend
 
     class EngineArgs:
-        def create_engine_config(self):
+        def create_engine_config(self, usage_context=None, headless=False):
+            del usage_context, headless
             if self.enable_dbo:
                 assert self.all2all_backend in {
                     "deepep_low_latency",
@@ -50,6 +50,13 @@ def _install_fake_vllm_config(monkeypatch):
     return arg_utils_module, config_module
 
 
+def _load_patch_module():
+    module_name = "afd_plugin.compat.patches.config_validation"
+    if module_name in sys.modules:
+        return importlib.reload(sys.modules[module_name])
+    return importlib.import_module(module_name)
+
+
 def _engine_args(*, enabled):
     args = sys.modules["vllm.engine.arg_utils"].EngineArgs()
     args.additional_config = {"afd": {"enabled": enabled, "role": "attention"}}
@@ -61,8 +68,8 @@ def _engine_args(*, enabled):
 
 def test_config_validation_patch_relaxes_backend_for_afd_ubatching(monkeypatch):
     arg_utils_module, _config_module = _install_fake_vllm_config(monkeypatch)
-    apply_config_validation_patch()
-    apply_config_validation_patch()
+    patch_module = _load_patch_module()
+    importlib.reload(patch_module)
     args = _engine_args(enabled=True)
 
     cfg = arg_utils_module.EngineArgs.create_engine_config(args)
@@ -73,7 +80,7 @@ def test_config_validation_patch_relaxes_backend_for_afd_ubatching(monkeypatch):
 
 def test_config_validation_patch_preserves_non_afd_validation(monkeypatch):
     arg_utils_module, _config_module = _install_fake_vllm_config(monkeypatch)
-    apply_config_validation_patch()
+    _load_patch_module()
     args = _engine_args(enabled=False)
 
     try:
@@ -87,7 +94,7 @@ def test_config_validation_patch_preserves_non_afd_validation(monkeypatch):
 def test_config_validation_patch_allows_vllm_dev_checkout(monkeypatch):
     arg_utils_module, _config_module = _install_fake_vllm_config(monkeypatch)
     sys.modules["vllm"].__version__ = "0.1.dev14230+g68b0c3135"
-    apply_config_validation_patch()
+    _load_patch_module()
     args = _engine_args(enabled=True)
 
     cfg = arg_utils_module.EngineArgs.create_engine_config(args)
@@ -97,7 +104,7 @@ def test_config_validation_patch_allows_vllm_dev_checkout(monkeypatch):
 
 def test_config_validation_patch_relaxes_repeated_vllm_post_init(monkeypatch):
     arg_utils_module, _config_module = _install_fake_vllm_config(monkeypatch)
-    apply_config_validation_patch()
+    _load_patch_module()
     args = _engine_args(enabled=True)
 
     cfg = arg_utils_module.EngineArgs.create_engine_config(args)
