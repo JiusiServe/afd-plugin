@@ -450,6 +450,7 @@ def send_dp_metadata_payload(
         torch.distributed.send(size_tensor, dst=d, group=group)
         torch.distributed.send(object_tensor, dst=d, group=group)
 
+
 def recv_dp_metadata_payload(
     *,
     src: int,
