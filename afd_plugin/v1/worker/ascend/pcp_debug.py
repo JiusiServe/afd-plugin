@@ -78,7 +78,7 @@ def debug_value_summary(value: Any, *, limit: int = 8) -> Any:
         summary["values_error"] = repr(exc)
         return summary
 
-    if isinstance(value, list | tuple):
+    if isinstance(value, (list, tuple)):
         total = len(value)
         summary["len"] = total
         summary["head"] = [debug_scalar(item) for item in value[:limit]]
