@@ -241,13 +241,12 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         # The CAMP2P DP-metadata group runs on gloo, so the wire tensors stay on
         # CPU rather than the NPU device.
         device = torch.device("cpu")
-        for dst in self.dst_list:
-            send_dp_metadata_payload(
-                payload,
-                dst=dst,
-                group=self.p2p_pg,
-                device=device,
-            )
+        send_dp_metadata_payload(
+            payload,
+            dst=self.dst_list,
+            group=self.p2p_pg,
+            device=device,
+        )
 
     def recv_dp_metadata_list(
         self,

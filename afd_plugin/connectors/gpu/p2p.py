@@ -245,13 +245,12 @@ class P2PAFDConnector(AFDConnectorBase):
             return
         # NCCL transport requires the wire tensors to live on the CUDA device.
         device = torch.device(f"cuda:{self.local_rank}")
-        for dst in self.dst_list:
-            send_dp_metadata_payload(
-                payload,
-                dst=dst,
-                group=self.p2p_pg,
-                device=device,
-            )
+        send_dp_metadata_payload(
+            payload,
+            dst=self.dst_list,
+            group=self.p2p_pg,
+            device=device,
+        )
 
     def recv_dp_metadata_list(
         self,

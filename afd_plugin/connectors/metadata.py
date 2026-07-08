@@ -427,7 +427,7 @@ def decode_dp_metadata_payload(payload_bytes: bytes) -> AFDDPMetadataPayload:
 def send_dp_metadata_payload(
     payload: AFDDPMetadataPayload,
     *,
-    dst: int,
+    dst: int | list[int] | tuple[int, ...],
     group: ProcessGroup,
     device: torch.device,
 ) -> None:
@@ -445,9 +445,10 @@ def send_dp_metadata_payload(
         dtype=torch.long,
         device=device,
     )
-    torch.distributed.send(size_tensor, dst=dst, group=group)
-    torch.distributed.send(object_tensor, dst=dst, group=group)
-
+    dsts = [dst] if isinstance(dst, int) else dst
+    for d in dsts:
+        torch.distributed.send(size_tensor, dst=d, group=group)
+        torch.distributed.send(object_tensor, dst=d, group=group)
 
 def recv_dp_metadata_payload(
     *,
