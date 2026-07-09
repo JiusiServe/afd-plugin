@@ -24,6 +24,8 @@ from afd_plugin.config import AFDConfig, parse_afd_config
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
+    from vllm.v1.executor import Executor
+    from vllm.v1.kv_cache_interface import KVCacheConfig
 
 logger = logging.getLogger(__name__)
 
@@ -51,14 +53,19 @@ _original_dp_engine_core_proc_run_busy_loop: Callable[..., Any] | None = None
 _initialize_kv_caches_returns_tuple_value = False
 
 
+# Patch reason: AFD FFN ranks run as connector daemons instead of normal
+# request-scheduling EngineCore instances.
+# Patch functionality: returns after model executor construction for AFD FFN
+# configs and delegates all non-AFD configs to upstream.
+# Signature: matches upstream; no added parameters.
 def __init__(
     self,
     vllm_config: VllmConfig,
-    executor_class: type[Any],
+    executor_class: type[Executor],
     log_stats: bool,
-    executor_fail_callback: Callable[..., Any] | None = None,
+    executor_fail_callback: Callable | None = None,
     include_finished_set: bool = False,
-) -> None:
+):
     if not _is_afd_ffn_config(vllm_config):
         assert _original_engine_core_init is not None
         _original_engine_core_init(
@@ -85,7 +92,12 @@ def __init__(
     # ### PATCH END: AFD FFN EngineCore daemon initialization
 
 
-def shutdown(self) -> None:
+# Patch reason: AFD FFN daemon engines skip scheduler/KV setup, so upstream
+# shutdown can touch attributes that were intentionally not initialized.
+# Patch functionality: stops the connector worker loop and shuts down the model
+# executor for AFD FFN engines; delegates non-AFD engines to upstream.
+# Signature: matches upstream; no added parameters.
+def shutdown(self):
     if not _is_afd_ffn_engine(self):
         assert _original_engine_core_shutdown is not None
         _original_engine_core_shutdown(self)
@@ -103,7 +115,12 @@ def shutdown(self) -> None:
     # ### PATCH END: AFD FFN EngineCore shutdown
 
 
-def _initialize_kv_caches(self, vllm_config: VllmConfig) -> Any:
+# Patch reason: late-loaded AFD FFN EngineCore paths may ask for KV cache setup
+# even though FFN daemons do not own request KV blocks.
+# Patch functionality: returns a minimal KV-cache-shaped result for AFD FFN
+# configs and delegates non-AFD configs to upstream.
+# Signature: matches upstream; no added parameters.
+def _initialize_kv_caches(self, vllm_config: VllmConfig) -> KVCacheConfig:
     if not _is_afd_ffn_config(vllm_config):
         assert _original_engine_core_initialize_kv_caches is not None
         return _original_engine_core_initialize_kv_caches(self, vllm_config)
@@ -121,7 +138,12 @@ def _initialize_kv_caches(self, vllm_config: VllmConfig) -> Any:
     return result
 
 
-def run_busy_loop(self) -> Any:
+# Patch reason: AFD FFN ranks must run the connector server loop rather than
+# vLLM's normal request scheduling busy loop.
+# Patch functionality: starts and monitors the FFN connector loop for AFD FFN
+# engines and delegates non-AFD engine processes to upstream.
+# Signature: matches upstream; no added parameters.
+def run_busy_loop(self):
     if not _is_afd_ffn_engine(self):
         if isinstance(self, _DP_ENGINE_CORE_PROC_CLS):
             assert _original_dp_engine_core_proc_run_busy_loop is not None
@@ -275,9 +297,9 @@ def _initialize_ffn_engine_core(
     self,
     core_module: Any,
     vllm_config: VllmConfig,
-    executor_class: type[Any],
+    executor_class: type[Executor],
     log_stats: bool,
-    executor_fail_callback: Callable[..., Any] | None,
+    executor_fail_callback: Callable | None,
 ) -> None:
     try:
         from vllm.plugins import load_general_plugins

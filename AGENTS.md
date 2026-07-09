@@ -92,6 +92,12 @@ When copying or wrapping upstream code, mark every AFD-specific difference with
 text short and specific so reviewers can compare the patch against upstream
 quickly.
 
+Every patch function must have comments immediately above the function that
+explain why that upstream function is patched and what behavior the patch adds
+or changes. The patched function signature, including return type, must match
+the upstream function exactly. If a patch must add parameters, document those
+new parameters in the comments immediately above the patch function.
+
 **Required Pattern**: AFD-specific functionality should be implemented via:
 
 1. **Patching**:
@@ -115,6 +121,9 @@ from vllm.some_upstream_module import UpstreamClass
 
 _original_method = UpstreamClass.method
 
+# Patch reason: upstream does not know about AFD's routing policy.
+# Patch functionality: add AFD routing while delegating non-AFD requests.
+# Signature: matches upstream; no added parameters.
 def method(self, *args, **kwargs):
     # ### PATCH START: AFD custom routing
     # AFD-specific behavior that differs from upstream.

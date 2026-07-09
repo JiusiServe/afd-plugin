@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import torch
 from vllm.config import VllmConfig
@@ -27,6 +28,9 @@ from vllm_ascend.quantization.methods.w8a8_dynamic import (
     build_fused_experts_input,
 )
 from vllm_ascend.quantization.quant_type import QuantType
+
+if TYPE_CHECKING:
+    from vllm_ascend.ops.fused_moe.moe_runtime_args import MoEFusedExpertsInput
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +188,12 @@ def _get_force_lb_topk_ids(
     return buffer[:batch_tokens, :top_k]
 
 
-def __init__(self: object, *args: object, **kwargs: object) -> None:
+# Patch reason: vllm-ascend's AscendFusedMoE does not initialize AFD profiling
+# knobs for deterministic force-load-balance routing.
+# Patch functionality: delegates upstream initialization, then builds the AFD
+# fake top-k buffer for W8A8 layers when force load balance is enabled.
+# Signature: matches upstream; no added parameters.
+def __init__(self, *args, **kwargs):
     assert _original_fused_moe_init is not None
     _original_fused_moe_init(self, *args, **kwargs)
 
@@ -232,44 +241,169 @@ def _replace_topk_ids(
     return fake_topk_ids
 
 
+# Patch reason: vllm-ascend W8A8 MoE routes tokens with model-selected expert
+# ids, but AFD profiling needs deterministic balanced expert ids.
+# Patch functionality: temporarily replaces build_fused_experts_input so only
+# routed top-k ids are swapped; all other W8A8 apply behavior stays upstream.
+# Signature: matches upstream; no added parameters.
 def apply(
-    self: object,
-    layer: object,
-    *args: object,
-    **kwargs: object,
-) -> object:
+    self,
+    layer: torch.nn.Module,
+    x: torch.Tensor,
+    router_logits: torch.Tensor,
+    top_k: int,
+    renormalize: bool,
+    use_grouped_topk: bool = False,
+    num_experts: int = -1,
+    expert_map: torch.Tensor | None = None,
+    topk_group: int | None = None,
+    num_expert_group: int | None = None,
+    custom_routing_function: Callable | None = None,
+    scoring_func: str = "softmax",
+    routed_scaling_factor: float = 1.0,
+    e_score_correction_bias: torch.Tensor | None = None,
+    is_prefill: bool = True,
+    enable_force_load_balance: bool = False,
+    log2phy: torch.Tensor | None = None,
+    global_redundant_expert_num: int = 0,
+    pertoken_scale: Any | None = None,
+    activation: str = "silu",
+    apply_router_weight_on_input: bool = False,
+    mc2_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
     if not (
         getattr(layer, "enable_force_load_balance", False)
         and getattr(layer, "force_lb_fake_topk_buffer", None) is not None
     ):
         assert _original_w8a8_apply is not None
-        return _original_w8a8_apply(self, layer, *args, **kwargs)
-
-    routed_top_k = kwargs.get("top_k")
-    routed_top_k = routed_top_k if isinstance(routed_top_k, int) else None
+        return _original_w8a8_apply(
+            self,
+            layer,
+            x,
+            router_logits,
+            top_k,
+            renormalize,
+            use_grouped_topk=use_grouped_topk,
+            num_experts=num_experts,
+            expert_map=expert_map,
+            topk_group=topk_group,
+            num_expert_group=num_expert_group,
+            custom_routing_function=custom_routing_function,
+            scoring_func=scoring_func,
+            routed_scaling_factor=routed_scaling_factor,
+            e_score_correction_bias=e_score_correction_bias,
+            is_prefill=is_prefill,
+            enable_force_load_balance=enable_force_load_balance,
+            log2phy=log2phy,
+            global_redundant_expert_num=global_redundant_expert_num,
+            pertoken_scale=pertoken_scale,
+            activation=activation,
+            apply_router_weight_on_input=apply_router_weight_on_input,
+            mc2_mask=mc2_mask,
+        )
 
     # ### PATCH START: AFD force-load-balance W8A8 routing override
     # Swap routed topk ids only around build_fused_experts_input so the rest of
     # vllm-ascend's W8A8 apply path stays upstream-compatible.
+    # Patch reason: this wrapper is installed only during W8A8 apply to intercept
+    # the exact point where routed expert ids become fused expert input.
+    # Patch functionality: replaces topk_ids with deterministic AFD ids and
+    # delegates all other fused expert input construction to upstream.
+    # Signature: matches upstream; no added parameters.
     def _build_fused_experts_input(
-        *inner_args: object,
-        **inner_kwargs: object,
-    ) -> object:
-        topk_ids = inner_kwargs.get("topk_ids")
-        if topk_ids is not None:
-            inner_kwargs["topk_ids"] = _replace_topk_ids(
-                layer,
-                topk_ids,
-                routed_top_k,
-            )
+        *,
+        hidden_states: torch.Tensor,
+        topk_weights: torch.Tensor,
+        topk_ids: torch.Tensor,
+        w1: torch.Tensor | list[torch.Tensor],
+        w2: torch.Tensor | list[torch.Tensor],
+        quant_type: QuantType,
+        dynamic_eplb: bool,
+        expert_map: torch.Tensor | None = None,
+        global_redundant_expert_num: int = 0,
+        mc2_mask: torch.Tensor | None = None,
+        apply_router_weight_on_input: bool = False,
+        log2phy: torch.Tensor | None = None,
+        pertoken_scale: torch.Tensor | None = None,
+        activation: str = "silu",
+        need_trans: bool = False,
+        w1_bias: torch.Tensor | None = None,
+        w2_bias: torch.Tensor | None = None,
+        comm_quant_mode: int | None = None,
+        mxfp_act_quant_type: torch.dtype | None = None,
+        mxfp_weight_quant_type: torch.dtype | None = None,
+        mxfp_scale_dtype: torch.dtype | None = None,
+        mxfp_per_token_scale_dtype: torch.dtype | None = None,
+        mxfp_use_bf16: bool | None = None,
+        w1_scale: list[torch.Tensor] | torch.Tensor | None = None,
+        w2_scale: list[torch.Tensor] | torch.Tensor | None = None,
+        w1_scale_bias: torch.Tensor | None = None,
+        w2_scale_bias: torch.Tensor | None = None,
+        w1_offset: torch.Tensor | None = None,
+        w2_offset: torch.Tensor | None = None,
+    ) -> MoEFusedExpertsInput:
         assert _original_build_fused_experts_input is not None
-        return _original_build_fused_experts_input(*inner_args, **inner_kwargs)
+        return _original_build_fused_experts_input(
+            hidden_states=hidden_states,
+            topk_weights=topk_weights,
+            topk_ids=_replace_topk_ids(layer, topk_ids, top_k),
+            w1=w1,
+            w2=w2,
+            quant_type=quant_type,
+            dynamic_eplb=dynamic_eplb,
+            expert_map=expert_map,
+            global_redundant_expert_num=global_redundant_expert_num,
+            mc2_mask=mc2_mask,
+            apply_router_weight_on_input=apply_router_weight_on_input,
+            log2phy=log2phy,
+            pertoken_scale=pertoken_scale,
+            activation=activation,
+            need_trans=need_trans,
+            w1_bias=w1_bias,
+            w2_bias=w2_bias,
+            comm_quant_mode=comm_quant_mode,
+            mxfp_act_quant_type=mxfp_act_quant_type,
+            mxfp_weight_quant_type=mxfp_weight_quant_type,
+            mxfp_scale_dtype=mxfp_scale_dtype,
+            mxfp_per_token_scale_dtype=mxfp_per_token_scale_dtype,
+            mxfp_use_bf16=mxfp_use_bf16,
+            w1_scale=w1_scale,
+            w2_scale=w2_scale,
+            w1_scale_bias=w1_scale_bias,
+            w2_scale_bias=w2_scale_bias,
+            w1_offset=w1_offset,
+            w2_offset=w2_offset,
+        )
 
     old_build_fused_experts_input = w8a8_dynamic.build_fused_experts_input
     w8a8_dynamic.build_fused_experts_input = _build_fused_experts_input
     try:
         assert _original_w8a8_apply is not None
-        result = _original_w8a8_apply(self, layer, *args, **kwargs)
+        result = _original_w8a8_apply(
+            self,
+            layer,
+            x,
+            router_logits,
+            top_k,
+            renormalize,
+            use_grouped_topk=use_grouped_topk,
+            num_experts=num_experts,
+            expert_map=expert_map,
+            topk_group=topk_group,
+            num_expert_group=num_expert_group,
+            custom_routing_function=custom_routing_function,
+            scoring_func=scoring_func,
+            routed_scaling_factor=routed_scaling_factor,
+            e_score_correction_bias=e_score_correction_bias,
+            is_prefill=is_prefill,
+            enable_force_load_balance=enable_force_load_balance,
+            log2phy=log2phy,
+            global_redundant_expert_num=global_redundant_expert_num,
+            pertoken_scale=pertoken_scale,
+            activation=activation,
+            apply_router_weight_on_input=apply_router_weight_on_input,
+            mc2_mask=mc2_mask,
+        )
     finally:
         w8a8_dynamic.build_fused_experts_input = old_build_fused_experts_input
     # ### PATCH END: AFD force-load-balance W8A8 routing override

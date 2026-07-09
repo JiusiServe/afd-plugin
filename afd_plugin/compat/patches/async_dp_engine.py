@@ -63,6 +63,11 @@ if TYPE_CHECKING:
     ]
 
 
+# Patch reason: vLLM's MoE DP engine process uses DPEngineCoreProc, but AFD
+# async Attention ranks are connector-driven and must not run DP wave logic.
+# Patch functionality: keep upstream startup flow while selecting EngineCoreProc
+# for AFD async Attention configs.
+# Signature: matches upstream; no added parameters.
 def run_engine_core(
     *args: Any,
     dp_rank: int = 0,
@@ -164,7 +169,11 @@ def run_engine_core(
         if engine_core is not None:
             engine_core.shutdown()
 
-
+# Patch reason: vLLM enables MoE DP wave coordination when launching DP cores,
+# while AFD async-DP only needs coordinator stats.
+# Patch functionality: preserve upstream engine launch behavior but disable wave
+# coordination for AFD async-DP configs.
+# Signature: matches upstream; no added parameters.
 @contextmanager
 def launch_core_engines(
     vllm_config: VllmConfig,
@@ -306,6 +315,11 @@ def launch_core_engines(
         )
 
 
+# Patch reason: vLLM sends FIRST_REQ wakeups to coordinate DP waves, which AFD
+# async-DP engines intentionally do not use.
+# Patch functionality: preserve request routing and stats updates while skipping
+# FIRST_REQ for AFD async-DP configs.
+# Signature: matches upstream; no added parameters.
 async def add_request_async(
     self,
     request: EngineCoreRequest,

@@ -37,6 +37,11 @@ _AFD_TEMP_BACKEND = "deepep_low_latency"
 _PATCH_STATE: _PatchState | None = None
 
 
+# Patch reason: vLLM validates native ubatching by requiring a DeepEP all2all
+# backend, while AFD ubatching is implemented by plugin connectors.
+# Patch functionality: temporarily uses a supported backend only during
+# upstream EngineArgs-to-VllmConfig validation for AFD configs.
+# Signature: matches upstream; no added parameters.
 def create_engine_config(
     self: EngineArgs,
     usage_context: UsageContext | None = None,
@@ -71,6 +76,11 @@ def create_engine_config(
     return config
 
 
+# Patch reason: VllmConfig validation can rerun the native ubatching all2all
+# backend assertion after EngineArgs construction.
+# Patch functionality: temporarily relaxes that assertion for AFD configs while
+# restoring the real backend after upstream validation.
+# Signature: matches upstream; no added parameters.
 def __post_init__(self: VllmConfig):
     """Verify configs are valid & consistent with each other."""
 

@@ -3,7 +3,9 @@ from __future__ import annotations
 import importlib
 import sys
 import types
+from collections.abc import Callable
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -31,17 +33,62 @@ def _install_fake_modules(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
     class AscendW8A8DynamicFusedMoEMethod:
         def apply(
             self,
-            layer: object,
-            x: object,
-            router_logits: object,
+            layer: torch.nn.Module,
+            x: torch.Tensor,
+            router_logits: torch.Tensor,
             top_k: int,
             renormalize: bool,
-            **kwargs: object,
+            use_grouped_topk: bool = False,
+            num_experts: int = -1,
+            expert_map: torch.Tensor | None = None,
+            topk_group: int | None = None,
+            num_expert_group: int | None = None,
+            custom_routing_function: Callable | None = None,
+            scoring_func: str = "softmax",
+            routed_scaling_factor: float = 1.0,
+            e_score_correction_bias: torch.Tensor | None = None,
+            is_prefill: bool = True,
+            enable_force_load_balance: bool = False,
+            log2phy: torch.Tensor | None = None,
+            global_redundant_expert_num: int = 0,
+            pertoken_scale: Any | None = None,
+            activation: str = "silu",
+            apply_router_weight_on_input: bool = False,
+            mc2_mask: torch.Tensor | None = None,
         ) -> torch.Tensor:
             import vllm_ascend.quantization.methods.w8a8_dynamic as mod
 
-            del layer, x, router_logits, top_k, renormalize
-            return mod.build_fused_experts_input(topk_ids=kwargs["topk_ids"])
+            del (
+                layer,
+                top_k,
+                renormalize,
+                use_grouped_topk,
+                num_experts,
+                expert_map,
+                topk_group,
+                num_expert_group,
+                custom_routing_function,
+                scoring_func,
+                routed_scaling_factor,
+                e_score_correction_bias,
+                is_prefill,
+                enable_force_load_balance,
+                log2phy,
+                global_redundant_expert_num,
+                pertoken_scale,
+                activation,
+                apply_router_weight_on_input,
+                mc2_mask,
+            )
+            return mod.build_fused_experts_input(
+                hidden_states=x,
+                topk_weights=torch.ones_like(router_logits, dtype=torch.float32),
+                topk_ids=router_logits,
+                w1=torch.empty(0),
+                w2=torch.empty(0),
+                quant_type=_QuantType.W8A8,
+                dynamic_eplb=False,
+            )
 
     vllm = types.ModuleType("vllm")
     vllm_config = types.ModuleType("vllm.config")
@@ -221,11 +268,10 @@ def test_w8a8_apply_swaps_topk_ids_with_buffer(force_lb_mod: types.ModuleType):
     real_topk_ids = torch.zeros((4, 2), dtype=torch.int64)
     out = method.apply(
         layer=layer,
-        x=None,
-        router_logits=None,
+        x=torch.empty((4, 1)),
+        router_logits=real_topk_ids,
         top_k=2,
         renormalize=True,
-        topk_ids=real_topk_ids,
     )
 
     expected = layer.force_lb_fake_topk_buffer.to(torch.int64)
@@ -244,11 +290,10 @@ def test_w8a8_apply_passthrough_when_buffer_absent(force_lb_mod: types.ModuleTyp
     real_topk_ids = torch.zeros((4, 2), dtype=torch.int64)
     out = method.apply(
         layer=layer,
-        x=None,
-        router_logits=None,
+        x=torch.empty((4, 1)),
+        router_logits=real_topk_ids,
         top_k=2,
         renormalize=True,
-        topk_ids=real_topk_ids,
     )
 
     assert torch.equal(out, real_topk_ids)
