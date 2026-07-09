@@ -48,6 +48,12 @@ def _make_args(
     dbo_decode_token_threshold: int = 1,
     dbo_prefill_token_threshold: int | None = None,
     tp_size: int = 1,
+    attention_tp_size: int | None = None,
+    ffn_tp_size: int | None = None,
+    afd_connector: str | None = None,
+    afd_async: bool = False,
+    compute_gate_on_attention: bool = False,
+    afd_extra_config: list[str] | None = None,
     device_backend: str = "gpu",
 ) -> dict[str, Any]:
     """Build a dict mimicking the runner's argparse Namespace."""
@@ -77,6 +83,12 @@ def _make_args(
         "num_requests": None,
         "request_concurrency": None,
         "tp_size": tp_size,
+        "attention_tp_size": attention_tp_size,
+        "ffn_tp_size": ffn_tp_size,
+        "afd_connector": afd_connector,
+        "afd_async": afd_async,
+        "compute_gate_on_attention": compute_gate_on_attention,
+        "afd_extra_config": afd_extra_config or [],
         "device_backend": device_backend,
     }
 
@@ -236,7 +248,11 @@ def _launch_afd_server(
             else f"CUDA_VISIBLE_DEVICES={ffn_devices_str}"
         )
         print(f"\n[conftest] Starting FFN ({device_label})")
-        ffn_proc = start_process("ffn", ffn_cmd, build_env(ffn_devices_str, args))
+        ffn_proc = start_process(
+            "ffn",
+            ffn_cmd,
+            build_env(ffn_devices_str, args, role="ffn"),
+        )
         processes.append(ffn_proc)
         log_threads.append(stream_output("ffn", ffn_proc))
 
@@ -256,7 +272,7 @@ def _launch_afd_server(
         attn_proc = start_process(
             "attention",
             attn_cmd,
-            build_env(attn_devices_str, args),
+            build_env(attn_devices_str, args, role="attention"),
         )
         processes.append(attn_proc)
         log_threads.append(stream_output("attention", attn_proc))

@@ -37,6 +37,12 @@ def _args() -> argparse.Namespace:
         attention_vllm_arg=[],
         ffn_vllm_arg=[],
         tp_size=1,
+        attention_tp_size=None,
+        ffn_tp_size=None,
+        afd_connector=None,
+        afd_async=False,
+        compute_gate_on_attention=False,
+        afd_extra_config=[],
         device_backend="gpu",
     )
 
@@ -89,6 +95,68 @@ def test_runner_uses_plugin_decode_bench_connector():
     assert kv_transfer_config["kv_connector_module_path"] == (
         "tools.benchmarks.decode_bench"
     )
+
+
+def test_runner_builds_npu_async_cam_role_specific_topology():
+    args = _args()
+    args.device_backend = "npu"
+    args.num_attention_ranks = 2
+    args.num_ffn_ranks = 2
+    args.attention_tp_size = 2
+    args.ffn_tp_size = 1
+    args.afd_connector = "afdasyncconnector"
+    args.afd_async = True
+    args.compute_gate_on_attention = True
+    args.afd_extra_config = [
+        (
+            '{"quant_mode":0,"dynamicQuant":0,'
+            '"async_moe_ubatching":false,"async_moe_num_ubatches":2,'
+            '"async_moe_split":"request","attn_ranks_per_dp":2}'
+        ),
+    ]
+
+    attention_command = build_vllm_command(args, role="attention")
+    ffn_command = build_vllm_command(args, role="ffn")
+
+    assert _arg_value(attention_command, "--data-parallel-size") == "1"
+    assert _arg_value(attention_command, "--tensor-parallel-size") == "2"
+    assert _arg_value(ffn_command, "--data-parallel-size") == "2"
+    assert _arg_value(ffn_command, "--tensor-parallel-size") == "1"
+    assert _arg_value(attention_command, "--worker-cls") == (
+        "afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker"
+    )
+    assert _arg_value(ffn_command, "--worker-cls") == (
+        "afd_plugin.v1.worker.ascend.AFDNPUFFNWorker"
+    )
+
+    additional_config = json.loads(_arg_value(attention_command, "--additional-config"))
+    afd_config = additional_config["afd"]
+    assert afd_config["connector"] == "afdasyncconnector"
+    assert afd_config["async"] is True
+    assert afd_config["compute_gate_on_attention"] is True
+    assert afd_config["num_attention_ranks"] == 2
+    assert afd_config["num_ffn_ranks"] == 2
+    assert afd_config["extra_config"]["attn_ranks_per_dp"] == 2
+    assert afd_config["extra_config"]["async_moe_split"] == "request"
+
+
+def test_runner_rejects_role_rank_count_not_divisible_by_tp():
+    args = _args()
+    args.attention_tp_size = 3
+
+    with pytest.raises(ValueError, match="attention rank count"):
+        runner.validate_topology(args, ["0", "1"], ["2", "3"])
+
+
+def test_runner_drops_flashcomm_for_npu_role_without_tp(monkeypatch):
+    args = _args()
+    args.device_backend = "npu"
+    args.ffn_tp_size = 1
+    monkeypatch.setenv("VLLM_ASCEND_ENABLE_FLASHCOMM1", "1")
+
+    env = runner.build_env("2,3", args, role="ffn")
+
+    assert "VLLM_ASCEND_ENABLE_FLASHCOMM1" not in env
 
 
 def test_runner_sends_one_concurrent_request_per_attention_dp_rank(monkeypatch):
