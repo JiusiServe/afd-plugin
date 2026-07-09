@@ -116,21 +116,32 @@ new parameters in the comments immediately above the patch function.
 **Example Patch Pattern:**
 
 ```python
-# afd_plugin/compat/patches/example_patch.py
+# Upstream source: vllm/some_upstream_module.py
+class UpstreamClass:
+    def route_request(self, request: Request, priority: int = 0) -> RouteResult:
+        route = self.router.pick(request, priority)
+        return self.scheduler.enqueue(request, route)
+```
+
+```python
+# AFD patch: afd_plugin/compat/patches/example_patch.py
 from vllm.some_upstream_module import UpstreamClass
 
-_original_method = UpstreamClass.method
+_original_route_request = UpstreamClass.route_request
 
-# Patch reason: upstream does not know about AFD's routing policy.
-# Patch functionality: add AFD routing while delegating non-AFD requests.
+# Patch reason: upstream route_request does not know about AFD's connector
+# routing policy.
+# Patch functionality: use AFD routing for AFD requests while delegating
+# non-AFD requests to upstream unchanged.
 # Signature: matches upstream; no added parameters.
-def method(self, *args, **kwargs):
-    # ### PATCH START: AFD custom routing
-    # AFD-specific behavior that differs from upstream.
-    ...
-    # ### PATCH END: AFD custom routing
-    # If delegation is needed:
-    # return _original_method(self, *args, **kwargs)
+def route_request(self, request: Request, priority: int = 0) -> RouteResult:
+    if not request.is_afd:
+        return _original_route_request(self, request, priority)
 
-UpstreamClass.method = method  # Patch upstream class
+    # ### PATCH START: AFD custom routing
+    route = self.afd_router.pick(request, priority)
+    return self.scheduler.enqueue(request, route)
+    # ### PATCH END: AFD custom routing
+
+UpstreamClass.route_request = route_request
 ```
