@@ -6,14 +6,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from vllm.v1.worker.workspace import init_workspace_manager
 from vllm_ascend.worker.worker import NPUWorker
 
 from afd_plugin.compat.ascend import (
     apply_afd_ascend_patches_if_needed,
-    ensure_ascend_runtime_available,
     fail_if_unsupported_npu_afd_features,
     fix_all2all_backend_for_afd,
-    init_ascend_workspace_for_afd,
     npu_afd_num_ubatches,
 )
 from afd_plugin.v1.worker.ascend.attention_model_runner import (
@@ -31,7 +30,6 @@ class AFDNPUAttentionWorker(NPUWorker):
     afd_expected_role = "attention"
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        ensure_ascend_runtime_available()
         apply_afd_ascend_patches_if_needed()
         super().__init__(*args, **kwargs)
 
@@ -50,9 +48,9 @@ class AFDNPUAttentionWorker(NPUWorker):
             )
 
         self.device = self._init_device()
-        init_ascend_workspace_for_afd(
+        init_workspace_manager(
             self.device,
-            num_ubatches=npu_afd_num_ubatches(self.vllm_config),
+            npu_afd_num_ubatches(self.vllm_config),
         )
         self.model_runner = AFDNPUAttentionModelRunner(
             self.vllm_config,

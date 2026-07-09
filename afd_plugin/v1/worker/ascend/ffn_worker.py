@@ -9,14 +9,13 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 import torch
+from vllm.v1.worker.workspace import init_workspace_manager
 from vllm_ascend.worker.worker import NPUWorker
 
 from afd_plugin.compat.ascend import (
     apply_afd_ascend_patches_if_needed,
-    ensure_ascend_runtime_available,
     fail_if_unsupported_npu_afd_features,
     fix_all2all_backend_for_afd,
-    init_ascend_workspace_for_afd,
     npu_afd_num_ubatches,
 )
 from afd_plugin.v1.worker.ascend.ffn_model_runner import AFDNPUFFNModelRunner
@@ -35,7 +34,6 @@ class AFDNPUFFNWorker(NPUWorker):
     afd_expected_role = "ffn"
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        ensure_ascend_runtime_available()
         apply_afd_ascend_patches_if_needed()
         super().__init__(*args, **kwargs)
         self._ffn_thread: threading.Thread | None = None
@@ -55,9 +53,9 @@ class AFDNPUFFNWorker(NPUWorker):
             raise RuntimeError("AFD NPU FFN supports only vllm-ascend MRv1")
 
         self.device = self._init_device()
-        init_ascend_workspace_for_afd(
+        init_workspace_manager(
             self.device,
-            num_ubatches=npu_afd_num_ubatches(self.vllm_config),
+            npu_afd_num_ubatches(self.vllm_config),
         )
         self.model_runner = AFDNPUFFNModelRunner(self.vllm_config, self.device)
 

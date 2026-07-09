@@ -51,7 +51,6 @@ from vllm_ascend.utils import (
 from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
 
 from afd_plugin.compat.ascend import (
-    ensure_vllm_config_has_afd_proxy,
     fail_if_unsupported_npu_afd_features,
     mirror_afd_metadata_on_forward_context,
 )
@@ -110,7 +109,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
     def __init__(self, vllm_config: VllmConfig, device: object) -> None:
         afd_config = self.parse_config(vllm_config)
-        ensure_vllm_config_has_afd_proxy(vllm_config, afd_config)
         super().__init__(vllm_config, device)
 
         self.afd_config = afd_config

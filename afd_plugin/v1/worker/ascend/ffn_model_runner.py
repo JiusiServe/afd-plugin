@@ -16,7 +16,6 @@ from vllm_ascend.worker.model_runner_v1 import NPUModelRunner, graph_capture
 
 from afd_plugin.compat.ascend import (
     ascend_forward_context,
-    ensure_vllm_config_has_afd_proxy,
     fail_if_unsupported_npu_afd_features,
     mirror_afd_metadata_on_forward_context,
 )
@@ -63,7 +62,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
     def __init__(self, vllm_config: VllmConfig, device: object) -> None:
         afd_config = self.parse_config(vllm_config)
-        ensure_vllm_config_has_afd_proxy(vllm_config, afd_config)
         super().__init__(vllm_config, device)
 
         self.afd_config = afd_config
