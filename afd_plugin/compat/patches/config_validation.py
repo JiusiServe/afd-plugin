@@ -23,12 +23,8 @@ if TYPE_CHECKING:
     from vllm.engine.arg_utils import EngineArgs
     from vllm.usage.usage_lib import UsageContext
 
-_ORIGINAL_CREATE_ENGINE_CONFIG_ATTR = (
-    "_afd_plugin_original_create_engine_config"
-)
-_ORIGINAL_VLLM_CONFIG_POST_INIT_ATTR = (
-    "_afd_plugin_original_vllm_config_post_init"
-)
+_ORIGINAL_CREATE_ENGINE_CONFIG_ATTR = "_afd_plugin_original_create_engine_config"
+_ORIGINAL_VLLM_CONFIG_POST_INIT_ATTR = "_afd_plugin_original_vllm_config_post_init"
 _AFD_TEMP_BACKEND = "deepep_low_latency"
 _original_create_engine_config: Callable[..., Any] | None = None
 _original_vllm_config_post_init: Callable[..., Any] | None = None

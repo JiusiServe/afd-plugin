@@ -19,9 +19,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
-from vllm.config import VllmConfig
 import vllm_ascend.envs as envs_ascend
 import vllm_ascend.ops.fused_moe.fused_moe as fused_moe_module
+from vllm.config import VllmConfig
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX, MoECommType
 from vllm_ascend.flash_common3_context import get_flash_common3_context
 from vllm_ascend.ops.fused_moe.experts_selector import (
@@ -421,7 +421,9 @@ def apply(
     # to avoid accumulating too much tokens on a single rank.
     # currently it is only activated when doing profile runs.
     if enable_force_load_balance:
-        random_matrix = torch.rand(topk_ids.size(0), num_experts, device=topk_ids.device)
+        random_matrix = torch.rand(
+            topk_ids.size(0), num_experts, device=topk_ids.device
+        )
         topk_ids = torch.argsort(random_matrix, dim=1)[:, : topk_ids.size(1)].to(
             topk_ids.dtype
         )
@@ -459,15 +461,21 @@ def apply(
         )
         w2 = layer.w2_weight_list
         w2_scale = (
-            layer.fused_w2_scale_list if fused_scale_flag else layer.w2_weight_scale_list
+            layer.fused_w2_scale_list
+            if fused_scale_flag
+            else layer.w2_weight_scale_list
         )
     else:
         w1 = [layer.w13_weight]
         w1_scale = (
-            [layer.fused_w1_scale] if fused_scale_flag else [layer.w13_weight_scale_fp32]
+            [layer.fused_w1_scale]
+            if fused_scale_flag
+            else [layer.w13_weight_scale_fp32]
         )
         w2 = [layer.w2_weight]
-        w2_scale = [layer.fused_w2_scale] if fused_scale_flag else [layer.w2_weight_scale]
+        w2_scale = (
+            [layer.fused_w2_scale] if fused_scale_flag else [layer.w2_weight_scale]
+        )
 
     final_hidden_states = moe_comm_method.fused_experts(
         fused_experts_input=build_fused_experts_input(

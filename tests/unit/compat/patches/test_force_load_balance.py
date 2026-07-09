@@ -103,9 +103,7 @@ def _install_fake_modules(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
     root = types.ModuleType("vllm_ascend")
     envs_mod = types.ModuleType("vllm_ascend.envs")
     envs_mod.VLLM_ASCEND_ENABLE_FUSED_MC2 = 0
-    ascend_forward_context_mod = types.ModuleType(
-        "vllm_ascend.ascend_forward_context"
-    )
+    ascend_forward_context_mod = types.ModuleType("vllm_ascend.ascend_forward_context")
     ascend_forward_context_mod.MoECommType = SimpleNamespace(FUSED_MC2="fused_mc2")
     ascend_forward_context_mod._EXTRA_CTX = SimpleNamespace(
         moe_comm_method=SimpleNamespace(
@@ -113,17 +111,16 @@ def _install_fake_modules(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
         ),
         moe_comm_type=None,
     )
-    flash_common3_context_mod = types.ModuleType(
-        "vllm_ascend.flash_common3_context"
-    )
+    flash_common3_context_mod = types.ModuleType("vllm_ascend.flash_common3_context")
     flash_common3_context_mod.get_flash_common3_context = lambda: None
     ops = types.ModuleType("vllm_ascend.ops")
     fused_moe_pkg = types.ModuleType("vllm_ascend.ops.fused_moe")
     experts_selector_mod = types.ModuleType(
         "vllm_ascend.ops.fused_moe.experts_selector"
     )
-    experts_selector_mod.select_experts = (
-        lambda hidden_states,
+
+    def select_experts(
+        hidden_states,
         router_logits,
         top_k,
         use_grouped_topk,
@@ -137,11 +134,14 @@ def _install_fake_modules(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
         mix_placement,
         num_logical_experts,
         num_shared_experts,
-        num_experts: (
+        num_experts,
+    ):
+        return (
             torch.ones_like(router_logits, dtype=torch.float32),
             router_logits,
         )
-    )
+
+    experts_selector_mod.select_experts = select_experts
     experts_selector_mod.zero_experts_compute = None
     fused_moe_mod = types.ModuleType("vllm_ascend.ops.fused_moe.fused_moe")
     fused_moe_mod.AscendFusedMoE = AscendFusedMoE

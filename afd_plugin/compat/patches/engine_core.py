@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from vllm.v1.executor import Executor
     from vllm.v1.kv_cache_interface import KVCacheConfig
 
+
 # Patch reason: AFD FFN ranks run as connector daemons instead of normal
 # request-scheduling EngineCore instances.
 # Patch functionality: returns after model executor construction for AFD FFN
@@ -116,9 +117,7 @@ def __init__(
         self.model_executor.init_kv_output_aggregator(self.scheduler.connector)  # type: ignore
 
     mm_registry = core_module.MULTIMODAL_REGISTRY
-    self.mm_receiver_cache = mm_registry.engine_receiver_cache_from_config(
-        vllm_config
-    )
+    self.mm_receiver_cache = mm_registry.engine_receiver_cache_from_config(vllm_config)
 
     # If a KV connector is initialized for scheduler, we want to collect
     # handshake metadata from all workers so the connector in the scheduler
@@ -171,9 +170,7 @@ def __init__(
             scheduler_block_size, caching_hash_fn
         )
 
-    self.step_fn = (
-        self.step if self.batch_queue is None else self.step_with_batch_queue
-    )
+    self.step_fn = self.step if self.batch_queue is None else self.step_with_batch_queue
     self.async_scheduling = vllm_config.scheduler_config.async_scheduling
 
     self.aborts_queue = queue.Queue()

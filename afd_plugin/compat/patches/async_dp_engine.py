@@ -131,7 +131,9 @@ def run_engine_core(
 
         def signal_handler(signum: int, frame: object) -> None:
             del signum, frame
-            engine_core.shutdown_state = engine_core_module.EngineShutdownState.REQUESTED
+            engine_core.shutdown_state = (
+                engine_core_module.EngineShutdownState.REQUESTED
+            )
             signal_callback.trigger()
 
         engine_core_module.signal.signal(
@@ -168,6 +170,7 @@ def run_engine_core(
             signal_callback.stop()
         if engine_core is not None:
             engine_core.shutdown()
+
 
 # Patch reason: vLLM enables MoE DP wave coordination when launching DP cores,
 # while AFD async-DP only needs coordinator stats.

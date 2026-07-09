@@ -98,10 +98,12 @@ def set_forward_context(
         if num_tokens_across_dp is None:
             assert ubatch_slices is None
             assert num_tokens is not None
-            _, num_tokens_across_dp, _ = forward_context_module.coordinate_batch_across_dp(
-                num_tokens_unpadded=num_tokens,
-                parallel_config=vllm_config.parallel_config,
-                allow_microbatching=False,
+            _, num_tokens_across_dp, _ = (
+                forward_context_module.coordinate_batch_across_dp(
+                    num_tokens_unpadded=num_tokens,
+                    parallel_config=vllm_config.parallel_config,
+                    allow_microbatching=False,
+                )
             )
             assert num_tokens_across_dp is not None
         dp_metadata = forward_context_module.DPMetadata.make(
@@ -114,10 +116,7 @@ def set_forward_context(
     # Convenience: if cudagraph is used and num_tokens is given, we can just
     # create a batch descriptor here if not given (there's no harm since if it
     # doesn't match in the wrapper it'll fall through).
-    if (
-        cudagraph_runtime_mode != CUDAGraphMode.NONE
-        and num_tokens is not None
-    ):
+    if cudagraph_runtime_mode != CUDAGraphMode.NONE and num_tokens is not None:
         batch_descriptor = batch_descriptor or forward_context_module.BatchDescriptor(
             num_tokens=num_tokens,
         )
