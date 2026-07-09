@@ -9,7 +9,6 @@ relaxes that assertion for configs with ``additional_config["afd"].enabled``.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -23,9 +22,6 @@ if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm.engine.arg_utils import EngineArgs
     from vllm.usage.usage_lib import UsageContext
-
-logger = logging.getLogger(__name__)
-
 
 _ORIGINAL_CREATE_ENGINE_CONFIG_ATTR = (
     "_afd_plugin_original_create_engine_config"
@@ -195,7 +191,7 @@ if _is_target_vllm_compatible():
 
     arg_utils_module.EngineArgs.create_engine_config = create_engine_config
     config_module.VllmConfig.__post_init__ = __post_init__
-    logger.debug("AFD config validation patch applied")
+    arg_utils_module.logger.debug("AFD config validation patch applied")
 
 
 __all__: list[str] = []

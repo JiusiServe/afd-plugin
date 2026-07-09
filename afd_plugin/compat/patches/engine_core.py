@@ -11,7 +11,6 @@ startup out of HybridKVCacheCoordinator.
 from __future__ import annotations
 
 import gc
-import logging
 import queue
 import time
 from collections import deque
@@ -27,9 +26,6 @@ if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm.v1.executor import Executor
     from vllm.v1.kv_cache_interface import KVCacheConfig
-
-logger = logging.getLogger(__name__)
-
 
 # Patch reason: AFD FFN ranks run as connector daemons instead of normal
 # request-scheduling EngineCore instances.
@@ -420,7 +416,10 @@ def _initialize_ffn_engine_core(
 
         load_general_plugins()
     except Exception:
-        logger.debug("AFD FFN EngineCore could not reload vLLM plugins", exc_info=True)
+        core_module.logger.debug(
+            "AFD FFN EngineCore could not reload vLLM plugins",
+            exc_info=True,
+        )
 
     afd_config = _get_afd_config(vllm_config)
     self.vllm_config = vllm_config
@@ -434,8 +433,7 @@ def _initialize_ffn_engine_core(
     local_dp_rank = getattr(parallel_config, "data_parallel_rank_local", 0)
     if not local_dp_rank:
         version = getattr(core_module, "VLLM_VERSION", "unknown")
-        core_logger = getattr(core_module, "logger", logger)
-        core_logger.info(
+        core_module.logger.info(
             "Initializing an AFD FFN V1 engine (v%s) with config: %s",
             version,
             vllm_config,
@@ -491,8 +489,7 @@ def _prepare_late_loaded_ffn_engine_core(
 
 
 def _run_ffn_busy_loop(self, core_module: Any) -> None:
-    core_logger = getattr(core_module, "logger", logger)
-    core_logger.info("AFD FFN EngineCore started; workers run connector loop.")
+    core_module.logger.info("AFD FFN EngineCore started; workers run connector loop.")
 
     started = False
     try:
@@ -502,9 +499,11 @@ def _run_ffn_busy_loop(self, core_module: Any) -> None:
             self.model_executor.collective_rpc("raise_ffn_loop_error_if_any")
             time.sleep(0.5)
     except KeyboardInterrupt:
-        core_logger.info("AFD FFN EngineCore shutting down after KeyboardInterrupt")
+        core_module.logger.info(
+            "AFD FFN EngineCore shutting down after KeyboardInterrupt"
+        )
     except Exception:
-        core_logger.exception("AFD FFN EngineCore encountered a fatal error")
+        core_module.logger.exception("AFD FFN EngineCore encountered a fatal error")
         raise
     finally:
         if started:
@@ -520,7 +519,7 @@ def _stop_ffn_worker_loop(self) -> None:
     try:
         model_executor.collective_rpc("stop_ffn_server_loop")
     except Exception:
-        logger.debug(
+        core_module.logger.debug(
             "AFD FFN worker loop stop failed or was already stopped",
             exc_info=True,
         )
@@ -551,7 +550,10 @@ def _get_afd_config(vllm_config: VllmConfig | None) -> AFDConfig:
     try:
         return parse_afd_config(vllm_config, validate=False)
     except Exception:
-        logger.debug("Unable to parse AFD config from vLLM config", exc_info=True)
+        core_module.logger.debug(
+            "Unable to parse AFD config from vLLM config",
+            exc_info=True,
+        )
         return AFDConfig()
 
 
@@ -560,7 +562,7 @@ core_module.EngineCore._initialize_kv_caches = _initialize_kv_caches
 core_module.EngineCore.shutdown = shutdown
 core_module.EngineCoreProc.run_busy_loop = run_busy_loop
 core_module.DPEngineCoreProc.run_busy_loop = run_busy_loop
-logger.debug("AFD EngineCore patch applied")
+core_module.logger.debug("AFD EngineCore patch applied")
 
 
 __all__: list[str] = []

@@ -41,7 +41,9 @@ def _install_fake_vllm_config(monkeypatch):
             return cfg
 
     config_module.VllmConfig = VllmConfig
+    config_module.logger = SimpleNamespace(debug=lambda *args, **kwargs: None)
     arg_utils_module.EngineArgs = EngineArgs
+    arg_utils_module.logger = SimpleNamespace(debug=lambda *args, **kwargs: None)
     monkeypatch.setitem(sys.modules, "vllm", vllm_module)
     monkeypatch.setitem(sys.modules, "vllm.config", config_package)
     monkeypatch.setitem(sys.modules, "vllm.config.vllm", config_module)

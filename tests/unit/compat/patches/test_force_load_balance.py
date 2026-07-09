@@ -145,6 +145,11 @@ def _install_fake_modules(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
     experts_selector_mod.zero_experts_compute = None
     fused_moe_mod = types.ModuleType("vllm_ascend.ops.fused_moe.fused_moe")
     fused_moe_mod.AscendFusedMoE = AscendFusedMoE
+    fused_moe_mod.logger = SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        info_once=lambda *args, **kwargs: None,
+    )
 
     quant = types.ModuleType("vllm_ascend.quantization")
     methods = types.ModuleType("vllm_ascend.quantization.methods")

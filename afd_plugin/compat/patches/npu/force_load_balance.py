@@ -14,7 +14,6 @@ not a production correctness feature.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -35,8 +34,6 @@ from vllm_ascend.quantization.methods.w8a8_dynamic import (
     build_fused_experts_input,
 )
 from vllm_ascend.quantization.quant_type import QuantType
-
-logger = logging.getLogger(__name__)
 
 _FORCE_LB_DETERMINISTIC_SEED = 1024
 
@@ -145,7 +142,7 @@ def _init_force_lb_buffer(
     layer.force_lb_fake_topk_buffer = buffer
     layer.max_force_lb_tokens = max_tokens
 
-    logger.info(
+    fused_moe_module.logger.info(
         "AFD force load balance buffer initialized: ep_size=%s top_k=%s"
         " topn_per_rank=%s shape=%s preview=%s",
         config.ep_size,
@@ -167,7 +164,7 @@ def _get_force_lb_topk_ids(
 
     if batch_tokens > buffer.size(0):
         new_max_tokens = max(batch_tokens, buffer.size(0) * 2)
-        logger.warning(
+        fused_moe_module.logger.warning(
             "Growing AFD force load balance buffer: old_tokens=%s new_tokens=%s",
             buffer.size(0),
             new_max_tokens,
