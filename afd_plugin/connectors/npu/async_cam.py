@@ -271,7 +271,10 @@ class AFDAsyncConnector(AFDConnectorBase):
         total_num_tokens = max(1, _cam_metadata_int(token_nums_rankid_layeridx, 0))
         shared_num_tokens = _cam_shared_token_count(recv_output, total_num_tokens)
         layer_idx = _cam_metadata_int(token_nums_rankid_layeridx, 2)
-        num_tokens = max(0, total_num_tokens - shared_num_tokens)
+        num_tokens = _cam_routed_token_count(
+            recv_output,
+            fallback=max(0, total_num_tokens - shared_num_tokens),
+        )
 
         metadata.layer_idx = layer_idx
         metadata.stage_idx = stage_idx
@@ -824,6 +827,23 @@ def _cam_shared_token_count(payload: AFDAttnOutput, fallback: int) -> int:
     if expert_token_nums_shared is None:
         return max(1, int(fallback))
     return max(1, _cam_metadata_int(expert_token_nums_shared, 0))
+
+
+def _cam_routed_token_count(payload: AFDAttnOutput, fallback: int) -> int:
+    expert_token_nums = payload.ep_recv_counts
+    if expert_token_nums is None:
+        expert_token_nums = payload.group_list
+    if isinstance(expert_token_nums, Tensor):
+        return max(0, int(expert_token_nums.to(torch.int64).sum().item()))
+    if isinstance(expert_token_nums, (list, tuple)):
+        return max(
+            0,
+            sum(
+                _cam_metadata_int(expert_token_nums, index)
+                for index in range(len(expert_token_nums))
+            ),
+        )
+    return max(0, int(fallback))
 
 
 def _slice_cam_payload_to_actual_tokens(
