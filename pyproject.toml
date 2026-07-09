@@ -29,9 +29,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = [
-    "pre-commit>=4.6.0",
-]
+dependencies = []
 
 # Keep vLLM optional so macOS and CPU-only development can run import/config tests.
 # Install the runtime extra only in environments with a compatible vLLM wheel.
