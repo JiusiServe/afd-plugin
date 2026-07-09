@@ -47,6 +47,7 @@ afd = "afd_plugin:register_afd"
 
 [dependency-groups]
 dev = [
+    "pre-commit>=4",
     "pytest>=7.0",
     "ruff>=0.15.7,<0.16",
     "setuptools-scm>=8",

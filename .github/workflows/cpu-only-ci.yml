@@ -15,7 +15,40 @@ permissions:
   contents: read
 
 jobs:
-  cpu-only:
+  lint:
+    runs-on: ubuntu-latest
+    env:
+      AFD_BUILD_ASCEND_OPS: "0"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync environment
+        run: uv sync --locked --group dev
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+      - name: Validate GitHub issue templates
+        run: |
+          ruby -e 'require "yaml"; Dir[".github/ISSUE_TEMPLATE/*.yml"].each { |f| YAML.load_file(f); puts "ok #{f}" }'
+
+  cpu-tests:
     runs-on: ubuntu-latest
     env:
       AFD_BUILD_ASCEND_OPS: "0"
@@ -41,16 +74,6 @@ jobs:
 
       - name: Sync environment
         run: uv sync --locked --group dev
-
-      - name: Ruff lint
-        run: uv run ruff check .
-
-      - name: Ruff format
-        run: uv run ruff format --check .
-
-      - name: Validate GitHub issue templates
-        run: |
-          ruby -e 'require "yaml"; Dir[".github/ISSUE_TEMPLATE/*.yml"].each { |f| YAML.load_file(f); puts "ok #{f}" }'
 
       - name: CPU-only unit tests
         run: uv run pytest -q tests/unit -m "not gpu and not vllm_runtime"
