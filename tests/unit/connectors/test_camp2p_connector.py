@@ -11,10 +11,10 @@ pytest.importorskip("torch_npu")
 
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
+    AFDAttnOutput,
     AFDConnectorData,
     AFDConnectorFactory,
     AFDConnectorMetadata,
-    AFDRecvOutput,
 )
 from afd_plugin.connectors.npu import camp2p as camp2p_module
 from afd_plugin.connectors.npu.camp2p import (
@@ -163,7 +163,7 @@ def test_camp2p_update_metadata_keeps_original_handle_shape():
         ubatch_idx=0,
         layer_idx=0,
     )
-    recv_output = AFDRecvOutput(
+    recv_output = AFDAttnOutput(
         hidden_states="hidden",
         metadata=metadata,
         topk_ids="ids",

@@ -105,7 +105,7 @@ For each layer and stage, `AFDNPUFFNModelRunner`:
 
 1. updates connector state from DP metadata;
 2. creates receive metadata with `connector.create_recv_metadata(...)`;
-3. receives an `AFDRecvOutput` from `connector.recv_attn_output(...)`;
+3. receives an `AFDAttnOutput` from `connector.recv_attn_output(...)`;
 4. updates connector metadata from the received payload;
 5. installs DP and AFD metadata on Ascend forward context;
 6. waits for async receive handles when present;

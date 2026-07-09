@@ -18,11 +18,11 @@ from afd_plugin.compat.ascend import (
 )
 from afd_plugin.compat.ascend import runtime as ascend_runtime
 from afd_plugin.connectors import (
+    AFDAttnOutput,
     AFDConnectorMetadata,
     AFDDPMetadataPayload,
     AFDFFNOutput,
     AFDMetadata,
-    AFDRecvOutput,
 )
 
 
@@ -91,13 +91,13 @@ class _FakeFFNConnector:
     def recv_attn_output(self, metadata=None, ubatch_idx=None):
         for item in tuple(self.attn_outputs):
             item_metadata = (
-                item.metadata if isinstance(item, AFDRecvOutput) else item[1]
+                item.metadata if isinstance(item, AFDAttnOutput) else item[1]
             )
             if item_metadata.stage_idx == ubatch_idx:
                 self.attn_outputs.remove(item)
-                if isinstance(item, AFDRecvOutput):
+                if isinstance(item, AFDAttnOutput):
                     return item
-                return AFDRecvOutput(hidden_states=item[0], metadata=item[1])
+                return AFDAttnOutput(hidden_states=item[0], metadata=item[1])
         raise IndexError(ubatch_idx)
 
     def create_recv_metadata(self, **kwargs):
@@ -638,7 +638,7 @@ def test_npu_ffn_runner_executes_eager_ffn_step():
         ("npu-ffn(hidden, layer=0)", metadata, {"ubatch_idx": 0}),
     ]
     assert runner.connector.metadata_updates == [
-        (metadata, AFDRecvOutput(hidden_states="hidden", metadata=metadata)),
+        (metadata, AFDAttnOutput(hidden_states="hidden", metadata=metadata)),
     ]
 
 
@@ -657,7 +657,7 @@ def test_npu_ffn_runner_passes_async_shared_payload_to_model():
         seq_len=1,
     )
     runner.connector.attn_outputs.append(
-        AFDRecvOutput(
+        AFDAttnOutput(
             hidden_states="hidden",
             metadata=metadata,
             group_list="groups",
@@ -718,7 +718,7 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
         stage_idx=0,
         seq_lens=[5],
     )
-    recv_output = AFDRecvOutput(
+    recv_output = AFDAttnOutput(
         hidden_states="recv-hidden",
         metadata=metadata,
         group_list="groups",

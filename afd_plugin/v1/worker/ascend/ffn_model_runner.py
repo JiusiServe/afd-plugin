@@ -27,13 +27,13 @@ from afd_plugin.compat.ascend.profiler import (
 )
 from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
+    AFDAttnOutput,
     AFDConnectorFactory,
     AFDConnectorMetadata,
     AFDDPMetadata,
     AFDDPMetadataPayload,
     AFDFFNOutput,
     AFDMetadata,
-    AFDRecvOutput,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
     _resolve_world_ranks,
@@ -461,14 +461,14 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
 
 def _normalize_recv_output(
-    recv_output: AFDRecvOutput | tuple[torch.Tensor, AFDConnectorMetadata],
+    recv_output: AFDAttnOutput | tuple[torch.Tensor, AFDConnectorMetadata],
     *,
     stage_idx: int,
     layer_idx: int,
-) -> tuple[torch.Tensor, AFDConnectorMetadata, AFDRecvOutput]:
+) -> tuple[torch.Tensor, AFDConnectorMetadata, AFDAttnOutput]:
     if isinstance(recv_output, tuple):
         hidden_states, metadata = recv_output
-        payload = AFDRecvOutput(hidden_states=hidden_states, metadata=metadata)
+        payload = AFDAttnOutput(hidden_states=hidden_states, metadata=metadata)
         return hidden_states, metadata, payload
     hidden_states = recv_output.hidden_states
     metadata = recv_output.metadata

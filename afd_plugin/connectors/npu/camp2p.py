@@ -20,11 +20,11 @@ from afd_plugin.compat.ascend import ensure_cam_p2p_ops_available
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import (
+    AFDAttnOutput,
     AFDConnectorData,
     AFDConnectorMetadata,
     AFDDPMetadata,
     AFDDPMetadataPayload,
-    AFDRecvOutput,
     recv_dp_metadata_payload,
     send_dp_metadata_payload,
 )
@@ -297,7 +297,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
     def update_metadata(
         self,
         metadata: AFDConnectorMetadata,
-        recv_output: AFDRecvOutput,
+        recv_output: AFDAttnOutput,
     ) -> None:
         connector_data = _ensure_connector_data(metadata)
         connector_data.atten_batch_size = recv_output.atten_batch_size
@@ -373,7 +373,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         self,
         ubatch_idx: int | None = None,
         **kwargs: Any,
-    ) -> AFDRecvOutput:
+    ) -> AFDAttnOutput:
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
@@ -409,7 +409,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         connector_data.x_active_mask = outputs[4]
         connector_data.group_ep = group_ep
         connector_data.ffn_group_ep = self.hccl_comm_name1
-        return AFDRecvOutput(
+        return AFDAttnOutput(
             hidden_states=outputs[0],
             metadata=metadata,
             topk_ids=None,
