@@ -61,14 +61,13 @@ class P2PAFDConnector(AFDConnectorBase):
     ) -> None:
         super().__init__(rank, local_rank, vllm_config, afd_config)
         self._initialized = False
-        parallel_config = vllm_config.parallel_config
-        if parallel_config.data_parallel_size > 1:
-            role_rank = int(parallel_config.data_parallel_rank)
-        else:
-            role_rank = int(afd_config.afd_role_rank)
+        # afd_role_rank already carries the dp/pcp/tp-derived offset (the
+        # runners apply _with_dp_derived_afd_rank before create_connector);
+        # re-deriving from data_parallel_rank here would collapse TP peers
+        # onto the same role rank.
         self.mapping = build_rank_mapping(
             afd_config,
-            role_rank=role_rank,
+            role_rank=int(afd_config.afd_role_rank),
         )
         self.world_rank = self.mapping.world_rank
         self.p2p_rank = self.mapping.p2p_rank
