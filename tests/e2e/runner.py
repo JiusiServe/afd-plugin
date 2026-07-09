@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+ASYNC_AFD_CONNECTOR = "CAMAsyncAFDConnector"
 
 
 def main() -> int:
@@ -41,37 +42,42 @@ def main() -> int:
     log_threads: list[threading.Thread] = []
 
     try:
-        ffn_cmd = build_vllm_command(args, role="ffn")
-        ffn_cuda_visible_devices = ",".join(ffn_gpus)
-        print_command("FFN", ffn_cmd, ffn_cuda_visible_devices)
-        ffn_proc = start_process(
-            "ffn",
-            ffn_cmd,
-            build_env(ffn_cuda_visible_devices, args),
+        role_devices = {
+            "attention": attention_gpus,
+            "ffn": ffn_gpus,
+        }
+        launch_order = (
+            ("attention", "ATTN"),
+            ("ffn", "FFN"),
         )
-        processes.append(ffn_proc)
-        log_threads.append(stream_output("ffn", ffn_proc))
+        if not uses_async_connector(args):
+            launch_order = tuple(reversed(launch_order))
 
-        ensure_alive(ffn_proc, "FFN process exited during startup")
+        for role, label in launch_order:
+            command = build_vllm_command(args, role=role)
+            visible_devices = ",".join(role_devices[role])
+            print_command(label, command, visible_devices)
+            process = start_process(
+                role,
+                command,
+                build_env(visible_devices, args, role=role),
+            )
+            processes.append(process)
+            log_threads.append(stream_output(role, process))
+            ensure_alive(process, f"{label} process exited during startup")
 
-        attention_cmd = build_vllm_command(args, role="attention")
-        attention_cuda_visible_devices = ",".join(attention_gpus)
-        print_command("ATTN", attention_cmd, attention_cuda_visible_devices)
-        attention_proc = start_process(
-            "attention",
-            attention_cmd,
-            build_env(attention_cuda_visible_devices, args),
-        )
-        processes.append(attention_proc)
-        log_threads.append(stream_output("attention", attention_proc))
-
-        ensure_alive(attention_proc, "Attention process exited during startup")
-        wait_for_openai_api(args)
+        wait_for_openai_api(args, processes)
 
         responses = request_completions(args)
         for request_idx, response in enumerate(responses):
             print(f"\n=== Completion response: request {request_idx} ===")
             print(json.dumps(response, ensure_ascii=False, indent=2))
+            assert "error" not in response, (
+                f"request {request_idx}: completion response contains error: "
+                f"{response['error']!r}"
+            )
+            choices = response.get("choices", [])
+            assert choices, f"request {request_idx}: no choices in response"
 
         if args.expect_text:
             for request_idx, response in enumerate(responses):
@@ -206,6 +212,42 @@ def parse_args() -> argparse.Namespace:
         help="Tensor parallelism size. Defaults to 1.",
     )
     parser.add_argument(
+        "--attention-tp-size",
+        type=int,
+        default=None,
+        help="Attention tensor parallelism size. Defaults to --tp-size.",
+    )
+    parser.add_argument(
+        "--ffn-tp-size",
+        type=int,
+        default=None,
+        help="FFN tensor parallelism size. Defaults to --tp-size.",
+    )
+    parser.add_argument(
+        "--afd-connector",
+        default=None,
+        help=(
+            "AFD connector name. Defaults to p2pconnector for GPU and "
+            "camp2pconnector for NPU."
+        ),
+    )
+    parser.add_argument(
+        "--afd-async",
+        action="store_true",
+        help="Set additional_config['afd']['async']=true.",
+    )
+    parser.add_argument(
+        "--compute-gate-on-attention",
+        action="store_true",
+        help="Set additional_config['afd']['compute_gate_on_attention']=true.",
+    )
+    parser.add_argument(
+        "--afd-extra-config",
+        action="append",
+        default=[],
+        help="JSON object merged into additional_config['afd']['extra_config'].",
+    )
+    parser.add_argument(
         "--expect-text",
         default=None,
         help="If set, assert that every completion response contains this text.",
@@ -254,6 +296,18 @@ def validate_topology(
         raise ValueError("--num-ffn-ranks must match the number of --ffn-gpus")
     if args.num_attention_ranks < 1 or args.num_ffn_ranks < 1:
         raise ValueError("AFD E2E requires at least one Attention and FFN rank")
+    for role, rank_count in (
+        ("attention", args.num_attention_ranks),
+        ("ffn", args.num_ffn_ranks),
+    ):
+        tp_size = role_tp_size(args, role)
+        if tp_size < 1:
+            raise ValueError(f"{role} TP size must be positive")
+        if rank_count % tp_size != 0:
+            raise ValueError(
+                f"{role} rank count must be divisible by TP size "
+                f"(ranks={rank_count}, tp={tp_size})",
+            )
 
 
 def build_vllm_command(
@@ -261,24 +315,34 @@ def build_vllm_command(
     *,
     role: str,
 ) -> list[str]:
-    tp_size = args.tp_size
+    tp_size = role_tp_size(args, role)
     role_total_ranks = (
         args.num_attention_ranks if role == "attention" else args.num_ffn_ranks
     )
     role_dp_size = max(1, role_total_ranks // tp_size)
     is_npu = args.device_backend == "npu"
+    connector = args.afd_connector or (
+        "CAMP2pAFDConnector" if is_npu else "P2pNcclAFDConnector"
+    )
 
     afd_config = {
         "afd": {
             "enabled": True,
             "role": role,
-            "connector": "CAMP2pAFDConnector" if is_npu else "P2pNcclAFDConnector",
+            "connector": connector,
             "host": args.afd_host,
             "port": args.afd_port,
             "num_attention_ranks": args.num_attention_ranks,
             "num_ffn_ranks": args.num_ffn_ranks,
         },
     }
+    if args.afd_async:
+        afd_config["afd"]["async"] = True
+    if args.compute_gate_on_attention:
+        afd_config["afd"]["compute_gate_on_attention"] = True
+    extra_config = parse_afd_extra_config(args.afd_extra_config)
+    if extra_config:
+        afd_config["afd"]["extra_config"] = extra_config
     if is_npu:
         worker_cls = (
             "afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker"
@@ -361,6 +425,28 @@ def build_vllm_command(
     return cmd
 
 
+def role_tp_size(args: argparse.Namespace, role: str) -> int:
+    if role == "attention":
+        return args.attention_tp_size or args.tp_size
+    if role == "ffn":
+        return args.ffn_tp_size or args.tp_size
+    raise ValueError(f"unknown AFD role {role!r}")
+
+
+def parse_afd_extra_config(values: list[str]) -> dict[str, Any]:
+    extra_config: dict[str, Any] = {}
+    for raw_value in values:
+        value = json.loads(raw_value)
+        if not isinstance(value, dict):
+            raise ValueError("--afd-extra-config must be a JSON object")
+        extra_config.update(value)
+    return extra_config
+
+
+def uses_async_connector(args: argparse.Namespace) -> bool:
+    return args.afd_connector == ASYNC_AFD_CONNECTOR
+
+
 def decode_bench_connector_config() -> str:
     return json.dumps(
         {
@@ -388,7 +474,12 @@ def ffn_api_port(args: argparse.Namespace) -> int:
     return args.api_port_base + 1
 
 
-def build_env(visible_devices: str, args: argparse.Namespace) -> dict[str, str]:
+def build_env(
+    visible_devices: str,
+    args: argparse.Namespace,
+    *,
+    role: str | None = None,
+) -> dict[str, str]:
     env = os.environ.copy()
     if args.device_backend == "npu":
         env["ASCEND_RT_VISIBLE_DEVICES"] = visible_devices
@@ -396,6 +487,12 @@ def build_env(visible_devices: str, args: argparse.Namespace) -> dict[str, str]:
         env["CUDA_VISIBLE_DEVICES"] = visible_devices
     env["VLLM_PLUGINS"] = "ascend,afd" if args.device_backend == "npu" else "afd"
     env["PYTHONUNBUFFERED"] = "1"
+    if (
+        args.device_backend == "npu"
+        and role is not None
+        and role_tp_size(args, role) <= 1
+    ):
+        env.pop("VLLM_ASCEND_ENABLE_FLASHCOMM1", None)
     env.pop("AFD_PLUGIN_EARLY_ENGINE_PATCH", None)
     current_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = (
@@ -437,12 +534,22 @@ def stream_output(
     return thread
 
 
-def wait_for_openai_api(args: argparse.Namespace) -> None:
+def wait_for_openai_api(
+    args: argparse.Namespace,
+    processes: list[subprocess.Popen[str]],
+) -> None:
     deadline = time.monotonic() + args.startup_timeout
     url = f"http://{args.api_host}:{attention_api_port(args)}/v1/models"
     last_error: BaseException | None = None
 
     while time.monotonic() < deadline:
+        for process in processes:
+            returncode = process.poll()
+            if returncode is not None:
+                raise RuntimeError(
+                    f"vLLM process exited before Attention API was ready "
+                    f"(returncode={returncode}, command={process.args!r})",
+                )
         try:
             with urllib.request.urlopen(url, timeout=5) as response:
                 if response.status == 200:
