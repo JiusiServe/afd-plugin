@@ -95,13 +95,12 @@ def register_afd() -> None:
     try:
         import afd_plugin.compat.patches.async_dp_engine  # noqa: F401
         import afd_plugin.compat.patches.config_validation  # noqa: F401
+        import afd_plugin.compat.patches.engine_core  # noqa: F401
 
         from afd_plugin.compat.patches import (
             apply_async_dp_forward_context_patch,
-            apply_engine_core_patch,
         )
 
-        apply_engine_core_patch()
         apply_async_dp_forward_context_patch()
     except Exception:
         _logger.debug(
@@ -124,11 +123,7 @@ def register_afd() -> None:
 
         apply_afd_ascend_patches_if_needed()
         if importlib.util.find_spec("vllm_ascend") is not None:
-            from afd_plugin.compat.patches.npu.force_load_balance import (
-                apply_force_load_balance_patch,
-            )
-
-            apply_force_load_balance_patch()
+            import afd_plugin.compat.patches.npu.force_load_balance  # noqa: F401
     except Exception:
         _logger.debug(
             "AFD plugin: Ascend compatibility patches could not be applied",

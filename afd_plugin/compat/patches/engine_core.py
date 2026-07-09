@@ -18,7 +18,6 @@ import queue
 import time
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from afd_plugin.config import AFDConfig, parse_afd_config
@@ -29,139 +28,217 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class _PatchState:
-    engine_core_init: Callable[..., Any]
-    engine_core_initialize_kv_caches: Callable[..., Any] | None
-    engine_core_shutdown: Callable[..., Any]
-    engine_core_proc_run_busy_loop: Callable[..., Any] | None
-    dp_engine_core_proc_run_busy_loop: Callable[..., Any] | None
-    initialize_kv_caches_returns_tuple: bool
+_ORIGINAL_ENGINE_CORE_INIT_ATTR = "_afd_plugin_original_engine_core_init"
+_ORIGINAL_ENGINE_CORE_INITIALIZE_KV_CACHES_ATTR = (
+    "_afd_plugin_original_engine_core_initialize_kv_caches"
+)
+_ORIGINAL_ENGINE_CORE_SHUTDOWN_ATTR = "_afd_plugin_original_engine_core_shutdown"
+_ORIGINAL_ENGINE_CORE_PROC_RUN_BUSY_LOOP_ATTR = (
+    "_afd_plugin_original_engine_core_proc_run_busy_loop"
+)
+_ORIGINAL_DP_ENGINE_CORE_PROC_RUN_BUSY_LOOP_ATTR = (
+    "_afd_plugin_original_dp_engine_core_proc_run_busy_loop"
+)
+_INITIALIZE_KV_CACHES_RETURNS_TUPLE_ATTR = (
+    "_afd_plugin_initialize_kv_caches_returns_tuple"
+)
+
+_original_engine_core_init: Callable[..., Any] | None = None
+_original_engine_core_initialize_kv_caches: Callable[..., Any] | None = None
+_original_engine_core_shutdown: Callable[..., Any] | None = None
+_original_engine_core_proc_run_busy_loop: Callable[..., Any] | None = None
+_original_dp_engine_core_proc_run_busy_loop: Callable[..., Any] | None = None
+_initialize_kv_caches_returns_tuple_value = False
 
 
-_PATCH_ATTR = "_afd_plugin_engine_core_patch_state"
+def __init__(
+    self,
+    vllm_config: VllmConfig,
+    executor_class: type[Any],
+    log_stats: bool,
+    executor_fail_callback: Callable[..., Any] | None = None,
+    include_finished_set: bool = False,
+) -> None:
+    if not _is_afd_ffn_config(vllm_config):
+        assert _original_engine_core_init is not None
+        _original_engine_core_init(
+            self,
+            vllm_config,
+            executor_class,
+            log_stats,
+            executor_fail_callback,
+            include_finished_set,
+        )
+        return
+
+    # ### PATCH START: AFD FFN EngineCore daemon initialization
+    # FFN ranks are connector daemons, so stop EngineCore initialization after
+    # executor construction instead of setting up KV cache and scheduler state.
+    _initialize_ffn_engine_core(
+        self,
+        _CORE_MODULE,
+        vllm_config,
+        executor_class,
+        log_stats,
+        executor_fail_callback,
+    )
+    # ### PATCH END: AFD FFN EngineCore daemon initialization
 
 
-def apply_engine_core_patch() -> None:
-    """Apply the AFD FFN EngineCore patch if vLLM is importable.
+def shutdown(self) -> None:
+    if not _is_afd_ffn_engine(self):
+        assert _original_engine_core_shutdown is not None
+        _original_engine_core_shutdown(self)
+        return
 
-    The patch is intentionally narrow: all non-FFN configs delegate to the
-    original vLLM methods. For FFN configs, EngineCore stops after executor
-    construction and the process busy loop starts the connector-driven worker
-    loop.
-    """
+    # ### PATCH START: AFD FFN EngineCore shutdown
+    # Stop the connector-driven worker loop before shutting down the executor;
+    # scheduler/KV state may not exist for FFN daemon engines.
+    _stop_ffn_worker_loop(self)
+    model_executor = getattr(self, "model_executor", None)
+    if model_executor is not None:
+        model_executor.shutdown()
+    with suppress(Exception):
+        gc.unfreeze()
+    # ### PATCH END: AFD FFN EngineCore shutdown
 
+
+def _initialize_kv_caches(self, vllm_config: VllmConfig) -> Any:
+    if not _is_afd_ffn_config(vllm_config):
+        assert _original_engine_core_initialize_kv_caches is not None
+        return _original_engine_core_initialize_kv_caches(self, vllm_config)
+
+    # ### PATCH START: AFD FFN late-loaded KV cache bypass
+    # FFN daemon engines do not schedule requests or own KV cache blocks, but
+    # late-loaded paths still need a minimal KV cache config-shaped result.
+    _prepare_late_loaded_ffn_engine_core(self, vllm_config)
+    kv_cache_config = _AFDFFNKVCacheConfig()
+    if _initialize_kv_caches_returns_tuple_value:
+        result = 0, 0, kv_cache_config
+    else:
+        result = kv_cache_config
+    # ### PATCH END: AFD FFN late-loaded KV cache bypass
+    return result
+
+
+def run_busy_loop(self) -> Any:
+    if not _is_afd_ffn_engine(self):
+        if isinstance(self, _DP_ENGINE_CORE_PROC_CLS):
+            assert _original_dp_engine_core_proc_run_busy_loop is not None
+            return _original_dp_engine_core_proc_run_busy_loop(self)
+        assert _original_engine_core_proc_run_busy_loop is not None
+        return _original_engine_core_proc_run_busy_loop(self)
+
+    # ### PATCH START: AFD FFN connector busy loop
+    # FFN ranks run the connector server loop and poll worker-side failures
+    # instead of executing vLLM's normal request scheduling loop.
+    result = _run_ffn_busy_loop(self, _CORE_MODULE)
+    # ### PATCH END: AFD FFN connector busy loop
+    return result
+
+
+_CORE_MODULE: Any | None = None
+_DP_ENGINE_CORE_PROC_CLS: type[Any] = type(None)
+
+
+def _patch_engine_core() -> None:
+    """Patch AFD FFN EngineCore behavior when this module is imported."""
+
+    global _CORE_MODULE
+    global _DP_ENGINE_CORE_PROC_CLS
+    global _initialize_kv_caches_returns_tuple_value
+    global _original_dp_engine_core_proc_run_busy_loop
+    global _original_engine_core_init
+    global _original_engine_core_initialize_kv_caches
+    global _original_engine_core_proc_run_busy_loop
+    global _original_engine_core_shutdown
     try:
         core_module = importlib.import_module("vllm.v1.engine.core")
     except Exception:
         logger.debug("AFD EngineCore patch skipped: vLLM core is unavailable")
         return
 
-    if hasattr(core_module, _PATCH_ATTR):
-        return
-
+    _CORE_MODULE = core_module
     engine_core_cls = core_module.EngineCore
     engine_core_proc_cls = getattr(core_module, "EngineCoreProc", None)
     dp_engine_core_proc_cls = getattr(core_module, "DPEngineCoreProc", None)
-
-    state = _PatchState(
-        engine_core_init=engine_core_cls.__init__,
-        engine_core_initialize_kv_caches=getattr(
-            engine_core_cls,
-            "_initialize_kv_caches",
-            None,
-        ),
-        engine_core_shutdown=engine_core_cls.shutdown,
-        engine_core_proc_run_busy_loop=(
-            getattr(engine_core_proc_cls, "run_busy_loop", None)
-            if engine_core_proc_cls is not None
-            else None
-        ),
-        dp_engine_core_proc_run_busy_loop=(
-            getattr(dp_engine_core_proc_cls, "run_busy_loop", None)
-            if dp_engine_core_proc_cls is not None
-            else None
-        ),
-        initialize_kv_caches_returns_tuple=_initialize_kv_caches_returns_tuple(
-            engine_core_cls,
-        ),
+    _DP_ENGINE_CORE_PROC_CLS = (
+        dp_engine_core_proc_cls if dp_engine_core_proc_cls is not None else type(None)
     )
 
-    def patched_engine_core_init(
-        self,
-        vllm_config: VllmConfig,
-        executor_class: type[Any],
-        log_stats: bool,
-        executor_fail_callback: Callable[..., Any] | None = None,
-        include_finished_set: bool = False,
-    ) -> None:
-        if not _is_afd_ffn_config(vllm_config):
-            state.engine_core_init(
-                self,
-                vllm_config,
-                executor_class,
-                log_stats,
-                executor_fail_callback,
-                include_finished_set,
-            )
-            return
-
-        _initialize_ffn_engine_core(
-            self,
+    if not hasattr(core_module, _ORIGINAL_ENGINE_CORE_INIT_ATTR):
+        setattr(core_module, _ORIGINAL_ENGINE_CORE_INIT_ATTR, engine_core_cls.__init__)
+        setattr(
             core_module,
-            vllm_config,
-            executor_class,
-            log_stats,
-            executor_fail_callback,
+            _ORIGINAL_ENGINE_CORE_INITIALIZE_KV_CACHES_ATTR,
+            getattr(engine_core_cls, "_initialize_kv_caches", None),
+        )
+        setattr(
+            core_module,
+            _ORIGINAL_ENGINE_CORE_SHUTDOWN_ATTR,
+            engine_core_cls.shutdown,
+        )
+        setattr(
+            core_module,
+            _ORIGINAL_ENGINE_CORE_PROC_RUN_BUSY_LOOP_ATTR,
+            (
+                getattr(engine_core_proc_cls, "run_busy_loop", None)
+                if engine_core_proc_cls is not None
+                else None
+            ),
+        )
+        setattr(
+            core_module,
+            _ORIGINAL_DP_ENGINE_CORE_PROC_RUN_BUSY_LOOP_ATTR,
+            (
+                getattr(dp_engine_core_proc_cls, "run_busy_loop", None)
+                if dp_engine_core_proc_cls is not None
+                else None
+            ),
+        )
+        setattr(
+            core_module,
+            _INITIALIZE_KV_CACHES_RETURNS_TUPLE_ATTR,
+            _initialize_kv_caches_returns_tuple(engine_core_cls),
         )
 
-    def patched_engine_core_shutdown(self) -> None:
-        if not _is_afd_ffn_engine(self):
-            state.engine_core_shutdown(self)
-            return
+    _original_engine_core_init = getattr(
+        core_module,
+        _ORIGINAL_ENGINE_CORE_INIT_ATTR,
+    )
+    _original_engine_core_initialize_kv_caches = getattr(
+        core_module,
+        _ORIGINAL_ENGINE_CORE_INITIALIZE_KV_CACHES_ATTR,
+    )
+    _original_engine_core_shutdown = getattr(
+        core_module,
+        _ORIGINAL_ENGINE_CORE_SHUTDOWN_ATTR,
+    )
+    _original_engine_core_proc_run_busy_loop = getattr(
+        core_module,
+        _ORIGINAL_ENGINE_CORE_PROC_RUN_BUSY_LOOP_ATTR,
+    )
+    _original_dp_engine_core_proc_run_busy_loop = getattr(
+        core_module,
+        _ORIGINAL_DP_ENGINE_CORE_PROC_RUN_BUSY_LOOP_ATTR,
+    )
+    _initialize_kv_caches_returns_tuple_value = getattr(
+        core_module,
+        _INITIALIZE_KV_CACHES_RETURNS_TUPLE_ATTR,
+    )
 
-        _stop_ffn_worker_loop(self)
-        model_executor = getattr(self, "model_executor", None)
-        if model_executor is not None:
-            model_executor.shutdown()
-        with suppress(Exception):
-            gc.unfreeze()
+    engine_core_cls.__init__ = __init__
+    if _original_engine_core_initialize_kv_caches is not None:
+        engine_core_cls._initialize_kv_caches = _initialize_kv_caches
+    engine_core_cls.shutdown = shutdown
+    if engine_core_proc_cls is not None and _original_engine_core_proc_run_busy_loop:
+        engine_core_proc_cls.run_busy_loop = run_busy_loop
+    if (
+        dp_engine_core_proc_cls is not None
+        and _original_dp_engine_core_proc_run_busy_loop
+    ):
+        dp_engine_core_proc_cls.run_busy_loop = run_busy_loop
 
-    def patched_initialize_kv_caches(self, vllm_config: VllmConfig) -> Any:
-        if not _is_afd_ffn_config(vllm_config):
-            assert state.engine_core_initialize_kv_caches is not None
-            return state.engine_core_initialize_kv_caches(self, vllm_config)
-
-        _prepare_late_loaded_ffn_engine_core(self, vllm_config)
-        kv_cache_config = _AFDFFNKVCacheConfig()
-        if state.initialize_kv_caches_returns_tuple:
-            return 0, 0, kv_cache_config
-        return kv_cache_config
-
-    def patched_engine_core_proc_run_busy_loop(self) -> Any:
-        if not _is_afd_ffn_engine(self):
-            assert state.engine_core_proc_run_busy_loop is not None
-            return state.engine_core_proc_run_busy_loop(self)
-        return _run_ffn_busy_loop(self, core_module)
-
-    def patched_dp_engine_core_proc_run_busy_loop(self) -> Any:
-        if not _is_afd_ffn_engine(self):
-            assert state.dp_engine_core_proc_run_busy_loop is not None
-            return state.dp_engine_core_proc_run_busy_loop(self)
-        return _run_ffn_busy_loop(self, core_module)
-
-    engine_core_cls.__init__ = patched_engine_core_init
-    if state.engine_core_initialize_kv_caches is not None:
-        engine_core_cls._initialize_kv_caches = patched_initialize_kv_caches
-    engine_core_cls.shutdown = patched_engine_core_shutdown
-    if engine_core_proc_cls is not None and state.engine_core_proc_run_busy_loop:
-        engine_core_proc_cls.run_busy_loop = patched_engine_core_proc_run_busy_loop
-    if dp_engine_core_proc_cls is not None and state.dp_engine_core_proc_run_busy_loop:
-        dp_engine_core_proc_cls.run_busy_loop = (
-            patched_dp_engine_core_proc_run_busy_loop
-        )
-
-    setattr(core_module, _PATCH_ATTR, state)
     logger.debug("AFD EngineCore patch applied")
 
 
@@ -350,4 +427,7 @@ def _initialize_kv_caches_returns_tuple(engine_core_cls: type[Any]) -> bool:
     return "num_gpu_blocks, num_cpu_blocks" in source
 
 
-__all__ = ["apply_engine_core_patch"]
+_patch_engine_core()
+
+
+__all__: list[str] = []

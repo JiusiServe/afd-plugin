@@ -15,6 +15,7 @@ not a production correctness feature.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
@@ -29,12 +30,16 @@ from vllm_ascend.quantization.quant_type import QuantType
 
 logger = logging.getLogger(__name__)
 
-_PATCH_ATTR = "_afd_plugin_force_load_balance_applied"
+_ORIGINAL_FUSED_MOE_INIT_ATTR = "_afd_plugin_original_fused_moe_init"
+_ORIGINAL_W8A8_APPLY_ATTR = "_afd_plugin_original_w8a8_apply"
+_ORIGINAL_BUILD_FUSED_EXPERTS_INPUT_ATTR = (
+    "_afd_plugin_original_build_fused_experts_input"
+)
 _FORCE_LB_DETERMINISTIC_SEED = 1024
 
-_origin_fused_moe_init = AscendFusedMoE.__init__
-_origin_w8a8_apply = AscendW8A8DynamicFusedMoEMethod.apply
-_origin_build_fused_experts_input = build_fused_experts_input
+_original_fused_moe_init: Callable[..., object] | None = None
+_original_w8a8_apply: Callable[..., object] | None = None
+_original_build_fused_experts_input: Callable[..., object] | None = None
 
 
 @dataclass(frozen=True)
@@ -179,9 +184,13 @@ def _get_force_lb_topk_ids(
     return buffer[:batch_tokens, :top_k]
 
 
-def _fused_moe_init(self: object, *args: object, **kwargs: object) -> None:
-    _origin_fused_moe_init(self, *args, **kwargs)
+def __init__(self: object, *args: object, **kwargs: object) -> None:
+    assert _original_fused_moe_init is not None
+    _original_fused_moe_init(self, *args, **kwargs)
 
+    # ### PATCH START: AFD force-load-balance layer initialization
+    # Read plugin-owned profiling knobs and prebuild deterministic fake routed
+    # expert ids for Ascend W8A8 MoE layers.
     vllm_config = self.vllm_config
     additional_config = getattr(vllm_config, "additional_config", None)
     if not isinstance(additional_config, dict):
@@ -203,6 +212,7 @@ def _fused_moe_init(self: object, *args: object, **kwargs: object) -> None:
             int(self.max_force_lb_tokens),
             self.w13_weight.device,
         )
+    # ### PATCH END: AFD force-load-balance layer initialization
 
 
 def _replace_topk_ids(
@@ -222,7 +232,7 @@ def _replace_topk_ids(
     return fake_topk_ids
 
 
-def _w8a8_apply(
+def apply(
     self: object,
     layer: object,
     *args: object,
@@ -232,11 +242,15 @@ def _w8a8_apply(
         getattr(layer, "enable_force_load_balance", False)
         and getattr(layer, "force_lb_fake_topk_buffer", None) is not None
     ):
-        return _origin_w8a8_apply(self, layer, *args, **kwargs)
+        assert _original_w8a8_apply is not None
+        return _original_w8a8_apply(self, layer, *args, **kwargs)
 
     routed_top_k = kwargs.get("top_k")
     routed_top_k = routed_top_k if isinstance(routed_top_k, int) else None
 
+    # ### PATCH START: AFD force-load-balance W8A8 routing override
+    # Swap routed topk ids only around build_fused_experts_input so the rest of
+    # vllm-ascend's W8A8 apply path stays upstream-compatible.
     def _build_fused_experts_input(
         *inner_args: object,
         **inner_kwargs: object,
@@ -248,23 +262,59 @@ def _w8a8_apply(
                 topk_ids,
                 routed_top_k,
             )
-        return _origin_build_fused_experts_input(*inner_args, **inner_kwargs)
+        assert _original_build_fused_experts_input is not None
+        return _original_build_fused_experts_input(*inner_args, **inner_kwargs)
 
     old_build_fused_experts_input = w8a8_dynamic.build_fused_experts_input
     w8a8_dynamic.build_fused_experts_input = _build_fused_experts_input
     try:
-        return _origin_w8a8_apply(self, layer, *args, **kwargs)
+        assert _original_w8a8_apply is not None
+        result = _original_w8a8_apply(self, layer, *args, **kwargs)
     finally:
         w8a8_dynamic.build_fused_experts_input = old_build_fused_experts_input
+    # ### PATCH END: AFD force-load-balance W8A8 routing override
+    return result
 
 
-def apply_force_load_balance_patch() -> None:
-    if getattr(AscendFusedMoE, _PATCH_ATTR, False):
-        return
+def _patch_force_load_balance() -> None:
+    """Patch Ascend W8A8 force-load-balance behavior when imported."""
 
-    AscendFusedMoE.__init__ = _fused_moe_init
-    AscendW8A8DynamicFusedMoEMethod.apply = _w8a8_apply
-    setattr(AscendFusedMoE, _PATCH_ATTR, True)
+    global _original_build_fused_experts_input
+    global _original_fused_moe_init
+    global _original_w8a8_apply
+
+    if not hasattr(AscendFusedMoE, _ORIGINAL_FUSED_MOE_INIT_ATTR):
+        setattr(
+            AscendFusedMoE,
+            _ORIGINAL_FUSED_MOE_INIT_ATTR,
+            AscendFusedMoE.__init__,
+        )
+        setattr(
+            AscendFusedMoE,
+            _ORIGINAL_W8A8_APPLY_ATTR,
+            AscendW8A8DynamicFusedMoEMethod.apply,
+        )
+        setattr(
+            AscendFusedMoE,
+            _ORIGINAL_BUILD_FUSED_EXPERTS_INPUT_ATTR,
+            build_fused_experts_input,
+        )
+
+    _original_fused_moe_init = getattr(
+        AscendFusedMoE,
+        _ORIGINAL_FUSED_MOE_INIT_ATTR,
+    )
+    _original_w8a8_apply = getattr(AscendFusedMoE, _ORIGINAL_W8A8_APPLY_ATTR)
+    _original_build_fused_experts_input = getattr(
+        AscendFusedMoE,
+        _ORIGINAL_BUILD_FUSED_EXPERTS_INPUT_ATTR,
+    )
+
+    AscendFusedMoE.__init__ = __init__
+    AscendW8A8DynamicFusedMoEMethod.apply = apply
 
 
-__all__ = ["apply_force_load_balance_patch"]
+_patch_force_load_balance()
+
+
+__all__: list[str] = []

@@ -87,8 +87,7 @@ def force_lb_mod(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
     module_name = "afd_plugin.compat.patches.npu.force_load_balance"
     sys.modules.pop(module_name, None)
     mod = importlib.import_module(module_name)
-    mod.apply_force_load_balance_patch()
-    mod.apply_force_load_balance_patch()
+    mod = importlib.reload(mod)
     return mod
 
 

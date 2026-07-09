@@ -87,6 +87,11 @@ Reviewers must verify:
 - Performance implications are understood
 - A long-term plan exists for upstream contribution or removal
 
+When copying or wrapping upstream code, mark every AFD-specific difference with
+`# ### PATCH START: ...` and `# ### PATCH END: ...` comments. Keep the marker
+text short and specific so reviewers can compare the patch against upstream
+quickly.
+
 **Required Pattern**: AFD-specific functionality should be implemented via:
 
 1. **Patching**:
@@ -111,8 +116,10 @@ from vllm.some_upstream_module import UpstreamClass
 _original_method = UpstreamClass.method
 
 def method(self, *args, **kwargs):
-    # AFD-specific behavior.
+    # ### PATCH START: AFD custom routing
+    # AFD-specific behavior that differs from upstream.
     ...
+    # ### PATCH END: AFD custom routing
     # If delegation is needed:
     # return _original_method(self, *args, **kwargs)
 

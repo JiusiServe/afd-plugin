@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import logging
 import sys
 import types
@@ -7,8 +8,6 @@ from enum import IntEnum
 from types import SimpleNamespace
 
 import pytest
-
-from afd_plugin.compat.patches.engine_core import apply_engine_core_patch
 
 
 class _EngineShutdownState(IntEnum):
@@ -65,6 +64,13 @@ def _install_fake_vllm_core(monkeypatch: pytest.MonkeyPatch):
     return core_module
 
 
+def _load_patch_module() -> types.ModuleType:
+    module_name = "afd_plugin.compat.patches.engine_core"
+    if module_name in sys.modules:
+        return importlib.reload(sys.modules[module_name])
+    return importlib.import_module(module_name)
+
+
 def _config(role: str):
     return SimpleNamespace(
         additional_config={"afd": {"enabled": True, "role": role}},
@@ -74,8 +80,8 @@ def _config(role: str):
 
 def test_engine_core_patch_skips_kv_scheduler_init_for_ffn(monkeypatch):
     core_module = _install_fake_vllm_core(monkeypatch)
-    apply_engine_core_patch()
-    apply_engine_core_patch()
+    patch_module = _load_patch_module()
+    importlib.reload(patch_module)
 
     class Executor:
         def __init__(self, vllm_config):
@@ -102,7 +108,7 @@ def test_engine_core_patch_skips_kv_scheduler_init_for_ffn(monkeypatch):
 
 def test_engine_core_patch_leaves_non_ffn_path_untouched(monkeypatch):
     core_module = _install_fake_vllm_core(monkeypatch)
-    apply_engine_core_patch()
+    _load_patch_module()
 
     engine = core_module.EngineCore(_config("attention"), object, log_stats=False)
 
@@ -111,7 +117,7 @@ def test_engine_core_patch_leaves_non_ffn_path_untouched(monkeypatch):
 
 def test_engine_core_patch_runs_and_stops_ffn_loop(monkeypatch):
     core_module = _install_fake_vllm_core(monkeypatch)
-    apply_engine_core_patch()
+    _load_patch_module()
 
     class Executor:
         def __init__(self, vllm_config):

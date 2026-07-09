@@ -6,11 +6,8 @@ Patches in this package must remain idempotent, version-aware, documented, and
 covered by CPU-safe tests whenever possible.
 """
 
-from afd_plugin.compat.patches.engine_core import apply_engine_core_patch
-
 __all__ = [
     "apply_async_dp_forward_context_patch",
-    "apply_engine_core_patch",
 ]
 
 
@@ -21,8 +18,4 @@ def __getattr__(name: str):
         )
 
         return apply_async_dp_forward_context_patch
-    if name == "apply_engine_core_patch":
-        from afd_plugin.compat.patches.engine_core import apply_engine_core_patch
-
-        return apply_engine_core_patch
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
