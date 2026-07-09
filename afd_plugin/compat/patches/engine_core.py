@@ -11,8 +11,6 @@ startup out of HybridKVCacheCoordinator.
 from __future__ import annotations
 
 import gc
-import importlib
-import inspect
 import logging
 import queue
 import time
@@ -20,6 +18,8 @@ from collections import deque
 from collections.abc import Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
+
+import vllm.v1.engine.core as core_module
 
 from afd_plugin.config import AFDConfig, parse_afd_config
 
@@ -29,13 +29,6 @@ if TYPE_CHECKING:
     from vllm.v1.kv_cache_interface import KVCacheConfig
 
 logger = logging.getLogger(__name__)
-
-
-_INITIALIZE_KV_CACHES_RETURNS_TUPLE_ATTR = (
-    "_afd_plugin_initialize_kv_caches_returns_tuple"
-)
-
-_initialize_kv_caches_returns_tuple_value = False
 
 
 # Patch reason: AFD FFN ranks run as connector daemons instead of normal
@@ -58,7 +51,7 @@ def __init__(
     if _is_afd_ffn_config(vllm_config):
         _initialize_ffn_engine_core(
             self,
-            _CORE_MODULE,
+            core_module,
             vllm_config,
             executor_class,
             log_stats,
@@ -66,8 +59,6 @@ def __init__(
         )
         return
     # ### PATCH END: AFD FFN EngineCore daemon initialization
-
-    core_module = _require_core_module()
 
     # plugins need to be loaded at the engine/scheduler level too
     from vllm.plugins import load_general_plugins
@@ -241,15 +232,9 @@ def _initialize_kv_caches(self, vllm_config: VllmConfig) -> KVCacheConfig:
     # late-loaded paths still need a minimal KV cache config-shaped result.
     if _is_afd_ffn_config(vllm_config):
         _prepare_late_loaded_ffn_engine_core(self, vllm_config)
-        kv_cache_config = _AFDFFNKVCacheConfig()
-        if _initialize_kv_caches_returns_tuple_value:
-            result = 0, 0, kv_cache_config
-        else:
-            result = kv_cache_config
-        return result
+        return _AFDFFNKVCacheConfig()
     # ### PATCH END: AFD FFN late-loaded KV cache bypass
 
-    core_module = _require_core_module()
     start = time.time()
 
     # Get all kv cache needed by the model
@@ -323,13 +308,11 @@ def run_busy_loop(self):
     # FFN ranks run the connector server loop and poll worker-side failures
     # instead of executing vLLM's normal request scheduling loop.
     if _is_afd_ffn_engine(self):
-        result = _run_ffn_busy_loop(self, _CORE_MODULE)
+        result = _run_ffn_busy_loop(self, core_module)
         return result
     # ### PATCH END: AFD FFN connector busy loop
 
-    if isinstance(self, _DP_ENGINE_CORE_PROC_CLS):
-        core_module = _require_core_module()
-
+    if isinstance(self, core_module.DPEngineCoreProc):
         # Loop until process is sent a SIGINT or SIGTERM
         while self._handle_shutdown():
             # 1) Poll the input queue until there is work to do.
@@ -393,59 +376,6 @@ def run_busy_loop(self):
         self._process_engine_step()
 
     raise SystemExit
-
-
-_CORE_MODULE: Any | None = None
-_DP_ENGINE_CORE_PROC_CLS: type[Any] = type(None)
-
-
-def _require_core_module() -> Any:
-    assert _CORE_MODULE is not None
-    return _CORE_MODULE
-
-
-def _patch_engine_core() -> None:
-    """Patch AFD FFN EngineCore behavior when this module is imported."""
-
-    global _CORE_MODULE
-    global _DP_ENGINE_CORE_PROC_CLS
-    global _initialize_kv_caches_returns_tuple_value
-    try:
-        core_module = importlib.import_module("vllm.v1.engine.core")
-    except Exception:
-        logger.debug("AFD EngineCore patch skipped: vLLM core is unavailable")
-        return
-
-    _CORE_MODULE = core_module
-    engine_core_cls = core_module.EngineCore
-    engine_core_proc_cls = getattr(core_module, "EngineCoreProc", None)
-    dp_engine_core_proc_cls = getattr(core_module, "DPEngineCoreProc", None)
-    _DP_ENGINE_CORE_PROC_CLS = (
-        dp_engine_core_proc_cls if dp_engine_core_proc_cls is not None else type(None)
-    )
-
-    if not hasattr(core_module, _INITIALIZE_KV_CACHES_RETURNS_TUPLE_ATTR):
-        setattr(
-            core_module,
-            _INITIALIZE_KV_CACHES_RETURNS_TUPLE_ATTR,
-            _initialize_kv_caches_returns_tuple(engine_core_cls),
-        )
-
-    _initialize_kv_caches_returns_tuple_value = getattr(
-        core_module,
-        _INITIALIZE_KV_CACHES_RETURNS_TUPLE_ATTR,
-    )
-
-    engine_core_cls.__init__ = __init__
-    if hasattr(engine_core_cls, "_initialize_kv_caches"):
-        engine_core_cls._initialize_kv_caches = _initialize_kv_caches
-    engine_core_cls.shutdown = shutdown
-    if engine_core_proc_cls is not None:
-        engine_core_proc_cls.run_busy_loop = run_busy_loop
-    if dp_engine_core_proc_cls is not None:
-        dp_engine_core_proc_cls.run_busy_loop = run_busy_loop
-
-    logger.debug("AFD EngineCore patch applied")
 
 
 class _AFDFFNKVCacheConfig:
@@ -625,15 +555,12 @@ def _get_afd_config(vllm_config: VllmConfig | None) -> AFDConfig:
         return AFDConfig()
 
 
-def _initialize_kv_caches_returns_tuple(engine_core_cls: type[Any]) -> bool:
-    try:
-        source = inspect.getsource(engine_core_cls.__init__)
-    except Exception:
-        return False
-    return "num_gpu_blocks, num_cpu_blocks" in source
-
-
-_patch_engine_core()
+core_module.EngineCore.__init__ = __init__
+core_module.EngineCore._initialize_kv_caches = _initialize_kv_caches
+core_module.EngineCore.shutdown = shutdown
+core_module.EngineCoreProc.run_busy_loop = run_busy_loop
+core_module.DPEngineCoreProc.run_busy_loop = run_busy_loop
+logger.debug("AFD EngineCore patch applied")
 
 
 __all__: list[str] = []

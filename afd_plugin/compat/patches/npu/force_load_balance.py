@@ -497,13 +497,8 @@ def apply(
     return final_hidden_states
 
 
-def _patch_force_load_balance() -> None:
-    """Patch Ascend W8A8 force-load-balance behavior when imported."""
-    AscendFusedMoE.__init__ = __init__
-    AscendW8A8DynamicFusedMoEMethod.apply = apply
-
-
-_patch_force_load_balance()
+AscendFusedMoE.__init__ = __init__
+AscendW8A8DynamicFusedMoEMethod.apply = apply
 
 
 __all__: list[str] = []

@@ -366,15 +366,6 @@ def _is_afd_async_attention_config(vllm_config: VllmConfig) -> bool:
     return is_afd_async_dp(vllm_config) and afd_config.role == "attention"
 
 
-def _patch_async_dp_engine() -> None:
-    """Patch AFD async-DP engine scheduling when this module is imported."""
-    EngineCoreProc.run_engine_core = staticmethod(run_engine_core)
-    engine_utils_module.launch_core_engines = launch_core_engines
-    core_client_module.launch_core_engines = launch_core_engines
-    DPAsyncMPClient.add_request_async = add_request_async
-    engine_core_module.logger.debug("AFD async-DP engine patch applied")
-
-
 def _is_target_vllm_compatible() -> bool:
     try:
         import vllm
@@ -389,7 +380,11 @@ def _is_target_vllm_compatible() -> bool:
 
 
 if _is_target_vllm_compatible():
-    _patch_async_dp_engine()
+    EngineCoreProc.run_engine_core = staticmethod(run_engine_core)
+    engine_utils_module.launch_core_engines = launch_core_engines
+    core_client_module.launch_core_engines = launch_core_engines
+    DPAsyncMPClient.add_request_async = add_request_async
+    engine_core_module.logger.debug("AFD async-DP engine patch applied")
 
 
 __all__: list[str] = []

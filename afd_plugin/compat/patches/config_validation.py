@@ -9,10 +9,12 @@ relaxes that assertion for configs with ``additional_config["afd"].enabled``.
 
 from __future__ import annotations
 
-import importlib
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
+
+import vllm.config.vllm as config_module
+import vllm.engine.arg_utils as arg_utils_module
 
 from afd_plugin.compat.vllm import TARGET_VLLM_VERSION
 from afd_plugin.config import parse_afd_config
@@ -108,65 +110,6 @@ def __post_init__(self: VllmConfig):
     return result
 
 
-def _patch_config_validation() -> None:
-    """Patch AFD ubatching config validation when this module is imported."""
-
-    global _original_create_engine_config
-    global _original_vllm_config_post_init
-    if not _is_target_vllm_compatible():
-        return
-
-    try:
-        arg_utils_module = importlib.import_module("vllm.engine.arg_utils")
-    except Exception:
-        logger.debug("AFD config validation patch skipped: vLLM args unavailable")
-        return
-    try:
-        config_module = importlib.import_module("vllm.config.vllm")
-    except Exception:
-        config_module = None
-
-    engine_args_cls = getattr(arg_utils_module, "EngineArgs", None)
-    if engine_args_cls is None:
-        return
-
-    if not hasattr(arg_utils_module, _ORIGINAL_CREATE_ENGINE_CONFIG_ATTR):
-        setattr(
-            arg_utils_module,
-            _ORIGINAL_CREATE_ENGINE_CONFIG_ATTR,
-            engine_args_cls.create_engine_config,
-        )
-
-    if (
-        config_module is not None
-        and not hasattr(config_module, _ORIGINAL_VLLM_CONFIG_POST_INIT_ATTR)
-    ):
-        setattr(
-            config_module,
-            _ORIGINAL_VLLM_CONFIG_POST_INIT_ATTR,
-            getattr(
-                getattr(config_module, "VllmConfig", None),
-                "__post_init__",
-                None,
-            ),
-        )
-
-    _original_create_engine_config = getattr(
-        arg_utils_module,
-        _ORIGINAL_CREATE_ENGINE_CONFIG_ATTR,
-    )
-    _original_vllm_config_post_init = (
-        getattr(config_module, _ORIGINAL_VLLM_CONFIG_POST_INIT_ATTR)
-        if config_module is not None
-        else None
-    )
-
-    engine_args_cls.create_engine_config = create_engine_config
-    if config_module is not None and _original_vllm_config_post_init is not None:
-        config_module.VllmConfig.__post_init__ = __post_init__
-    logger.debug("AFD config validation patch applied")
-
-
 def _should_relax_engine_args_backend(engine_args: EngineArgs) -> bool:
     if not _is_target_vllm_compatible():
         return False
@@ -226,7 +169,33 @@ def _is_target_vllm_compatible() -> bool:
     return version_text.startswith(TARGET_VLLM_VERSION)
 
 
-_patch_config_validation()
+if _is_target_vllm_compatible():
+    if not hasattr(arg_utils_module, _ORIGINAL_CREATE_ENGINE_CONFIG_ATTR):
+        setattr(
+            arg_utils_module,
+            _ORIGINAL_CREATE_ENGINE_CONFIG_ATTR,
+            arg_utils_module.EngineArgs.create_engine_config,
+        )
+
+    if not hasattr(config_module, _ORIGINAL_VLLM_CONFIG_POST_INIT_ATTR):
+        setattr(
+            config_module,
+            _ORIGINAL_VLLM_CONFIG_POST_INIT_ATTR,
+            config_module.VllmConfig.__post_init__,
+        )
+
+    _original_create_engine_config = getattr(
+        arg_utils_module,
+        _ORIGINAL_CREATE_ENGINE_CONFIG_ATTR,
+    )
+    _original_vllm_config_post_init = getattr(
+        config_module,
+        _ORIGINAL_VLLM_CONFIG_POST_INIT_ATTR,
+    )
+
+    arg_utils_module.EngineArgs.create_engine_config = create_engine_config
+    config_module.VllmConfig.__post_init__ = __post_init__
+    logger.debug("AFD config validation patch applied")
 
 
 __all__: list[str] = []

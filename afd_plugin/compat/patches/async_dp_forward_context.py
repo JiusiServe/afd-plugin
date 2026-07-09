@@ -190,25 +190,6 @@ def set_forward_context(
                     )
 
 
-def _patch_async_dp_forward_context() -> None:
-    """Patch AFD async-DP forward context behavior when imported."""
-    if not _is_target_vllm_compatible():
-        return
-
-    forward_context_module.set_forward_context = set_forward_context
-    _patch_loaded_forward_context_imports()
-    forward_context_module.logger.debug(
-        "AFD async-DP forward-context patch applied",
-    )
-
-
-def _patch_loaded_forward_context_imports() -> None:
-    for module_name in _FORWARD_CONTEXT_IMPORT_MODULES:
-        module = sys.modules.get(module_name)
-        if module is not None:
-            module.set_forward_context = set_forward_context
-
-
 def _is_target_vllm_compatible() -> bool:
     try:
         import vllm
@@ -222,7 +203,15 @@ def _is_target_vllm_compatible() -> bool:
     return version_text.startswith(TARGET_VLLM_VERSION)
 
 
-_patch_async_dp_forward_context()
+if _is_target_vllm_compatible():
+    forward_context_module.set_forward_context = set_forward_context
+    for module_name in _FORWARD_CONTEXT_IMPORT_MODULES:
+        module = sys.modules.get(module_name)
+        if module is not None:
+            module.set_forward_context = set_forward_context
+    forward_context_module.logger.debug(
+        "AFD async-DP forward-context patch applied",
+    )
 
 
 __all__: list[str] = []
