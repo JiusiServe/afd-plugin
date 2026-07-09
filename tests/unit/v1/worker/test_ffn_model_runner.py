@@ -10,9 +10,9 @@ pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
 from afd_plugin.connectors import (
+    AFDAttnOutput,
     AFDConnectorMetadata,
     AFDDPMetadataPayload,
-    AFDRecvOutput,
 )
 from afd_plugin.v1.worker.cuda_graph import make_ffn_graph_key
 from afd_plugin.v1.worker.ffn_model_runner import (
@@ -43,7 +43,7 @@ class _FakeConnector:
         if ubatch_idx is None:
             return self.attn_outputs.popleft()
         for item in tuple(self.attn_outputs):
-            metadata = item.metadata if isinstance(item, AFDRecvOutput) else item[1]
+            metadata = item.metadata if isinstance(item, AFDAttnOutput) else item[1]
             if getattr(metadata, "ubatch_idx", metadata.stage_idx) == ubatch_idx:
                 self.attn_outputs.remove(item)
                 return item
@@ -156,7 +156,7 @@ def test_ffn_runner_accepts_unified_recv_output_payload():
     runner = _runner_with_connector_and_model(_FakeModel())
     metadata = _metadata()
     runner.connector.attn_outputs.append(
-        AFDRecvOutput(hidden_states="hidden", metadata=metadata),
+        AFDAttnOutput(hidden_states="hidden", metadata=metadata),
     )
 
     runner.execute_model(dp_metadata_list={0: "dp"})

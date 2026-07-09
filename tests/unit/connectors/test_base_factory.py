@@ -6,12 +6,12 @@ pytest.importorskip("torch")
 
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
+    AFDAttnOutput,
     AFDConnectorBase,
     AFDConnectorFactory,
     AFDConnectorMetadata,
     AFDDPMetadata,
     AFDDPMetadataPayload,
-    AFDRecvOutput,
 )
 
 
@@ -43,13 +43,13 @@ def test_connector_metadata_validates_sequence_lengths():
         )
 
 
-def test_recv_output_carries_connector_payload_fields():
+def test_attn_output_carries_connector_payload_fields():
     metadata = AFDConnectorMetadata.create_ffn_metadata(
         layer_idx=1,
         stage_idx=2,
         seq_lens=[3],
     )
-    output = AFDRecvOutput(
+    output = AFDAttnOutput(
         hidden_states="hidden",
         metadata=metadata,
         topk_ids="ids",
@@ -60,6 +60,7 @@ def test_recv_output_carries_connector_payload_fields():
     assert output.metadata is metadata
     assert output.topk_ids == "ids"
     assert output.cam_p2p_ep_name == "ep"
+    assert repr(output).startswith("AFDAttnOutput(")
 
 
 def test_connector_base_builds_default_recv_metadata_from_dp_metadata():
@@ -103,7 +104,7 @@ class _MinimalConnector(AFDConnectorBase):
         return None
 
     def recv_attn_output(self, ubatch_idx=None):
-        return AFDRecvOutput(
+        return AFDAttnOutput(
             hidden_states=None,
             metadata=AFDConnectorMetadata.create_ffn_metadata(
                 layer_idx=0,

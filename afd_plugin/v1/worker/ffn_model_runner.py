@@ -24,11 +24,11 @@ from afd_plugin.compat.profiler import (
 )
 from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
+    AFDAttnOutput,
     AFDConnectorFactory,
     AFDConnectorMetadata,
     AFDDPMetadata,
     AFDDPMetadataPayload,
-    AFDRecvOutput,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
     _with_dp_derived_afd_rank,
@@ -379,7 +379,7 @@ def _normalize_recv_output(
         hidden_states, metadata = recv_output
         return hidden_states, metadata, recv_output
 
-    if isinstance(recv_output, AFDRecvOutput):
+    if isinstance(recv_output, AFDAttnOutput):
         return recv_output.hidden_states, recv_output.metadata, recv_output
 
     hidden_states = recv_output.hidden_states

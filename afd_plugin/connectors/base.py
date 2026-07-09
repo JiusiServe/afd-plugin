@@ -11,10 +11,10 @@ import torch
 
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.metadata import (
+    AFDAttnOutput,
     AFDConnectorMetadata,
     AFDDPMetadata,
     AFDDPMetadataPayload,
-    AFDRecvOutput,
 )
 
 if TYPE_CHECKING:
@@ -164,7 +164,7 @@ class AFDConnectorBase(ABC):
         self,
         ubatch_idx: int | None = None,
         **kwargs: Any,
-    ) -> AFDRecvOutput:
+    ) -> AFDAttnOutput:
         """Receive Attention hidden states on the FFN side.
 
         This method is called by FFN-side execution before running the FFN
@@ -178,7 +178,7 @@ class AFDConnectorBase(ABC):
             **kwargs: Optional backend-specific receive arguments.
 
         Returns:
-            ``AFDRecvOutput`` containing received hidden states, transfer
+            ``AFDAttnOutput`` containing received hidden states, transfer
             metadata, and optional backend-specific fields produced by the
             receive operation.
         """
@@ -332,7 +332,7 @@ class AFDConnectorBase(ABC):
     def update_metadata(
         self,
         metadata: AFDConnectorMetadata,
-        recv_output: AFDRecvOutput,
+        recv_output: AFDAttnOutput,
     ) -> None:
         """Update metadata after an Attention-to-FFN receive completes.
 

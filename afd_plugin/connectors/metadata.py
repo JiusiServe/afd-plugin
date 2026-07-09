@@ -276,7 +276,7 @@ class AFDConnectorMetadata:
 
 
 @dataclass(slots=True)
-class AFDRecvOutput:
+class AFDAttnOutput:
     """Unified Attention-to-FFN receive payload.
 
     ``recv_attn_output()`` returns this object on the FFN side. The first two
@@ -478,7 +478,7 @@ __all__ = [
     "AFDDPMetadataPayload",
     "AFDFFNOutput",
     "AFDMetadata",
-    "AFDRecvOutput",
+    "AFDAttnOutput",
     "AFDSingleDPMetadata",
     "decode_dp_metadata_payload",
     "encode_dp_metadata_payload",

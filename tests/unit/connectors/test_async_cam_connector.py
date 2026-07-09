@@ -10,12 +10,12 @@ from afd_plugin.config import AFDConfig, afd_config_from_mapping
 pytest.importorskip("torch")
 
 from afd_plugin.connectors import (  # noqa: E402
+    AFDAttnOutput,
     AFDConnectorFactory,
     AFDConnectorMetadata,
     AFDDPMetadata,
     AFDDPMetadataPayload,
     AFDFFNOutput,
-    AFDRecvOutput,
 )
 from afd_plugin.connectors.npu import async_cam as async_cam_module  # noqa: E402
 from afd_plugin.connectors.npu.async_cam import (  # noqa: E402
@@ -395,7 +395,7 @@ def test_async_ffn_work_item_uses_cam_layer_and_token_metadata(monkeypatch):
 
     def fake_recv_attn_output(*, metadata, ubatch_idx):
         assert ubatch_idx == 0
-        return AFDRecvOutput(
+        return AFDAttnOutput(
             hidden_states=_FakeTensorLike("hidden"),
             metadata=metadata,
             atten_batch_size=[
@@ -436,7 +436,7 @@ def test_async_cam_shared_token_count_uses_expert_tokens_shared_directly():
         stage_idx=0,
         seq_lens=[10],
     )
-    payload = AFDRecvOutput(
+    payload = AFDAttnOutput(
         hidden_states=_FakeTensorLike("hidden"),
         metadata=metadata,
         atten_batch_size=[
@@ -452,7 +452,7 @@ def test_async_cam_shared_token_count_uses_expert_tokens_shared_directly():
 
 
 def test_async_slice_cam_payload_shared_tensors_fallback_to_100_tokens():
-    payload = AFDRecvOutput(
+    payload = AFDAttnOutput(
         hidden_states=_FakeTensorLike("hidden"),
         metadata=AFDConnectorMetadata.create_ffn_metadata(
             layer_idx=0,
@@ -493,7 +493,7 @@ def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
     monkeypatch.setattr(connector, "send_ffn_output", fake_send_ffn_output)
 
     def fake_recv_attn_output(*, metadata, ubatch_idx):
-        return AFDRecvOutput(
+        return AFDAttnOutput(
             hidden_states=_FakeTensorLike("hidden"),
             metadata=metadata,
             atten_batch_size=[

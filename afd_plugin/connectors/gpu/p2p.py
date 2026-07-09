@@ -17,10 +17,10 @@ from vllm.utils.torch_utils import direct_register_custom_op
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import (
+    AFDAttnOutput,
     AFDConnectorMetadata,
     AFDDPMetadata,
     AFDDPMetadataPayload,
-    AFDRecvOutput,
     recv_dp_metadata_payload,
     send_dp_metadata_payload,
 )
@@ -305,7 +305,7 @@ class P2PAFDConnector(AFDConnectorBase):
         self,
         ubatch_idx: int | None = None,
         **kwargs: Any,
-    ) -> AFDRecvOutput:
+    ) -> AFDAttnOutput:
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
         hidden_states_list: list[torch.Tensor] = []
 
@@ -341,7 +341,7 @@ class P2PAFDConnector(AFDConnectorBase):
             stage_idx=ubatch_idx,
             seq_lens=[int(tensor.shape[0]) for tensor in hidden_states_list],
         )
-        return AFDRecvOutput(hidden_states=hidden_states, metadata=metadata)
+        return AFDAttnOutput(hidden_states=hidden_states, metadata=metadata)
 
     def send_ffn_output(
         self,

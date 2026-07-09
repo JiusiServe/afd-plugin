@@ -18,10 +18,10 @@ from afd_plugin.compat.ascend.ops import ensure_cam_async_ops_available
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import (
+    AFDAttnOutput,
     AFDConnectorMetadata,
     AFDDPMetadataPayload,
     AFDFFNOutput,
-    AFDRecvOutput,
 )
 from afd_plugin.distributed import init_afd_process_group
 
@@ -63,7 +63,7 @@ class AFDAsyncFFNWorkItem:
 
     hidden_states: Tensor
     metadata: AFDConnectorMetadata
-    recv_output: AFDRecvOutput
+    recv_output: AFDAttnOutput
     layer_idx: int
     stage_idx: int
     num_tokens: int
@@ -229,7 +229,7 @@ class AFDAsyncConnector(AFDConnectorBase):
     def update_metadata(
         self,
         metadata: AFDConnectorMetadata,
-        recv_output: AFDRecvOutput,
+        recv_output: AFDAttnOutput,
     ) -> None:
         data = self._metadata_data_or_default(metadata)
         data.topk_ids = recv_output.topk_ids
@@ -477,7 +477,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         self,
         ubatch_idx: int | None = None,
         **kwargs: Any,
-    ) -> AFDRecvOutput:
+    ) -> AFDAttnOutput:
         self._require_initialized()
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
         metadata = kwargs.get("metadata")
@@ -551,7 +551,7 @@ class AFDAsyncConnector(AFDConnectorBase):
         data.expert_token_nums = expert_token_nums
         data.expert_token_nums_shared = expert_token_nums_shared
         data.atten_batch_size = token_nums_rankid_layeridx
-        return AFDRecvOutput(
+        return AFDAttnOutput(
             hidden_states=hidden_states,
             metadata=metadata,
             group_list=expert_token_nums,
@@ -792,7 +792,7 @@ def _connector_driven_batch_size(
 
 
 def _cam_token_nums_rankid_layeridx(
-    payload: AFDRecvOutput,
+    payload: AFDAttnOutput,
     metadata: AFDConnectorMetadata,
 ) -> Tensor:
     token_nums_rankid_layeridx = payload.atten_batch_size
@@ -819,7 +819,7 @@ def _cam_metadata_int(token_nums_rankid_layeridx: Tensor, index: int) -> int:
     return int(value.item())
 
 
-def _cam_shared_token_count(payload: AFDRecvOutput, fallback: int) -> int:
+def _cam_shared_token_count(payload: AFDAttnOutput, fallback: int) -> int:
     expert_token_nums_shared = payload.ep_recv_counts_shared
     if expert_token_nums_shared is None:
         return max(1, int(fallback))
@@ -828,7 +828,7 @@ def _cam_shared_token_count(payload: AFDRecvOutput, fallback: int) -> int:
 
 def _slice_cam_payload_to_actual_tokens(
     hidden_states: Tensor,
-    payload: AFDRecvOutput,
+    payload: AFDAttnOutput,
     num_tokens: int,
     *,
     shared_num_tokens: int | None = None,
