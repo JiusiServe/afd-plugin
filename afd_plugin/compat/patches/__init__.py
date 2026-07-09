@@ -6,16 +6,8 @@ Patches in this package must remain idempotent, version-aware, documented, and
 covered by CPU-safe tests whenever possible.
 """
 
-__all__ = [
-    "apply_async_dp_forward_context_patch",
-]
+__all__: list[str] = []
 
 
 def __getattr__(name: str):
-    if name == "apply_async_dp_forward_context_patch":
-        from afd_plugin.compat.patches.async_dp_forward_context import (
-            apply_async_dp_forward_context_patch,
-        )
-
-        return apply_async_dp_forward_context_patch
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -12,9 +12,10 @@ Why:
     all-reduce and metadata paths must be skipped for the AFD async connector.
 
 How:
-    Non-AFD configs delegate to vLLM unchanged. AFD async configs create the
-    normal ``ForwardContext`` with ``dp_metadata=None`` so vLLM does not enter
-    native DP metadata coordination from this path.
+    This module is imported by ``register_afd()``. Importing it patches
+    ``set_forward_context`` in-place. The patched function expands the pinned
+    upstream implementation and only changes the DP metadata section for AFD
+    async configs.
 
 Future plan:
     Remove this patch when vLLM exposes a plugin-owned way to opt out of MoE
@@ -24,13 +25,11 @@ Future plan:
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import vllm.forward_context as forward_context_module
 from vllm.config import CUDAGraphMode
-from vllm.forward_context import DPMetadata
 
 from afd_plugin.compat.vllm import TARGET_VLLM_VERSION
 from afd_plugin.config import is_afd_async_dp
@@ -47,10 +46,6 @@ if TYPE_CHECKING:
     )
     SlotMapping: TypeAlias = dict[str, torch.Tensor] | list[dict[str, torch.Tensor]]
 
-_PATCH_APPLIED = False
-
-_original_set_forward_context = forward_context_module.set_forward_context
-
 _FORWARD_CONTEXT_IMPORT_MODULES = (
     "vllm.v1.worker.gpu_model_runner",
     "vllm.v1.worker.gpu.model_runner",
@@ -59,9 +54,14 @@ _FORWARD_CONTEXT_IMPORT_MODULES = (
 )
 
 
+# Patch reason: upstream set_forward_context always creates DPMetadata for MoE
+# DP ranks, but AFD async-DP uses connector-driven coordination instead.
+# Patch functionality: preserves the target upstream tag's forward-context
+# setup and skips DPMetadata creation only for AFD async-DP configs.
+# Signature: matches upstream; no added parameters.
 @contextmanager
-def _patched_set_forward_context(
-    attn_metadata: AttentionMetadataMapping | None,
+def set_forward_context(
+    attn_metadata: Any,
     vllm_config: VllmConfig,
     num_tokens: int | None = None,
     num_tokens_across_dp: torch.Tensor | None = None,
@@ -70,24 +70,11 @@ def _patched_set_forward_context(
     ubatch_slices: UBatchSlices | None = None,
     slot_mapping: SlotMapping | None = None,
     skip_compiled: bool = False,
-) -> Iterator[None]:
-    """Create a forward context without DP metadata for AFD async-DP."""
-
-    if not is_afd_async_dp(vllm_config):
-        with _original_set_forward_context(
-            attn_metadata,
-            vllm_config,
-            num_tokens,
-            num_tokens_across_dp,
-            cudagraph_runtime_mode,
-            batch_descriptor,
-            ubatch_slices,
-            slot_mapping,
-            skip_compiled,
-        ):
-            yield
-        return
-
+):
+    """A context manager that stores the current forward context,
+    can be attention metadata, etc.
+    Here we can inject common logic for every model forward pass.
+    """
     need_to_track_batchsize = (
         forward_context_module.track_batchsize and attn_metadata is not None
     )
@@ -96,14 +83,42 @@ def _patched_set_forward_context(
             forward_context_module.time.perf_counter()
         )
 
-    dp_metadata: DPMetadata | None = None
+    dp_metadata: forward_context_module.DPMetadata | None = None
+    # ### PATCH START: AFD async-DP forward context metadata
+    # AFD async-DP coordinates batches through connector flow, so skip vLLM's
+    # native DPMetadata construction only for AFD async configs.
+    if not is_afd_async_dp(vllm_config) and (
+        vllm_config.parallel_config.data_parallel_size > 1
+        and vllm_config.parallel_config.is_moe_model is not False
+        and (attn_metadata is not None or num_tokens is not None)
+    ):
+        # If num_tokens_across_dp hasn't already been initialized, then
+        # initialize it here. Both DP padding and Microbatching will be
+        # disabled.
+        if num_tokens_across_dp is None:
+            assert ubatch_slices is None
+            assert num_tokens is not None
+            _, num_tokens_across_dp, _ = forward_context_module.coordinate_batch_across_dp(
+                num_tokens_unpadded=num_tokens,
+                parallel_config=vllm_config.parallel_config,
+                allow_microbatching=False,
+            )
+            assert num_tokens_across_dp is not None
+        dp_metadata = forward_context_module.DPMetadata.make(
+            vllm_config.parallel_config,
+            num_tokens or 0,
+            num_tokens_across_dp,
+        )
+    # ### PATCH END: AFD async-DP forward context metadata
 
+    # Convenience: if cudagraph is used and num_tokens is given, we can just
+    # create a batch descriptor here if not given (there's no harm since if it
+    # doesn't match in the wrapper it'll fall through).
     if (
         cudagraph_runtime_mode != CUDAGraphMode.NONE
         and num_tokens is not None
-        and batch_descriptor is None
     ):
-        batch_descriptor = forward_context_module.BatchDescriptor(
+        batch_descriptor = batch_descriptor or forward_context_module.BatchDescriptor(
             num_tokens=num_tokens,
         )
 
@@ -138,10 +153,14 @@ def _patched_set_forward_context(
     finally:
         if need_to_track_batchsize:
             batchsize = num_tokens
+            # we use synchronous scheduling right now,
+            # adding a sync point here should not affect
+            # scheduling of the next batch
             synchronize = forward_context_module.current_platform.synchronize
             if synchronize is not None:
                 synchronize()
             now = forward_context_module.time.perf_counter()
+            # time measurement is in milliseconds
             forward_context_module.batchsize_forward_time[batchsize].append(
                 (now - forward_context_module.forward_start_time) * 1000,
             )
@@ -171,17 +190,12 @@ def _patched_set_forward_context(
                     )
 
 
-def apply_async_dp_forward_context_patch() -> None:
-    """Apply AFD async-DP forward-context patches once per process."""
-
-    global _PATCH_APPLIED
-    if _PATCH_APPLIED:
-        return
+def _patch_async_dp_forward_context() -> None:
+    """Patch AFD async-DP forward context behavior when imported."""
     if not _is_target_vllm_compatible():
         return
-    _PATCH_APPLIED = True
 
-    forward_context_module.set_forward_context = _patched_set_forward_context
+    forward_context_module.set_forward_context = set_forward_context
     _patch_loaded_forward_context_imports()
     forward_context_module.logger.debug(
         "AFD async-DP forward-context patch applied",
@@ -192,7 +206,7 @@ def _patch_loaded_forward_context_imports() -> None:
     for module_name in _FORWARD_CONTEXT_IMPORT_MODULES:
         module = sys.modules.get(module_name)
         if module is not None:
-            module.set_forward_context = _patched_set_forward_context
+            module.set_forward_context = set_forward_context
 
 
 def _is_target_vllm_compatible() -> bool:
@@ -208,4 +222,7 @@ def _is_target_vllm_compatible() -> bool:
     return version_text.startswith(TARGET_VLLM_VERSION)
 
 
-__all__ = ["apply_async_dp_forward_context_patch"]
+_patch_async_dp_forward_context()
+
+
+__all__: list[str] = []
