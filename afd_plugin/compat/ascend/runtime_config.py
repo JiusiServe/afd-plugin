@@ -20,18 +20,18 @@ def npu_afd_num_ubatches(vllm_config: VllmConfig) -> int:
 
 
 def fix_all2all_backend_for_afd(vllm_config: VllmConfig) -> None:
-    """Mirror vllm-ascend's platform.py all2all_backend override.
+    """Apply vLLM-Ascend's default-worker all2all fix to AFD workers.
 
-    vllm-ascend sets ``all2all_backend = "flashinfer_all2allv"`` when
-    ``enable_sp`` is False, but only when ``worker_cls == "auto"``.
-    AFD workers use a custom ``worker_cls``, so this override never fires
-    and ``all2all_backend`` keeps its default ``"allgather_reducescatter"``.
-    That value triggers ``use_sequence_parallel_moe = True`` (because
-    ``enable_expert_parallel=True``, ``tp_size > 1``, ``dp_size > 1``),
-    which incorrectly splits MoE tokens via ``sequence_parallel_chunk``,
-    producing wrong output.
+    vLLM-Ascend normally rewrites ``all2all_backend`` to
+    ``"flashinfer_all2allv"`` when sequence parallelism is disabled, but that
+    compatibility rewrite is gated on the default ``worker_cls == "auto"``.
+    AFD Attention/FFN workers use custom worker classes, so they miss the
+    rewrite and keep the default ``"allgather_reducescatter"`` backend.
 
-    This function applies the same fix for AFD workers.
+    Leaving that backend in place can make the Ascend MoE path think sequence
+    parallel MoE is enabled and split tokens through ``sequence_parallel_chunk``,
+    which is not the layout AFD's NPU connector path sends. Mirror the upstream
+    rewrite here before AFD creates the NPU model runner.
     """
     parallel_config = vllm_config.parallel_config
     if (
