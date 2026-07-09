@@ -430,6 +430,61 @@ def test_async_ffn_work_item_uses_cam_layer_and_token_metadata(monkeypatch):
     assert work_item.metadata.connector_data.layer_idx == 11
 
 
+def test_async_ffn_work_item_uses_expert_counts_for_routed_tokens(monkeypatch):
+    connector = AFDAsyncConnector(
+        0,
+        0,
+        _vllm_config(),
+        _afd_config(role="ffn"),
+    )
+
+    def fake_recv_attn_output(*, metadata, ubatch_idx):
+        assert ubatch_idx == 0
+        return AFDAttnOutput(
+            hidden_states=_FakeTensorLike("hidden"),
+            metadata=metadata,
+            atten_batch_size=[
+                _FakeScalar(6),
+                _FakeScalar(0),
+                _FakeScalar(23),
+            ],
+            group_list=[
+                _FakeScalar(1),
+                _FakeScalar(0),
+                _FakeScalar(0),
+                _FakeScalar(1),
+                _FakeScalar(1),
+                _FakeScalar(0),
+                _FakeScalar(0),
+                _FakeScalar(1),
+                _FakeScalar(0),
+                _FakeScalar(1),
+                _FakeScalar(1),
+                _FakeScalar(0),
+                _FakeScalar(0),
+                _FakeScalar(0),
+                _FakeScalar(0),
+                _FakeScalar(0),
+            ],
+            expand_x_shared=_FakeTensorLike("shared-hidden"),
+            dynamic_scales_shared=_FakeTensorLike("shared-scales"),
+            ep_recv_counts_shared=[_FakeScalar(1)],
+        )
+
+    monkeypatch.setattr(connector, "recv_attn_output", fake_recv_attn_output)
+
+    work_item = connector.recv_ffn_work_item(stage_idx=0, max_num_tokens=16)
+
+    assert work_item.layer_idx == 23
+    assert work_item.total_num_tokens == 6
+    assert work_item.shared_num_tokens == 1
+    assert work_item.num_tokens == 6
+    assert work_item.hidden_states == "hidden[:6]"
+    assert work_item.metadata.seq_lens == [6]
+    assert work_item.recv_output.expand_x_shared == "shared-hidden[:1]"
+    assert work_item.recv_output.dynamic_scales_shared == "shared-scales[:1]"
+
+
 def test_async_cam_shared_token_count_uses_expert_tokens_shared_directly():
     metadata = AFDConnectorMetadata.create_ffn_metadata(
         layer_idx=0,
