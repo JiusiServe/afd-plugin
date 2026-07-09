@@ -141,10 +141,10 @@ def _load_patch_module(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_async_dp_forward_context_skips_dp_metadata(monkeypatch):
-    patch_module = _load_patch_module(monkeypatch)
+    _load_patch_module(monkeypatch)
     forward_module = sys.modules["vllm.forward_context"]
-    patch_module.apply_async_dp_forward_context_patch()
-    patch_module.apply_async_dp_forward_context_patch()
+    module_name = "afd_plugin.compat.patches.async_dp_forward_context"
+    importlib.reload(sys.modules[module_name])
 
     with forward_module.set_forward_context(
         attn_metadata=object(),
@@ -159,15 +159,17 @@ def test_async_dp_forward_context_skips_dp_metadata(monkeypatch):
 
 
 def test_async_dp_forward_context_preserves_non_async_path(monkeypatch):
-    patch_module = _load_patch_module(monkeypatch)
+    _load_patch_module(monkeypatch)
     forward_module = sys.modules["vllm.forward_context"]
-    patch_module.apply_async_dp_forward_context_patch()
 
     with forward_module.set_forward_context(
         attn_metadata=object(),
         vllm_config=_config(connector="camp2pconnector", async_dp=False),
         num_tokens=4,
     ):
-        pass
+        context = forward_module.current_forward_context
+        assert context.dp_metadata is not None
+        assert context.dp_metadata.num_tokens == 4
 
-    assert forward_module.original_set_forward_context_called is True
+    assert forward_module.original_set_forward_context_called is False
+    assert forward_module.original_coordinate_called is True
