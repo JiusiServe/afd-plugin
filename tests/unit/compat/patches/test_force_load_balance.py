@@ -31,6 +31,12 @@ def _install_fake_modules(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
         return kwargs["topk_ids"]
 
     class AscendW8A8DynamicFusedMoEMethod:
+        def __init__(self):
+            self.multistream_overlap_gate = False
+            self.in_dtype = torch.float32
+            self.dynamic_eplb = False
+            self.quant_type = _QuantType.W8A8
+
         def apply(
             self,
             layer: torch.nn.Module,
@@ -95,8 +101,48 @@ def _install_fake_modules(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
     vllm_config.VllmConfig = object
 
     root = types.ModuleType("vllm_ascend")
+    envs_mod = types.ModuleType("vllm_ascend.envs")
+    envs_mod.VLLM_ASCEND_ENABLE_FUSED_MC2 = 0
+    ascend_forward_context_mod = types.ModuleType(
+        "vllm_ascend.ascend_forward_context"
+    )
+    ascend_forward_context_mod.MoECommType = SimpleNamespace(FUSED_MC2="fused_mc2")
+    ascend_forward_context_mod._EXTRA_CTX = SimpleNamespace(
+        moe_comm_method=SimpleNamespace(
+            fused_experts=lambda fused_experts_input: fused_experts_input
+        ),
+        moe_comm_type=None,
+    )
+    flash_common3_context_mod = types.ModuleType(
+        "vllm_ascend.flash_common3_context"
+    )
+    flash_common3_context_mod.get_flash_common3_context = lambda: None
     ops = types.ModuleType("vllm_ascend.ops")
     fused_moe_pkg = types.ModuleType("vllm_ascend.ops.fused_moe")
+    experts_selector_mod = types.ModuleType(
+        "vllm_ascend.ops.fused_moe.experts_selector"
+    )
+    experts_selector_mod.select_experts = (
+        lambda hidden_states,
+        router_logits,
+        top_k,
+        use_grouped_topk,
+        renormalize,
+        topk_group,
+        num_expert_group,
+        custom_routing_function,
+        scoring_func,
+        routed_scaling_factor,
+        e_score_correction_bias,
+        mix_placement,
+        num_logical_experts,
+        num_shared_experts,
+        num_experts: (
+            torch.ones_like(router_logits, dtype=torch.float32),
+            router_logits,
+        )
+    )
+    experts_selector_mod.zero_experts_compute = None
     fused_moe_mod = types.ModuleType("vllm_ascend.ops.fused_moe.fused_moe")
     fused_moe_mod.AscendFusedMoE = AscendFusedMoE
 
@@ -112,8 +158,24 @@ def _install_fake_modules(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
     monkeypatch.setitem(sys.modules, "vllm", vllm)
     monkeypatch.setitem(sys.modules, "vllm.config", vllm_config)
     monkeypatch.setitem(sys.modules, "vllm_ascend", root)
+    monkeypatch.setitem(sys.modules, "vllm_ascend.envs", envs_mod)
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_ascend.ascend_forward_context",
+        ascend_forward_context_mod,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_ascend.flash_common3_context",
+        flash_common3_context_mod,
+    )
     monkeypatch.setitem(sys.modules, "vllm_ascend.ops", ops)
     monkeypatch.setitem(sys.modules, "vllm_ascend.ops.fused_moe", fused_moe_pkg)
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_ascend.ops.fused_moe.experts_selector",
+        experts_selector_mod,
+    )
     monkeypatch.setitem(
         sys.modules, "vllm_ascend.ops.fused_moe.fused_moe", fused_moe_mod
     )
@@ -264,6 +326,10 @@ def test_w8a8_apply_swaps_topk_ids_with_buffer(force_lb_mod: types.ModuleType):
     layer.force_lb_fake_topk_buffer = torch.tensor(
         [[0, 2], [4, 6], [0, 2], [4, 6]], dtype=torch.int32
     )
+    layer.w13_weight = torch.empty(0)
+    layer.w13_weight_scale_fp32 = torch.empty(0)
+    layer.w2_weight = torch.empty(0)
+    layer.w2_weight_scale = torch.empty(0)
 
     real_topk_ids = torch.zeros((4, 2), dtype=torch.int64)
     out = method.apply(
@@ -272,6 +338,7 @@ def test_w8a8_apply_swaps_topk_ids_with_buffer(force_lb_mod: types.ModuleType):
         router_logits=real_topk_ids,
         top_k=2,
         renormalize=True,
+        num_experts=2,
     )
 
     expected = layer.force_lb_fake_topk_buffer.to(torch.int64)
@@ -286,6 +353,10 @@ def test_w8a8_apply_passthrough_when_buffer_absent(force_lb_mod: types.ModuleTyp
     layer.force_lb_fake_topk_buffer = None
     layer.mix_placement = False
     layer.top_k = 2
+    layer.w13_weight = torch.empty(0)
+    layer.w13_weight_scale_fp32 = torch.empty(0)
+    layer.w2_weight = torch.empty(0)
+    layer.w2_weight_scale = torch.empty(0)
 
     real_topk_ids = torch.zeros((4, 2), dtype=torch.int64)
     out = method.apply(
@@ -294,6 +365,7 @@ def test_w8a8_apply_passthrough_when_buffer_absent(force_lb_mod: types.ModuleTyp
         router_logits=real_topk_ids,
         top_k=2,
         renormalize=True,
+        num_experts=2,
     )
 
     assert torch.equal(out, real_topk_ids)

@@ -12,7 +12,6 @@ from __future__ import annotations
 import importlib
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from afd_plugin.compat.vllm import TARGET_VLLM_VERSION
@@ -26,21 +25,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class _PatchState:
-    engine_args_create_engine_config: Callable[..., Any]
-    vllm_config_post_init: Callable[..., Any] | None
-
-
-_PATCH_ATTR = "_afd_plugin_config_validation_patch_state"
+_ORIGINAL_CREATE_ENGINE_CONFIG_ATTR = (
+    "_afd_plugin_original_create_engine_config"
+)
+_ORIGINAL_VLLM_CONFIG_POST_INIT_ATTR = (
+    "_afd_plugin_original_vllm_config_post_init"
+)
 _AFD_TEMP_BACKEND = "deepep_low_latency"
-_PATCH_STATE: _PatchState | None = None
+_original_create_engine_config: Callable[..., Any] | None = None
+_original_vllm_config_post_init: Callable[..., Any] | None = None
 
 
 # Patch reason: vLLM validates native ubatching by requiring a DeepEP all2all
 # backend, while AFD ubatching is implemented by plugin connectors.
 # Patch functionality: temporarily uses a supported backend only during
 # upstream EngineArgs-to-VllmConfig validation for AFD configs.
+# Expansion exception: upstream create_engine_config is a large config builder;
+# keep a narrow original-function delegation so this patch only owns the AFD
+# validation bypass.
 # Signature: matches upstream; no added parameters.
 def create_engine_config(
     self: EngineArgs,
@@ -49,9 +51,9 @@ def create_engine_config(
 ) -> VllmConfig:
     """Create the VllmConfig."""
 
-    assert _PATCH_STATE is not None
+    assert _original_create_engine_config is not None
     if not _should_relax_engine_args_backend(self):
-        return _PATCH_STATE.engine_args_create_engine_config(
+        return _original_create_engine_config(
             self,
             usage_context,
             headless,
@@ -64,7 +66,7 @@ def create_engine_config(
     original_backend = self.all2all_backend
     self.all2all_backend = _AFD_TEMP_BACKEND
     try:
-        config = _PATCH_STATE.engine_args_create_engine_config(
+        config = _original_create_engine_config(
             self,
             usage_context,
             headless,
@@ -80,14 +82,16 @@ def create_engine_config(
 # backend assertion after EngineArgs construction.
 # Patch functionality: temporarily relaxes that assertion for AFD configs while
 # restoring the real backend after upstream validation.
+# Expansion exception: upstream VllmConfig.__post_init__ is a large validation
+# pipeline; keep a narrow original-function delegation so this patch only owns
+# the AFD validation bypass.
 # Signature: matches upstream; no added parameters.
 def __post_init__(self: VllmConfig):
     """Verify configs are valid & consistent with each other."""
 
-    assert _PATCH_STATE is not None
-    assert _PATCH_STATE.vllm_config_post_init is not None
+    assert _original_vllm_config_post_init is not None
     if not _should_relax_vllm_config_backend(self):
-        return _PATCH_STATE.vllm_config_post_init(self)
+        return _original_vllm_config_post_init(self)
 
     # ### PATCH START: AFD ubatching all2all backend validation
     # Repeated VllmConfig validation can run after EngineArgs construction.
@@ -97,7 +101,7 @@ def __post_init__(self: VllmConfig):
     original_backend = parallel_config.all2all_backend
     parallel_config.all2all_backend = _AFD_TEMP_BACKEND
     try:
-        result = _PATCH_STATE.vllm_config_post_init(self)
+        result = _original_vllm_config_post_init(self)
     finally:
         parallel_config.all2all_backend = original_backend
     # ### PATCH END: AFD ubatching all2all backend validation
@@ -107,7 +111,8 @@ def __post_init__(self: VllmConfig):
 def _patch_config_validation() -> None:
     """Patch AFD ubatching config validation when this module is imported."""
 
-    global _PATCH_STATE
+    global _original_create_engine_config
+    global _original_vllm_config_post_init
     if not _is_target_vllm_compatible():
         return
 
@@ -125,27 +130,39 @@ def _patch_config_validation() -> None:
     if engine_args_cls is None:
         return
 
-    state = getattr(arg_utils_module, _PATCH_ATTR, None)
-    if state is None:
-        state = _PatchState(
-            engine_args_create_engine_config=engine_args_cls.create_engine_config,
-            vllm_config_post_init=(
-                getattr(
-                    getattr(config_module, "VllmConfig", None),
-                    "__post_init__",
-                    None,
-                )
-                if config_module is not None
-                else None
+    if not hasattr(arg_utils_module, _ORIGINAL_CREATE_ENGINE_CONFIG_ATTR):
+        setattr(
+            arg_utils_module,
+            _ORIGINAL_CREATE_ENGINE_CONFIG_ATTR,
+            engine_args_cls.create_engine_config,
+        )
+
+    if (
+        config_module is not None
+        and not hasattr(config_module, _ORIGINAL_VLLM_CONFIG_POST_INIT_ATTR)
+    ):
+        setattr(
+            config_module,
+            _ORIGINAL_VLLM_CONFIG_POST_INIT_ATTR,
+            getattr(
+                getattr(config_module, "VllmConfig", None),
+                "__post_init__",
+                None,
             ),
         )
-        setattr(arg_utils_module, _PATCH_ATTR, state)
-        if config_module is not None:
-            setattr(config_module, _PATCH_ATTR, state)
 
-    _PATCH_STATE = state
+    _original_create_engine_config = getattr(
+        arg_utils_module,
+        _ORIGINAL_CREATE_ENGINE_CONFIG_ATTR,
+    )
+    _original_vllm_config_post_init = (
+        getattr(config_module, _ORIGINAL_VLLM_CONFIG_POST_INIT_ATTR)
+        if config_module is not None
+        else None
+    )
+
     engine_args_cls.create_engine_config = create_engine_config
-    if config_module is not None and state.vllm_config_post_init is not None:
+    if config_module is not None and _original_vllm_config_post_init is not None:
         config_module.VllmConfig.__post_init__ = __post_init__
     logger.debug("AFD config validation patch applied")
 

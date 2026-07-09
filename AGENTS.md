@@ -98,6 +98,15 @@ or changes. The patched function signature, including return type, must match
 the upstream function exactly. If a patch must add parameters, document those
 new parameters in the comments immediately above the patch function.
 
+AFD patches are developed against pinned vLLM and vLLM-Ascend tags. By default,
+patch functions should copy the corresponding upstream function from that tag
+and mark only AFD-specific differences with `# ### PATCH START: ...` and
+`# ### PATCH END: ...`. When upgrading to a new upstream tag, copy the new
+upstream function again and re-apply the marked AFD differences. Avoid using
+`_original_*` delegation as the main non-AFD path unless the upstream function
+is too large or unsuitable for local expansion; such exceptions must be called
+out in the patch function comments.
+
 **Required Pattern**: AFD-specific functionality should be implemented via:
 
 1. **Patching**:
@@ -127,21 +136,19 @@ class UpstreamClass:
 # AFD patch: afd_plugin/compat/patches/example_patch.py
 from vllm.some_upstream_module import UpstreamClass
 
-_original_route_request = UpstreamClass.route_request
-
 # Patch reason: upstream route_request does not know about AFD's connector
 # routing policy.
 # Patch functionality: use AFD routing for AFD requests while delegating
-# non-AFD requests to upstream unchanged.
+# non-AFD requests through the copied upstream logic unchanged.
 # Signature: matches upstream; no added parameters.
 def route_request(self, request: Request, priority: int = 0) -> RouteResult:
-    if not request.is_afd:
-        return _original_route_request(self, request, priority)
-
     # ### PATCH START: AFD custom routing
-    route = self.afd_router.pick(request, priority)
-    return self.scheduler.enqueue(request, route)
+    if request.is_afd:
+        route = self.afd_router.pick(request, priority)
+    else:
+        route = self.router.pick(request, priority)
     # ### PATCH END: AFD custom routing
+    return self.scheduler.enqueue(request, route)
 
 UpstreamClass.route_request = route_request
 ```
