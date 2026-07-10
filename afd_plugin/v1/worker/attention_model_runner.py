@@ -256,18 +256,26 @@ class AFDAttentionModelRunner(GPUModelRunner):
             num_tokens_across_dp,
             cudagraph_stats,
         ) = super()._determine_batch_execution_and_padding(*args, **kwargs)
-        # vLLM only decides ubatching inside the DP all-reduce coordination
-        # and hardcodes should_ubatch=False when data_parallel_size == 1, so
-        # AFD attention instances running without vLLM DP would never get DBO.
-        # Replicate the same decision pipeline rank-locally instead. When
-        # DP > 1 the coordinated result is an all-or-none contract across
-        # ranks and must not be overridden per-rank.
+
+        # determin if ubatch should be activated.
+        # 1. For dp = 1, vLLM hardcodes `should_ubatch=False`.
+        # This is the extra support for dp = 1
         if self.vllm_config.parallel_config.data_parallel_size == 1:
             should_ubatch = self._should_ubatch_single_rank(
                 batch_descriptor,
                 args,
                 kwargs,
             )
+
+        # 2. For dp > 1, vLLM's coordinated decision (_post_process_ubatch)
+        # only aborts when the last ubatch is empty. This ensures the first
+        # ubatch is not empty
+        elif should_ubatch:
+            values = _batch_execution_values(args, kwargs)
+            num_ubatches = self.vllm_config.parallel_config.num_ubatches
+            num_tokens = int(values.get("num_tokens", 0))
+            should_ubatch = num_tokens >= max(num_ubatches, 1)
+
         return (
             cudagraph_mode,
             batch_descriptor,
