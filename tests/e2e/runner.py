@@ -272,7 +272,7 @@ def build_vllm_command(
         "afd": {
             "enabled": True,
             "role": role,
-            "connector": "camp2pconnector" if is_npu else "p2pconnector",
+            "connector": "CAMP2pAFDConnector" if is_npu else "P2pNcclAFDConnector",
             "host": args.afd_host,
             "port": args.afd_port,
             "num_attention_ranks": args.num_attention_ranks,

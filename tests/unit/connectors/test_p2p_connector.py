@@ -48,9 +48,9 @@ def _tolist(value):
 def test_p2p_connector_is_registered():
     sys.modules.pop("afd_plugin.connectors.gpu.p2p", None)
 
-    cls = AFDConnectorFactory.get_connector_class("p2pconnector")
+    cls = AFDConnectorFactory.get_connector_class("P2pNcclAFDConnector")
 
-    assert cls.__name__ == "P2PAFDConnector"
+    assert cls.__name__ == "P2pNcclAFDConnector"
 
 
 def test_p2p_connector_can_be_constructed_without_runtime_initialization():
@@ -61,7 +61,7 @@ def test_p2p_connector_can_be_constructed_without_runtime_initialization():
         AFDConfig(
             enabled=True,
             role="attention",
-            connector="p2pconnector",
+            connector="P2pNcclAFDConnector",
             num_attention_ranks=2,
             num_ffn_ranks=1,
         ),
@@ -95,7 +95,7 @@ def test_p2p_connector_uses_config_role_rank_not_dp_rank():
         AFDConfig(
             enabled=True,
             role="attention",
-            connector="p2pconnector",
+            connector="P2pNcclAFDConnector",
             num_attention_ranks=4,
             num_ffn_ranks=4,
             afd_role_rank=3,
@@ -128,7 +128,7 @@ def test_p2p_topology_supports_equal_and_integer_multiple_attention_counts(
         AFDConfig(
             enabled=True,
             role=role,
-            connector="p2pconnector",
+            connector="P2pNcclAFDConnector",
             num_attention_ranks=attention_size,
             num_ffn_ranks=ffn_size,
             afd_role_rank=role_rank,
@@ -169,7 +169,7 @@ def test_p2p_ffn_metadata_tracks_each_attention_peer_in_xayf(
         AFDConfig(
             enabled=True,
             role="ffn",
-            connector="p2pconnector",
+            connector="P2pNcclAFDConnector",
             num_attention_ranks=attention_size,
             num_ffn_ranks=ffn_size,
             afd_role_rank=ffn_rank,
@@ -202,7 +202,7 @@ def test_p2p_tensor_metadata_clamps_idle_attention_rank_to_dummy_token():
         AFDConfig(
             enabled=True,
             role="ffn",
-            connector="p2pconnector",
+            connector="P2pNcclAFDConnector",
             num_attention_ranks=2,
             num_ffn_ranks=1,
         ),
@@ -230,7 +230,7 @@ def test_p2p_tensor_metadata_clamps_idle_attention_rank_to_dummy_token():
         AFDConfig(
             enabled=True,
             role="attention",
-            connector="p2pconnector",
+            connector="P2pNcclAFDConnector",
             num_attention_ranks=2,
             num_ffn_ranks=1,
         ),
@@ -245,7 +245,7 @@ def test_p2p_tensor_metadata_clamps_idle_attention_rank_to_dummy_token():
     [
         (
             {
-                "connector": "p2pconnector",
+                "connector": "P2pNcclAFDConnector",
                 "num_attention_ranks": 1,
                 "num_ffn_ranks": 2,
             },
@@ -253,7 +253,7 @@ def test_p2p_tensor_metadata_clamps_idle_attention_rank_to_dummy_token():
         ),
         (
             {
-                "connector": "p2pconnector",
+                "connector": "P2pNcclAFDConnector",
                 "num_attention_ranks": 3,
                 "num_ffn_ranks": 2,
             },
@@ -269,7 +269,7 @@ def test_p2p_topology_validation_errors_are_clear(raw, message):
 def test_p2p_module_exports_connector_class():
     module = importlib.import_module("afd_plugin.connectors.gpu.p2p")
 
-    assert module.P2PAFDConnector.__module__ == "afd_plugin.connectors.gpu.p2p"
+    assert module.P2pNcclAFDConnector.__module__ == "afd_plugin.connectors.gpu.p2p"
 
 
 def test_p2p_dp_metadata_serialization_uses_json_payload():
@@ -346,7 +346,7 @@ def test_p2p_hidden_state_send_uses_registered_custom_op(monkeypatch):
         AFDConfig(
             enabled=True,
             role="attention",
-            connector="p2pconnector",
+            connector="P2pNcclAFDConnector",
             num_attention_ranks=2,
             num_ffn_ranks=1,
         ),
@@ -392,7 +392,7 @@ def test_p2p_recv_preserves_dynamic_ref_tensor_first_dim(monkeypatch):
         AFDConfig(
             enabled=True,
             role="attention",
-            connector="p2pconnector",
+            connector="P2pNcclAFDConnector",
             num_attention_ranks=2,
             num_ffn_ranks=1,
         ),
@@ -447,7 +447,7 @@ def test_p2p_recv_single_rank_requires_ref_tensor():
         AFDConfig(
             enabled=True,
             role="attention",
-            connector="p2pconnector",
+            connector="P2pNcclAFDConnector",
             num_attention_ranks=2,
             num_ffn_ranks=1,
         ),

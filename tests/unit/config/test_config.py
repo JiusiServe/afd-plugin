@@ -28,7 +28,7 @@ def test_parse_canonical_additional_config_namespace():
             "afd": {
                 "enabled": True,
                 "role": "ffn",
-                "connector": "p2pconnector",
+                "connector": "P2pNcclAFDConnector",
                 "num_attention_ranks": 2,
                 "num_ffn_ranks": 2,
                 "afd_role_rank": 1,
@@ -50,7 +50,7 @@ def test_parse_vllm_like_config_object():
             "afd": {
                 "enabled": True,
                 "role": "attention",
-                "connector": "p2pconnector",
+                "connector": "P2pNcclAFDConnector",
             },
         },
     )
@@ -81,7 +81,7 @@ def test_async_moe_ubatching_helpers_read_extra_config():
         {
             "afd": {
                 "enabled": True,
-                "connector": "afdasyncconnector",
+                "connector": "CAMAsyncAFDConnector",
                 "role": "attention",
                 "extra_config": {
                     "async_moe_ubatching": "true",
@@ -104,7 +104,7 @@ def test_parse_async_dp_config_from_async_alias():
         {
             "afd": {
                 "enabled": True,
-                "connector": "afdasyncconnector",
+                "connector": "CAMAsyncAFDConnector",
                 "role": "attention",
                 "async": "true",
             },
@@ -115,12 +115,12 @@ def test_parse_async_dp_config_from_async_alias():
 
 
 def test_async_dp_requires_async_connector():
-    with pytest.raises(ValueError, match="requires connector='afdasyncconnector'"):
+    with pytest.raises(ValueError, match="requires connector='CAMAsyncAFDConnector'"):
         parse_afd_config(
             {
                 "afd": {
                     "enabled": True,
-                    "connector": "camp2pconnector",
+                    "connector": "CAMP2pAFDConnector",
                     "role": "attention",
                     "async": True,
                 },
@@ -133,7 +133,7 @@ def test_original_afd_field_aliases_are_supported():
         {
             "enabled": "true",
             "afd_role": "ffn",
-            "afd_connector": "p2pconnector",
+            "afd_connector": "P2pNcclAFDConnector",
             "afd_host": "localhost",
             "afd_port": 2345,
             "afd_extra_config": {"rank_map": "env"},
@@ -141,7 +141,7 @@ def test_original_afd_field_aliases_are_supported():
     )
 
     assert config.role == "ffn"
-    assert config.connector == "p2pconnector"
+    assert config.connector == "P2pNcclAFDConnector"
     assert config.afd_host == "localhost"
     assert config.afd_port == 2345
     assert config.afd_extra_config == {"rank_map": "env"}

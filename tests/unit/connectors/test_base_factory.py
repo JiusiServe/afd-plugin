@@ -25,11 +25,11 @@ def test_backend_connector_modules_are_registered_by_backend_package():
     pytest.importorskip("torch_npu")
 
     assert (
-        AFDConnectorFactory.get_connector_class("p2pconnector").__module__
+        AFDConnectorFactory.get_connector_class("P2pNcclAFDConnector").__module__
         == "afd_plugin.connectors.gpu.p2p"
     )
     assert (
-        AFDConnectorFactory.get_connector_class("camp2pconnector").__module__
+        AFDConnectorFactory.get_connector_class("CAMP2pAFDConnector").__module__
         == "afd_plugin.connectors.npu.camp2p"
     )
 
@@ -68,7 +68,7 @@ def test_connector_base_builds_default_recv_metadata_from_dp_metadata():
         0,
         0,
         object(),
-        AFDConfig(enabled=True, connector="camp2pconnector"),
+        AFDConfig(enabled=True, connector="CAMP2pAFDConnector"),
     )
 
     metadata = connector.create_recv_metadata(

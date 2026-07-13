@@ -52,8 +52,9 @@ Connector support:
 
 | Connector | Platform | Status | Notes |
 | --- | --- | --- | --- |
-| `p2pconnector` | CUDA | Supported | FFN ranks are ordered before Attention ranks. `num_attention_ranks` must be greater than or equal to `num_ffn_ranks` and divisible by it. |
-| `camp2pconnector` | Ascend NPU | Supported | Uses HCCL/CAMP2P custom ops. Ascend ops build by default on NPU platforms; set `AFD_BUILD_ASCEND_OPS=0` to skip them. |
+| `P2pNcclAFDConnector` | CUDA | Supported | FFN ranks are ordered before Attention ranks. `num_attention_ranks` must be greater than or equal to `num_ffn_ranks` and divisible by it. |
+| `CAMP2pAFDConnector` | Ascend NPU | Supported | Uses HCCL/CAMP2P custom ops. Ascend ops build by default on NPU platforms; set `AFD_BUILD_ASCEND_OPS=0` to skip them. |
+| `CAMAsyncAFDConnector` | Ascend NPU | Supported | Uses CAM async-DP custom ops and requires `async=true` with the Ascend NPU workers. |
 
 Connector implementations are grouped by backend package:
 `afd_plugin.connectors.gpu` for GPU-only connectors,
@@ -126,7 +127,7 @@ vllm serve /path/to/DeepSeek-V2-Lite \
   --enforce-eager \
   --host 127.0.0.1 \
   --port 18000 \
-  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"p2pconnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 GPU FFN-side shape:
@@ -141,11 +142,11 @@ vllm serve /path/to/DeepSeek-V2-Lite \
   --enforce-eager \
   --host 127.0.0.1 \
   --port 18001 \
-  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"p2pconnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 NPU uses the same config channel with Ascend class paths and
-`camp2pconnector`:
+`CAMP2pAFDConnector`:
 
 ```bash
 vllm serve /path/to/DeepSeek-V2-Lite \
@@ -157,7 +158,7 @@ vllm serve /path/to/DeepSeek-V2-Lite \
   --enforce-eager \
   --host 127.0.0.1 \
   --port 18000 \
-  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"camp2pconnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 Start the FFN side first, then start the Attention side and send requests to
@@ -180,7 +181,7 @@ uv run python tests/e2e/runner.py \
 ```
 
 For NPU, use `--device-backend npu`; the runner maps the same device arguments
-to `ASCEND_RT_VISIBLE_DEVICES` and selects `camp2pconnector`.
+to `ASCEND_RT_VISIBLE_DEVICES` and selects `CAMP2pAFDConnector`.
 
 ## AFD Config
 
@@ -191,7 +192,7 @@ The canonical config shape is:
   "afd": {
     "enabled": true,
     "role": "attention",
-    "connector": "p2pconnector",
+    "connector": "P2pNcclAFDConnector",
     "host": "127.0.0.1",
     "port": 1239,
     "num_attention_ranks": 2,
@@ -203,9 +204,10 @@ The canonical config shape is:
 }
 ```
 
-`role` must be `attention` or `ffn`. `connector` must be `p2pconnector` or
-`camp2pconnector`. The plugin also accepts selected compatibility aliases such
-as `afd_role`, `afd_connector`, `afd_host`, `afd_port`, and `afd_extra_config`.
+`role` must be `attention` or `ffn`. `connector` must be `P2pNcclAFDConnector`,
+`CAMP2pAFDConnector`, or `CAMAsyncAFDConnector`. The plugin also accepts selected
+compatibility aliases such as `afd_role`, `afd_connector`, `afd_host`,
+`afd_port`, and `afd_extra_config`.
 
 ## Development
 

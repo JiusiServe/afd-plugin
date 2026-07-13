@@ -13,7 +13,7 @@ import pytest
 
 def _config(
     *,
-    connector: str = "afdasyncconnector",
+    connector: str = "CAMAsyncAFDConnector",
     role: str = "attention",
     async_dp: bool = True,
     is_moe: bool = True,
@@ -220,7 +220,7 @@ def test_async_dp_engine_patch_preserves_non_async_moe_dp(monkeypatch):
     core_module = sys.modules["vllm.v1.engine.core"]
 
     core_module.EngineCoreProc.run_engine_core(
-        vllm_config=_config(connector="camp2pconnector", async_dp=False),
+        vllm_config=_config(connector="CAMP2pAFDConnector", async_dp=False),
         dp_rank=1,
     )
     engine = core_module.last_engine
@@ -234,7 +234,7 @@ def test_async_dp_engine_patch_reload_is_idempotent(monkeypatch):
     importlib.reload(patch_module)
 
     core_module.EngineCoreProc.run_engine_core(
-        vllm_config=_config(connector="camp2pconnector", async_dp=False),
+        vllm_config=_config(connector="CAMP2pAFDConnector", async_dp=False),
         dp_rank=1,
     )
     engine = core_module.last_engine

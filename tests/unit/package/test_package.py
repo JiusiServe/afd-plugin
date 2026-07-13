@@ -9,7 +9,7 @@ from afd_plugin.compat import is_vllm_version_supported
 
 def test_package_import_is_cpu_safe():
     assert afd_plugin.__version__
-    assert afd_plugin.AFDConfig().connector == "p2pconnector"
+    assert afd_plugin.AFDConfig().connector == "P2pNcclAFDConnector"
 
 
 def test_register_afd_is_idempotent():

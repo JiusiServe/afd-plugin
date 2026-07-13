@@ -155,7 +155,7 @@ def test_npu_afd_config_patch_restores_dbo_for_afd(monkeypatch):
             "afd": {
                 "enabled": enabled,
                 "role": "attention",
-                "connector": "camp2pconnector",
+                "connector": "CAMP2pAFDConnector",
             },
         }
         config.parallel_config = FakeParallelConfig(enable_dbo=True, ubatch_size=4)

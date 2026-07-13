@@ -44,7 +44,7 @@ class _TensorMetadata(NamedTuple):
     size: torch.Size
 
 
-class P2PAFDConnector(AFDConnectorBase):
+class P2pNcclAFDConnector(AFDConnectorBase):
     """NCCL-backed Attention <-> FFN connector.
 
     The P2P topology places FFN ranks before Attention ranks in the AFD world,
@@ -584,4 +584,4 @@ def _register_p2p_custom_ops() -> None:
     _AFD_CUSTOM_OPS_REGISTERED = True
 
 
-__all__ = ["P2PAFDConnector"]
+__all__ = ["P2pNcclAFDConnector"]

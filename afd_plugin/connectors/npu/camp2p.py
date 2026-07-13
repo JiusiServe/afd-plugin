@@ -84,7 +84,7 @@ class _CAMP2PTopology:
         return self.ffn_size <= self.world_rank < self.ffn_size + self.min_size
 
 
-class CAMP2PAFDConnector(AFDConnectorBase):
+class CAMP2pAFDConnector(AFDConnectorBase):
     """HCCL/CAMP2P-backed Attention <-> FFN connector for NPU.
 
     The connector owns HCCL process-group setup and CAMP2P custom-op transfers.
@@ -862,7 +862,7 @@ def _empty_npu_tensor(*, dtype_name: str) -> torch.Tensor:
 
 
 __all__ = [
-    "CAMP2PAFDConnector",
+    "CAMP2pAFDConnector",
     "CAMP2PAFDConnectorData",
     "CAMP2PAFDConnectorMetadata",
     "build_camp2p_topology",

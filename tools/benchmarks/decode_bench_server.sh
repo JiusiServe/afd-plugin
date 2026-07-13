@@ -54,7 +54,7 @@ CUDA_VISIBLE_DEVICES=0,1 uv run vllm serve "$MODEL_PATH" \
         "afd": {
             "enabled": true,
             "role": "attention",
-            "connector": "p2pconnector",
+            "connector": "P2pNcclAFDConnector",
             "host": "127.0.0.1",
             "port": 6269,
             "num_attention_ranks": 2,
@@ -88,7 +88,7 @@ CUDA_VISIBLE_DEVICES=2,3 uv run vllm serve "$MODEL_PATH" \
         "afd": {
             "enabled": true,
             "role": "ffn",
-            "connector": "p2pconnector",
+            "connector": "P2pNcclAFDConnector",
             "host": "127.0.0.1",
             "port": 6269,
             "num_attention_ranks": 2,
