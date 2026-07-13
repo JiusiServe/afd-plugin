@@ -52,7 +52,6 @@ from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
 
 from afd_plugin.compat.ascend import (
     fail_if_unsupported_npu_afd_features,
-    set_afd_metadata_on_forward_context,
 )
 from afd_plugin.compat.ascend.profiler import (
     create_afd_npu_profiler,
@@ -1233,10 +1232,9 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 _forward_context_num_tokens(forward_context, self.vllm_config),
             )
 
-        set_afd_metadata_on_forward_context(
-            forward_context,
-            self._afd_pending_metadata,
-        )
+        if forward_context.additional_kwargs is None:
+            forward_context.additional_kwargs = {}
+        forward_context.additional_kwargs["afd_metadata"] = self._afd_pending_metadata
         if not bool(
             getattr(self.afd_connector, "uses_dp_metadata_control_plane", True),
         ):

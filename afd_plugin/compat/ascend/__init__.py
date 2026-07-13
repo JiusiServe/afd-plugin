@@ -24,7 +24,6 @@ from afd_plugin.compat.ascend.runtime import (
     fail_if_unsupported_npu_afd_features,
     fix_all2all_backend_for_afd,
     npu_afd_num_ubatches,
-    set_afd_metadata_on_forward_context,
 )
 
 __all__ = [
@@ -47,5 +46,4 @@ __all__ = [
     "get_afd_cust_opapi_path",
     "has_afd_ascend_ops",
     "npu_afd_num_ubatches",
-    "set_afd_metadata_on_forward_context",
 ]
