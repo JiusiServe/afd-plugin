@@ -11,11 +11,14 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
+    from vllm.forward_context import ForwardContext
+
+    from afd_plugin.connectors import AFDConnectorMetadata, AFDMetadata
 
 
 def set_afd_metadata_on_forward_context(
-    forward_context: object,
-    afd_metadata: object,
+    forward_context: ForwardContext,
+    afd_metadata: AFDMetadata | AFDConnectorMetadata,
 ) -> None:
     """Store AFD metadata in ``ForwardContext.additional_kwargs``."""
 
