@@ -252,10 +252,7 @@ class P2PAFDConnector(AFDConnectorBase):
             device=device,
         )
 
-    def recv_dp_metadata_list(
-        self,
-        timeout_ms: int | None = None,
-    ) -> AFDDPMetadataPayload:
+    def recv_dp_metadata_list(self) -> AFDDPMetadataPayload:
         if self.p2p_pg is None:
             raise RuntimeError("P2P DP metadata process group is not initialized")
 

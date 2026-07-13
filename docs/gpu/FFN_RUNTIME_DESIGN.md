@@ -69,7 +69,7 @@ AFDFFNWorker.initialize_from_config(...)
   -> start_ffn_server_loop()
 
 background loop:
-  -> recv_dp_metadata_list(timeout_ms=100)
+  -> recv_dp_metadata_list()
   -> if graph warmup/capture: model_runner.capture_model(...)
   -> else: model_runner.execute_model(dp_metadata_list=...)
   -> torch.cuda.synchronize()

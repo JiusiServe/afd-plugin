@@ -248,10 +248,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             device=device,
         )
 
-    def recv_dp_metadata_list(
-        self,
-        timeout_ms: int | None = None,
-    ) -> AFDDPMetadataPayload:
+    def recv_dp_metadata_list(self) -> AFDDPMetadataPayload:
         if self.p2p_pg is None:
             raise RuntimeError("CAMP2P metadata process group is not initialized")
         src = self.p2p_rank % self.min_size + self.ffn_size
