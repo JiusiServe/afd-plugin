@@ -461,7 +461,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         try:
             forward_context = get_forward_context()
             afd_metadata = forward_context.additional_kwargs["afd_metadata"]
-            return int(afd_metadata.ubatch_idx)
+            return int(afd_metadata.stage_index)
         except Exception:
             return 0
 

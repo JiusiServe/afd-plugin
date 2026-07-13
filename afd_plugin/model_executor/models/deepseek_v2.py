@@ -37,7 +37,7 @@ except ImportError:
     get_ascend_config = None
 
 from afd_plugin.config import parse_afd_config
-from afd_plugin.connectors import AFDTransferMetadata, AFDF2ATransferPayload, AFDMetadata
+from afd_plugin.connectors import AFDTransferMetadata, AFDF2ATransferPayload, AFDForwardContextMetadata
 from afd_plugin.model_executor.models import (
     get_afd_metadata_from_forward_context,
     get_async_moe_ubatch_metadata_from_forward_context,
@@ -472,7 +472,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
         positions: torch.Tensor,
-        afd_metadata: AFDMetadata,
+        afd_metadata: AFDForwardContextMetadata,
         llama_4_scaling: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if self.afd_config.compute_gate_on_attention:
@@ -499,17 +499,16 @@ class AFDDeepseekV2Model(torch.nn.Module):
         afd_connector = afd_metadata.afd_connector
         forward_context = get_forward_context()
         stage_idx = int(
-            getattr(forward_context, "ubatch_idx", afd_metadata.afd_stage_idx),
+            getattr(forward_context, "ubatch_idx", afd_metadata.stage_idx),
         )
 
         for layer_offset, layer in enumerate(
             islice(self.layers, self.start_layer, self.end_layer),
         ):
             stage_idx = int(
-                getattr(forward_context, "ubatch_idx", afd_metadata.afd_stage_idx),
+                getattr(forward_context, "ubatch_idx", afd_metadata.stage_idx),
             )
-            afd_metadata.ubatch_idx = stage_idx
-            afd_metadata.afd_stage_idx = stage_idx
+            afd_metadata.stage_idx = stage_idx
             if layer_offset > 0:
                 hidden_states = afd_connector.recv_ffn_output(
                     ref_tensor=hidden_states,
@@ -544,7 +543,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
         positions: torch.Tensor,
-        afd_metadata: AFDMetadata,
+        afd_metadata: AFDForwardContextMetadata,
         llama_4_scaling: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         from afd_plugin.model_executor.models.npu import (
@@ -565,7 +564,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
         positions: torch.Tensor,
-        afd_metadata: AFDMetadata,
+        afd_metadata: AFDForwardContextMetadata,
         llama_4_scaling: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         forward_context = get_forward_context()

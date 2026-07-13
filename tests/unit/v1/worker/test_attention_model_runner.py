@@ -130,11 +130,11 @@ def test_attention_runner_builds_single_stage_metadata():
 
     metadata = runner._build_afd_metadata(None, 7)
 
-    assert metadata.afd_tokens_start_loc == [0]
-    assert metadata.afd_reqs_start_loc == [0]
-    assert metadata.afd_tokens_lens == [7]
-    assert metadata.afd_tokens_unpadded_lens == [7]
-    assert metadata.num_of_stages == 1
+    assert metadata.tokens_start_loc == [0]
+    assert metadata.requests_start_loc == [0]
+    assert metadata.tokens_lens == [7]
+    assert metadata.tokens_unpadded_lens == [7]
+    assert metadata.num_stages == 1
     assert metadata.afd_connector is runner.afd_connector
 
 
@@ -155,7 +155,7 @@ def test_attention_runner_installs_afd_metadata_on_forward_context():
     runner._install_afd_metadata_on_forward_context(forward_context)
 
     assert forward_context.additional_kwargs["platform_key"] == "platform_value"
-    assert forward_context.additional_kwargs["afd_metadata"].afd_tokens_lens == [5]
+    assert forward_context.additional_kwargs["afd_metadata"].tokens_lens == [5]
     assert set(runner.afd_connector.dp_metadata_updates[0]) == {0}
     assert _tokens(runner.afd_connector.dp_metadata_updates[0][0]) == [5]
     assert set(runner.afd_connector.sent_dp_metadata_lists[0]) == {0}
@@ -180,7 +180,7 @@ def test_attention_runner_initializes_missing_forward_context_kwargs():
 
     runner._install_afd_metadata_on_forward_context(forward_context)
 
-    assert forward_context.additional_kwargs["afd_metadata"].afd_tokens_lens == [5]
+    assert forward_context.additional_kwargs["afd_metadata"].tokens_lens == [5]
 
 
 def test_attention_runner_uses_padded_full_graph_tokens_for_afd_metadata():
@@ -205,7 +205,7 @@ def test_attention_runner_uses_padded_full_graph_tokens_for_afd_metadata():
     runner._install_afd_metadata_on_forward_context(forward_context)
 
     metadata = forward_context.additional_kwargs["afd_metadata"]
-    assert metadata.afd_tokens_lens == [1]
+    assert metadata.tokens_lens == [1]
     sent_metadata = runner.afd_connector.sent_dp_metadata_lists[0][0]
     tokens = sent_metadata.num_tokens_across_dp_cpu
     if hasattr(tokens, "tolist"):
@@ -304,7 +304,7 @@ def test_ubatch_metadata_clones_parent_and_preserves_additional_kwargs():
         [_UbatchSlice(0, 3, 0, 1), _UbatchSlice(3, 8, 1, 2)],
         8,
     )
-    parent.afd_tokens_unpadded_lens = [3, 4]
+    parent.tokens_unpadded_lens = [3, 4]
 
     first = build_ubatch_afd_metadata(
         parent, [_UbatchSlice(0, 3, 0, 1), _UbatchSlice(3, 8, 1, 2)], 0
@@ -321,14 +321,14 @@ def test_ubatch_metadata_clones_parent_and_preserves_additional_kwargs():
     assert second is not parent
     assert first is not second
     assert first.ubatch_idx == 0
-    assert first.afd_stage_idx == 0
-    assert first.afd_tokens_lens == [3]
+    assert first.stage_idx == 0
+    assert first.tokens_lens == [3]
     assert second.ubatch_idx == 1
-    assert second.afd_stage_idx == 1
-    assert second.afd_tokens_start_loc == [3]
-    assert second.afd_reqs_start_loc == [1]
-    assert second.afd_tokens_lens == [5]
-    assert second.afd_tokens_unpadded_lens == [4]
+    assert second.stage_idx == 1
+    assert second.tokens_start_loc == [3]
+    assert second.requests_start_loc == [1]
+    assert second.tokens_lens == [5]
+    assert second.tokens_unpadded_lens == [4]
     assert child_kwargs["platform_key"] == "platform_value"
     assert child_kwargs["afd_metadata"] is second
 
@@ -624,7 +624,7 @@ def test_forward_context_provider_installs_metadata_before_model_forward(monkeyp
         metadata = get_afd_metadata_from_forward_context(forward_context)
 
     assert metadata is not None
-    assert metadata.afd_tokens_lens == [1]
+    assert metadata.tokens_lens == [1]
     assert forward_context.additional_kwargs["afd_metadata"] is metadata
     assert runner.afd_connector.sent_dp_metadata_lists
     assert fake_forward_context.create_forward_context is original_create

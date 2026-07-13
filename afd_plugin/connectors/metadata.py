@@ -336,25 +336,24 @@ class AFDF2ATransferPayload:
 
 
 @dataclass(slots=True)
-class AFDMetadata:
+class AFDForwardContextMetadata:
     """Forward-context metadata visible to plugin-owned model wrappers."""
 
-    afd_tokens_start_loc: list[int]
-    afd_reqs_start_loc: list[int]
-    afd_stage_idx: int
+    tokens_start_loc: list[int]
+    requests_start_loc: list[int]
+    stage_idx: int
     afd_connector: AFDConnectorBase
-    afd_tokens_lens: list[int]
-    num_of_stages: int
-    ubatch_idx: int = 0
+    tokens_lens: list[int]
+    num_stages: int
     transaction_id: str | None = None
-    afd_tokens_unpadded_lens: list[int] = field(default_factory=list)
+    tokens_unpadded_lens: list[int] = field(default_factory=list)
 
-    def clone(self) -> AFDMetadata:
+    def clone(self) -> AFDForwardContextMetadata:
         cloned = copy.copy(self)
-        cloned.afd_tokens_start_loc = list(self.afd_tokens_start_loc)
-        cloned.afd_reqs_start_loc = list(self.afd_reqs_start_loc)
-        cloned.afd_tokens_lens = list(self.afd_tokens_lens)
-        cloned.afd_tokens_unpadded_lens = list(self.afd_tokens_unpadded_lens)
+        cloned.tokens_start_loc = list(self.tokens_start_loc)
+        cloned.requests_start_loc = list(self.requests_start_loc)
+        cloned.tokens_lens = list(self.tokens_lens)
+        cloned.tokens_unpadded_lens = list(self.tokens_unpadded_lens)
         return cloned
 
 
@@ -477,7 +476,7 @@ __all__ = [
     "AFDDPMetadata",
     "AFDControlPayload",
     "AFDF2ATransferPayload",
-    "AFDMetadata",
+    "AFDForwardContextMetadata",
     "AFDA2FTransferPayload",
     "AFDSingleDPMetadata",
     "decode_control_payload",

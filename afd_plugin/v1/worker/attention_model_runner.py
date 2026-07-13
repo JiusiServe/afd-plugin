@@ -33,7 +33,7 @@ from afd_plugin.connectors import (
     AFDConnectorFactory,
     AFDDPMetadata,
     AFDControlPayload,
-    AFDMetadata,
+    AFDForwardContextMetadata,
 )
 from afd_plugin.model_executor.models.forward_context import use_afd_metadata_provider
 from afd_plugin.v1.worker.cuda_graph import validate_cuda_graph_mode
@@ -72,7 +72,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
         self.afd_connector.init_afd_connector()
         self._is_warmup = False
         self._afd_is_graph_capturing = False
-        self._afd_pending_metadata: AFDMetadata | None = None
+        self._afd_pending_metadata: AFDForwardContextMetadata | None = None
         self._afd_suppress_metadata_send = False
         self._afd_transaction_counter = 0
         self.prof = create_afd_gpu_profiler("attention")
@@ -85,29 +85,29 @@ class AFDAttentionModelRunner(GPUModelRunner):
         self,
         ubatch_slices: Any,
         num_tokens_unpadded: int,
-    ) -> AFDMetadata:
+    ) -> AFDForwardContextMetadata:
         if ubatch_slices and len(ubatch_slices) > 1:
-            afd_tokens_start_loc = [ub.token_slice.start for ub in ubatch_slices]
-            afd_reqs_start_loc = [ub.request_slice.start for ub in ubatch_slices]
-            afd_tokens_lens = [ub.num_tokens for ub in ubatch_slices]
-            afd_tokens_unpadded_lens = [int(ub.num_tokens) for ub in ubatch_slices]
-            num_of_stages = len(ubatch_slices)
+            tokens_start_loc = [ub.token_slice.start for ub in ubatch_slices]
+            requests_start_loc = [ub.request_slice.start for ub in ubatch_slices]
+            tokens_lens = [ub.num_tokens for ub in ubatch_slices]
+            tokens_unpadded_lens = [int(ub.num_tokens) for ub in ubatch_slices]
+            num_stages = len(ubatch_slices)
         else:
-            afd_tokens_start_loc = [0]
-            afd_reqs_start_loc = [0]
-            afd_tokens_lens = [num_tokens_unpadded]
-            afd_tokens_unpadded_lens = [num_tokens_unpadded]
-            num_of_stages = 1
+            tokens_start_loc = [0]
+            requests_start_loc = [0]
+            tokens_lens = [num_tokens_unpadded]
+            tokens_unpadded_lens = [num_tokens_unpadded]
+            num_stages = 1
 
-        return AFDMetadata(
-            afd_tokens_start_loc=afd_tokens_start_loc,
-            afd_reqs_start_loc=afd_reqs_start_loc,
-            afd_stage_idx=0,
+        return AFDForwardContextMetadata(
+            tokens_start_loc=tokens_start_loc,
+            requests_start_loc=requests_start_loc,
+            stage_idx=0,
             afd_connector=self.afd_connector,
-            afd_tokens_lens=afd_tokens_lens,
-            num_of_stages=num_of_stages,
+            tokens_lens=tokens_lens,
+            num_stages=num_stages,
             transaction_id=self._next_afd_transaction_id(),
-            afd_tokens_unpadded_lens=afd_tokens_unpadded_lens,
+            tokens_unpadded_lens=tokens_unpadded_lens,
         )
 
     def _send_dp_metadata(
@@ -172,10 +172,10 @@ class AFDAttentionModelRunner(GPUModelRunner):
 
         if self._afd_pending_metadata is None:
             raise RuntimeError("AFD metadata is not available for DP metadata fallback")
-        if len(self._afd_pending_metadata.afd_tokens_lens) != 1:
+        if len(self._afd_pending_metadata.tokens_lens) != 1:
             raise RuntimeError("AFD DP=1 fallback only supports one stage")
 
-        num_tokens = int(self._afd_pending_metadata.afd_tokens_lens[0])
+        num_tokens = int(self._afd_pending_metadata.tokens_lens[0])
         num_tokens_across_dp_cpu = torch.tensor(
             [num_tokens],
             dtype=torch.int32,
@@ -493,9 +493,9 @@ def _is_ubatch_child_afd_context(
 ) -> bool:
     if getattr(forward_context, "ubatch_slices", None) is not None:
         return False
-    if int(getattr(afd_metadata, "num_of_stages", 1) or 1) <= 1:
+    if int(getattr(afd_metadata, "num_stages", 1) or 1) <= 1:
         return False
-    return len(getattr(afd_metadata, "afd_tokens_lens", []) or []) == 1
+    return len(getattr(afd_metadata, "tokens_lens", []) or []) == 1
 
 
 def _with_dp_derived_afd_rank(

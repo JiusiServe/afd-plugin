@@ -22,7 +22,7 @@ from afd_plugin.connectors import (
     AFDTransferMetadata,
     AFDControlPayload,
     AFDF2ATransferPayload,
-    AFDMetadata,
+    AFDForwardContextMetadata,
 )
 
 
@@ -235,7 +235,7 @@ def test_npu_attention_runner_builds_and_sets_metadata():
     runner._install_afd_metadata_on_forward_context(forward_context)
 
     metadata = forward_context.additional_kwargs["afd_metadata"]
-    assert metadata.afd_tokens_lens == [1]
+    assert metadata.tokens_lens == [1]
     assert len(runner.afd_connector.dp_metadata_updates) == 1
     assert len(runner.afd_connector.sent_dp_metadata_lists) == 1
 
@@ -263,7 +263,7 @@ def test_npu_attention_async_connector_skips_dp_metadata_control_plane():
     runner._install_afd_metadata_on_forward_context(forward_context)
 
     metadata = forward_context.additional_kwargs["afd_metadata"]
-    assert metadata.afd_tokens_lens == [3]
+    assert metadata.tokens_lens == [3]
     assert runner.afd_connector.dp_metadata_updates == []
     assert runner.afd_connector.sent_dp_metadata_lists == []
 
@@ -548,14 +548,14 @@ def test_npu_create_ascend_forward_context_marks_current_ubatch(monkeypatch):
         "get_moe_comm_method",
         lambda moe_comm_type: f"method:{moe_comm_type}",
     )
-    afd_metadata = AFDMetadata(
-        afd_tokens_start_loc=[0, 4],
-        afd_reqs_start_loc=[0, 1],
-        afd_stage_idx=0,
+    afd_metadata = AFDForwardContextMetadata(
+        tokens_start_loc=[0, 4],
+        requests_start_loc=[0, 1],
+        stage_idx=0,
         afd_connector=object(),
-        afd_tokens_lens=[4, 3],
-        num_of_stages=2,
-        afd_tokens_unpadded_lens=[4, 3],
+        tokens_lens=[4, 3],
+        num_stages=2,
+        tokens_unpadded_lens=[4, 3],
     )
     cur_forward_context = SimpleNamespace(
         additional_kwargs={"afd_metadata": afd_metadata},
@@ -606,7 +606,7 @@ def test_npu_create_ascend_forward_context_marks_current_ubatch(monkeypatch):
     assert new_forward_context.num_ubatches == 2
     assert new_forward_context.num_tokens == 3
     assert child_metadata.ubatch_idx == 1
-    assert child_metadata.afd_stage_idx == 1
+    assert child_metadata.stage_idx == 1
 
 
 def test_npu_ffn_runner_executes_eager_ffn_step():
@@ -769,7 +769,7 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
     ]
     assert sent_outputs == [(work_item, "npu-ffn(hidden[:5], layer=7)")]
     assert context_calls[0]["num_tokens"] == 5
-    assert context_calls[0]["afd_metadata"].afd_tokens_lens == [5]
+    assert context_calls[0]["afd_metadata"].tokens_lens == [5]
 
 
 def test_npu_ffn_runner_sends_structured_shared_output():

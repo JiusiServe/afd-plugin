@@ -13,7 +13,7 @@ import vllm.forward_context as forward_context_module
 from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.v1.worker.ubatch_utils import UBatchSlices
 
-from afd_plugin.connectors import AFDMetadata
+from afd_plugin.connectors import AFDForwardContextMetadata
 
 ASYNC_MOE_UBATCH_METADATA_KEY: Final[str] = "afd_async_moe_ubatch_metadata"
 
@@ -25,7 +25,7 @@ class AsyncMoeUbatchMetadata(TypedDict):
 
 def get_afd_metadata_from_forward_context(
     forward_context: ForwardContext | None = None,
-) -> AFDMetadata | None:
+) -> AFDForwardContextMetadata | None:
     """Return AFD metadata from vLLM ``ForwardContext.additional_kwargs``.
 
     Model wrappers use this helper so AFD metadata stays outside vLLM's
@@ -38,7 +38,7 @@ def get_afd_metadata_from_forward_context(
     additional_kwargs = forward_context.additional_kwargs or {}
     # Keep the type refinement static: torch.compile traces this helper and
     # cannot wrap the runtime ``types.UnionType`` created by typing.cast.
-    metadata: AFDMetadata | None = additional_kwargs.get("afd_metadata")
+    metadata: AFDForwardContextMetadata | None = additional_kwargs.get("afd_metadata")
     return metadata
 
 

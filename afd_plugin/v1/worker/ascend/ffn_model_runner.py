@@ -31,7 +31,7 @@ from afd_plugin.connectors import (
     AFDDPMetadata,
     AFDControlPayload,
     AFDF2ATransferPayload,
-    AFDMetadata,
+    AFDForwardContextMetadata,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
     _resolve_world_ranks,
@@ -202,13 +202,13 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 ),
             )
         num_stages = max(len(dp_metadata_list), 1)
-        afd_metadata = AFDMetadata(
-            afd_tokens_start_loc=[],
-            afd_reqs_start_loc=[],
-            afd_stage_idx=0,
+        afd_metadata = AFDForwardContextMetadata(
+            tokens_start_loc=[],
+            requests_start_loc=[],
+            stage_idx=0,
             afd_connector=self.connector,
-            afd_tokens_lens=[],
-            num_of_stages=num_stages,
+            tokens_lens=[],
+            num_stages=num_stages,
         )
         stage_ids = sorted(int(stage_idx) for stage_idx in dp_metadata_list) or [0]
         num_tokens_across_dp = _ffn_token_counts_across_ranks(
@@ -298,14 +298,14 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             payload = work_item.recv_output
             layer_idx = work_item.layer_idx
             num_tokens = work_item.num_tokens
-            afd_metadata = AFDMetadata(
-                afd_tokens_start_loc=[0],
-                afd_reqs_start_loc=[0],
-                afd_stage_idx=stage_idx,
+            afd_metadata = AFDForwardContextMetadata(
+                tokens_start_loc=[0],
+                requests_start_loc=[0],
+                stage_idx=stage_idx,
                 afd_connector=self.connector,
-                afd_tokens_lens=[num_tokens],
-                num_of_stages=1,
-                afd_tokens_unpadded_lens=[num_tokens],
+                tokens_lens=[num_tokens],
+                num_stages=1,
+                tokens_unpadded_lens=[num_tokens],
             )
 
             with ascend_forward_context(
