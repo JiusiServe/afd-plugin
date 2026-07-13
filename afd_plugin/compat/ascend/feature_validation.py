@@ -26,7 +26,7 @@ def fail_if_unsupported_npu_afd_features(vllm_config: VllmConfig) -> None:
 
     afd_config = parse_afd_config(vllm_config)
     extra = afd_config.extra_config or {}
-    if afd_config.connector == "afdasyncconnector":
+    if afd_config.connector == "CAMAsyncAFDConnector":
         _fail_if_unsupported_npu_afd_async_features(vllm_config, afd_config)
         return
 
@@ -74,16 +74,16 @@ def _fail_if_unsupported_npu_afd_async_features(
     parallel_config = vllm_config.parallel_config
     if not is_afd_async_dp(vllm_config):
         raise RuntimeError(
-            "AFDAsyncConnector requires additional_config['afd'] "
-            "with async=true and connector='afdasyncconnector'",
+            "CAMAsyncAFDConnector requires additional_config['afd'] "
+            "with async=true and connector='CAMAsyncAFDConnector'",
         )
     if not bool(vllm_config.model_config.enforce_eager):
         raise RuntimeError(
-            "AFDAsyncConnector supports only eager Attention/FFN execution",
+            "CAMAsyncAFDConnector supports only eager Attention/FFN execution",
         )
     if bool(parallel_config.use_ubatching):
         raise RuntimeError(
-            "AFDAsyncConnector does not support vLLM native ubatching/DBO",
+            "CAMAsyncAFDConnector does not support vLLM native ubatching/DBO",
         )
     if async_moe_ubatching_enabled(afd_config):
         _fail_if_unsupported_npu_async_moe_ubatching_features(
@@ -91,24 +91,26 @@ def _fail_if_unsupported_npu_afd_async_features(
             afd_config,
         )
     if _truthy(extra.get("is_multistream")):
-        raise RuntimeError("AFDAsyncConnector does not support multistream")
+        raise RuntimeError("CAMAsyncAFDConnector does not support multistream")
     if _truthy(extra.get("is_attn_multistream")):
-        raise RuntimeError("AFDAsyncConnector does not support attention multistream")
+        raise RuntimeError(
+            "CAMAsyncAFDConnector does not support attention multistream",
+        )
     if _truthy(extra.get("is_ffn_multistream")):
-        raise RuntimeError("AFDAsyncConnector does not support FFN multistream")
+        raise RuntimeError("CAMAsyncAFDConnector does not support FFN multistream")
 
     multistream_info = extra.get("multistream_info")
     if isinstance(multistream_info, Mapping):
         for key in ("enable", "enabled", "attn_enable", "ffn_enable"):
             if _truthy(multistream_info.get(key)):
                 raise RuntimeError(
-                    "AFDAsyncConnector does not support multistream_info enabled",
+                    "CAMAsyncAFDConnector does not support multistream_info enabled",
                 )
 
     quant_mode = extra.get("dynamicQuant", 0)
     if quant_mode not in (None, "", 0, "0", 1, "1"):
         raise RuntimeError(
-            "AFDAsyncConnector currently supports only dynamicQuant 0 or 1",
+            "CAMAsyncAFDConnector currently supports only dynamicQuant 0 or 1",
         )
 
 
