@@ -5,8 +5,8 @@
 # AF-disaggregated (2A2F) decode-only benchmark.
 #
 # This is the DECODE side of prefill-decode (PD) disaggregation with the prefill
-# instance faked out. Compare recipe/gpu/deepseek_v2_lite/
-# prefill_decode_disaggregation/1p1a1f_graph_dbo.sh, where the decode side
+# instance faked out. Compare recipe/gpu/p2p_nccl/deepseek_v2_lite/
+# prefill_decode_disaggregation/2p1a1f_graph_dbo.sh, where the decode side
 # (attention + ffn) carries an LMCacheConnectorV1 kv_consumer and pulls real KV
 # from a separate 1P prefill instance via a proxy.
 #
