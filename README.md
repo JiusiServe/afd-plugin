@@ -1,5 +1,7 @@
 # vllm-afd-plugin
 
+## Overview
+
 **vllm-afd-plugin** is a [vLLM](https://github.com/vllm-project/vllm)
 external plugin for **Attention-FFN Disaggregation (AFD)**. It provides
 plugin-owned worker classes, model runners, model wrappers, connectors,
@@ -22,8 +24,6 @@ Core runtime support:
 - Python package metadata for the `vllm-afd-plugin` distribution.
 - `vllm.general_plugins` entry point named `afd`, implemented by
   `afd_plugin:register_afd`.
-- CPU-safe package import, config parsing, stack validation, class-path
-  resolution, and compatibility-patch tests.
 - Plugin-owned `AFDConfig`, parsed from vLLM
   `additional_config["afd"]`.
 - GPU Attention and FFN workers:
@@ -43,35 +43,28 @@ Core runtime support:
 
 Model support:
 
-| Model family | Registered architectures | Status | Notes |
-| --- | --- | --- | --- |
-| DeepSeekV2 / DeepSeekV3 / GLM MoE DSA | `DeepseekForCausalLM`, `DeepseekV2ForCausalLM`, `DeepseekV3ForCausalLM`, `GlmMoeDsaForCausalLM` | Supported for AFD smoke and E2E validation | Uses `afd_plugin.model_executor.models.deepseek_v2` wrappers. Attention and FFN sides currently load full model weights. |
-| Other model families | Not registered by this plugin | Not supported | Add a plugin-owned model wrapper before using AFD-specific model forward behavior. |
+| Model family | Registered architectures | Notes |
+| --- | --- | --- |
+| DeepSeekV2 / DeepSeekV3 / GLM MoE DSA | `DeepseekForCausalLM`, `DeepseekV2ForCausalLM`, `DeepseekV3ForCausalLM`, `GlmMoeDsaForCausalLM` | Uses `afd_plugin.model_executor.models.deepseek_v2` wrappers. Attention and FFN sides currently load full model weights. |
 
 Connector support:
 
-| Connector | Platform | Status | Notes |
-| --- | --- | --- | --- |
-| `P2pNcclAFDConnector` | CUDA | Supported | FFN ranks are ordered before Attention ranks. `num_attention_ranks` must be greater than or equal to `num_ffn_ranks` and divisible by it. |
-| `CAMP2pAFDConnector` | Ascend NPU | Supported | Uses HCCL/CAMP2P custom ops. Ascend ops build by default on NPU platforms; set `AFD_BUILD_ASCEND_OPS=0` to skip them. |
-| `CAMAsyncAFDConnector` | Ascend NPU | Supported | Uses CAM async-DP custom ops and requires `async=true` with the Ascend NPU workers. |
+| Connector | Platform | Prefill or Decode | Sync or Async | Graph Support | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `P2pNcclAFDConnector` | CUDA | Prefill and Decode | Sync | `FULL_DECODE_ONLY` CUDA graph | FFN ranks are ordered before Attention ranks. `num_attention_ranks` must be greater than or equal to `num_ffn_ranks` and divisible by it. See the [DeepSeek V2 Lite recipe](recipe/gpu/p2p_nccl/deepseek_v2_lite/README.md). |
+| `CAMP2pAFDConnector` | Ascend NPU | Prefill and Decode | Sync | `FULL_DECODE_ONLY` ACL graph | Uses HCCL/CAMP2P custom ops. Ascend ops build by default on NPU platforms; set `AFD_BUILD_ASCEND_OPS=0` to skip them. |
+| `CAMAsyncAFDConnector` | Ascend NPU | Prefill | Async | Not supported | Uses CAM async-DP custom ops and requires `async=true` with the Ascend NPU workers. See the [DeepSeek V3.2 recipe](recipe/npu/cam_async/DeepSeek-V3.2.md). |
 
 Connector implementations are grouped by backend package:
 `afd_plugin.connectors.gpu` for GPU-only connectors,
-`afd_plugin.connectors.npu` for NPU-only connectors, and
-`afd_plugin.connectors` for shared contracts and metadata.
-
+`afd_plugin.connectors.npu` for NPU-only connectors.
 Known gaps:
 
 - vLLM versions other than `0.19.1` are not claimed as supported.
 - vLLM/vLLM-Ascend model runner v2 is not supported.
-- Role-based weight pruning is not implemented; Attention and FFN sides still
-  load full DeepSeekV2-family weights.
 - GPU and NPU E2E tests are opt-in and require real hardware plus model weights.
 - GPU CUDA graph support is limited to `FULL_DECODE_ONLY`.
 - GPU DBO plus CUDA graph is limited to exactly two ubatches.
-- NPU runtime rejects `compute_gate_on_attention=true`, `quant_mode != 0`, and
-  multistream communication.
 
 ## Install
 
@@ -97,20 +90,6 @@ The optional extra pins `vllm==0.19.1`.
 
 Install or sync the distribution as `vllm-afd-plugin`. Python imports and CLI
 class paths use the `afd_plugin` package name.
-
-For GPU:
-
-```bash
-export VLLM_PLUGINS=afd
-unset VLLM_USE_V2_MODEL_RUNNER
-```
-
-For NPU, load the Ascend plugin before AFD:
-
-```bash
-export VLLM_PLUGINS=ascend,afd
-unset VLLM_USE_V2_MODEL_RUNNER
-```
 
 AFD is configured through vLLM `--additional-config`. There is no separate
 `--afd-config` flag.
@@ -255,4 +234,18 @@ AFD_NPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite uv run pytest -q -m npu
 
 ## License
 
-Apache License 2.0 - see [LICENSE](LICENSE).
+vLLM AFD Plugin is licensed under the [Apache License 2.0](LICENSE).
+
+## Cite
+
+If you find vLLM AFD Plugin helpful in your research or projects, please
+consider citing it:
+
+```bibtex
+@misc{vllmafdplugin2026,
+  title={vLLM AFD Plugin: Attention-FFN Disaggregation for vLLM},
+  author={AFD Plugin Contributors},
+  year={2026},
+  howpublished={\url{https://github.com/vllm-project/afd-plugin}},
+}
+```
