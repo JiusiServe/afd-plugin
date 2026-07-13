@@ -1,18 +1,23 @@
-# DeepSeek-V3.2 async_cam Recipe
+# CAMAsyncAFDConnector For DeepSeek-V3.2 Recipe
 
-This recipe describes how to run DeepSeek-V3.2 with the AFD async CAM
+This recipe describes how to run DeepSeek-V3.2 with the AFD CAM async
 connector on Ascend NPU.
 
 ## Introduction
 
-`async_cam.py` provides an Ascend CAM backed asynchronous AFD connector for
-the Attention-FFN disaggregation path. It uses CAM async dispatch/combine
+`CAMAsyncAFDConnector` provides an Ascend CAM-backed asynchronous AFD connector
+for the Attention-FFN disaggregation path. It uses CAM async dispatch/combine
 operators to move MoE activations between attention-side and FFN-side ranks,
 allowing the prefill computation to be split across independent attention and
 expert workers.
 
-Current limitation: async CAM currently supports only the prefill stage in a
+Current limitation: CAM async currently supports only the prefill stage in a
 prefill/decode disaggregated deployment.
+
+AFD provides the following backend-specific connectors:
+
+- GPU: `P2pNcclAFDConnector`.
+- NPU: `CAMP2pAFDConnector` and `CAMAsyncAFDConnector`.
 
 ## Image and Hardware Requirements
 
@@ -36,28 +41,28 @@ pip install afd_plugin/connectors/npu/bin/umdk_cam_op_lib-208.1.0b1-cp311-cp311-
 
 The AFD runtime is enabled through the `afd` object passed to
 `--additional-config`. The same topology-level values must be used by the
-attention and FFN commands so all workers join the same async CAM group.
+attention and FFN commands so all workers join the same CAM async group.
 
 | Field | Meaning |
 |-------|---------|
 | `enabled` | Enables the AFD runtime path for this vLLM process. |
-| `connector` | Selects the AFD connector implementation. Use `afdasyncconnector` for async CAM. |
-| `async` | Enables async-DP execution, which is required by `afdasyncconnector`. |
+| `connector` | Selects the AFD connector implementation. Use `CAMAsyncAFDConnector` for CAM async. |
+| `async` | Enables async-DP execution, which is required by `CAMAsyncAFDConnector`. |
 | `role` | Worker role in the AFD split. Use `attention` for prefill attention workers and `ffn` for expert workers. |
 | `host` / `port` | Rendezvous address for the async CAM HCCL process group. Set `host` to the IP address of the node that owns attention rank 0; all attention and FFN workers must use the same `host` and `port`. |
 | `num_attention_ranks` | Total attention-side ranks in the AFD topology. In this recipe, `DP3PCP8` gives `3 * 8 = 24`. |
 | `num_ffn_ranks` | Total FFN-side ranks in the AFD topology. In this recipe, `EP8` gives `8`. |
-| `afd_role_rank` | Role-local starting rank for the process. The worker expands this with the local DP/PCP or EP layout. |
+| `afd_role_rank` | Role-local starting rank for the process. For attention workers, this is the data-parallel starting rank multiplied by `attn_ranks_per_dp`. |
 | `compute_gate_on_attention` | Runs MoE routing/gating on the attention side before dispatching activations to FFN ranks. |
 
-`extra_config` carries async CAM specific knobs:
+`extra_config` carries CAM async-specific knobs:
 
 | Field | Meaning |
 |-------|---------|
 | `quant_mode` | CAM operator quantization mode. `0` keeps the base non-quantized CAM path. |
 | `dynamicQuant` | Enables dynamic quantization metadata for CAM dispatch/combine. |
 | `async_moe_ubatching` | Enables AFD-managed MoE ubatching instead of vLLM native DBO. |
-| `async_moe_num_ubatches` | Number of async MoE stages. Current async CAM setup uses `2`. |
+| `async_moe_num_ubatches` | Number of async MoE stages. The current CAM async setup uses `2`. |
 | `async_moe_split` | Split policy for async MoE ubatches. This recipe uses request-level splitting. |
 | `attn_ranks_per_dp` | Number of attention ranks per DP replica. With `PCP8`, this value is `8`. |
 
@@ -75,7 +80,6 @@ attention and FFN commands so all workers join the same async CAM group.
 Dataset:
 
 - File: `cp8sp50k_custom_dataset_token_ids.jsonl`
-- Download URL: `[TBD](https://example.com/to-be-filled)`.
 
 ```bash
 vllm bench serve \
@@ -138,7 +142,6 @@ vllm serve /path/to/DeepSeek-V3.2 \
   --quantization ascend \
   --seed 1024 \
   --served-model-name deepseek_v3_2 \
-  --enable-expert-parallel \
   --max-num-seqs 8 \
   --max-model-len 70000 \
   --max-num-batched-tokens 140000 \
@@ -183,7 +186,6 @@ vllm serve /path/to/DeepSeek-V3.2 \
   --quantization ascend \
   --seed 1024 \
   --served-model-name deepseek_v3_2 \
-  --enable-expert-parallel \
   --max-num-seqs 8 \
   --max-model-len 70000 \
   --max-num-batched-tokens 140000 \
@@ -195,11 +197,11 @@ vllm serve /path/to/DeepSeek-V3.2 \
 ```
 </details>
 
-### AFD async CAM
+### AFD CAM async
 
 - Attention side: `DP3PCP8`.
 - FFN side: `EP8`.
-- Connector: `afdasyncconnector`.
+- Connector: `CAMAsyncAFDConnector`.
 - Current scope: PD-disaggregated prefill stage only.
 
 <details>
@@ -247,7 +249,7 @@ vllm serve /path/to/DeepSeek-V3.2 \
   --additional-config '{
     "afd": {
       "enabled": true,
-      "connector": "afdasyncconnector",
+      "connector": "CAMAsyncAFDConnector",
       "async": true,
       "role": "attention",
       "host": "33.215.117.43",
@@ -316,14 +318,14 @@ vllm serve /path/to/DeepSeek-V3.2 \
   --additional-config '{
     "afd": {
       "enabled": true,
-      "connector": "afdasyncconnector",
+      "connector": "CAMAsyncAFDConnector",
       "async": true,
       "role": "attention",
       "host": "33.215.117.43",
       "port": 1239,
       "num_attention_ranks": 24,
       "num_ffn_ranks": 8,
-      "afd_role_rank": 0,
+      "afd_role_rank": 16,
       "compute_gate_on_attention": true,
       "extra_config": {
         "quant_mode": 0,
@@ -374,7 +376,7 @@ vllm serve /path/to/DeepSeek-V3.2 \
   --additional-config '{
     "afd": {
       "enabled": true,
-      "connector": "afdasyncconnector",
+      "connector": "CAMAsyncAFDConnector",
       "async": true,
       "role": "ffn",
       "host": "33.215.117.43",
@@ -404,7 +406,8 @@ and with the reduced 10-layer model described above.**
 
 ![Text-matched dataset median TTFT comparison](text_matched_dp_afd_median_ttft.png)
 
-On the dataset mentioned above, AFD async CAM consistently reduces Median/P50 TTFT
-compared with the `DP4PCP8 TP1` baseline across the measured request rates. The
-gap becomes more visible at higher load: at 10 RPS and 12 RPS, AFD is about
-7.2s faster than the baseline, with 12 RPS improving from 15.1s to 8.0s.
+On the dataset mentioned above, AFD CAM async consistently reduces Median/P50
+TTFT compared with the `DP4PCP8 TP1` baseline across the measured request
+rates. The gap becomes more visible at higher load: at 10 RPS and 12 RPS, AFD
+is about 7.2s faster than the baseline, with 12 RPS improving from 15.1s to
+8.0s.
