@@ -90,7 +90,7 @@ AFDNPUFFNWorker.initialize_from_config(...)
 
 background loop:
   -> torch.npu.set_device(...)
-  -> recv_dp_metadata_list(timeout_ms=100)
+  -> recv_dp_metadata_list()
   -> model_runner.execute_ffn_step(...)
   -> torch.npu.synchronize()
 ```

@@ -252,23 +252,13 @@ class AFDConnectorBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def recv_dp_metadata_list(
-        self,
-        timeout_ms: int | None = None,
-    ) -> AFDDPMetadataPayload:
+    def recv_dp_metadata_list(self) -> AFDDPMetadataPayload:
         """Receive a DP metadata control-plane payload on the FFN side.
-
-        Args:
-            timeout_ms: Optional timeout in milliseconds. Current backends may
-                still use blocking communication primitives; callers should not
-                assume all implementations enforce this timeout precisely.
 
         Returns:
             Structured DP metadata payload received from the Attention side.
 
         Raises:
-            TimeoutError: If an implementation supports timeout and no payload
-                arrives before the deadline.
             RuntimeError: If the control-plane communication group is not
                 initialized or unsupported by this connector.
         """

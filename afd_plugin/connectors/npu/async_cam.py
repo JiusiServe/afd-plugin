@@ -181,10 +181,7 @@ class AFDAsyncConnector(AFDConnectorBase):
     ) -> None:
         return None
 
-    def recv_dp_metadata_list(
-        self,
-        timeout_ms: int | None = None,
-    ) -> AFDDPMetadataPayload:
+    def recv_dp_metadata_list(self) -> AFDDPMetadataPayload:
         raise RuntimeError(
             "AFDAsyncConnector does not use the DP metadata control plane",
         )

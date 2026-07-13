@@ -122,7 +122,7 @@ class _MinimalConnector(AFDConnectorBase):
     def send_dp_metadata_list(self, payload):
         return None
 
-    def recv_dp_metadata_list(self, timeout_ms=None):
+    def recv_dp_metadata_list(self):
         return AFDDPMetadataPayload(
             dp_metadata_list={
                 0: AFDDPMetadata(
