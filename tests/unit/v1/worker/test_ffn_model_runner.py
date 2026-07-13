@@ -10,9 +10,9 @@ pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
 from afd_plugin.connectors import (
-    AFDAttnOutput,
-    AFDConnectorMetadata,
-    AFDDPMetadataPayload,
+    AFDA2FTransferPayload,
+    AFDTransferMetadata,
+    AFDControlPayload,
 )
 from afd_plugin.v1.worker.cuda_graph import make_ffn_graph_key
 from afd_plugin.v1.worker.ffn_model_runner import (
@@ -30,7 +30,7 @@ class _FakeConnector:
         self.closed = False
 
     def update_state_from_dp_metadata(self, payload):
-        assert isinstance(payload, AFDDPMetadataPayload)
+        assert isinstance(payload, AFDControlPayload)
         self.dp_metadata_updates.append(
             (
                 dict(payload.dp_metadata_list),
@@ -43,7 +43,7 @@ class _FakeConnector:
         if ubatch_idx is None:
             return self.attn_outputs.popleft()
         for item in tuple(self.attn_outputs):
-            metadata = item.metadata if isinstance(item, AFDAttnOutput) else item[1]
+            metadata = item.metadata if isinstance(item, AFDA2FTransferPayload) else item[1]
             if getattr(metadata, "ubatch_idx", metadata.stage_idx) == ubatch_idx:
                 self.attn_outputs.remove(item)
                 return item
@@ -74,7 +74,7 @@ class _StepProfiler:
 
 
 def _metadata():
-    return AFDConnectorMetadata.create_attention_metadata(
+    return AFDTransferMetadata.create_attention_metadata(
         layer_idx=0,
         stage_idx=0,
         seq_len=1,
@@ -82,7 +82,7 @@ def _metadata():
 
 
 def _metadata_for_stage(stage_idx):
-    return AFDConnectorMetadata.create_attention_metadata(
+    return AFDTransferMetadata.create_attention_metadata(
         layer_idx=0,
         stage_idx=stage_idx,
         seq_len=1,
@@ -156,7 +156,7 @@ def test_ffn_runner_accepts_unified_recv_output_payload():
     runner = _runner_with_connector_and_model(_FakeModel())
     metadata = _metadata()
     runner.connector.attn_outputs.append(
-        AFDAttnOutput(hidden_states="hidden", metadata=metadata),
+        AFDA2FTransferPayload(hidden_states="hidden", metadata=metadata),
     )
 
     runner.execute_model(dp_metadata_list={0: "dp"})

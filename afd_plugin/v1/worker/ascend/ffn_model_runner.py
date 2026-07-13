@@ -25,12 +25,12 @@ from afd_plugin.compat.ascend.profiler import (
 )
 from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
-    AFDAttnOutput,
+    AFDA2FTransferPayload,
     AFDConnectorFactory,
-    AFDConnectorMetadata,
+    AFDTransferMetadata,
     AFDDPMetadata,
-    AFDDPMetadataPayload,
-    AFDFFNOutput,
+    AFDControlPayload,
+    AFDF2ATransferPayload,
     AFDMetadata,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
@@ -450,19 +450,19 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
 
 def _normalize_recv_output(
-    recv_output: AFDAttnOutput | tuple[torch.Tensor, AFDConnectorMetadata],
+    recv_output: AFDA2FTransferPayload | tuple[torch.Tensor, AFDTransferMetadata],
     *,
     stage_idx: int,
     layer_idx: int,
-) -> tuple[torch.Tensor, AFDConnectorMetadata, AFDAttnOutput]:
+) -> tuple[torch.Tensor, AFDTransferMetadata, AFDA2FTransferPayload]:
     if isinstance(recv_output, tuple):
         hidden_states, metadata = recv_output
-        payload = AFDAttnOutput(hidden_states=hidden_states, metadata=metadata)
+        payload = AFDA2FTransferPayload(hidden_states=hidden_states, metadata=metadata)
         return hidden_states, metadata, payload
     hidden_states = recv_output.hidden_states
     metadata = recv_output.metadata
     if metadata is None:
-        metadata = AFDConnectorMetadata.create_ffn_metadata(
+        metadata = AFDTransferMetadata.create_ffn_metadata(
             layer_idx=layer_idx,
             stage_idx=stage_idx,
             seq_lens=[
@@ -477,12 +477,12 @@ def _normalize_recv_output(
 
 def _send_ffn_output(
     connector: AFDConnectorBase,
-    ffn_output: torch.Tensor | AFDFFNOutput,
-    metadata: AFDConnectorMetadata,
+    ffn_output: torch.Tensor | AFDF2ATransferPayload,
+    metadata: AFDTransferMetadata,
     *,
     stage_idx: int,
 ) -> None:
-    if not isinstance(ffn_output, AFDFFNOutput):
+    if not isinstance(ffn_output, AFDF2ATransferPayload):
         connector.send_ffn_output(
             ffn_output,
             metadata,
@@ -527,8 +527,8 @@ def _make_dp_metadata_payload(
     *,
     is_graph_capturing: bool = False,
     is_warmup: bool = False,
-) -> AFDDPMetadataPayload:
-    return AFDDPMetadataPayload(
+) -> AFDControlPayload:
+    return AFDControlPayload(
         dp_metadata_list=dp_metadata_list,
         is_graph_capturing=is_graph_capturing,
         is_warmup=is_warmup,

@@ -11,7 +11,7 @@ pytest.importorskip("vllm")
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
 from afd_plugin.config import AFDConfig
-from afd_plugin.connectors import AFDDPMetadataPayload
+from afd_plugin.connectors import AFDControlPayload
 from afd_plugin.model_executor.models.forward_context import (
     get_afd_metadata_from_forward_context,
 )
@@ -60,14 +60,14 @@ class _RecordingConnector:
         self.closed = False
 
     def update_state_from_dp_metadata(self, payload):
-        assert isinstance(payload, AFDDPMetadataPayload)
+        assert isinstance(payload, AFDControlPayload)
         self.dp_metadata_updates.append(payload.dp_metadata_list)
         self.dp_metadata_update_flags.append(
             (payload.is_graph_capturing, payload.is_warmup),
         )
 
     def send_dp_metadata_list(self, payload):
-        assert isinstance(payload, AFDDPMetadataPayload)
+        assert isinstance(payload, AFDControlPayload)
         self.sent_dp_metadata_lists.append(payload.dp_metadata_list)
         self.sent_dp_metadata_flags.append(
             (payload.is_graph_capturing, payload.is_warmup),

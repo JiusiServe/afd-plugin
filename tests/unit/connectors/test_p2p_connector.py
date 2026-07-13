@@ -14,7 +14,7 @@ from afd_plugin.config import AFDConfig, afd_config_from_mapping  # noqa: E402
 from afd_plugin.connectors import (  # noqa: E402
     AFDConnectorFactory,
     AFDDPMetadata,
-    AFDDPMetadataPayload,
+    AFDControlPayload,
 )
 from afd_plugin.distributed import build_rank_mapping  # noqa: E402
 
@@ -177,7 +177,7 @@ def test_p2p_ffn_metadata_tracks_each_attention_peer_in_xayf(
     )
 
     connector.update_state_from_dp_metadata(
-        AFDDPMetadataPayload(
+        AFDControlPayload(
             dp_metadata_list={0: AFDDPMetadata(token_counts)},
             is_graph_capturing=False,
             is_warmup=False,
@@ -207,7 +207,7 @@ def test_p2p_tensor_metadata_clamps_idle_attention_rank_to_dummy_token():
             num_ffn_ranks=1,
         ),
     )
-    payload = AFDDPMetadataPayload(
+    payload = AFDControlPayload(
         dp_metadata_list={0: AFDDPMetadata([0, 4])},
         is_graph_capturing=False,
         is_warmup=False,
@@ -279,14 +279,14 @@ def test_p2p_dp_metadata_serialization_uses_json_payload():
         max_tokens_across_dp_cpu=5,
     )
 
-    payload = module.encode_dp_metadata_payload(
-        AFDDPMetadataPayload(
+    payload = module.encode_control_payload(
+        AFDControlPayload(
             dp_metadata_list={7: metadata},
             is_graph_capturing=True,
             is_warmup=False,
         ),
     )
-    decoded_payload = module.decode_dp_metadata_payload(payload)
+    decoded_payload = module.decode_control_payload(payload)
     decoded = decoded_payload.dp_metadata_list
 
     assert payload.startswith(b"{")

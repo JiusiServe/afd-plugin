@@ -6,12 +6,12 @@ pytest.importorskip("torch")
 
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
-    AFDAttnOutput,
+    AFDA2FTransferPayload,
     AFDConnectorBase,
     AFDConnectorFactory,
-    AFDConnectorMetadata,
+    AFDTransferMetadata,
     AFDDPMetadata,
-    AFDDPMetadataPayload,
+    AFDControlPayload,
 )
 
 
@@ -36,7 +36,7 @@ def test_backend_connector_modules_are_registered_by_backend_package():
 
 def test_connector_metadata_validates_sequence_lengths():
     with pytest.raises(ValueError, match="sequence lengths"):
-        AFDConnectorMetadata(
+        AFDTransferMetadata(
             layer_idx=0,
             stage_idx=0,
             seq_lens=[0],
@@ -44,12 +44,12 @@ def test_connector_metadata_validates_sequence_lengths():
 
 
 def test_attn_output_carries_connector_payload_fields():
-    metadata = AFDConnectorMetadata.create_ffn_metadata(
+    metadata = AFDTransferMetadata.create_ffn_metadata(
         layer_idx=1,
         stage_idx=2,
         seq_lens=[3],
     )
-    output = AFDAttnOutput(
+    output = AFDA2FTransferPayload(
         hidden_states="hidden",
         metadata=metadata,
         topk_ids="ids",
@@ -60,7 +60,7 @@ def test_attn_output_carries_connector_payload_fields():
     assert output.metadata is metadata
     assert output.topk_ids == "ids"
     assert output.cam_p2p_ep_name == "ep"
-    assert repr(output).startswith("AFDAttnOutput(")
+    assert repr(output).startswith("AFDA2FTransferPayload(")
 
 
 def test_connector_base_builds_default_recv_metadata_from_dp_metadata():
@@ -104,9 +104,9 @@ class _MinimalConnector(AFDConnectorBase):
         return None
 
     def recv_attn_output(self, ubatch_idx=None):
-        return AFDAttnOutput(
+        return AFDA2FTransferPayload(
             hidden_states=None,
-            metadata=AFDConnectorMetadata.create_ffn_metadata(
+            metadata=AFDTransferMetadata.create_ffn_metadata(
                 layer_idx=0,
                 stage_idx=0,
                 seq_lens=[1],
@@ -123,7 +123,7 @@ class _MinimalConnector(AFDConnectorBase):
         return None
 
     def recv_dp_metadata_list(self):
-        return AFDDPMetadataPayload(
+        return AFDControlPayload(
             dp_metadata_list={
                 0: AFDDPMetadata(
                     _cpu_token_tensor([1]),

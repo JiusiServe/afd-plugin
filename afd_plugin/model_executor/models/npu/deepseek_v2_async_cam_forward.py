@@ -13,7 +13,7 @@ import torch
 from vllm.forward_context import get_forward_context
 from vllm.v1.worker.ubatch_utils import UBatchSlices
 
-from afd_plugin.connectors import AFDConnectorMetadata, AFDMetadata
+from afd_plugin.connectors import AFDTransferMetadata, AFDMetadata
 from afd_plugin.model_executor.models import AsyncMoeUbatchMetadata
 from afd_plugin.v1.worker.dbo import maybe_apply_dbo_yield
 
@@ -78,7 +78,7 @@ def run_attention_gate_afd_forward(
             llama_4_scaling,
         )
 
-        metadata = AFDConnectorMetadata.create_attention_metadata(
+        metadata = AFDTransferMetadata.create_attention_metadata(
             layer_idx=layer.layer_idx,
             stage_idx=stage_idx,
             seq_len=int(hidden_states.shape[0]),
@@ -197,7 +197,7 @@ def run_async_moe_ubatch_afd_forward(
         router_logits: torch.Tensor | None,
     ) -> None:
         expected_tokens = int(ubatch_slices[stage_idx].num_tokens)
-        stage_metadata = AFDConnectorMetadata.create_attention_metadata(
+        stage_metadata = AFDTransferMetadata.create_attention_metadata(
             layer_idx=layer.layer_idx,
             stage_idx=stage_idx,
             seq_len=expected_tokens,

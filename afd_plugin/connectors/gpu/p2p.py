@@ -17,12 +17,12 @@ from vllm.utils.torch_utils import direct_register_custom_op
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import (
-    AFDAttnOutput,
-    AFDConnectorMetadata,
+    AFDA2FTransferPayload,
+    AFDTransferMetadata,
     AFDDPMetadata,
-    AFDDPMetadataPayload,
-    recv_dp_metadata_payload,
-    send_dp_metadata_payload,
+    AFDControlPayload,
+    recv_control_payload,
+    send_control_payload,
 )
 from afd_plugin.distributed import (
     DefaultProcessGroupSwitcher,
@@ -168,7 +168,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
 
     def update_state_from_dp_metadata(
         self,
-        payload: AFDDPMetadataPayload,
+        payload: AFDControlPayload,
     ) -> None:
         self.dp_metadata_list = payload.dp_metadata_list
         self.is_graph_capturing = payload.is_graph_capturing
@@ -236,7 +236,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
 
     def send_dp_metadata_list(
         self,
-        payload: AFDDPMetadataPayload,
+        payload: AFDControlPayload,
     ) -> None:
         if self.p2p_pg is None:
             return
@@ -244,25 +244,25 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             return
         # NCCL transport requires the wire tensors to live on the CUDA device.
         device = torch.device(f"cuda:{self.local_rank}")
-        send_dp_metadata_payload(
+        send_control_payload(
             payload,
             dst=self.dst_list,
             group=self.p2p_pg,
             device=device,
         )
 
-    def recv_dp_metadata_list(self) -> AFDDPMetadataPayload:
+    def recv_dp_metadata_list(self) -> AFDControlPayload:
         if self.p2p_pg is None:
             raise RuntimeError("P2P DP metadata process group is not initialized")
 
         src = self.p2p_rank % self.min_size + self.ffn_size
         device = torch.device(f"cuda:{self.local_rank}")
-        return recv_dp_metadata_payload(src=src, group=self.p2p_pg, device=device)
+        return recv_control_payload(src=src, group=self.p2p_pg, device=device)
 
     def send_attn_output(
         self,
         hidden_states: torch.Tensor,
-        metadata: AFDConnectorMetadata,
+        metadata: AFDTransferMetadata,
         **kwargs: Any,
     ) -> None:
         if not _torch_is_compiling() and not metadata.validate_tensor_shape(
@@ -301,7 +301,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         self,
         ubatch_idx: int | None = None,
         **kwargs: Any,
-    ) -> AFDAttnOutput:
+    ) -> AFDA2FTransferPayload:
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
         hidden_states_list: list[torch.Tensor] = []
 
@@ -332,17 +332,17 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             if len(hidden_states_list) > 1
             else hidden_states_list[0]
         )
-        metadata = AFDConnectorMetadata.create_ffn_metadata(
+        metadata = AFDTransferMetadata.create_ffn_metadata(
             layer_idx=0,
             stage_idx=ubatch_idx,
             seq_lens=[int(tensor.shape[0]) for tensor in hidden_states_list],
         )
-        return AFDAttnOutput(hidden_states=hidden_states, metadata=metadata)
+        return AFDA2FTransferPayload(hidden_states=hidden_states, metadata=metadata)
 
     def send_ffn_output(
         self,
         ffn_output: torch.Tensor,
-        metadata: AFDConnectorMetadata,
+        metadata: AFDTransferMetadata,
         **kwargs: Any,
     ) -> None:
         if not _torch_is_compiling() and not metadata.validate_tensor_shape(

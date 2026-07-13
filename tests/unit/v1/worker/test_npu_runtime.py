@@ -18,10 +18,10 @@ from afd_plugin.compat.ascend import (
 )
 from afd_plugin.compat.ascend import runtime as ascend_runtime
 from afd_plugin.connectors import (
-    AFDAttnOutput,
-    AFDConnectorMetadata,
-    AFDDPMetadataPayload,
-    AFDFFNOutput,
+    AFDA2FTransferPayload,
+    AFDTransferMetadata,
+    AFDControlPayload,
+    AFDF2ATransferPayload,
     AFDMetadata,
 )
 
@@ -35,7 +35,7 @@ class _RecordingConnector:
         self.sent_dp_metadata_lists = []
 
     def update_state_from_dp_metadata(self, payload):
-        assert isinstance(payload, AFDDPMetadataPayload)
+        assert isinstance(payload, AFDControlPayload)
         self.dp_metadata_updates.append(
             (
                 payload.dp_metadata_list,
@@ -45,7 +45,7 @@ class _RecordingConnector:
         )
 
     def send_dp_metadata_list(self, payload):
-        assert isinstance(payload, AFDDPMetadataPayload)
+        assert isinstance(payload, AFDControlPayload)
         self.sent_dp_metadata_lists.append(
             (
                 payload.dp_metadata_list,
@@ -76,7 +76,7 @@ class _FakeFFNConnector:
         self.topology = SimpleNamespace(role_rank=role_rank)
 
     def update_state_from_dp_metadata(self, payload):
-        assert isinstance(payload, AFDDPMetadataPayload)
+        assert isinstance(payload, AFDControlPayload)
         self.dp_metadata_list = dict(payload.dp_metadata_list)
         self.updates.append(
             (
@@ -91,17 +91,17 @@ class _FakeFFNConnector:
     def recv_attn_output(self, metadata=None, ubatch_idx=None):
         for item in tuple(self.attn_outputs):
             item_metadata = (
-                item.metadata if isinstance(item, AFDAttnOutput) else item[1]
+                item.metadata if isinstance(item, AFDA2FTransferPayload) else item[1]
             )
             if item_metadata.stage_idx == ubatch_idx:
                 self.attn_outputs.remove(item)
-                if isinstance(item, AFDAttnOutput):
+                if isinstance(item, AFDA2FTransferPayload):
                     return item
-                return AFDAttnOutput(hidden_states=item[0], metadata=item[1])
+                return AFDA2FTransferPayload(hidden_states=item[0], metadata=item[1])
         raise IndexError(ubatch_idx)
 
     def create_recv_metadata(self, **kwargs):
-        return AFDConnectorMetadata.create_ffn_metadata(
+        return AFDTransferMetadata.create_ffn_metadata(
             layer_idx=kwargs["layer_idx"],
             stage_idx=kwargs["ubatch_idx"],
             seq_lens=[1],
@@ -133,7 +133,7 @@ class _RecordingFakeModel:
 
 class _FakeStructuredFFNModel:
     def compute_ffn_output(self, hidden_states, layer_idx, **_kwargs):
-        return AFDFFNOutput(
+        return AFDF2ATransferPayload(
             routed_output=f"routed({hidden_states}, layer={layer_idx})",
             shared_output=f"shared({hidden_states}, layer={layer_idx})",
         )
@@ -618,7 +618,7 @@ def test_npu_ffn_runner_executes_eager_ffn_step():
     runner.max_num_tokens = 1
     runner.use_aclgraph = False
     runner._acl_graphs = {}
-    metadata = AFDConnectorMetadata.create_attention_metadata(
+    metadata = AFDTransferMetadata.create_attention_metadata(
         layer_idx=0,
         stage_idx=0,
         seq_len=1,
@@ -635,7 +635,7 @@ def test_npu_ffn_runner_executes_eager_ffn_step():
         ("npu-ffn(hidden, layer=0)", metadata, {"ubatch_idx": 0}),
     ]
     assert runner.connector.metadata_updates == [
-        (metadata, AFDAttnOutput(hidden_states="hidden", metadata=metadata)),
+        (metadata, AFDA2FTransferPayload(hidden_states="hidden", metadata=metadata)),
     ]
 
 
@@ -648,13 +648,13 @@ def test_npu_ffn_runner_passes_async_shared_payload_to_model():
     runner.max_num_tokens = 1
     runner.use_aclgraph = False
     runner._acl_graphs = {}
-    metadata = AFDConnectorMetadata.create_attention_metadata(
+    metadata = AFDTransferMetadata.create_attention_metadata(
         layer_idx=0,
         stage_idx=0,
         seq_len=1,
     )
     runner.connector.attn_outputs.append(
-        AFDAttnOutput(
+        AFDA2FTransferPayload(
             hidden_states="hidden",
             metadata=metadata,
             group_list="groups",
@@ -710,12 +710,12 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
     runner.model = _RecordingFakeModel()
     runner.num_layers = 1
     runner.max_num_tokens = 16
-    metadata = AFDConnectorMetadata.create_ffn_metadata(
+    metadata = AFDTransferMetadata.create_ffn_metadata(
         layer_idx=7,
         stage_idx=0,
         seq_lens=[5],
     )
-    recv_output = AFDAttnOutput(
+    recv_output = AFDA2FTransferPayload(
         hidden_states="recv-hidden",
         metadata=metadata,
         group_list="groups",
@@ -781,7 +781,7 @@ def test_npu_ffn_runner_sends_structured_shared_output():
     runner.max_num_tokens = 1
     runner.use_aclgraph = False
     runner._acl_graphs = {}
-    metadata = AFDConnectorMetadata.create_attention_metadata(
+    metadata = AFDTransferMetadata.create_attention_metadata(
         layer_idx=0,
         stage_idx=0,
         seq_len=1,
@@ -865,7 +865,7 @@ def test_npu_ffn_runner_falls_back_to_eager_on_acl_graph_miss():
     runner.max_num_tokens = 1
     runner.use_aclgraph = True
     runner._acl_graphs = {}
-    metadata = AFDConnectorMetadata.create_attention_metadata(
+    metadata = AFDTransferMetadata.create_attention_metadata(
         layer_idx=0,
         stage_idx=0,
         seq_len=1,
@@ -903,7 +903,7 @@ def test_npu_ffn_runner_warmup_uses_eager_forward_without_graph(monkeypatch):
         capture_flags.append,
     )
     monkeypatch.setattr(ffn_model_runner.torch.npu, "mem_get_info", lambda: (0, 0))
-    metadata = AFDConnectorMetadata.create_attention_metadata(
+    metadata = AFDTransferMetadata.create_attention_metadata(
         layer_idx=0,
         stage_idx=0,
         seq_len=1,
@@ -950,7 +950,7 @@ def test_npu_ffn_runner_capture_stores_acl_graph_and_skips_duplicate_state_updat
         lambda enabled: None,
     )
     monkeypatch.setattr(ffn_model_runner.torch.npu, "mem_get_info", lambda: (0, 0))
-    metadata = AFDConnectorMetadata.create_attention_metadata(
+    metadata = AFDTransferMetadata.create_attention_metadata(
         layer_idx=0,
         stage_idx=0,
         seq_len=1,
@@ -980,7 +980,7 @@ def test_npu_ffn_runner_requires_compute_hook():
     runner.max_num_tokens = 1
     runner.use_aclgraph = False
     runner._acl_graphs = {}
-    metadata = AFDConnectorMetadata.create_attention_metadata(
+    metadata = AFDTransferMetadata.create_attention_metadata(
         layer_idx=0,
         stage_idx=0,
         seq_len=1,

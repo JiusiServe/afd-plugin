@@ -67,7 +67,7 @@ from afd_plugin.config import (
 from afd_plugin.connectors import (
     AFDConnectorFactory,
     AFDDPMetadata,
-    AFDDPMetadataPayload,
+    AFDControlPayload,
     AFDMetadata,
 )
 from afd_plugin.model_executor.models import ASYNC_MOE_UBATCH_METADATA_KEY
@@ -1277,7 +1277,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             dp_metadata_list = {0: dp_metadata}
         is_warmup = bool(self._is_warmup)
         is_graph_capturing = bool(self._afd_is_graph_capturing)
-        payload = AFDDPMetadataPayload(
+        payload = AFDControlPayload(
             dp_metadata_list=dp_metadata_list,
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,

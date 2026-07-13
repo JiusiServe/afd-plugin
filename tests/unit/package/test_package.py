@@ -43,11 +43,11 @@ def test_connectors_export_attn_output_without_recv_alias():
     metadata_source = (root / "afd_plugin/connectors/metadata.py").read_text()
     namespace_source = (root / "afd_plugin/connectors/__init__.py").read_text()
 
-    assert "class AFDAttnOutput:" in metadata_source
-    assert '"AFDAttnOutput"' in metadata_source
+    assert "class AFDA2FTransferPayload:" in metadata_source
+    assert '"AFDA2FTransferPayload"' in metadata_source
     assert "AFDRecvOutput" not in metadata_source
-    assert "AFDAttnOutput," in namespace_source
-    assert '"AFDAttnOutput"' in namespace_source
+    assert "AFDA2FTransferPayload," in namespace_source
+    assert '"AFDA2FTransferPayload"' in namespace_source
     assert "AFDRecvOutput" not in namespace_source
 
 

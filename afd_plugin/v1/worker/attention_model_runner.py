@@ -32,7 +32,7 @@ from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
     AFDConnectorFactory,
     AFDDPMetadata,
-    AFDDPMetadataPayload,
+    AFDControlPayload,
     AFDMetadata,
 )
 from afd_plugin.model_executor.models.forward_context import use_afd_metadata_provider
@@ -127,7 +127,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
             dp_metadata_list = {0: dp_metadata}
         is_warmup = bool(self._is_warmup)
         is_graph_capturing = bool(getattr(self, "_afd_is_graph_capturing", False))
-        payload = AFDDPMetadataPayload(
+        payload = AFDControlPayload(
             dp_metadata_list=dp_metadata_list,
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,
