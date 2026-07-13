@@ -52,7 +52,7 @@ from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
 
 from afd_plugin.compat.ascend import (
     fail_if_unsupported_npu_afd_features,
-    mirror_afd_metadata_on_forward_context,
+    set_afd_metadata_on_forward_context,
 )
 from afd_plugin.compat.ascend.profiler import (
     create_afd_npu_profiler,
@@ -1233,7 +1233,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 _forward_context_num_tokens(forward_context, self.vllm_config),
             )
 
-        mirror_afd_metadata_on_forward_context(
+        set_afd_metadata_on_forward_context(
             forward_context,
             self._afd_pending_metadata,
         )

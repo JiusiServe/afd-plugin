@@ -17,7 +17,7 @@ from vllm_ascend.worker.model_runner_v1 import NPUModelRunner, graph_capture
 from afd_plugin.compat.ascend import (
     ascend_forward_context,
     fail_if_unsupported_npu_afd_features,
-    mirror_afd_metadata_on_forward_context,
+    set_afd_metadata_on_forward_context,
 )
 from afd_plugin.compat.ascend.profiler import (
     create_afd_npu_profiler,
@@ -251,7 +251,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     metadata.stage_idx = stage_idx
                     if forward_context is not None:
                         forward_context.dp_metadata = dp_metadata_list.get(stage_idx)
-                        mirror_afd_metadata_on_forward_context(
+                        set_afd_metadata_on_forward_context(
                             forward_context,
                             metadata,
                         )
@@ -321,7 +321,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             ) as forward_context:
                 if forward_context is not None:
                     forward_context.dp_metadata = None
-                    mirror_afd_metadata_on_forward_context(
+                    set_afd_metadata_on_forward_context(
                         forward_context,
                         metadata,
                     )

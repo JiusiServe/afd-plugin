@@ -29,8 +29,7 @@ def get_afd_metadata_from_forward_context(
     """Return AFD metadata from vLLM ``ForwardContext.additional_kwargs``.
 
     Model wrappers use this helper so AFD metadata stays outside vLLM's
-    ``ForwardContext`` schema, with a compatibility fallback for patched
-    contexts.
+    ``ForwardContext`` schema.
     """
 
     if forward_context is None:
@@ -38,9 +37,7 @@ def get_afd_metadata_from_forward_context(
 
     additional_kwargs = forward_context.additional_kwargs or {}
     metadata = additional_kwargs.get("afd_metadata")
-    if metadata is not None:
-        return cast(AFDMetadata, metadata)
-    return cast(AFDMetadata | None, getattr(forward_context, "afd_metadata", None))
+    return cast(AFDMetadata | None, metadata)
 
 
 def get_async_moe_ubatch_metadata_from_forward_context(

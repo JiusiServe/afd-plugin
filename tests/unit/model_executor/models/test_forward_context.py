@@ -17,9 +17,19 @@ from afd_plugin.model_executor.models import (
 def test_get_afd_metadata_from_additional_kwargs():
     forward_context = SimpleNamespace(
         additional_kwargs={"afd_metadata": {"stage": 0}},
+        afd_metadata={"stage": 1},
     )
 
     assert get_afd_metadata_from_forward_context(forward_context) == {"stage": 0}
+
+
+def test_get_afd_metadata_ignores_forward_context_attribute():
+    forward_context = SimpleNamespace(
+        additional_kwargs={},
+        afd_metadata={"stage": 0},
+    )
+
+    assert get_afd_metadata_from_forward_context(forward_context) is None
 
 
 def test_get_async_moe_ubatch_metadata_from_additional_kwargs():

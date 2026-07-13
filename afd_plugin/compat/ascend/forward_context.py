@@ -13,16 +13,15 @@ if TYPE_CHECKING:
     from vllm.config import VllmConfig
 
 
-def mirror_afd_metadata_on_forward_context(
+def set_afd_metadata_on_forward_context(
     forward_context: object,
     afd_metadata: object,
 ) -> None:
-    """Store AFD metadata in canonical kwargs and Ascend's mirrored attribute."""
+    """Store AFD metadata in ``ForwardContext.additional_kwargs``."""
 
     if forward_context.additional_kwargs is None:
         forward_context.additional_kwargs = {}
     forward_context.additional_kwargs["afd_metadata"] = afd_metadata
-    forward_context.afd_metadata = afd_metadata
 
 
 @contextmanager
@@ -54,7 +53,6 @@ def ascend_forward_context(
         "batch_descriptor": None,
         "aclgraph_runtime_mode": aclgraph_runtime_mode,
         "model_instance": model_instance,
-        "afd_metadata": afd_metadata,
         "num_tokens": int(num_tokens),
         "num_tokens_across_dp": num_tokens_across_dp,
     }
@@ -72,8 +70,8 @@ def ascend_forward_context(
     with set_ascend_forward_context(**context_kwargs):
         forward_context = get_forward_context()
         if afd_metadata is not None:
-            mirror_afd_metadata_on_forward_context(forward_context, afd_metadata)
+            set_afd_metadata_on_forward_context(forward_context, afd_metadata)
         yield forward_context
 
 
-__all__ = ["ascend_forward_context", "mirror_afd_metadata_on_forward_context"]
+__all__ = ["ascend_forward_context", "set_afd_metadata_on_forward_context"]
