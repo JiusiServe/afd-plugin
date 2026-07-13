@@ -217,7 +217,7 @@ def _new_ffn_worker():
     return object.__new__(AFDNPUFFNWorker)
 
 
-def test_npu_attention_runner_builds_and_mirrors_metadata():
+def test_npu_attention_runner_builds_and_sets_metadata():
     runner = _new_attention_runner()
     runner.vllm_config = _vllm_config(role="attention")
     runner.afd_connector = _RecordingConnector()
@@ -235,7 +235,6 @@ def test_npu_attention_runner_builds_and_mirrors_metadata():
     runner._install_afd_metadata_on_forward_context(forward_context)
 
     metadata = forward_context.additional_kwargs["afd_metadata"]
-    assert forward_context.afd_metadata is metadata
     assert metadata.afd_tokens_lens == [1]
     assert len(runner.afd_connector.dp_metadata_updates) == 1
     assert len(runner.afd_connector.sent_dp_metadata_lists) == 1
@@ -264,7 +263,6 @@ def test_npu_attention_async_connector_skips_dp_metadata_control_plane():
     runner._install_afd_metadata_on_forward_context(forward_context)
 
     metadata = forward_context.additional_kwargs["afd_metadata"]
-    assert forward_context.afd_metadata is metadata
     assert metadata.afd_tokens_lens == [3]
     assert runner.afd_connector.dp_metadata_updates == []
     assert runner.afd_connector.sent_dp_metadata_lists == []
@@ -609,7 +607,6 @@ def test_npu_create_ascend_forward_context_marks_current_ubatch(monkeypatch):
     assert new_forward_context.num_tokens == 3
     assert child_metadata.ubatch_idx == 1
     assert child_metadata.afd_stage_idx == 1
-    assert new_forward_context.afd_metadata is child_metadata
 
 
 def test_npu_ffn_runner_executes_eager_ffn_step():

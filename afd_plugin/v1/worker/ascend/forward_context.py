@@ -11,7 +11,6 @@ from vllm.forward_context import BatchDescriptor, DPMetadata, ForwardContext
 from vllm.v1.worker.ubatch_utils import UBatchSlices
 from vllm_ascend.ops.fused_moe.moe_comm_method import get_moe_comm_method
 
-from afd_plugin.compat.ascend import mirror_afd_metadata_on_forward_context
 from afd_plugin.v1.worker.ubatch_wrapper import (
     build_ubatch_additional_kwargs,
     build_ubatch_afd_metadata,
@@ -131,9 +130,6 @@ def create_ascend_forward_context(
         new_forward_context.mc2_mask = mc2_mask
 
     new_forward_context.dbo_enabled = True
-    child_metadata = new_forward_context.additional_kwargs.get("afd_metadata")
-    if child_metadata is not None:
-        mirror_afd_metadata_on_forward_context(new_forward_context, child_metadata)
     return new_forward_context
 
 

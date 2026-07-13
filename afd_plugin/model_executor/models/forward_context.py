@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any, Final, TypedDict, cast
+from typing import Any, Final, TypedDict
 
 import vllm.forward_context as forward_context_module
 from vllm.forward_context import ForwardContext, get_forward_context
@@ -29,18 +29,17 @@ def get_afd_metadata_from_forward_context(
     """Return AFD metadata from vLLM ``ForwardContext.additional_kwargs``.
 
     Model wrappers use this helper so AFD metadata stays outside vLLM's
-    ``ForwardContext`` schema, with a compatibility fallback for patched
-    contexts.
+    ``ForwardContext`` schema.
     """
 
     if forward_context is None:
         forward_context = get_forward_context()
 
     additional_kwargs = forward_context.additional_kwargs or {}
-    metadata = additional_kwargs.get("afd_metadata")
-    if metadata is not None:
-        return cast(AFDMetadata, metadata)
-    return cast(AFDMetadata | None, getattr(forward_context, "afd_metadata", None))
+    # Keep the type refinement static: torch.compile traces this helper and
+    # cannot wrap the runtime ``types.UnionType`` created by typing.cast.
+    metadata: AFDMetadata | None = additional_kwargs.get("afd_metadata")
+    return metadata
 
 
 def get_async_moe_ubatch_metadata_from_forward_context(
@@ -54,8 +53,10 @@ def get_async_moe_ubatch_metadata_from_forward_context(
         forward_context = get_forward_context()
 
     additional_kwargs = forward_context.additional_kwargs or {}
-    metadata = additional_kwargs.get(ASYNC_MOE_UBATCH_METADATA_KEY)
-    return cast(AsyncMoeUbatchMetadata | None, metadata)
+    metadata: AsyncMoeUbatchMetadata | None = additional_kwargs.get(
+        ASYNC_MOE_UBATCH_METADATA_KEY,
+    )
+    return metadata
 
 
 @contextmanager

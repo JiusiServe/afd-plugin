@@ -16,9 +16,7 @@ from vllm_ascend.worker.model_runner_v1 import NPUModelRunner, graph_capture
 
 from afd_plugin.compat.ascend import (
     ascend_forward_context,
-    ensure_vllm_config_has_afd_proxy,
     fail_if_unsupported_npu_afd_features,
-    mirror_afd_metadata_on_forward_context,
 )
 from afd_plugin.compat.ascend.profiler import (
     create_afd_npu_profiler,
@@ -63,7 +61,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
     def __init__(self, vllm_config: VllmConfig, device: object) -> None:
         afd_config = self.parse_config(vllm_config)
-        ensure_vllm_config_has_afd_proxy(vllm_config, afd_config)
         super().__init__(vllm_config, device)
 
         self.afd_config = afd_config
@@ -251,13 +248,9 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     self.connector.update_metadata(metadata, payload)
                     metadata.layer_idx = layer_idx
                     metadata.stage_idx = stage_idx
-                    if forward_context is not None:
-                        forward_context.dp_metadata = dp_metadata_list.get(stage_idx)
-                        mirror_afd_metadata_on_forward_context(
-                            forward_context,
-                            metadata,
-                        )
-                        _set_moe_layer_index(forward_context, layer_idx)
+                    forward_context.dp_metadata = dp_metadata_list.get(stage_idx)
+                    forward_context.additional_kwargs["afd_metadata"] = metadata
+                    _set_moe_layer_index(forward_context, layer_idx)
 
                     rank_ffn_output = self.model.compute_ffn_output(
                         hidden_states=hidden_states,
@@ -321,13 +314,9 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 model_instance=self.model,
                 num_tokens=num_tokens,
             ) as forward_context:
-                if forward_context is not None:
-                    forward_context.dp_metadata = None
-                    mirror_afd_metadata_on_forward_context(
-                        forward_context,
-                        metadata,
-                    )
-                    _set_moe_layer_index(forward_context, layer_idx)
+                forward_context.dp_metadata = None
+                forward_context.additional_kwargs["afd_metadata"] = metadata
+                _set_moe_layer_index(forward_context, layer_idx)
 
                 rank_ffn_output = self.model.compute_ffn_output(
                     hidden_states=hidden_states,

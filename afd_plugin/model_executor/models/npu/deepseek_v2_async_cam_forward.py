@@ -312,10 +312,6 @@ def _use_async_moe_ubatch_forward_context(
             forward_context,
             "additional_kwargs",
         ),
-        "afd_metadata": _read_forward_context_attr(
-            forward_context,
-            "afd_metadata",
-        ),
         "ubatch_idx": _read_forward_context_attr(forward_context, "ubatch_idx"),
         "num_ubatches": _read_forward_context_attr(
             forward_context,
@@ -335,7 +331,6 @@ def _use_async_moe_ubatch_forward_context(
     try:
         forward_context.attn_metadata = attn_metadata[stage_idx]
         forward_context.additional_kwargs = stage_kwargs
-        forward_context.afd_metadata = stage_afd_metadata
         forward_context.ubatch_idx = stage_idx
         forward_context.num_ubatches = len(ubatch_slices)
         forward_context.num_tokens = int(ubatch_slices[stage_idx].num_tokens)
