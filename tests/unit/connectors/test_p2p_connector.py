@@ -72,10 +72,15 @@ def test_p2p_connector_can_be_constructed_without_runtime_initialization():
     assert connector.dst_list == [0]
 
 
-def test_p2p_connector_uses_dp_rank_as_role_rank_for_native_dp():
+def test_p2p_connector_uses_config_role_rank_not_dp_rank():
+    # The runners fold dp/pcp/tp offsets into afd_role_rank before creating
+    # the connector; the connector must not re-derive it from the DP rank,
+    # otherwise TP peers within one DP group collapse onto the same role rank
+    # (e.g. dp2tp2: EP ranks 0..3 would become 0,0,1,1 and collide on the
+    # subgroup rendezvous port).
     connector = AFDConnectorFactory.create_connector(
-        1,
-        1,
+        3,
+        3,
         SimpleNamespace(
             model_config=SimpleNamespace(
                 dtype="bf16",
@@ -91,14 +96,15 @@ def test_p2p_connector_uses_dp_rank_as_role_rank_for_native_dp():
             enabled=True,
             role="attention",
             connector="p2pconnector",
-            num_attention_ranks=2,
-            num_ffn_ranks=2,
+            num_attention_ranks=4,
+            num_ffn_ranks=4,
+            afd_role_rank=3,
         ),
     )
 
-    assert connector.mapping.role_rank == 1
-    assert connector.world_rank == 3
-    assert connector.p2p_rank == 3
+    assert connector.mapping.role_rank == 3
+    assert connector.world_rank == 7
+    assert connector.p2p_rank == 7
 
 
 @pytest.mark.parametrize(
