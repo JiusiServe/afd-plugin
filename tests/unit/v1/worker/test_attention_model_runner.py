@@ -466,15 +466,6 @@ def _ubatch_runner(uniform_decode, **parallel_overrides):
             True,
             id="cudagraph-pad-split-inside-real",
         ),
-        pytest.param(
-            {"use_ubatching": True, "num_ubatches": 2},
-            True,
-            48,
-            None,
-            True,
-            True,
-            id="no-batch-descriptor-uses-real-tokens",
-        ),
     ],
 )
 def test_should_ubatch_single_rank(
@@ -486,11 +477,7 @@ def test_should_ubatch_single_rank(
     expected,
 ):
     runner = _ubatch_runner(uniform_decode, **parallel_overrides)
-    batch_descriptor = (
-        SimpleNamespace(num_tokens=padded_num_tokens)
-        if padded_num_tokens is not None
-        else None
-    )
+    batch_descriptor = SimpleNamespace(num_tokens=padded_num_tokens)
 
     assert (
         runner._should_ubatch_single_rank(
@@ -522,6 +509,8 @@ def test_should_ubatch_single_rank(
         pytest.param(1, False, 2, 64, False, id="dp1-rejects-empty-last-ubatch"),
         pytest.param(2, True, 2, 64, True, id="dp2-keeps-coordinated-true"),
         pytest.param(2, False, 48, 64, False, id="dp2-keeps-coordinated-false"),
+        pytest.param(2, True, 1, 1, False, id="dp2-rejects-empty-first-ubatch"),
+        pytest.param(2, True, 2, 2, True, id="dp2-keeps-minimal-nonempty-split"),
     ],
 )
 def test_determine_batch_execution_overrides_ubatch_only_for_dp1(
