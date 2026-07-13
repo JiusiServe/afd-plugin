@@ -189,8 +189,8 @@ def _launch_afd_server(
     Parameters
     ----------
     backend:
-        ``"gpu"`` uses CUDA workers with ``P2pNcclConnector``.
-        ``"npu"`` uses Ascend workers with ``CAMP2pConnector``.
+        ``"gpu"`` uses CUDA workers with ``P2pNcclAFDConnector``.
+        ``"npu"`` uses Ascend workers with ``CAMP2pAFDConnector``.
     attention_devices:
         Device IDs for the attention worker (e.g. ``["0"]``).
     ffn_devices:
@@ -219,7 +219,7 @@ def _launch_afd_server(
         ),
     )
 
-    # NPU uses CAMP2pConnector; GPU uses P2pNcclConnector.
+    # NPU uses CAMP2pAFDConnector; GPU uses P2pNcclAFDConnector.
     # Patch the connector in the AFD config after building the command.
     processes: list[subprocess.Popen[str]] = []
     log_threads: list[threading.Thread] = []
@@ -228,7 +228,7 @@ def _launch_afd_server(
         # --- FFN ---
         ffn_cmd = build_vllm_command(args, role="ffn")
         if is_npu:
-            ffn_cmd = _patch_connector(ffn_cmd, "CAMP2pConnector")
+            ffn_cmd = _patch_connector(ffn_cmd, "CAMP2pAFDConnector")
         ffn_devices_str = ",".join(ffn_devices)
         device_label = (
             f"ASCEND_RT_VISIBLE_DEVICES={ffn_devices_str}"
@@ -245,7 +245,7 @@ def _launch_afd_server(
         # --- Attention ---
         attn_cmd = build_vllm_command(args, role="attention")
         if is_npu:
-            attn_cmd = _patch_connector(attn_cmd, "CAMP2pConnector")
+            attn_cmd = _patch_connector(attn_cmd, "CAMP2pAFDConnector")
         attn_devices_str = ",".join(attention_devices)
         device_label = (
             f"ASCEND_RT_VISIBLE_DEVICES={attn_devices_str}"

@@ -3,13 +3,13 @@
 """NPU-specific AFD connector implementations."""
 
 from afd_plugin.connectors.npu.camp2p import (
+    CAMP2pAFDConnector,
     CAMP2PAFDConnectorMetadata,
-    CAMP2pConnector,
     build_camp2p_topology,
 )
 
 __all__ = [
-    "CAMP2pConnector",
+    "CAMP2pAFDConnector",
     "CAMP2PAFDConnectorMetadata",
     "build_camp2p_topology",
 ]

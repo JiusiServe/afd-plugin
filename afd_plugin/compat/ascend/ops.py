@@ -70,7 +70,7 @@ def _assert_cam_namespace_registered(torch: object) -> None:
 
 @lru_cache(maxsize=1)
 def ensure_cam_p2p_ops_available() -> None:
-    """Import the custom operators used by ``CAMP2pConnector``.
+    """Import the custom operators used by ``CAMP2pAFDConnector``.
 
     The extension is optional at package import time.  It is built by default
     in an Ascend environment unless ``AFD_BUILD_ASCEND_OPS=0`` is set.
@@ -112,7 +112,7 @@ def ensure_cam_async_ops_available() -> None:
         import umdk_cam_op_lib  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(
-            "CAMAsyncConnector requires torch, torch_npu, umdk_cam_op_lib, "
+            "CAMAsyncAFDConnector requires torch, torch_npu, umdk_cam_op_lib, "
             "and preloaded real torch.ops.umdk_cam_op_lib CAM ops.",
         ) from exc
 
@@ -120,7 +120,7 @@ def ensure_cam_async_ops_available() -> None:
         _assert_cam_namespace_registered(torch)
     except AttributeError as exc:
         raise RuntimeError(
-            "CAMAsyncConnector requires real torch.ops.umdk_cam_op_lib CAM ops "
+            "CAMAsyncAFDConnector requires real torch.ops.umdk_cam_op_lib CAM ops "
             "(async_dispatch_send, async_dispatch_recv, async_combine_send, "
             "async_combine_recv). Install or preload the CAM operator binaries "
             "before initializing the connector.",

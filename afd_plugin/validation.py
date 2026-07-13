@@ -91,7 +91,7 @@ def assert_compatible_afd_stack(
     parallel_config = vllm_config.parallel_config
     async_expected_worker = (
         expected_npu_worker_qualname(config.role)
-        if config.connector == "CAMAsyncConnector"
+        if config.connector == "CAMAsyncAFDConnector"
         else None
     )
 
@@ -121,7 +121,7 @@ def assert_compatible_afd_stack(
     expected_fqcn = normalize_qualname(expected_qualname)
     if worker_fqcn != expected_fqcn:
         prefix = (
-            "CAMAsyncConnector requires Ascend NPU worker class: "
+            "CAMAsyncAFDConnector requires Ascend NPU worker class: "
             if async_expected_worker is not None
             else "invalid worker class for AFD runtime stack: "
         )

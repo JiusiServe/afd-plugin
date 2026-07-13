@@ -103,7 +103,7 @@ shape; only `role` and `afd_size` differ between attention and FFN:
   "afd": {
     "enabled": true,
     "role": "attention",            // or "ffn"
-    "connector": "P2pNcclConnector",
+    "connector": "P2pNcclAFDConnector",
     "host": "127.0.0.1",
     "port": 6269,
     "num_attention_ranks": 1,      // 2 in 2A2F

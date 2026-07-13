@@ -10,7 +10,7 @@ NPU Attention is selected with an explicit vLLM-Ascend worker class:
 ```bash
 VLLM_PLUGINS=ascend,afd vllm serve <model> \
   --worker-cls afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker \
-  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"CAMP2pConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 NPU runtime modules intentionally import real vLLM-Ascend dependencies. The
@@ -68,7 +68,7 @@ Current behavior:
   vLLM-Ascend code that still reads that attribute;
 - validates unsupported NPU feature flags;
 - derives `afd_role_rank` from DP/TP ranks;
-- creates and initializes `CAMP2pConnector`;
+- creates and initializes `CAMP2pAFDConnector`;
 - injects AFD metadata into Ascend/vLLM forward context;
 - sends DP metadata to FFN ranks before model forward;
 - supports NPU DBO metadata splitting through plugin-owned ubatch utilities;
@@ -85,7 +85,7 @@ OpenAI request
   -> AFDNPUAttentionModelRunner.execute_model(...)
   -> vLLM-Ascend builds scheduler/input/attention metadata
   -> AFD runner installs AFD metadata
-  -> AFD runner sends DP metadata through CAMP2pConnector
+  -> AFD runner sends DP metadata through CAMP2pAFDConnector
   -> model forward under Ascend forward context
   -> plugin-owned model wrapper sends Attention output
   -> NPU FFN side computes and sends FFN output
@@ -119,7 +119,7 @@ the plugin-owned fallback `AFDDPMetadata`.
 
 ## Connector
 
-NPU Attention uses `CAMP2pConnector`, implemented by
+NPU Attention uses `CAMP2pAFDConnector`, implemented by
 `afd_plugin.connectors.npu.camp2p`. The connector initializes HCCL/Gloo process
 groups and loads plugin-owned Ascend custom ops lazily when
 `init_afd_connector()` runs.
@@ -138,7 +138,7 @@ Supported:
 
 - vLLM `0.19.1` runtime stack with vLLM-Ascend model runner v1;
 - `--additional-config '{"afd": ...}'`;
-- `CAMP2pConnector`;
+- `CAMP2pAFDConnector`;
 - eager Attention path;
 - DBO with exactly two ubatches;
 - full model weight loading.

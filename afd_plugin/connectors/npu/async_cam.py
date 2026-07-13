@@ -85,7 +85,7 @@ class AFDAsyncTopology:
         return self.attention_rank_size + self.expert_rank_size
 
 
-class CAMAsyncConnector(AFDConnectorBase):
+class CAMAsyncAFDConnector(AFDConnectorBase):
     """CAM-backed async-DP connector for Ascend NPU AFD."""
 
     uses_dp_metadata_control_plane = False
@@ -183,7 +183,7 @@ class CAMAsyncConnector(AFDConnectorBase):
 
     def recv_dp_metadata_list(self) -> AFDDPMetadataPayload:
         raise RuntimeError(
-            "CAMAsyncConnector does not use the DP metadata control plane",
+            "CAMAsyncAFDConnector does not use the DP metadata control plane",
         )
 
     def select_experts(self, **kwargs: Any) -> tuple[Tensor, Tensor]:
@@ -352,7 +352,7 @@ class CAMAsyncConnector(AFDConnectorBase):
         topk_weights = kwargs.get("topk_weights")
         if topk_ids is None or topk_weights is None:
             raise RuntimeError(
-                "CAMAsyncConnector send_attn_output requires topk_ids/topk_weights",
+                "CAMAsyncAFDConnector send_attn_output requires topk_ids/topk_weights",
             )
         topk_ids = cast(Tensor, topk_ids)
         topk_weights = cast(Tensor, topk_weights)
@@ -649,7 +649,7 @@ class CAMAsyncConnector(AFDConnectorBase):
 
     def _require_initialized(self) -> None:
         if not self._initialized:
-            raise RuntimeError("CAMAsyncConnector is not initialized")
+            raise RuntimeError("CAMAsyncAFDConnector is not initialized")
 
     def _queue_attention_payload(
         self,
@@ -668,7 +668,7 @@ class CAMAsyncConnector(AFDConnectorBase):
         payloads = self._pending_attention_payloads.get(int(stage_idx))
         if not payloads:
             raise RuntimeError(
-                "CAMAsyncConnector recv_ffn_output is missing pending "
+                "CAMAsyncAFDConnector recv_ffn_output is missing pending "
                 "Attention metadata",
             )
         payload = payloads.pop(0)
@@ -785,7 +785,7 @@ def _resolve_cam_tp_size(afd_config: AFDConfig) -> int:
 
 
 def _connector_driven_batch_size(
-    connector: CAMAsyncConnector,
+    connector: CAMAsyncAFDConnector,
     fallback: int,
 ) -> int:
     return max(1, int(getattr(connector, "max_seq_len", fallback) or fallback))
@@ -879,7 +879,7 @@ def _sync_connector_data_with_cam_metadata(
 
 
 def _send_ffn_output_payload(
-    connector: CAMAsyncConnector,
+    connector: CAMAsyncAFDConnector,
     ffn_output: Tensor | AFDFFNOutput,
     metadata: AFDConnectorMetadata,
     *,
@@ -934,7 +934,7 @@ def _hccl_comm_name(group: ProcessGroup, rank: int) -> str:
 
 __all__ = [
     "AFD_ASYNC_CAM_GROUP_NAME",
-    "CAMAsyncConnector",
+    "CAMAsyncAFDConnector",
     "AFDAsyncConnectorData",
     "AFDAsyncFFNWorkItem",
     "AFDAsyncTopology",

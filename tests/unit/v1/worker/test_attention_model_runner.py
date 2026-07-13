@@ -717,7 +717,7 @@ def test_afd_rank_derives_from_data_parallel_rank():
     config = AFDConfig(
         enabled=True,
         role="attention",
-        connector="P2pNcclConnector",
+        connector="P2pNcclAFDConnector",
         num_attention_ranks=2,
         num_ffn_ranks=2,
         afd_role_rank=0,
@@ -766,7 +766,7 @@ def test_afd_rank_derives_from_tp_rank_dp1_tp2(monkeypatch):
     config = AFDConfig(
         enabled=True,
         role="attention",
-        connector="P2pNcclConnector",
+        connector="P2pNcclAFDConnector",
         num_attention_ranks=4,
         num_ffn_ranks=4,
         afd_role_rank=0,
@@ -791,7 +791,7 @@ def test_afd_rank_derives_from_pcp_rank_dp1_pcp2(monkeypatch):
     config = AFDConfig(
         enabled=True,
         role="attention",
-        connector="P2pNcclConnector",
+        connector="P2pNcclAFDConnector",
         num_attention_ranks=2,
         num_ffn_ranks=2,
         afd_role_rank=0,
@@ -820,7 +820,7 @@ def test_afd_rank_derives_from_dp_and_tp_ranks_dp2_tp2(monkeypatch):
     config = AFDConfig(
         enabled=True,
         role="attention",
-        connector="P2pNcclConnector",
+        connector="P2pNcclAFDConnector",
         num_attention_ranks=4,
         num_ffn_ranks=4,
         afd_role_rank=0,
@@ -840,7 +840,7 @@ def test_afd_rank_unchanged_when_dp1_tp1():
     config = AFDConfig(
         enabled=True,
         role="attention",
-        connector="P2pNcclConnector",
+        connector="P2pNcclAFDConnector",
         num_attention_ranks=1,
         num_ffn_ranks=1,
         afd_role_rank=0,
@@ -864,7 +864,7 @@ def test_afd_rank_raises_for_out_of_range_dp2_tp2(monkeypatch):
     config = AFDConfig(
         enabled=True,
         role="attention",
-        connector="P2pNcclConnector",
+        connector="P2pNcclAFDConnector",
         num_attention_ranks=2,
         num_ffn_ranks=2,
         afd_role_rank=0,
