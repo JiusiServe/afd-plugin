@@ -21,8 +21,8 @@ from afd_plugin.connectors.npu import async_cam as async_cam_module  # noqa: E40
 from afd_plugin.connectors.npu.async_cam import (  # noqa: E402
     AFD_ASYNC_CAM_GROUP_NAME,
     CAM_COMM_ID,
-    AFDAsyncConnector,
     AFDAsyncConnectorData,
+    CAMAsyncConnector,
     build_async_topology,
 )
 
@@ -128,7 +128,7 @@ def _vllm_config(*, tp_size: int = 1, pcp_size: int = 1):
 def _afd_config(*, role: str, rank: int = 0, extra_config=None):
     return AFDConfig(
         enabled=True,
-        connector="afdasyncconnector",
+        connector="CAMAsyncConnector",
         role=role,
         afd_role_rank=rank,
         num_attention_ranks=4,
@@ -149,11 +149,11 @@ def test_config_accepts_async_connector_name():
         {
             "enabled": True,
             "role": "attention",
-            "connector": "afdasyncconnector",
+            "connector": "CAMAsyncConnector",
         },
     )
 
-    assert config.connector == "afdasyncconnector"
+    assert config.connector == "CAMAsyncConnector"
 
 
 def test_async_connector_factory_creates_import_safe_connector():
@@ -164,7 +164,7 @@ def test_async_connector_factory_creates_import_safe_connector():
         _afd_config(role="attention"),
     )
 
-    assert isinstance(connector, AFDAsyncConnector)
+    assert isinstance(connector, CAMAsyncConnector)
     assert not connector.is_initialized
     assert connector.uses_dp_metadata_control_plane is False
     assert connector.ffn_step_trigger == "connector"
@@ -172,7 +172,7 @@ def test_async_connector_factory_creates_import_safe_connector():
 
 
 def test_async_connector_uses_attn_ranks_per_dp_for_cam_tp_size():
-    connector = AFDAsyncConnector(
+    connector = CAMAsyncConnector(
         0,
         0,
         _vllm_config(tp_size=4, pcp_size=2),
@@ -185,7 +185,7 @@ def test_async_connector_uses_attn_ranks_per_dp_for_cam_tp_size():
 @pytest.mark.parametrize("value", [True, "bad"])
 def test_async_connector_rejects_invalid_attn_ranks_per_dp(value):
     with pytest.raises(TypeError, match="extra_config.attn_ranks_per_dp"):
-        AFDAsyncConnector(
+        CAMAsyncConnector(
             0,
             0,
             _vllm_config(),
@@ -195,7 +195,7 @@ def test_async_connector_rejects_invalid_attn_ranks_per_dp(value):
 
 def test_async_connector_rejects_nonpositive_attn_ranks_per_dp():
     with pytest.raises(ValueError, match="extra_config.attn_ranks_per_dp"):
-        AFDAsyncConnector(
+        CAMAsyncConnector(
             0,
             0,
             _vllm_config(),
@@ -241,7 +241,7 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
         "_hccl_comm_name",
         lambda group, rank: f"hccl:{group.group_name}:{rank}",
     )
-    connector = AFDAsyncConnector(
+    connector = CAMAsyncConnector(
         0,
         0,
         _vllm_config(),
@@ -268,7 +268,7 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
 
 
 def test_async_connector_disables_dp_metadata_control_plane():
-    connector = AFDAsyncConnector(0, 0, _vllm_config(), _afd_config(role="ffn"))
+    connector = CAMAsyncConnector(0, 0, _vllm_config(), _afd_config(role="ffn"))
     payload = AFDDPMetadataPayload(
         dp_metadata_list={0: AFDDPMetadata([1])},
         is_graph_capturing=False,
@@ -285,7 +285,7 @@ def test_async_connector_disables_dp_metadata_control_plane():
 def test_async_connector_calls_cam_shaped_ops(monkeypatch):
     fake_torch = _FakeTorch()
     monkeypatch.setattr(async_cam_module, "torch", fake_torch)
-    connector = AFDAsyncConnector(
+    connector = CAMAsyncConnector(
         0,
         0,
         _vllm_config(pcp_size=3),
@@ -330,7 +330,7 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
 def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
     fake_torch = _FakeTorch()
     monkeypatch.setattr(async_cam_module, "torch", fake_torch)
-    connector = AFDAsyncConnector(
+    connector = CAMAsyncConnector(
         0,
         0,
         _vllm_config(pcp_size=2),
@@ -360,7 +360,7 @@ def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
 def test_async_combine_send_requires_dispatch_recv_token_metadata(monkeypatch):
     fake_torch = _FakeTorch()
     monkeypatch.setattr(async_cam_module, "torch", fake_torch)
-    connector = AFDAsyncConnector(
+    connector = CAMAsyncConnector(
         0,
         0,
         _vllm_config(),
@@ -385,7 +385,7 @@ def test_async_combine_send_requires_dispatch_recv_token_metadata(monkeypatch):
 
 
 def test_async_ffn_work_item_uses_cam_layer_and_token_metadata(monkeypatch):
-    connector = AFDAsyncConnector(
+    connector = CAMAsyncConnector(
         0,
         0,
         _vllm_config(),
@@ -431,7 +431,7 @@ def test_async_ffn_work_item_uses_cam_layer_and_token_metadata(monkeypatch):
 
 
 def test_async_ffn_work_item_uses_expert_counts_for_routed_tokens(monkeypatch):
-    connector = AFDAsyncConnector(
+    connector = CAMAsyncConnector(
         0,
         0,
         _vllm_config(),
@@ -534,7 +534,7 @@ def test_async_slice_cam_payload_shared_tensors_fallback_to_100_tokens():
 def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
     monkeypatch,
 ):
-    connector = AFDAsyncConnector(
+    connector = CAMAsyncConnector(
         0,
         0,
         _vllm_config(),
@@ -608,7 +608,7 @@ def test_async_select_experts_maps_legacy_global_num_experts(monkeypatch):
         "vllm_ascend.ops.fused_moe.experts_selector",
         fake_selector,
     )
-    connector = AFDAsyncConnector(
+    connector = CAMAsyncConnector(
         0,
         0,
         _vllm_config(),

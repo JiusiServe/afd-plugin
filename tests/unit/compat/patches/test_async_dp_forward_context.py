@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 
-def _config(*, connector: str = "afdasyncconnector", async_dp: bool = True):
+def _config(*, connector: str = "CAMAsyncConnector", async_dp: bool = True):
     return SimpleNamespace(
         additional_config={
             "afd": {
@@ -164,7 +164,7 @@ def test_async_dp_forward_context_preserves_non_async_path(monkeypatch):
 
     with forward_module.set_forward_context(
         attn_metadata=object(),
-        vllm_config=_config(connector="camp2pconnector", async_dp=False),
+        vllm_config=_config(connector="CAMP2pConnector", async_dp=False),
         num_tokens=4,
     ):
         context = forward_module.current_forward_context

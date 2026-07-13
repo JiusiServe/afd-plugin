@@ -11,7 +11,7 @@ class:
 ```bash
 vllm serve <model> \
   --worker-cls afd_plugin.v1.worker.AFDFFNWorker \
-  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"p2pconnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"P2pNcclConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 The FFN process is not request-driven. Start the FFN process first, then start
@@ -109,7 +109,7 @@ Warmup and capture are driven by flags received from the Attention side through
 - Only vLLM `0.19.1` and model runner v1 are supported.
 - FFN workers are connector-driven only; scheduler-driven request execution is
   rejected.
-- The GPU connector is `p2pconnector`, implemented by
+- The GPU connector is `P2pNcclConnector`, implemented by
   `afd_plugin.connectors.gpu.p2p`.
 - DBO requires exactly two ubatches.
 - Role-based weight pruning is not implemented.

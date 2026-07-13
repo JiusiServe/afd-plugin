@@ -165,7 +165,7 @@ def _parallel_config(**overrides):
 def _vllm_config(
     *,
     role="attention",
-    connector="camp2pconnector",
+    connector="CAMP2pConnector",
     extra_config=None,
     **parallel_overrides,
 ):
@@ -244,7 +244,7 @@ def test_npu_attention_async_connector_skips_dp_metadata_control_plane():
     runner = _new_attention_runner()
     runner.vllm_config = _vllm_config(
         role="attention",
-        connector="afdasyncconnector",
+        connector="CAMAsyncConnector",
         async_dp=True,
         data_parallel_size=2,
     )
@@ -1091,10 +1091,10 @@ def test_npu_feature_validation_allows_two_ubatches_only():
 def test_npu_async_feature_validation_requires_async_config_and_eager():
     with pytest.raises(RuntimeError, match="async=true"):
         fail_if_unsupported_npu_afd_features(
-            _vllm_config(connector="afdasyncconnector", async_dp=False),
+            _vllm_config(connector="CAMAsyncConnector", async_dp=False),
         )
 
-    config = _vllm_config(connector="afdasyncconnector", async_dp=True)
+    config = _vllm_config(connector="CAMAsyncConnector", async_dp=True)
     config.model_config.enforce_eager = False
     with pytest.raises(RuntimeError, match="only eager"):
         fail_if_unsupported_npu_afd_features(config)
@@ -1104,7 +1104,7 @@ def test_npu_async_feature_validation_rejects_ubatching_and_multistream():
     with pytest.raises(RuntimeError, match="ubatching"):
         fail_if_unsupported_npu_afd_features(
             _vllm_config(
-                connector="afdasyncconnector",
+                connector="CAMAsyncConnector",
                 async_dp=True,
                 use_ubatching=True,
             ),
@@ -1113,7 +1113,7 @@ def test_npu_async_feature_validation_rejects_ubatching_and_multistream():
     with pytest.raises(RuntimeError, match="multistream"):
         fail_if_unsupported_npu_afd_features(
             _vllm_config(
-                connector="afdasyncconnector",
+                connector="CAMAsyncConnector",
                 async_dp=True,
                 extra_config={"multistream_info": {"ffn_enable": "true"}},
             ),
@@ -1123,7 +1123,7 @@ def test_npu_async_feature_validation_rejects_ubatching_and_multistream():
 def test_npu_async_feature_validation_allows_dynamic_quant_zero_or_one():
     fail_if_unsupported_npu_afd_features(
         _vllm_config(
-            connector="afdasyncconnector",
+            connector="CAMAsyncConnector",
             async_dp=True,
             extra_config={"dynamicQuant": "1"},
         ),
@@ -1132,7 +1132,7 @@ def test_npu_async_feature_validation_allows_dynamic_quant_zero_or_one():
     with pytest.raises(RuntimeError, match="dynamicQuant"):
         fail_if_unsupported_npu_afd_features(
             _vllm_config(
-                connector="afdasyncconnector",
+                connector="CAMAsyncConnector",
                 async_dp=True,
                 extra_config={"dynamicQuant": 2},
             ),
@@ -1142,7 +1142,7 @@ def test_npu_async_feature_validation_allows_dynamic_quant_zero_or_one():
 def test_npu_async_moe_ubatching_validation_requires_supported_shape():
     fail_if_unsupported_npu_afd_features(
         _vllm_config(
-            connector="afdasyncconnector",
+            connector="CAMAsyncConnector",
             async_dp=True,
             extra_config={
                 "async_moe_ubatching": True,
@@ -1154,7 +1154,7 @@ def test_npu_async_moe_ubatching_validation_requires_supported_shape():
     with pytest.raises(RuntimeError, match="compute_gate_on_attention"):
         fail_if_unsupported_npu_afd_features(
             _vllm_config(
-                connector="afdasyncconnector",
+                connector="CAMAsyncConnector",
                 async_dp=True,
                 extra_config={"async_moe_ubatching": True},
             ),
@@ -1163,7 +1163,7 @@ def test_npu_async_moe_ubatching_validation_requires_supported_shape():
     with pytest.raises(RuntimeError, match="exactly two"):
         fail_if_unsupported_npu_afd_features(
             _vllm_config(
-                connector="afdasyncconnector",
+                connector="CAMAsyncConnector",
                 async_dp=True,
                 extra_config={
                     "async_moe_ubatching": True,
@@ -1176,7 +1176,7 @@ def test_npu_async_moe_ubatching_validation_requires_supported_shape():
     with pytest.raises(RuntimeError, match="request-boundary"):
         fail_if_unsupported_npu_afd_features(
             _vllm_config(
-                connector="afdasyncconnector",
+                connector="CAMAsyncConnector",
                 async_dp=True,
                 extra_config={
                     "async_moe_ubatching": True,
@@ -1188,7 +1188,7 @@ def test_npu_async_moe_ubatching_validation_requires_supported_shape():
 
     fail_if_unsupported_npu_afd_features(
         _vllm_config(
-            connector="afdasyncconnector",
+            connector="CAMAsyncConnector",
             async_dp=True,
             prefill_context_parallel_size=2,
             extra_config={
@@ -1201,7 +1201,7 @@ def test_npu_async_moe_ubatching_validation_requires_supported_shape():
     with pytest.raises(RuntimeError, match="decode context parallel"):
         fail_if_unsupported_npu_afd_features(
             _vllm_config(
-                connector="afdasyncconnector",
+                connector="CAMAsyncConnector",
                 async_dp=True,
                 decode_context_parallel_size=2,
                 extra_config={

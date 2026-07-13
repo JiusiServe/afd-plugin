@@ -63,19 +63,19 @@ class AFDConnectorFactory:
 
 
 AFDConnectorFactory.register_connector(
-    "p2pconnector",
+    "P2pNcclConnector",
     "afd_plugin.connectors.gpu.p2p",
-    "P2PAFDConnector",
+    "P2pNcclConnector",
 )
 AFDConnectorFactory.register_connector(
-    "camp2pconnector",
+    "CAMP2pConnector",
     "afd_plugin.connectors.npu.camp2p",
-    "CAMP2PAFDConnector",
+    "CAMP2pConnector",
 )
 AFDConnectorFactory.register_connector(
-    "afdasyncconnector",
+    "CAMAsyncConnector",
     "afd_plugin.connectors.npu.async_cam",
-    "AFDAsyncConnector",
+    "CAMAsyncConnector",
 )
 
 

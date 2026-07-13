@@ -11,7 +11,7 @@ vLLM-Ascend worker class:
 ```bash
 VLLM_PLUGINS=ascend,afd vllm serve <model> \
   --worker-cls afd_plugin.v1.worker.ascend.AFDNPUFFNWorker \
-  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"camp2pconnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"CAMP2pConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 The FFN process is connector-driven. It should not receive OpenAI/vLLM
@@ -68,7 +68,7 @@ Current behavior:
 - installs a vLLM-Ascend `vllm_config.afd_config` compatibility proxy;
 - validates unsupported NPU AFD features;
 - derives `afd_role_rank` from DP/TP ranks;
-- creates `camp2pconnector`;
+- creates `CAMP2pConnector`;
 - returns empty KV cache specs and no-ops KV initialization;
 - receives DP metadata and Attention outputs from the connector;
 - builds a minimal Ascend forward context for connector-driven FFN steps;
@@ -126,7 +126,7 @@ The current compute call forwards these payload fields when available:
 
 ## CAMP2P
 
-`camp2pconnector`, implemented by `afd_plugin.connectors.npu.camp2p`, owns NPU
+`CAMP2pConnector`, implemented by `afd_plugin.connectors.npu.camp2p`, owns NPU
 topology, HCCL/Gloo process groups, custom-op loading, DP metadata exchange,
 receive metadata construction, and FFN/Attention payload transfer.
 
@@ -150,7 +150,7 @@ Supported:
 
 - vLLM `0.19.1` runtime stack with vLLM-Ascend model runner v1;
 - `--additional-config '{"afd": ...}'`;
-- `camp2pconnector`;
+- `CAMP2pConnector`;
 - connector-driven FFN daemon loop;
 - empty KV cache;
 - eager FFN execution;

@@ -85,7 +85,7 @@ def test_stack_validation_accepts_npu_worker_override():
         afd={
             "enabled": True,
             "role": "attention",
-            "connector": "camp2pconnector",
+            "connector": "CAMP2pConnector",
         },
         worker_cls=NPU_ATTENTION_WORKER_FQCN,
     )
@@ -97,7 +97,7 @@ def test_stack_validation_accepts_npu_worker_override():
         expected_worker_qualname_override=NPU_ATTENTION_WORKER_FQCN,
     )
 
-    assert config.connector == "camp2pconnector"
+    assert config.connector == "CAMP2pConnector"
 
 
 def test_async_connector_requires_npu_attention_worker():
@@ -105,7 +105,7 @@ def test_async_connector_requires_npu_attention_worker():
         afd={
             "enabled": True,
             "role": "attention",
-            "connector": "afdasyncconnector",
+            "connector": "CAMAsyncConnector",
         },
         worker_cls=ATTENTION_WORKER_FQCN,
     )
@@ -123,7 +123,7 @@ def test_async_connector_requires_npu_attention_worker():
         caller="test",
         expected_role="attention",
     )
-    assert config.connector == "afdasyncconnector"
+    assert config.connector == "CAMAsyncConnector"
 
 
 def test_async_connector_requires_npu_ffn_worker():
@@ -131,7 +131,7 @@ def test_async_connector_requires_npu_ffn_worker():
         afd={
             "enabled": True,
             "role": "ffn",
-            "connector": "afdasyncconnector",
+            "connector": "CAMAsyncConnector",
         },
         worker_cls=NPU_FFN_WORKER_FQCN,
     )
@@ -142,4 +142,4 @@ def test_async_connector_requires_npu_ffn_worker():
         expected_role="ffn",
     )
 
-    assert config.connector == "afdasyncconnector"
+    assert config.connector == "CAMAsyncConnector"

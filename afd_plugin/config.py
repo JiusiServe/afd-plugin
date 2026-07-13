@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from vllm.config import VllmConfig
 
 AFD_ADDITIONAL_CONFIG_KEY: Final[str] = "afd"
-AFD_ASYNC_CONNECTOR: Final[str] = "afdasyncconnector"
+AFD_ASYNC_CONNECTOR: Final[str] = "CAMAsyncConnector"
 ASYNC_MOE_UBATCHING_CONFIG_KEY: Final[str] = "async_moe_ubatching"
 ASYNC_MOE_NUM_UBATCHES_CONFIG_KEY: Final[str] = "async_moe_num_ubatches"
 ASYNC_MOE_SPLIT_CONFIG_KEY: Final[str] = "async_moe_split"
@@ -22,8 +22,8 @@ AFDRole = Literal["attention", "ffn"]
 
 SUPPORTED_AFD_ROLES: Final[tuple[str, ...]] = ("attention", "ffn")
 SUPPORTED_AFD_CONNECTORS: Final[tuple[str, ...]] = (
-    "p2pconnector",
-    "camp2pconnector",
+    "P2pNcclConnector",
+    "CAMP2pConnector",
     AFD_ASYNC_CONNECTOR,
 )
 
@@ -51,7 +51,7 @@ class AFDConfig:
     # Open connector/plugin extension namespace, aligned with vLLM extra config.
     extra_config: dict[str, Any] = field(default_factory=dict)
     # Connector implementation name used to create the backend data path.
-    connector: str = "p2pconnector"
+    connector: str = "P2pNcclConnector"
     # Whether AFD owns async data-parallel runtime patches for this process.
     async_dp: bool = False
     # Role owned by this process: Attention sends hidden states; FFN receives.
@@ -318,10 +318,10 @@ def validate_afd_config(
         )
     if config.async_dp and config.connector != AFD_ASYNC_CONNECTOR:
         raise ValueError(
-            "AFD async mode requires connector='afdasyncconnector'",
+            "AFD async mode requires connector='CAMAsyncConnector'",
         )
     p2p_sizes: tuple[int, int] | None = None
-    if config.connector == "p2pconnector":
+    if config.connector == "P2pNcclConnector":
         from afd_plugin.distributed import (
             topology_from_config,
             validate_p2p_topology,

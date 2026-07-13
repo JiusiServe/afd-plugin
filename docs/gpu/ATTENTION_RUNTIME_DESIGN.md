@@ -10,7 +10,7 @@ GPU Attention is selected with an explicit worker class:
 ```bash
 vllm serve <model> \
   --worker-cls afd_plugin.v1.worker.AFDAttentionWorker \
-  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"p2pconnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"P2pNcclConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 The public config channel is vLLM `additional_config["afd"]`; the plugin does
@@ -61,7 +61,7 @@ OpenAI request
   -> AFDAttentionWorker.execute_model(...)
   -> AFDAttentionModelRunner.execute_model(...)
   -> build attention metadata and AFD metadata
-  -> send DP metadata through p2pconnector
+  -> send DP metadata through P2pNcclConnector
   -> model forward
   -> plugin-owned model wrapper sends Attention output
   -> FFN side computes and sends FFN output
@@ -98,7 +98,7 @@ Unsupported graph modes fail fast in `validate_cuda_graph_mode`.
 
 ## Connector
 
-GPU Attention uses `p2pconnector`, implemented by
+GPU Attention uses `P2pNcclConnector`, implemented by
 `afd_plugin.connectors.gpu.p2p`. The connector is created during runner
 initialization and remains owned by the model runner. Rank topology is validated
 from `AFDConfig`; FFN ranks are ordered before Attention ranks.
@@ -113,4 +113,4 @@ divisible by it.
   time.
 - DBO requires exactly two ubatches.
 - Role-based weight pruning is not implemented.
-- The only CUDA connector is `p2pconnector`.
+- The only CUDA connector is `P2pNcclConnector`.

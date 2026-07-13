@@ -7,7 +7,7 @@ from afd_plugin.config import is_afd_async_dp, parse_afd_config
 
 def _config(
     *,
-    connector: str = "afdasyncconnector",
+    connector: str = "CAMAsyncConnector",
     role: str = "attention",
     async_dp: bool = True,
 ):
@@ -38,7 +38,7 @@ def test_async_dp_helper_rejects_missing_async_flag():
 
 
 def test_async_dp_helper_rejects_non_async_connector():
-    config = _config(connector="camp2pconnector", async_dp=False)
+    config = _config(connector="CAMP2pConnector", async_dp=False)
 
     assert is_afd_async_dp(config) is False
 

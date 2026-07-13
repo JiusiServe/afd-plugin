@@ -18,8 +18,8 @@ from afd_plugin.connectors import (
 )
 from afd_plugin.connectors.npu import camp2p as camp2p_module
 from afd_plugin.connectors.npu.camp2p import (
-    CAMP2PAFDConnector,
     CAMP2PAFDConnectorMetadata,
+    CAMP2pConnector,
     build_camp2p_topology,
 )
 
@@ -51,7 +51,7 @@ def _vllm_config(*, num_ubatches: int = 1, n_shared_experts: int = 0):
 def _afd_config(*, role: str, rank: int = 0, extra_config: dict | None = None):
     return AFDConfig(
         enabled=True,
-        connector="camp2pconnector",
+        connector="CAMP2pConnector",
         role=role,
         afd_role_rank=rank,
         num_attention_ranks=4,
@@ -68,7 +68,7 @@ def test_camp2p_factory_creates_connector():
         _afd_config(role="attention"),
     )
 
-    assert isinstance(connector, CAMP2PAFDConnector)
+    assert isinstance(connector, CAMP2pConnector)
     assert not connector.is_initialized
     assert connector.max_num_reqs == 8
 
@@ -94,13 +94,13 @@ def test_camp2p_topology_matches_original_rank_layout():
 
 
 def test_camp2p_create_recv_metadata_uses_original_contiguous_af_grouping():
-    rank0 = CAMP2PAFDConnector(
+    rank0 = CAMP2pConnector(
         0,
         0,
         _vllm_config(),
         _afd_config(role="ffn", rank=0),
     )
-    rank1 = CAMP2PAFDConnector(
+    rank1 = CAMP2pConnector(
         1,
         1,
         _vllm_config(),
@@ -129,7 +129,7 @@ def test_camp2p_create_recv_metadata_uses_original_contiguous_af_grouping():
 
 
 def test_camp2p_ignores_mix_placement_for_connector_metadata():
-    connector = CAMP2PAFDConnector(
+    connector = CAMP2pConnector(
         0,
         0,
         _vllm_config(n_shared_experts=3),
@@ -152,7 +152,7 @@ def test_camp2p_ignores_mix_placement_for_connector_metadata():
 
 
 def test_camp2p_update_metadata_keeps_original_handle_shape():
-    connector = CAMP2PAFDConnector(
+    connector = CAMP2pConnector(
         0,
         0,
         _vllm_config(),
@@ -206,7 +206,7 @@ def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
         "init_afd_process_group",
         fake_init_afd_process_group,
     )
-    connector = CAMP2PAFDConnector(
+    connector = CAMP2pConnector(
         0,
         0,
         _vllm_config(num_ubatches=2),
@@ -242,7 +242,7 @@ def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
 def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
     torch = pytest.importorskip("torch")
     captured = {}
-    connector = CAMP2PAFDConnector(
+    connector = CAMP2pConnector(
         0,
         0,
         _vllm_config(num_ubatches=2),
@@ -289,7 +289,7 @@ def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
 
 
 def test_camp2p_init_fails_cleanly_without_ascend_runtime():
-    connector = CAMP2PAFDConnector(
+    connector = CAMP2pConnector(
         0,
         0,
         _vllm_config(),
