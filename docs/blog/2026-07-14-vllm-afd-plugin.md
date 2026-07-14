@@ -57,18 +57,18 @@ The same high-level exchange—Attention output to FFN, FFN output back to Atten
 
 * **Native vLLM serving surface.** Existing vLLM users still launch with `vllm serve`, send requests to an OpenAI-compatible endpoint, and configure the runtime through `--additional-config`.
 * **GPU and Ascend implementations.** GPU workers extend vLLM v1 classes, while NPU workers extend vLLM-Ascend classes directly. Shared behavior lives in configuration, topology, metadata, and connector contracts rather than cross-device inheritance.
-* **Synchronous AFD on Ascend NPU.** `CAMP2pAFDConnector` uses CAMP2P custom operators and HCCL communication to exchange Attention activations and FFN outputs synchronously. It supports both prefill and decode, including the current `FULL_DECODE_ONLY` ACL graph path for decode workloads.
-* **Asynchronous prefill AFD on Ascend NPU.** `CAMAsyncAFDConnector` uses CAM asynchronous dispatch and combine operators to decouple prefill Attention ranks from expert workers. Together with AFD-managed MoE ubatching, it overlaps independent Attention and FFN stages to reduce pipeline stalls. This path currently targets the prefill stage in a prefill/decode-disaggregated deployment and does not yet support graph execution.
+* **Synchronous AFD for decode throughput.** `P2pNcclAFDConnector` and `CAMP2pAFDConnector` synchronously exchange Attention activations and FFN outputs, allowing the two roles to scale independently in throughput-oriented decode deployments. Their current graph paths use `FULL_DECODE_ONLY` semantics on CUDA and ACL, respectively.
+* **Asynchronous AFD for prefill.** `CAMAsyncAFDConnector` uses CAM asynchronous dispatch and combine operators to decouple prefill Attention ranks from expert workers. Together with AFD-managed MoE ubatching, it overlaps independent Attention and FFN stages to reduce pipeline stalls. This path currently targets the prefill stage in a prefill/decode-disaggregated deployment and does not yet support graph execution.
 * **MoE model integration.** The plugin registers wrappers for DeepSeek V2/V3-family architectures, including DeepSeek V3.2, and GLM MoE DSA. The wrapper exposes separate Attention and FFN computations while reusing upstream layer implementations.
 * **Graph and ubatching paths.** The synchronous GPU and NPU connectors support decode-only graph capture. Dual Batch Overlap is supported with exactly two ubatches, and CAM async provides AFD-managed MoE ubatching for its prefill path.
 
 ## A Performance Snapshot
 
-### NPU Decode Performance with `CAMP2pAFDConnector`
+### Synchronous AFD Decode Throughput with `CAMP2pAFDConnector`
 
-<!-- TODO: Add the synchronous NPU decode benchmark setup, results, figure, and analysis. -->
+<!-- TODO: Add the synchronous AFD decode benchmark setup, results, figure, and analysis. -->
 
-### Asynchronous AFD Prefill Performance on NPU with `CAMAsyncAFDConnector`
+### Asynchronous AFD Prefill Performance with `CAMAsyncAFDConnector`
 
 The repository includes an early CAM async experiment on two Ascend 910C nodes using a DeepSeek V3.2 W8A8 model reduced to 10 layers. The comparison uses forced expert balancing and contrasts a `DP4PCP8 TP1` baseline with an AFD layout consisting of Attention `DP3PCP8 TP1` plus FFN `EP8`.
 
