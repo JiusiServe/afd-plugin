@@ -13,7 +13,7 @@ import torch
 from vllm.forward_context import get_forward_context
 from vllm.v1.worker.ubatch_utils import UBatchSlices
 
-from afd_plugin.connectors import AFDTransferMetadata, AFDForwardContextMetadata
+from afd_plugin.connectors import AFDForwardContextMetadata, AFDTransferMetadata
 from afd_plugin.model_executor.models import AsyncMoeUbatchMetadata
 from afd_plugin.v1.worker.dbo import maybe_apply_dbo_yield
 

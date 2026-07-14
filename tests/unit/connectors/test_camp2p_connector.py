@@ -12,9 +12,9 @@ pytest.importorskip("torch_npu")
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
     AFDA2FTransferPayload,
-    AFDTransferState,
     AFDConnectorFactory,
     AFDTransferMetadata,
+    AFDTransferState,
 )
 from afd_plugin.connectors.npu import camp2p as camp2p_module
 from afd_plugin.connectors.npu.camp2p import (

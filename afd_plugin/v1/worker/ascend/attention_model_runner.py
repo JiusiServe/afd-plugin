@@ -66,8 +66,8 @@ from afd_plugin.config import (
 )
 from afd_plugin.connectors import (
     AFDConnectorFactory,
-    AFDDPMetadata,
     AFDControlPayload,
+    AFDDPMetadata,
     AFDForwardContextMetadata,
 )
 from afd_plugin.model_executor.models import ASYNC_MOE_UBATCH_METADATA_KEY

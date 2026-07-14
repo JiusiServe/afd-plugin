@@ -27,11 +27,11 @@ from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
     AFDA2FTransferPayload,
     AFDConnectorFactory,
-    AFDTransferMetadata,
-    AFDDPMetadata,
     AFDControlPayload,
+    AFDDPMetadata,
     AFDF2ATransferPayload,
     AFDForwardContextMetadata,
+    AFDTransferMetadata,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
     _resolve_world_ranks,

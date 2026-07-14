@@ -21,10 +21,10 @@ from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
-    AFDTransferState,
-    AFDTransferMetadata,
-    AFDDPMetadata,
     AFDControlPayload,
+    AFDDPMetadata,
+    AFDTransferMetadata,
+    AFDTransferState,
     recv_control_payload,
     send_control_payload,
 )

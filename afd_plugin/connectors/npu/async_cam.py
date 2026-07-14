@@ -19,9 +19,9 @@ from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
-    AFDTransferMetadata,
     AFDControlPayload,
     AFDF2ATransferPayload,
+    AFDTransferMetadata,
     AFDTransferState,
 )
 from afd_plugin.distributed import init_afd_process_group

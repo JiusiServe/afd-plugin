@@ -37,7 +37,11 @@ except ImportError:
     get_ascend_config = None
 
 from afd_plugin.config import parse_afd_config
-from afd_plugin.connectors import AFDTransferMetadata, AFDF2ATransferPayload, AFDForwardContextMetadata
+from afd_plugin.connectors import (
+    AFDF2ATransferPayload,
+    AFDForwardContextMetadata,
+    AFDTransferMetadata,
+)
 from afd_plugin.model_executor.models import (
     get_afd_metadata_from_forward_context,
     get_async_moe_ubatch_metadata_from_forward_context,

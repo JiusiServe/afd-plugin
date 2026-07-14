@@ -12,9 +12,9 @@ import torch
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
-    AFDTransferMetadata,
-    AFDDPMetadata,
     AFDControlPayload,
+    AFDDPMetadata,
+    AFDTransferMetadata,
 )
 
 if TYPE_CHECKING:

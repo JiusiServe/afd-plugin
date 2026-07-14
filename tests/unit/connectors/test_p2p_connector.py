@@ -13,8 +13,8 @@ pytest.importorskip("vllm")
 from afd_plugin.config import AFDConfig, afd_config_from_mapping  # noqa: E402
 from afd_plugin.connectors import (  # noqa: E402
     AFDConnectorFactory,
-    AFDDPMetadata,
     AFDControlPayload,
+    AFDDPMetadata,
 )
 from afd_plugin.distributed import build_rank_mapping  # noqa: E402
 

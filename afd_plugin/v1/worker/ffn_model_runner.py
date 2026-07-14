@@ -26,9 +26,9 @@ from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
     AFDA2FTransferPayload,
     AFDConnectorFactory,
-    AFDTransferMetadata,
-    AFDDPMetadata,
     AFDControlPayload,
+    AFDDPMetadata,
+    AFDTransferMetadata,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
     _with_dp_derived_afd_rank,

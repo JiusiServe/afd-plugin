@@ -9,9 +9,9 @@ from afd_plugin.connectors import (
     AFDA2FTransferPayload,
     AFDConnectorBase,
     AFDConnectorFactory,
-    AFDTransferMetadata,
-    AFDDPMetadata,
     AFDControlPayload,
+    AFDDPMetadata,
+    AFDTransferMetadata,
 )
 
 

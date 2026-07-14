@@ -31,8 +31,8 @@ from afd_plugin.compat.profiler import (
 from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
     AFDConnectorFactory,
-    AFDDPMetadata,
     AFDControlPayload,
+    AFDDPMetadata,
     AFDForwardContextMetadata,
 )
 from afd_plugin.model_executor.models.forward_context import use_afd_metadata_provider

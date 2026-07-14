@@ -19,10 +19,10 @@ from afd_plugin.compat.ascend import (
 from afd_plugin.compat.ascend import runtime as ascend_runtime
 from afd_plugin.connectors import (
     AFDA2FTransferPayload,
-    AFDTransferMetadata,
     AFDControlPayload,
     AFDF2ATransferPayload,
     AFDForwardContextMetadata,
+    AFDTransferMetadata,
 )
 
 

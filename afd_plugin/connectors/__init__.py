@@ -6,13 +6,13 @@ from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.factory import AFDConnectorFactory
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
-    AFDTransferState,
-    AFDTransferMetadata,
-    AFDDPMetadata,
     AFDControlPayload,
+    AFDDPMetadata,
     AFDF2ATransferPayload,
     AFDForwardContextMetadata,
     AFDSingleDPMetadata,
+    AFDTransferMetadata,
+    AFDTransferState,
 )
 
 __all__ = [

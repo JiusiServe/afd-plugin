@@ -12,10 +12,10 @@ pytest.importorskip("torch")
 from afd_plugin.connectors import (  # noqa: E402
     AFDA2FTransferPayload,
     AFDConnectorFactory,
-    AFDTransferMetadata,
-    AFDDPMetadata,
     AFDControlPayload,
+    AFDDPMetadata,
     AFDF2ATransferPayload,
+    AFDTransferMetadata,
     AFDTransferState,
 )
 from afd_plugin.connectors.npu import async_cam as async_cam_module  # noqa: E402

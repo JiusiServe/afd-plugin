@@ -11,8 +11,8 @@ pytest.importorskip("vllm")
 
 from afd_plugin.connectors import (
     AFDA2FTransferPayload,
-    AFDTransferMetadata,
     AFDControlPayload,
+    AFDTransferMetadata,
 )
 from afd_plugin.v1.worker.cuda_graph import make_ffn_graph_key
 from afd_plugin.v1.worker.ffn_model_runner import (
@@ -43,7 +43,9 @@ class _FakeConnector:
         if ubatch_idx is None:
             return self.attn_outputs.popleft()
         for item in tuple(self.attn_outputs):
-            metadata = item.metadata if isinstance(item, AFDA2FTransferPayload) else item[1]
+            metadata = (
+                item.metadata if isinstance(item, AFDA2FTransferPayload) else item[1]
+            )
             if getattr(metadata, "ubatch_idx", metadata.stage_idx) == ubatch_idx:
                 self.attn_outputs.remove(item)
                 return item
