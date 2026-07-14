@@ -37,7 +37,7 @@ logger = init_logger(__name__)
 
 
 @dataclass(slots=True)
-class AFDAsyncTransferState:
+class AFDAsyncTransferState(AFDTransferState):
     """CAM-side metadata carried from dispatch recv to combine send."""
 
     batch_size: int = 1
