@@ -199,50 +199,19 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
                 kwargs["num_experts"] = kwargs.pop("global_num_experts")
         return select_experts(**kwargs)
 
-    def configure_metadata(
-        self,
-        metadata: AFDTransferMetadata,
-        **kwargs: Any,
-    ) -> None:
-        metadata.connector_data = self._make_connector_data(
-            batch_size=int(kwargs.get("batch_size", metadata.total_tokens)),
-            layer_idx=int(metadata.layer_idx),
-        )
-
-    def create_recv_metadata(self, **kwargs: Any) -> AFDTransferMetadata:
-        batch_size = int(kwargs.get("batch_size", kwargs.get("max_num_tokens", 1)) or 1)
-        layer_idx = int(kwargs.get("layer_idx", 0) or 0)
-        stage_idx = int(kwargs.get("ubatch_idx", 0) or 0)
+    def _create_transfer_metadata(
+        self, batch_size: int = 1, layer_idx: int = 0, stage_idx: int = 0
+    ) -> AFDTransferMetadata:
         metadata = AFDTransferMetadata.create_ffn_metadata(
             layer_idx=layer_idx,
             stage_idx=stage_idx,
             seq_lens=[max(1, batch_size)],
         )
-        metadata.connector_data = self._make_connector_data(
+        metadata.transfer_state = self._make_transfer_state(
             batch_size=max(1, batch_size),
             layer_idx=layer_idx,
         )
         return metadata
-
-    def update_metadata(
-        self,
-        metadata: AFDTransferMetadata,
-        recv_output: AFDA2FTransferPayload,
-    ) -> None:
-        data = self._metadata_data_or_default(metadata)
-        data.topk_ids = recv_output.topk_ids
-        data.topk_weights = recv_output.topk_weights
-        data.expand_idx = recv_output.expand_idx
-        data.expert_token_nums = recv_output.ep_recv_counts
-        if data.expert_token_nums is None:
-            data.expert_token_nums = recv_output.group_list
-        data.dynamic_scales = recv_output.dynamic_scales
-        data.dynamic_scales_shared = recv_output.dynamic_scales_shared
-        data.expand_x_shared = recv_output.expand_x_shared
-        data.expert_token_nums_shared = recv_output.ep_recv_counts_shared
-        data.atten_batch_size = recv_output.atten_batch_size
-        data.token_nums_rankid_layeridx = recv_output.atten_batch_size
-        data.x_active_mask = recv_output.x_active_mask
 
     def recv_ffn_work_item(
         self,
@@ -250,17 +219,13 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         stage_idx: int,
         max_num_tokens: int,
     ) -> AFDAsyncFFNWorkItem:
-        stage_idx = int(stage_idx)
-        metadata = self.create_recv_metadata(
-            ubatch_idx=stage_idx,
+        recv_output = self.recv_attn_output(
+            stage_idx=stage_idx,
             layer_idx=0,
             batch_size=_connector_driven_batch_size(self, max_num_tokens),
-        )
-        recv_output = self.recv_attn_output(
-            metadata=metadata,
             ubatch_idx=stage_idx,
         )
-        self.update_metadata(metadata, recv_output)
+        metadata = recv_output.metadata
 
         token_nums_rankid_layeridx = _cam_token_nums_rankid_layeridx(
             recv_output,
@@ -284,7 +249,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             num_tokens,
             shared_num_tokens=shared_num_tokens,
         )
-        _sync_connector_data_with_cam_metadata(metadata, layer_idx=layer_idx)
+        _sync_transfer_state_with_cam_metadata(metadata, layer_idx=layer_idx)
 
         return AFDAsyncFFNWorkItem(
             hidden_states=hidden_states,
@@ -481,14 +446,11 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
     ) -> AFDA2FTransferPayload:
         self._require_initialized()
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
-        metadata = kwargs.get("metadata")
-        if metadata is None:
-            metadata = self.create_recv_metadata(
-                ubatch_idx=ubatch_idx,
-                batch_size=int(kwargs.get("batch_size", self.max_seq_len) or 1),
-                layer_idx=int(kwargs.get("layer_idx", 0) or 0),
-            )
-        metadata = cast(AFDTransferMetadata, metadata)
+        metadata = self._create_transfer_metadata(
+            stage_idx=ubatch_idx,
+            batch_size=int(kwargs.get("batch_size", self.max_seq_len) or 1),
+            layer_idx=int(kwargs.get("layer_idx", 0) or 0),
+        )
         data = self._metadata_data_or_default(metadata)
         placeholder = kwargs.get("placeholder", self._placeholder)
         _log_cam_op_values(
@@ -552,7 +514,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         data.expert_token_nums = expert_token_nums
         data.expert_token_nums_shared = expert_token_nums_shared
         data.atten_batch_size = token_nums_rankid_layeridx
-        return AFDA2FTransferPayload(
+        payload = AFDA2FTransferPayload(
             hidden_states=hidden_states,
             metadata=metadata,
             group_list=expert_token_nums,
@@ -563,6 +525,21 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             ep_recv_counts=expert_token_nums,
             ep_recv_counts_shared=expert_token_nums_shared,
         )
+        data = self._metadata_data_or_default(metadata)
+        data.topk_ids = payload.topk_ids
+        data.topk_weights = payload.topk_weights
+        data.expand_idx = payload.expand_idx
+        data.expert_token_nums = payload.ep_recv_counts
+        if data.expert_token_nums is None:
+            data.expert_token_nums = payload.group_list
+        data.dynamic_scales = payload.dynamic_scales
+        data.dynamic_scales_shared = payload.dynamic_scales_shared
+        data.expand_x_shared = payload.expand_x_shared
+        data.expert_token_nums_shared = payload.ep_recv_counts_shared
+        data.atten_batch_size = payload.atten_batch_size
+        data.token_nums_rankid_layeridx = payload.atten_batch_size
+        data.x_active_mask = payload.x_active_mask
+        return payload
 
     def send_ffn_output(
         self,
@@ -624,18 +601,18 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self,
         metadata: AFDTransferMetadata,
     ) -> AFDAsyncTransferState:
-        data = metadata.connector_data
+        data = metadata.transfer_state
         if data is None:
-            data = self._make_connector_data(
+            data = self._make_transfer_state(
                 batch_size=metadata.total_tokens,
                 layer_idx=int(metadata.layer_idx),
             )
-            metadata.connector_data = data
+            metadata.transfer_state = data
         if not isinstance(data, AFDAsyncTransferState):
-            raise RuntimeError("AFD async metadata is missing connector_data")
+            raise RuntimeError("AFD async metadata is missing transfer_state")
         return data
 
-    def _make_connector_data(
+    def _make_transfer_state(
         self,
         *,
         batch_size: int,
@@ -798,10 +775,10 @@ def _cam_token_nums_rankid_layeridx(
 ) -> Tensor:
     token_nums_rankid_layeridx = payload.atten_batch_size
     if token_nums_rankid_layeridx is None:
-        connector_data = metadata.connector_data
-        if connector_data is not None:
+        transfer_state = metadata.transfer_state
+        if transfer_state is not None:
             token_nums_rankid_layeridx = getattr(
-                connector_data,
+                transfer_state,
                 "token_nums_rankid_layeridx",
                 None,
             )
@@ -868,15 +845,15 @@ def _slice_cam_payload_to_actual_tokens(
     return hidden_states
 
 
-def _sync_connector_data_with_cam_metadata(
+def _sync_transfer_state_with_cam_metadata(
     metadata: AFDTransferMetadata,
     *,
     layer_idx: int,
 ) -> None:
-    connector_data = metadata.connector_data
-    if connector_data is None:
+    transfer_state = metadata.transfer_state
+    if transfer_state is None:
         return
-    connector_data.layer_idx = int(layer_idx)
+    transfer_state.layer_idx = int(layer_idx)
 
 
 def _send_ffn_output_payload(

@@ -306,7 +306,6 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
         seq_len=3,
     )
 
-    connector.configure_metadata(metadata, batch_size=3)
     output = connector.send_attn_output(
         hidden_states,
         metadata,
@@ -326,8 +325,8 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][5:11] == (3, 16, 2, 2, 4, 4)
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][5:11] == (3, 16, 2, 2, 4, 4)
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][14] == 3
-    assert isinstance(metadata.connector_data, AFDAsyncTransferState)
-    assert isinstance(metadata.connector_data, AFDTransferState)
+    assert isinstance(metadata.transfer_state, AFDAsyncTransferState)
+    assert isinstance(metadata.transfer_state, AFDTransferState)
 
 
 def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
@@ -375,7 +374,7 @@ def test_async_combine_send_requires_dispatch_recv_token_metadata(monkeypatch):
         stage_idx=0,
         seq_lens=[4],
     )
-    metadata.connector_data = AFDAsyncTransferState(
+    metadata.transfer_state = AFDAsyncTransferState(
         batch_size=4,
         hidden_size=16,
         topk=2,
@@ -430,7 +429,7 @@ def test_async_ffn_work_item_uses_cam_layer_and_token_metadata(monkeypatch):
     assert work_item.recv_output.expand_x_shared == "shared-hidden[:2]"
     assert work_item.recv_output.dynamic_scales_shared == "shared-scales[:2]"
     assert work_item.recv_output.x_active_mask == "active-mask[:5]"
-    assert work_item.metadata.connector_data.layer_idx == 11
+    assert work_item.metadata.transfer_state.layer_idx == 11
 
 
 def test_async_ffn_work_item_uses_expert_counts_for_routed_tokens(monkeypatch):

@@ -121,11 +121,11 @@ def test_camp2p_create_recv_metadata_uses_original_contiguous_af_grouping():
 
     assert metadata0.seq_lens == [5]
     assert metadata1.seq_lens == [12]
-    assert isinstance(metadata0.connector_data, CAMP2PTransferState)
-    assert isinstance(metadata0.connector_data, AFDTransferState)
-    assert metadata0.connector_data.batch_size == 5
-    assert metadata0.connector_data.h == 16
-    assert metadata0.connector_data.k == 2
+    assert isinstance(metadata0.transfer_state, CAMP2PTransferState)
+    assert isinstance(metadata0.transfer_state, AFDTransferState)
+    assert metadata0.transfer_state.batch_size == 5
+    assert metadata0.transfer_state.h == 16
+    assert metadata0.transfer_state.k == 2
 
 
 def test_camp2p_ignores_mix_placement_for_connector_metadata():
@@ -146,9 +146,9 @@ def test_camp2p_ignores_mix_placement_for_connector_metadata():
         layer_idx=3,
     )
 
-    assert metadata.connector_data.k == 2
-    assert metadata.connector_data.moe_expert_num == 4
-    assert metadata.connector_data.shared_expert_num == 0
+    assert metadata.transfer_state.k == 2
+    assert metadata.transfer_state.moe_expert_num == 4
+    assert metadata.transfer_state.shared_expert_num == 0
 
 
 def test_camp2p_update_metadata_keeps_original_handle_shape():
@@ -175,7 +175,7 @@ def test_camp2p_update_metadata_keeps_original_handle_shape():
 
     connector.update_metadata(metadata, recv_output)
 
-    assert metadata.connector_data.handle == [
+    assert metadata.transfer_state.handle == [
         "ids",
         "weights",
         "expand",
@@ -259,8 +259,8 @@ def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
         seq_len=3,
     )
 
-    def fake_set_forward_context_connector_data(data, *, ubatch_idx=None):
-        captured["connector_data"] = data
+    def fake_set_forward_context_transfer_state(data, *, ubatch_idx=None):
+        captured["transfer_state"] = data
         captured["ubatch_idx"] = ubatch_idx
 
     def fake_send_attn_output(*args):
@@ -269,8 +269,8 @@ def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
 
     monkeypatch.setattr(
         camp2p_module,
-        "_set_forward_context_connector_data",
-        fake_set_forward_context_connector_data,
+        "_set_forward_context_transfer_state",
+        fake_set_forward_context_transfer_state,
     )
     monkeypatch.setattr(
         torch.ops.vllm,
@@ -285,7 +285,7 @@ def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
     assert captured["ubatch_idx"] == 1
     assert captured["args"][1:4] == ("hccl0", "hccl1", "")
     assert captured["args"][4] == 3
-    assert captured["connector_data"].batch_size == 3
+    assert captured["transfer_state"].batch_size == 3
 
 
 def test_camp2p_init_fails_cleanly_without_ascend_runtime():
