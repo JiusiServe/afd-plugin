@@ -45,10 +45,10 @@ This boundary is deliberately narrow. vLLM continues to own the serving control 
 
 ### Connector and backend support
 
-| Connector | Backend | Execution | Supported stage | Graph support |
+| Connector | Backend | Execution | Recommended stage | Graph support |
 | --- | --- | --- | --- | --- |
-| `P2pNcclAFDConnector` | CUDA | Synchronous P2P | Prefill and decode | `FULL_DECODE_ONLY` CUDA graph |
-| `CAMP2pAFDConnector` | Ascend NPU | Synchronous CAMP2P/HCCL | Prefill and decode | `FULL_DECODE_ONLY` ACL graph |
+| `P2pNcclAFDConnector` | CUDA | Synchronous P2P | Decode | `FULL_DECODE_ONLY` CUDA graph |
+| `CAMP2pAFDConnector` | Ascend NPU | Synchronous CAMP2P/HCCL | Decode | `FULL_DECODE_ONLY` ACL graph |
 | `CAMAsyncAFDConnector` | Ascend NPU | Asynchronous CAM | Prefill | Not currently supported |
 
 The same high-level exchange—Attention output to FFN, FFN output back to Attention—is shared across connectors. Backend packages remain separate so CUDA graph behavior, ACL graph behavior, NCCL communication, and Ascend custom operators do not leak into one another.
