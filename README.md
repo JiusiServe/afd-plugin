@@ -53,7 +53,7 @@ Model support:
 
 Connector support:
 
-| Connector | Platform | Prefill or Decode | Sync or Async | Graph Support | Notes |
+| Connector | Platform | Recommend Stage | Sync or Async | Graph Support | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `P2pNcclAFDConnector` | CUDA | Prefill and Decode | Sync | `FULL_DECODE_ONLY` CUDA graph | FFN ranks are ordered before Attention ranks. `num_attention_ranks` must be greater than or equal to `num_ffn_ranks` and divisible by it. See the [DeepSeek V2 Lite recipe](recipe/gpu/p2p_nccl/deepseek_v2_lite/README.md). |
 | `CAMP2pAFDConnector` | Ascend NPU | Prefill and Decode | Sync | `FULL_DECODE_ONLY` ACL graph | Uses HCCL/CAMP2P custom ops. Ascend ops build by default on NPU platforms; set `AFD_BUILD_ASCEND_OPS=0` to skip them. |
