@@ -13,7 +13,7 @@ import torch
 from vllm.forward_context import get_forward_context
 from vllm.v1.worker.ubatch_utils import UBatchSlices
 
-from afd_plugin.connectors import AFDConnectorMetadata, AFDMetadata
+from afd_plugin.connectors import AFDForwardContextMetadata, AFDTransferMetadata
 from afd_plugin.model_executor.models import AsyncMoeUbatchMetadata
 from afd_plugin.v1.worker.dbo import maybe_apply_dbo_yield
 
@@ -29,7 +29,7 @@ def run_attention_gate_afd_forward(
     hidden_states: torch.Tensor,
     residual: torch.Tensor | None,
     positions: torch.Tensor,
-    afd_metadata: AFDMetadata,
+    afd_metadata: AFDForwardContextMetadata,
     llama_4_scaling: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Run the Attention-side gate AFD path used by async CAM."""
@@ -37,7 +37,7 @@ def run_attention_gate_afd_forward(
     afd_connector = afd_metadata.afd_connector
     forward_context = get_forward_context()
     stage_idx = int(
-        getattr(forward_context, "ubatch_idx", afd_metadata.afd_stage_idx),
+        getattr(forward_context, "ubatch_idx", afd_metadata.stage_idx),
     )
     pending_ffn_recv = False
 
@@ -45,10 +45,9 @@ def run_attention_gate_afd_forward(
         islice(model.layers, model.start_layer, model.end_layer),
     ):
         stage_idx = int(
-            getattr(forward_context, "ubatch_idx", afd_metadata.afd_stage_idx),
+            getattr(forward_context, "ubatch_idx", afd_metadata.stage_idx),
         )
-        afd_metadata.ubatch_idx = stage_idx
-        afd_metadata.afd_stage_idx = stage_idx
+        afd_metadata.stage_idx = stage_idx
         if layer_offset > 0 and pending_ffn_recv:
             hidden_states = afd_connector.recv_ffn_output(
                 ref_tensor=hidden_states,
@@ -78,7 +77,7 @@ def run_attention_gate_afd_forward(
             llama_4_scaling,
         )
 
-        metadata = AFDConnectorMetadata.create_attention_metadata(
+        metadata = AFDTransferMetadata.create_attention_metadata(
             layer_idx=layer.layer_idx,
             stage_idx=stage_idx,
             seq_len=int(hidden_states.shape[0]),
@@ -109,7 +108,7 @@ def run_async_moe_ubatch_afd_forward(
     hidden_states: torch.Tensor,
     residual: torch.Tensor | None,
     positions: torch.Tensor,
-    afd_metadata: AFDMetadata,
+    afd_metadata: AFDForwardContextMetadata,
     async_moe_ubatch_metadata: AsyncMoeUbatchMetadata,
     llama_4_scaling: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
@@ -197,7 +196,7 @@ def run_async_moe_ubatch_afd_forward(
         router_logits: torch.Tensor | None,
     ) -> None:
         expected_tokens = int(ubatch_slices[stage_idx].num_tokens)
-        stage_metadata = AFDConnectorMetadata.create_attention_metadata(
+        stage_metadata = AFDTransferMetadata.create_attention_metadata(
             layer_idx=layer.layer_idx,
             stage_idx=stage_idx,
             seq_len=expected_tokens,
@@ -291,7 +290,7 @@ _MISSING_FORWARD_CONTEXT_ATTR = object()
 def _use_async_moe_ubatch_forward_context(
     *,
     forward_context: object,
-    parent_afd_metadata: AFDMetadata,
+    parent_afd_metadata: AFDForwardContextMetadata,
     async_moe_ubatch_metadata: AsyncMoeUbatchMetadata,
     stage_idx: int,
 ) -> Iterator[None]:
@@ -341,23 +340,22 @@ def _use_async_moe_ubatch_forward_context(
 
 
 def _build_async_moe_stage_afd_metadata(
-    parent_afd_metadata: AFDMetadata,
+    parent_afd_metadata: AFDForwardContextMetadata,
     ubatch_slices: UBatchSlices,
     stage_idx: int,
-) -> AFDMetadata:
+) -> AFDForwardContextMetadata:
     ubatch_slice = ubatch_slices[stage_idx]
     stage_metadata = parent_afd_metadata.clone()
-    stage_metadata.afd_stage_idx = stage_idx
-    stage_metadata.ubatch_idx = stage_idx
-    stage_metadata.num_of_stages = len(ubatch_slices)
-    stage_metadata.afd_tokens_start_loc = [ubatch_slice.token_slice.start]
-    stage_metadata.afd_reqs_start_loc = [ubatch_slice.request_slice.start]
-    stage_metadata.afd_tokens_lens = [ubatch_slice.num_tokens]
-    if len(parent_afd_metadata.afd_tokens_unpadded_lens) > stage_idx:
-        unpadded_len = parent_afd_metadata.afd_tokens_unpadded_lens[stage_idx]
+    stage_metadata.stage_idx = stage_idx
+    stage_metadata.num_stages = len(ubatch_slices)
+    stage_metadata.tokens_start_loc = [ubatch_slice.token_slice.start]
+    stage_metadata.requests_start_loc = [ubatch_slice.request_slice.start]
+    stage_metadata.tokens_lens = [ubatch_slice.num_tokens]
+    if len(parent_afd_metadata.tokens_unpadded_lens) > stage_idx:
+        unpadded_len = parent_afd_metadata.tokens_unpadded_lens[stage_idx]
     else:
         unpadded_len = ubatch_slice.num_tokens
-    stage_metadata.afd_tokens_unpadded_lens = [int(unpadded_len)]
+    stage_metadata.tokens_unpadded_lens = [int(unpadded_len)]
     return stage_metadata
 
 

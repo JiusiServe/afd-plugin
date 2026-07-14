@@ -11,15 +11,15 @@ pytest.importorskip("torch_npu")
 
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
-    AFDAttnOutput,
-    AFDConnectorData,
+    AFDA2FTransferPayload,
     AFDConnectorFactory,
-    AFDConnectorMetadata,
+    AFDTransferMetadata,
+    AFDTransferState,
 )
 from afd_plugin.connectors.npu import camp2p as camp2p_module
 from afd_plugin.connectors.npu.camp2p import (
     CAMP2pAFDConnector,
-    CAMP2PAFDConnectorMetadata,
+    CAMP2PTransferState,
     build_camp2p_topology,
 )
 
@@ -121,8 +121,8 @@ def test_camp2p_create_recv_metadata_uses_original_contiguous_af_grouping():
 
     assert metadata0.seq_lens == [5]
     assert metadata1.seq_lens == [12]
-    assert isinstance(metadata0.connector_data, CAMP2PAFDConnectorMetadata)
-    assert isinstance(metadata0.connector_data, AFDConnectorData)
+    assert isinstance(metadata0.connector_data, CAMP2PTransferState)
+    assert isinstance(metadata0.connector_data, AFDTransferState)
     assert metadata0.connector_data.batch_size == 5
     assert metadata0.connector_data.h == 16
     assert metadata0.connector_data.k == 2
@@ -163,7 +163,7 @@ def test_camp2p_update_metadata_keeps_original_handle_shape():
         ubatch_idx=0,
         layer_idx=0,
     )
-    recv_output = AFDAttnOutput(
+    recv_output = AFDA2FTransferPayload(
         hidden_states="hidden",
         metadata=metadata,
         topk_ids="ids",
@@ -253,7 +253,7 @@ def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
     connector.hccl_comm_name2 = "hccl1"
     connector.hccl_comm_name3 = ""
     hidden_states = torch.empty((3, 16))
-    metadata = AFDConnectorMetadata.create_attention_metadata(
+    metadata = AFDTransferMetadata.create_attention_metadata(
         layer_idx=0,
         stage_idx=1,
         seq_len=3,

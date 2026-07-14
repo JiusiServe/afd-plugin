@@ -18,7 +18,7 @@ from vllm.v1.worker.gpu_ubatch_wrapper import UbatchMetadata, UBatchWrapper
 from vllm.v1.worker.ubatching import make_ubatch_contexts
 
 from afd_plugin.config import parse_afd_config
-from afd_plugin.connectors import AFDDPMetadata, AFDMetadata
+from afd_plugin.connectors import AFDDPMetadata, AFDForwardContextMetadata
 
 
 class AFDUBatchWrapper(UBatchWrapper):
@@ -226,10 +226,10 @@ class AFDUBatchWrapper(UBatchWrapper):
 
 
 def build_ubatch_afd_metadata(
-    afd_metadata: AFDMetadata,
+    afd_metadata: AFDForwardContextMetadata,
     ubatch_slices: Any,
     ubatch_idx: int,
-) -> AFDMetadata:
+) -> AFDForwardContextMetadata:
     """Clone parent AFD metadata for one vLLM ubatch."""
 
     if ubatch_idx < 0 or ubatch_idx >= len(ubatch_slices):
@@ -237,13 +237,12 @@ def build_ubatch_afd_metadata(
 
     ubatch_slice = ubatch_slices[ubatch_idx]
     clone = afd_metadata.clone()
-    clone.ubatch_idx = ubatch_idx
-    clone.afd_stage_idx = ubatch_idx
-    clone.num_of_stages = len(ubatch_slices)
-    clone.afd_tokens_start_loc = [int(ubatch_slice.token_slice.start)]
-    clone.afd_reqs_start_loc = [int(ubatch_slice.request_slice.start)]
-    clone.afd_tokens_lens = [int(ubatch_slice.num_tokens)]
-    clone.afd_tokens_unpadded_lens = [
+    clone.stage_idx = ubatch_idx
+    clone.num_stages = len(ubatch_slices)
+    clone.tokens_start_loc = [int(ubatch_slice.token_slice.start)]
+    clone.requests_start_loc = [int(ubatch_slice.request_slice.start)]
+    clone.tokens_lens = [int(ubatch_slice.num_tokens)]
+    clone.tokens_unpadded_lens = [
         _resolve_ubatch_unpadded_tokens(afd_metadata, ubatch_slice, ubatch_idx),
     ]
     return clone
@@ -251,7 +250,7 @@ def build_ubatch_afd_metadata(
 
 def build_ubatch_additional_kwargs(
     parent_additional_kwargs: dict[str, Any],
-    afd_metadata: AFDMetadata,
+    afd_metadata: AFDForwardContextMetadata,
 ) -> dict[str, Any]:
     child_kwargs = dict(parent_additional_kwargs)
     child_kwargs["afd_metadata"] = afd_metadata
@@ -305,11 +304,11 @@ def build_ubatch_dp_metadata_list(
 
 
 def _resolve_ubatch_unpadded_tokens(
-    afd_metadata: AFDMetadata,
+    afd_metadata: AFDForwardContextMetadata,
     ubatch_slice: Any,
     ubatch_idx: int,
 ) -> int:
-    unpadded_lens = afd_metadata.afd_tokens_unpadded_lens
+    unpadded_lens = afd_metadata.tokens_unpadded_lens
     if ubatch_idx < len(unpadded_lens):
         return int(unpadded_lens[ubatch_idx])
     return int(ubatch_slice.num_tokens)

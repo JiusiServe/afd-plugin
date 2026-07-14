@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from afd_plugin.connectors import AFDFFNOutput
+from afd_plugin.connectors import AFDF2ATransferPayload
 from afd_plugin.envs import force_balanced_topk_ids_enabled
 from afd_plugin.model_executor.models import get_afd_metadata_from_forward_context
 
@@ -88,7 +88,7 @@ def compute_attention_gate_moe_ffn(
     dynamic_scales_shared: torch.Tensor | None,
     topk_scales: torch.Tensor | None,
     group_list_type: int,
-) -> AFDFFNOutput:
+) -> AFDF2ATransferPayload:
     """Compute FFN output for MoE layers whose gate ran on Attention ranks."""
 
     from vllm_ascend.ops.fused_moe.moe_mlp import unified_apply_mlp
@@ -173,7 +173,7 @@ def compute_attention_gate_moe_ffn(
     elif shared_output is not None:
         shared_output *= 1.0 / layer.mlp.routed_scaling_factor
 
-    return AFDFFNOutput(
+    return AFDF2ATransferPayload(
         routed_output=routed_output,
         shared_output=shared_output,
     )

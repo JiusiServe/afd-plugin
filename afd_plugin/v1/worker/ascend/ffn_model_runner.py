@@ -25,13 +25,13 @@ from afd_plugin.compat.ascend.profiler import (
 )
 from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
-    AFDAttnOutput,
+    AFDA2FTransferPayload,
     AFDConnectorFactory,
-    AFDConnectorMetadata,
+    AFDControlPayload,
     AFDDPMetadata,
-    AFDDPMetadataPayload,
-    AFDFFNOutput,
-    AFDMetadata,
+    AFDF2ATransferPayload,
+    AFDForwardContextMetadata,
+    AFDTransferMetadata,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
     _resolve_world_ranks,
@@ -202,13 +202,13 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 ),
             )
         num_stages = max(len(dp_metadata_list), 1)
-        afd_metadata = AFDMetadata(
-            afd_tokens_start_loc=[],
-            afd_reqs_start_loc=[],
-            afd_stage_idx=0,
+        afd_metadata = AFDForwardContextMetadata(
+            tokens_start_loc=[],
+            requests_start_loc=[],
+            stage_idx=0,
             afd_connector=self.connector,
-            afd_tokens_lens=[],
-            num_of_stages=num_stages,
+            tokens_lens=[],
+            num_stages=num_stages,
         )
         stage_ids = sorted(int(stage_idx) for stage_idx in dp_metadata_list) or [0]
         num_tokens_across_dp = _ffn_token_counts_across_ranks(
@@ -298,14 +298,14 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             payload = work_item.recv_output
             layer_idx = work_item.layer_idx
             num_tokens = work_item.num_tokens
-            afd_metadata = AFDMetadata(
-                afd_tokens_start_loc=[0],
-                afd_reqs_start_loc=[0],
-                afd_stage_idx=stage_idx,
+            afd_metadata = AFDForwardContextMetadata(
+                tokens_start_loc=[0],
+                requests_start_loc=[0],
+                stage_idx=stage_idx,
                 afd_connector=self.connector,
-                afd_tokens_lens=[num_tokens],
-                num_of_stages=1,
-                afd_tokens_unpadded_lens=[num_tokens],
+                tokens_lens=[num_tokens],
+                num_stages=1,
+                tokens_unpadded_lens=[num_tokens],
             )
 
             with ascend_forward_context(
@@ -450,19 +450,19 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
 
 def _normalize_recv_output(
-    recv_output: AFDAttnOutput | tuple[torch.Tensor, AFDConnectorMetadata],
+    recv_output: AFDA2FTransferPayload | tuple[torch.Tensor, AFDTransferMetadata],
     *,
     stage_idx: int,
     layer_idx: int,
-) -> tuple[torch.Tensor, AFDConnectorMetadata, AFDAttnOutput]:
+) -> tuple[torch.Tensor, AFDTransferMetadata, AFDA2FTransferPayload]:
     if isinstance(recv_output, tuple):
         hidden_states, metadata = recv_output
-        payload = AFDAttnOutput(hidden_states=hidden_states, metadata=metadata)
+        payload = AFDA2FTransferPayload(hidden_states=hidden_states, metadata=metadata)
         return hidden_states, metadata, payload
     hidden_states = recv_output.hidden_states
     metadata = recv_output.metadata
     if metadata is None:
-        metadata = AFDConnectorMetadata.create_ffn_metadata(
+        metadata = AFDTransferMetadata.create_ffn_metadata(
             layer_idx=layer_idx,
             stage_idx=stage_idx,
             seq_lens=[
@@ -477,12 +477,12 @@ def _normalize_recv_output(
 
 def _send_ffn_output(
     connector: AFDConnectorBase,
-    ffn_output: torch.Tensor | AFDFFNOutput,
-    metadata: AFDConnectorMetadata,
+    ffn_output: torch.Tensor | AFDF2ATransferPayload,
+    metadata: AFDTransferMetadata,
     *,
     stage_idx: int,
 ) -> None:
-    if not isinstance(ffn_output, AFDFFNOutput):
+    if not isinstance(ffn_output, AFDF2ATransferPayload):
         connector.send_ffn_output(
             ffn_output,
             metadata,
@@ -527,8 +527,8 @@ def _make_dp_metadata_payload(
     *,
     is_graph_capturing: bool = False,
     is_warmup: bool = False,
-) -> AFDDPMetadataPayload:
-    return AFDDPMetadataPayload(
+) -> AFDControlPayload:
+    return AFDControlPayload(
         dp_metadata_list=dp_metadata_list,
         is_graph_capturing=is_graph_capturing,
         is_warmup=is_warmup,

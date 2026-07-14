@@ -24,11 +24,11 @@ from afd_plugin.compat.profiler import (
 )
 from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
-    AFDAttnOutput,
+    AFDA2FTransferPayload,
     AFDConnectorFactory,
-    AFDConnectorMetadata,
+    AFDControlPayload,
     AFDDPMetadata,
-    AFDDPMetadataPayload,
+    AFDTransferMetadata,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
     _with_dp_derived_afd_rank,
@@ -361,8 +361,8 @@ def _make_dp_metadata_payload(
     *,
     is_graph_capturing: bool = False,
     is_warmup: bool = False,
-) -> AFDDPMetadataPayload:
-    return AFDDPMetadataPayload(
+) -> AFDControlPayload:
+    return AFDControlPayload(
         dp_metadata_list=dp_metadata_list,
         is_graph_capturing=is_graph_capturing,
         is_warmup=is_warmup,
@@ -374,18 +374,18 @@ def _normalize_recv_output(
     *,
     stage_idx: int,
     layer_idx: int,
-) -> tuple[torch.Tensor, AFDConnectorMetadata, Any]:
+) -> tuple[torch.Tensor, AFDTransferMetadata, Any]:
     if isinstance(recv_output, tuple):
         hidden_states, metadata = recv_output
         return hidden_states, metadata, recv_output
 
-    if isinstance(recv_output, AFDAttnOutput):
+    if isinstance(recv_output, AFDA2FTransferPayload):
         return recv_output.hidden_states, recv_output.metadata, recv_output
 
     hidden_states = recv_output.hidden_states
     metadata = getattr(recv_output, "metadata", None)
     if metadata is None:
-        metadata = AFDConnectorMetadata.create_ffn_metadata(
+        metadata = AFDTransferMetadata.create_ffn_metadata(
             layer_idx=layer_idx,
             stage_idx=stage_idx,
             seq_lens=[

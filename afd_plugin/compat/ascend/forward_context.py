@@ -13,14 +13,14 @@ if TYPE_CHECKING:
     from vllm.config import CUDAGraphMode, VllmConfig
     from vllm.forward_context import ForwardContext
 
-    from afd_plugin.connectors import AFDMetadata
+    from afd_plugin.connectors import AFDForwardContextMetadata
 
 
 @contextmanager
 def ascend_forward_context(
     *,
     vllm_config: VllmConfig,
-    afd_metadata: AFDMetadata,
+    afd_metadata: AFDForwardContextMetadata,
     model_instance: torch.nn.Module | None = None,
     num_tokens: int = 0,
     num_tokens_across_dp: torch.Tensor | None = None,

@@ -250,7 +250,7 @@ def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():
     assert "compute_attention_gate_moe_ffn(" in compute_ffn_output
     assert "from afd_plugin.model_executor.models.npu import (" in compute_ffn_output
     assert "deepseek_v2_attention_gate," in compute_ffn_output
-    assert "AFDFFNOutput(" in compute_moe
+    assert "AFDF2ATransferPayload(" in compute_moe
     assert "MoEMlpComputeInput(" in compute_moe
     assert "unified_apply_mlp(" in compute_moe
     assert "quant_type == QuantType.W8A8" in compute_moe

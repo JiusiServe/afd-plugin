@@ -5,25 +5,25 @@
 from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.factory import AFDConnectorFactory
 from afd_plugin.connectors.metadata import (
-    AFDAttnOutput,
-    AFDConnectorData,
-    AFDConnectorMetadata,
+    AFDA2FTransferPayload,
+    AFDControlPayload,
     AFDDPMetadata,
-    AFDDPMetadataPayload,
-    AFDFFNOutput,
-    AFDMetadata,
+    AFDF2ATransferPayload,
+    AFDForwardContextMetadata,
     AFDSingleDPMetadata,
+    AFDTransferMetadata,
+    AFDTransferState,
 )
 
 __all__ = [
     "AFDConnectorBase",
-    "AFDConnectorData",
+    "AFDTransferState",
     "AFDConnectorFactory",
-    "AFDConnectorMetadata",
+    "AFDTransferMetadata",
     "AFDDPMetadata",
-    "AFDDPMetadataPayload",
-    "AFDFFNOutput",
-    "AFDMetadata",
-    "AFDAttnOutput",
+    "AFDControlPayload",
+    "AFDF2ATransferPayload",
+    "AFDForwardContextMetadata",
+    "AFDA2FTransferPayload",
     "AFDSingleDPMetadata",
 ]

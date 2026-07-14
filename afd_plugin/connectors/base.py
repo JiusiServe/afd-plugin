@@ -11,10 +11,10 @@ import torch
 
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.metadata import (
-    AFDAttnOutput,
-    AFDConnectorMetadata,
+    AFDA2FTransferPayload,
+    AFDControlPayload,
     AFDDPMetadata,
-    AFDDPMetadataPayload,
+    AFDTransferMetadata,
 )
 
 if TYPE_CHECKING:
@@ -37,7 +37,7 @@ class AFDConnectorBase(ABC):
     Implementations may use very different transport mechanisms. For example,
     the GPU P2P connector uses explicit point-to-point tensor transfers, while
     the NPU CAMP2P connector carries additional backend state through
-    ``AFDConnectorMetadata.connector_data``. This base class documents the
+    ``AFDTransferMetadata.connector_data``. This base class documents the
     common runtime contract shared by those implementations.
     """
 
@@ -113,7 +113,7 @@ class AFDConnectorBase(ABC):
     def send_attn_output(
         self,
         hidden_states: torch.Tensor,
-        metadata: AFDConnectorMetadata,
+        metadata: AFDTransferMetadata,
         **kwargs: Any,
     ) -> None:
         """Send Attention hidden states to the FFN runtime.
@@ -164,7 +164,7 @@ class AFDConnectorBase(ABC):
         self,
         ubatch_idx: int | None = None,
         **kwargs: Any,
-    ) -> AFDAttnOutput:
+    ) -> AFDA2FTransferPayload:
         """Receive Attention hidden states on the FFN side.
 
         This method is called by FFN-side execution before running the FFN
@@ -178,7 +178,7 @@ class AFDConnectorBase(ABC):
             **kwargs: Optional backend-specific receive arguments.
 
         Returns:
-            ``AFDAttnOutput`` containing received hidden states, transfer
+            ``AFDA2FTransferPayload`` containing received hidden states, transfer
             metadata, and optional backend-specific fields produced by the
             receive operation.
         """
@@ -188,7 +188,7 @@ class AFDConnectorBase(ABC):
     def send_ffn_output(
         self,
         ffn_output: torch.Tensor,
-        metadata: AFDConnectorMetadata,
+        metadata: AFDTransferMetadata,
         **kwargs: Any,
     ) -> None:
         """Send FFN output back to the Attention runtime.
@@ -219,7 +219,7 @@ class AFDConnectorBase(ABC):
     @abstractmethod
     def update_state_from_dp_metadata(
         self,
-        payload: AFDDPMetadataPayload,
+        payload: AFDControlPayload,
     ) -> None:
         """Apply a DP metadata payload to local connector state.
 
@@ -237,7 +237,7 @@ class AFDConnectorBase(ABC):
     @abstractmethod
     def send_dp_metadata_list(
         self,
-        payload: AFDDPMetadataPayload,
+        payload: AFDControlPayload,
     ) -> None:
         """Submit DP metadata control-plane payload from Attention to FFN.
 
@@ -252,7 +252,7 @@ class AFDConnectorBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def recv_dp_metadata_list(self) -> AFDDPMetadataPayload:
+    def recv_dp_metadata_list(self) -> AFDControlPayload:
         """Receive a DP metadata control-plane payload on the FFN side.
 
         Returns:
@@ -268,7 +268,7 @@ class AFDConnectorBase(ABC):
     # Metadata helpers
     # ==============================
 
-    def create_recv_metadata(self, **kwargs: Any) -> AFDConnectorMetadata:
+    def create_recv_metadata(self, **kwargs: Any) -> AFDTransferMetadata:
         """Create metadata for an FFN-side receive operation.
 
         This helper is used before ``recv_attn_output`` when the runner needs a
@@ -287,7 +287,7 @@ class AFDConnectorBase(ABC):
                   implementation derives one length from ``dp_metadata_list``.
 
         Returns:
-            ``AFDConnectorMetadata`` for the receive operation.
+            ``AFDTransferMetadata`` for the receive operation.
         """
         dp_metadata_list = kwargs.get("dp_metadata_list") or {}
         ubatch_idx = int(kwargs.get("ubatch_idx", 0))
@@ -295,7 +295,7 @@ class AFDConnectorBase(ABC):
         seq_lens = kwargs.get("seq_lens")
         if seq_lens is None:
             seq_lens = [_num_tokens_for_stage(dp_metadata_list, ubatch_idx)]
-        return AFDConnectorMetadata.create_ffn_metadata(
+        return AFDTransferMetadata.create_ffn_metadata(
             layer_idx=layer_idx,
             stage_idx=ubatch_idx,
             seq_lens=list(seq_lens),
@@ -303,7 +303,7 @@ class AFDConnectorBase(ABC):
 
     def configure_metadata(  # noqa: B027
         self,
-        metadata: AFDConnectorMetadata,
+        metadata: AFDTransferMetadata,
         **kwargs: Any,
     ) -> None:
         """Attach or update backend-specific data on existing metadata.
@@ -321,8 +321,8 @@ class AFDConnectorBase(ABC):
 
     def update_metadata(
         self,
-        metadata: AFDConnectorMetadata,
-        recv_output: AFDAttnOutput,
+        metadata: AFDTransferMetadata,
+        recv_output: AFDA2FTransferPayload,
     ) -> None:
         """Update metadata after an Attention-to-FFN receive completes.
 

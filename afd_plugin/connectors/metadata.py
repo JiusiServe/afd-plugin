@@ -93,7 +93,7 @@ AFDSingleDPMetadata = AFDDPMetadata
 
 
 @dataclass(slots=True)
-class AFDDPMetadataPayload:
+class AFDControlPayload:
     """Structured DP metadata control-plane payload.
 
     This object is the envelope used by connector control-plane methods:
@@ -203,15 +203,15 @@ def _compute_sp_num_tokens(
 
 
 @dataclass(slots=True)
-class AFDConnectorData:
+class AFDTransferState:
     """Base class for backend-specific connector metadata payloads."""
 
 
 @dataclass(slots=True)
-class AFDConnectorMetadata:
+class AFDTransferMetadata:
     """Communication metadata for one AFD Attention/FFN exchange.
 
-    ``AFDConnectorMetadata`` describes the logical tensor transfer for a single
+    ``AFDTransferMetadata`` describes the logical tensor transfer for a single
     layer/stage pair. It is intentionally backend-neutral, with
     ``connector_data`` reserved for backend-specific state.
 
@@ -223,7 +223,7 @@ class AFDConnectorMetadata:
             metadata. For one-to-one transfers this is usually a single-item
             list; for fan-in/fan-out paths it can describe split sizes.
         connector_data: Optional backend-specific payload. For example,
-            CAMP2P stores ``CAMP2PAFDConnectorMetadata`` here so receive-time
+            CAMP2P stores ``CAMP2PTransferState`` here so receive-time
             results can be reused by the matching send path. P2P does not
             currently require connector-specific data.
     """
@@ -231,7 +231,7 @@ class AFDConnectorMetadata:
     layer_idx: int
     stage_idx: int
     seq_lens: list[int]
-    connector_data: AFDConnectorData | None = None
+    connector_data: AFDTransferState | None = None
 
     def __post_init__(self) -> None:
         if not self.seq_lens:
@@ -250,7 +250,7 @@ class AFDConnectorMetadata:
         layer_idx: int,
         stage_idx: int,
         seq_len: int,
-    ) -> AFDConnectorMetadata:
+    ) -> AFDTransferMetadata:
         return cls(
             layer_idx=layer_idx,
             stage_idx=stage_idx,
@@ -264,7 +264,7 @@ class AFDConnectorMetadata:
         layer_idx: int,
         stage_idx: int,
         seq_lens: list[int],
-    ) -> AFDConnectorMetadata:
+    ) -> AFDTransferMetadata:
         return cls(
             layer_idx=layer_idx,
             stage_idx=stage_idx,
@@ -276,7 +276,7 @@ class AFDConnectorMetadata:
 
 
 @dataclass(slots=True)
-class AFDAttnOutput:
+class AFDA2FTransferPayload:
     """Unified Attention-to-FFN receive payload.
 
     ``recv_attn_output()`` returns this object on the FFN side. The first two
@@ -310,7 +310,7 @@ class AFDAttnOutput:
     """
 
     hidden_states: torch.Tensor
-    metadata: AFDConnectorMetadata
+    metadata: AFDTransferMetadata
     group_list: object = None
     topk_weights: torch.Tensor | None = None
     topk_ids: torch.Tensor | None = None
@@ -328,7 +328,7 @@ class AFDAttnOutput:
 
 
 @dataclass(slots=True)
-class AFDFFNOutput:
+class AFDF2ATransferPayload:
     """Unified FFN -> Attention payload for separated routed/shared outputs."""
 
     routed_output: torch.Tensor
@@ -336,25 +336,24 @@ class AFDFFNOutput:
 
 
 @dataclass(slots=True)
-class AFDMetadata:
+class AFDForwardContextMetadata:
     """Forward-context metadata visible to plugin-owned model wrappers."""
 
-    afd_tokens_start_loc: list[int]
-    afd_reqs_start_loc: list[int]
-    afd_stage_idx: int
+    tokens_start_loc: list[int]
+    requests_start_loc: list[int]
+    stage_idx: int
     afd_connector: AFDConnectorBase
-    afd_tokens_lens: list[int]
-    num_of_stages: int
-    ubatch_idx: int = 0
+    tokens_lens: list[int]
+    num_stages: int
     transaction_id: str | None = None
-    afd_tokens_unpadded_lens: list[int] = field(default_factory=list)
+    tokens_unpadded_lens: list[int] = field(default_factory=list)
 
-    def clone(self) -> AFDMetadata:
+    def clone(self) -> AFDForwardContextMetadata:
         cloned = copy.copy(self)
-        cloned.afd_tokens_start_loc = list(self.afd_tokens_start_loc)
-        cloned.afd_reqs_start_loc = list(self.afd_reqs_start_loc)
-        cloned.afd_tokens_lens = list(self.afd_tokens_lens)
-        cloned.afd_tokens_unpadded_lens = list(self.afd_tokens_unpadded_lens)
+        cloned.tokens_start_loc = list(self.tokens_start_loc)
+        cloned.requests_start_loc = list(self.requests_start_loc)
+        cloned.tokens_lens = list(self.tokens_lens)
+        cloned.tokens_unpadded_lens = list(self.tokens_unpadded_lens)
         return cloned
 
 
@@ -363,8 +362,8 @@ def _to_int(value: object) -> int:
     return int(item() if callable(item) else value)
 
 
-def encode_dp_metadata_payload(payload: AFDDPMetadataPayload) -> bytes:
-    """Serialize an ``AFDDPMetadataPayload`` to a compact JSON byte string.
+def encode_control_payload(payload: AFDControlPayload) -> bytes:
+    """Serialize an ``AFDControlPayload`` to a compact JSON byte string.
 
     Only ``num_tokens_across_dp_cpu`` / ``max_tokens_across_dp_cpu`` per stage
     and the graph-capturing / warmup flags are carried; these are the fields the
@@ -399,8 +398,8 @@ def encode_dp_metadata_payload(payload: AFDDPMetadataPayload) -> bytes:
     )
 
 
-def decode_dp_metadata_payload(payload_bytes: bytes) -> AFDDPMetadataPayload:
-    """Rebuild an ``AFDDPMetadataPayload`` from ``encode_dp_metadata_payload``."""
+def decode_control_payload(payload_bytes: bytes) -> AFDControlPayload:
+    """Rebuild an ``AFDControlPayload`` from ``encode_control_payload``."""
     payload = json.loads(payload_bytes.decode("utf-8"))
     dp_metadata_list = {
         int(stage_idx): AFDDPMetadata(
@@ -417,15 +416,15 @@ def decode_dp_metadata_payload(payload_bytes: bytes) -> AFDDPMetadataPayload:
         )
         for stage_idx, metadata in payload["dp_metadata_list"].items()
     }
-    return AFDDPMetadataPayload(
+    return AFDControlPayload(
         dp_metadata_list=dp_metadata_list,
         is_graph_capturing=bool(payload.get("is_graph_capturing", False)),
         is_warmup=bool(payload.get("is_warmup", False)),
     )
 
 
-def send_dp_metadata_payload(
-    payload: AFDDPMetadataPayload,
+def send_control_payload(
+    payload: AFDControlPayload,
     *,
     dst: int | list[int] | tuple[int, ...],
     group: ProcessGroup,
@@ -437,7 +436,7 @@ def send_dp_metadata_payload(
     ``uint8`` object tensor, both staged on ``device`` so the caller controls
     whether the backend transport sees CUDA/NPU or CPU tensors.
     """
-    object_bytes = encode_dp_metadata_payload(payload)
+    object_bytes = encode_control_payload(payload)
     object_tensor_cpu = torch.frombuffer(bytearray(object_bytes), dtype=torch.uint8)
     object_tensor = object_tensor_cpu.to(device)
     size_tensor = torch.tensor(
@@ -451,12 +450,12 @@ def send_dp_metadata_payload(
         torch.distributed.send(object_tensor, dst=d, group=group)
 
 
-def recv_dp_metadata_payload(
+def recv_control_payload(
     *,
     src: int,
     group: ProcessGroup,
     device: torch.device,
-) -> AFDDPMetadataPayload:
+) -> AFDControlPayload:
     """Receive and decode a DP-metadata payload from ``src`` over ``group``."""
     size_tensor = torch.empty(1, dtype=torch.long, device=device)
     rank_size = torch.distributed.recv(size_tensor, src=src, group=group)
@@ -468,20 +467,20 @@ def recv_dp_metadata_payload(
     rank_object = torch.distributed.recv(object_tensor, src=src, group=group)
     if rank_object != rank_size:
         raise RuntimeError("received AFD DP metadata fragments from different ranks")
-    return decode_dp_metadata_payload(object_tensor.cpu().numpy().tobytes())
+    return decode_control_payload(object_tensor.cpu().numpy().tobytes())
 
 
 __all__ = [
-    "AFDConnectorData",
-    "AFDConnectorMetadata",
+    "AFDTransferState",
+    "AFDTransferMetadata",
     "AFDDPMetadata",
-    "AFDDPMetadataPayload",
-    "AFDFFNOutput",
-    "AFDMetadata",
-    "AFDAttnOutput",
+    "AFDControlPayload",
+    "AFDF2ATransferPayload",
+    "AFDForwardContextMetadata",
+    "AFDA2FTransferPayload",
     "AFDSingleDPMetadata",
-    "decode_dp_metadata_payload",
-    "encode_dp_metadata_payload",
-    "recv_dp_metadata_payload",
-    "send_dp_metadata_payload",
+    "decode_control_payload",
+    "encode_control_payload",
+    "recv_control_payload",
+    "send_control_payload",
 ]

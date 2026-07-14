@@ -18,10 +18,11 @@ from afd_plugin.compat.ascend.ops import ensure_cam_async_ops_available
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import (
-    AFDAttnOutput,
-    AFDConnectorMetadata,
-    AFDDPMetadataPayload,
-    AFDFFNOutput,
+    AFDA2FTransferPayload,
+    AFDControlPayload,
+    AFDF2ATransferPayload,
+    AFDTransferMetadata,
+    AFDTransferState,
 )
 from afd_plugin.distributed import init_afd_process_group
 
@@ -37,7 +38,7 @@ logger = init_logger(__name__)
 
 
 @dataclass(slots=True)
-class AFDAsyncConnectorData:
+class AFDAsyncTransferState(AFDTransferState):
     """CAM-side metadata carried from dispatch recv to combine send."""
 
     batch_size: int = 1
@@ -62,8 +63,8 @@ class AFDAsyncFFNWorkItem:
     """Normalized FFN-side work item produced by async CAM dispatch recv."""
 
     hidden_states: Tensor
-    metadata: AFDConnectorMetadata
-    recv_output: AFDAttnOutput
+    metadata: AFDTransferMetadata
+    recv_output: AFDA2FTransferPayload
     layer_idx: int
     stage_idx: int
     num_tokens: int
@@ -128,7 +129,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self._placeholder: Tensor | None = None
         self._pending_attention_payloads: dict[
             int,
-            list[tuple[AFDConnectorMetadata, Tensor, Tensor]],
+            list[tuple[AFDTransferMetadata, Tensor, Tensor]],
         ] = {}
 
     @property
@@ -171,17 +172,17 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
 
     def update_state_from_dp_metadata(
         self,
-        payload: AFDDPMetadataPayload,
+        payload: AFDControlPayload,
     ) -> None:
         return None
 
     def send_dp_metadata_list(
         self,
-        payload: AFDDPMetadataPayload,
+        payload: AFDControlPayload,
     ) -> None:
         return None
 
-    def recv_dp_metadata_list(self) -> AFDDPMetadataPayload:
+    def recv_dp_metadata_list(self) -> AFDControlPayload:
         raise RuntimeError(
             "CAMAsyncAFDConnector does not use the DP metadata control plane",
         )
@@ -200,7 +201,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
 
     def configure_metadata(
         self,
-        metadata: AFDConnectorMetadata,
+        metadata: AFDTransferMetadata,
         **kwargs: Any,
     ) -> None:
         metadata.connector_data = self._make_connector_data(
@@ -208,11 +209,11 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             layer_idx=int(metadata.layer_idx),
         )
 
-    def create_recv_metadata(self, **kwargs: Any) -> AFDConnectorMetadata:
+    def create_recv_metadata(self, **kwargs: Any) -> AFDTransferMetadata:
         batch_size = int(kwargs.get("batch_size", kwargs.get("max_num_tokens", 1)) or 1)
         layer_idx = int(kwargs.get("layer_idx", 0) or 0)
         stage_idx = int(kwargs.get("ubatch_idx", 0) or 0)
-        metadata = AFDConnectorMetadata.create_ffn_metadata(
+        metadata = AFDTransferMetadata.create_ffn_metadata(
             layer_idx=layer_idx,
             stage_idx=stage_idx,
             seq_lens=[max(1, batch_size)],
@@ -225,8 +226,8 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
 
     def update_metadata(
         self,
-        metadata: AFDConnectorMetadata,
-        recv_output: AFDAttnOutput,
+        metadata: AFDTransferMetadata,
+        recv_output: AFDA2FTransferPayload,
     ) -> None:
         data = self._metadata_data_or_default(metadata)
         data.topk_ids = recv_output.topk_ids
@@ -299,8 +300,8 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
     def send_ffn_work_item_output(
         self,
         work_item: AFDAsyncFFNWorkItem,
-        ffn_output: Tensor | AFDFFNOutput,
-    ) -> Tensor | AFDFFNOutput:
+        ffn_output: Tensor | AFDF2ATransferPayload,
+    ) -> Tensor | AFDF2ATransferPayload:
         if int(work_item.num_tokens) > 0:
             _send_ffn_output_payload(
                 self,
@@ -319,8 +320,8 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             dtype=torch.bfloat16,
             device=work_item.recv_output.hidden_states.device,
         )
-        if isinstance(ffn_output, AFDFFNOutput):
-            ffn_output = AFDFFNOutput(
+        if isinstance(ffn_output, AFDF2ATransferPayload):
+            ffn_output = AFDF2ATransferPayload(
                 routed_output=fake_routed_output,
                 shared_output=ffn_output.shared_output,
             )
@@ -338,7 +339,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
     def send_attn_output(
         self,
         hidden_states: Tensor,
-        metadata: AFDConnectorMetadata,
+        metadata: AFDTransferMetadata,
         **kwargs: Any,
     ) -> None:
         self._require_initialized()
@@ -425,7 +426,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
                 topk_ids = pending_topk_ids
             if topk_weights is None:
                 topk_weights = pending_topk_weights
-        metadata = cast(AFDConnectorMetadata, metadata)
+        metadata = cast(AFDTransferMetadata, metadata)
         topk_ids = cast(Tensor, topk_ids)
         topk_weights = cast(Tensor, topk_weights)
         data = self._metadata_data_or_default(metadata)
@@ -477,7 +478,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self,
         ubatch_idx: int | None = None,
         **kwargs: Any,
-    ) -> AFDAttnOutput:
+    ) -> AFDA2FTransferPayload:
         self._require_initialized()
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
         metadata = kwargs.get("metadata")
@@ -487,7 +488,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
                 batch_size=int(kwargs.get("batch_size", self.max_seq_len) or 1),
                 layer_idx=int(kwargs.get("layer_idx", 0) or 0),
             )
-        metadata = cast(AFDConnectorMetadata, metadata)
+        metadata = cast(AFDTransferMetadata, metadata)
         data = self._metadata_data_or_default(metadata)
         placeholder = kwargs.get("placeholder", self._placeholder)
         _log_cam_op_values(
@@ -551,7 +552,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         data.expert_token_nums = expert_token_nums
         data.expert_token_nums_shared = expert_token_nums_shared
         data.atten_batch_size = token_nums_rankid_layeridx
-        return AFDAttnOutput(
+        return AFDA2FTransferPayload(
             hidden_states=hidden_states,
             metadata=metadata,
             group_list=expert_token_nums,
@@ -566,7 +567,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
     def send_ffn_output(
         self,
         ffn_output: Tensor,
-        metadata: AFDConnectorMetadata,
+        metadata: AFDTransferMetadata,
         **kwargs: Any,
     ) -> None:
         self._require_initialized()
@@ -621,8 +622,8 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
 
     def _metadata_data_or_default(
         self,
-        metadata: AFDConnectorMetadata,
-    ) -> AFDAsyncConnectorData:
+        metadata: AFDTransferMetadata,
+    ) -> AFDAsyncTransferState:
         data = metadata.connector_data
         if data is None:
             data = self._make_connector_data(
@@ -630,7 +631,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
                 layer_idx=int(metadata.layer_idx),
             )
             metadata.connector_data = data
-        if not isinstance(data, AFDAsyncConnectorData):
+        if not isinstance(data, AFDAsyncTransferState):
             raise RuntimeError("AFD async metadata is missing connector_data")
         return data
 
@@ -639,8 +640,8 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         *,
         batch_size: int,
         layer_idx: int,
-    ) -> AFDAsyncConnectorData:
-        return AFDAsyncConnectorData(
+    ) -> AFDAsyncTransferState:
+        return AFDAsyncTransferState(
             batch_size=max(1, int(batch_size)),
             hidden_size=self.hidden_size,
             topk=self.topk,
@@ -653,7 +654,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
 
     def _queue_attention_payload(
         self,
-        metadata: AFDConnectorMetadata,
+        metadata: AFDTransferMetadata,
         topk_ids: Tensor,
         topk_weights: Tensor,
     ) -> None:
@@ -664,7 +665,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
     def _pop_attention_payload(
         self,
         stage_idx: int,
-    ) -> tuple[AFDConnectorMetadata, Tensor, Tensor]:
+    ) -> tuple[AFDTransferMetadata, Tensor, Tensor]:
         payloads = self._pending_attention_payloads.get(int(stage_idx))
         if not payloads:
             raise RuntimeError(
@@ -792,8 +793,8 @@ def _connector_driven_batch_size(
 
 
 def _cam_token_nums_rankid_layeridx(
-    payload: AFDAttnOutput,
-    metadata: AFDConnectorMetadata,
+    payload: AFDA2FTransferPayload,
+    metadata: AFDTransferMetadata,
 ) -> Tensor:
     token_nums_rankid_layeridx = payload.atten_batch_size
     if token_nums_rankid_layeridx is None:
@@ -819,14 +820,14 @@ def _cam_metadata_int(token_nums_rankid_layeridx: Tensor, index: int) -> int:
     return int(value.item())
 
 
-def _cam_shared_token_count(payload: AFDAttnOutput, fallback: int) -> int:
+def _cam_shared_token_count(payload: AFDA2FTransferPayload, fallback: int) -> int:
     expert_token_nums_shared = payload.ep_recv_counts_shared
     if expert_token_nums_shared is None:
         return max(1, int(fallback))
     return max(1, _cam_metadata_int(expert_token_nums_shared, 0))
 
 
-def _cam_routed_token_count(payload: AFDAttnOutput, fallback: int) -> int:
+def _cam_routed_token_count(payload: AFDA2FTransferPayload, fallback: int) -> int:
     expert_token_nums = payload.ep_recv_counts
     if expert_token_nums is None:
         expert_token_nums = payload.group_list
@@ -845,7 +846,7 @@ def _cam_routed_token_count(payload: AFDAttnOutput, fallback: int) -> int:
 
 def _slice_cam_payload_to_actual_tokens(
     hidden_states: Tensor,
-    payload: AFDAttnOutput,
+    payload: AFDA2FTransferPayload,
     num_tokens: int,
     *,
     shared_num_tokens: int | None = None,
@@ -868,7 +869,7 @@ def _slice_cam_payload_to_actual_tokens(
 
 
 def _sync_connector_data_with_cam_metadata(
-    metadata: AFDConnectorMetadata,
+    metadata: AFDTransferMetadata,
     *,
     layer_idx: int,
 ) -> None:
@@ -880,12 +881,12 @@ def _sync_connector_data_with_cam_metadata(
 
 def _send_ffn_output_payload(
     connector: CAMAsyncAFDConnector,
-    ffn_output: Tensor | AFDFFNOutput,
-    metadata: AFDConnectorMetadata,
+    ffn_output: Tensor | AFDF2ATransferPayload,
+    metadata: AFDTransferMetadata,
     *,
     stage_idx: int,
 ) -> None:
-    if not isinstance(ffn_output, AFDFFNOutput):
+    if not isinstance(ffn_output, AFDF2ATransferPayload):
         connector.send_ffn_output(
             ffn_output,
             metadata,
@@ -935,7 +936,7 @@ def _hccl_comm_name(group: ProcessGroup, rank: int) -> str:
 __all__ = [
     "AFD_ASYNC_CAM_GROUP_NAME",
     "CAMAsyncAFDConnector",
-    "AFDAsyncConnectorData",
+    "AFDAsyncTransferState",
     "AFDAsyncFFNWorkItem",
     "AFDAsyncTopology",
     "ATTN_RANKS_PER_DP_CONFIG_KEY",

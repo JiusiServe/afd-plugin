@@ -20,13 +20,13 @@ from afd_plugin.compat.ascend import ensure_cam_p2p_ops_available
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import AFDConnectorBase
 from afd_plugin.connectors.metadata import (
-    AFDAttnOutput,
-    AFDConnectorData,
-    AFDConnectorMetadata,
+    AFDA2FTransferPayload,
+    AFDControlPayload,
     AFDDPMetadata,
-    AFDDPMetadataPayload,
-    recv_dp_metadata_payload,
-    send_dp_metadata_payload,
+    AFDTransferMetadata,
+    AFDTransferState,
+    recv_control_payload,
+    send_control_payload,
 )
 from afd_plugin.distributed import init_afd_process_group, topology_from_config
 
@@ -38,10 +38,10 @@ logger = init_logger(__name__)
 
 
 @dataclass(slots=True)
-class CAMP2PAFDConnectorMetadata(AFDConnectorData):
+class CAMP2PTransferState(AFDTransferState):
     """CAMP2P payload metadata carried between recv and send phases.
 
-    This mirrors ``vllm_ascend.distributed.metadata.CAMP2PAFDConnectorMetadata``
+    This mirrors ``vllm_ascend.distributed.metadata.CAMP2PTransferState``
     while keeping the class plugin-owned.
     """
 
@@ -224,7 +224,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
 
     def update_state_from_dp_metadata(
         self,
-        payload: AFDDPMetadataPayload,
+        payload: AFDControlPayload,
     ) -> None:
         self.dp_metadata_list = dict(payload.dp_metadata_list)
         self.is_graph_capturing = payload.is_graph_capturing
@@ -232,7 +232,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
 
     def send_dp_metadata_list(
         self,
-        payload: AFDDPMetadataPayload,
+        payload: AFDControlPayload,
     ) -> None:
         if self.p2p_pg is None:
             return
@@ -241,18 +241,18 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         # The CAMP2P DP-metadata group runs on gloo, so the wire tensors stay on
         # CPU rather than the NPU device.
         device = torch.device("cpu")
-        send_dp_metadata_payload(
+        send_control_payload(
             payload,
             dst=self.dst_list,
             group=self.p2p_pg,
             device=device,
         )
 
-    def recv_dp_metadata_list(self) -> AFDDPMetadataPayload:
+    def recv_dp_metadata_list(self) -> AFDControlPayload:
         if self.p2p_pg is None:
             raise RuntimeError("CAMP2P metadata process group is not initialized")
         src = self.p2p_rank % self.min_size + self.ffn_size
-        return recv_dp_metadata_payload(
+        return recv_control_payload(
             src=src,
             group=self.p2p_pg,
             device=torch.device("cpu"),
@@ -260,7 +260,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
 
     def configure_metadata(
         self,
-        metadata: AFDConnectorMetadata,
+        metadata: AFDTransferMetadata,
         **kwargs: Any,
     ) -> None:
         metadata.connector_data = self._make_connector_data(
@@ -268,7 +268,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
             layer_idx=int(metadata.layer_idx),
         )
 
-    def create_recv_metadata(self, **kwargs: Any) -> AFDConnectorMetadata:
+    def create_recv_metadata(self, **kwargs: Any) -> AFDTransferMetadata:
         dp_metadata_list = kwargs.get("dp_metadata_list") or self.dp_metadata_list
         ubatch_idx = int(kwargs.get("ubatch_idx", 0))
         layer_idx = int(kwargs.get("layer_idx", 0))
@@ -280,7 +280,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
             ffn_size=self.ffn_size,
             fallback=int(kwargs.get("max_num_tokens", 1) or 1),
         )
-        metadata = AFDConnectorMetadata.create_ffn_metadata(
+        metadata = AFDTransferMetadata.create_ffn_metadata(
             layer_idx=layer_idx,
             stage_idx=ubatch_idx,
             seq_lens=[max(1, int(batch_size))],
@@ -293,8 +293,8 @@ class CAMP2pAFDConnector(AFDConnectorBase):
 
     def update_metadata(
         self,
-        metadata: AFDConnectorMetadata,
-        recv_output: AFDAttnOutput,
+        metadata: AFDTransferMetadata,
+        recv_output: AFDA2FTransferPayload,
     ) -> None:
         connector_data = _ensure_connector_data(metadata)
         connector_data.atten_batch_size = recv_output.atten_batch_size
@@ -310,7 +310,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
     def send_attn_output(
         self,
         hidden_states: torch.Tensor,
-        metadata: AFDConnectorMetadata,
+        metadata: AFDTransferMetadata,
         **kwargs: Any,
     ) -> None:
         if not self._initialized:
@@ -370,7 +370,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         self,
         ubatch_idx: int | None = None,
         **kwargs: Any,
-    ) -> AFDAttnOutput:
+    ) -> AFDA2FTransferPayload:
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
@@ -406,7 +406,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         connector_data.x_active_mask = outputs[4]
         connector_data.group_ep = group_ep
         connector_data.ffn_group_ep = self.hccl_comm_name1
-        return AFDAttnOutput(
+        return AFDA2FTransferPayload(
             hidden_states=outputs[0],
             metadata=metadata,
             topk_ids=None,
@@ -419,7 +419,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
     def send_ffn_output(
         self,
         ffn_output: torch.Tensor,
-        metadata: AFDConnectorMetadata,
+        metadata: AFDTransferMetadata,
         **kwargs: Any,
     ) -> None:
         if not self._initialized:
@@ -450,9 +450,9 @@ class CAMP2pAFDConnector(AFDConnectorBase):
 
     def _metadata_data_or_default(
         self,
-        metadata: AFDConnectorMetadata,
+        metadata: AFDTransferMetadata,
         hidden_states: torch.Tensor,
-    ) -> CAMP2PAFDConnectorMetadata:
+    ) -> CAMP2PTransferState:
         data = metadata.connector_data
         if data is None:
             data = self._make_connector_data(
@@ -469,11 +469,11 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         *,
         batch_size: int,
         layer_idx: int,
-    ) -> CAMP2PAFDConnectorMetadata:
+    ) -> CAMP2PTransferState:
         k = self.num_experts_per_tok
         moe_experts = self.num_routed_experts
         shared_experts = 0
-        return CAMP2PAFDConnectorMetadata(
+        return CAMP2PTransferState(
             moe_expert_num=moe_experts,
             shared_expert_num=shared_experts,
             quant_mode=0,
@@ -613,10 +613,10 @@ def _to_int_list(value: object) -> list[int]:
 
 
 def _ensure_connector_data(
-    metadata: AFDConnectorMetadata,
-) -> CAMP2PAFDConnectorMetadata:
+    metadata: AFDTransferMetadata,
+) -> CAMP2PTransferState:
     data = metadata.connector_data
-    if not isinstance(data, CAMP2PAFDConnectorMetadata):
+    if not isinstance(data, CAMP2PTransferState):
         raise RuntimeError("CAMP2P metadata is missing connector_data")
     return data
 
@@ -639,7 +639,7 @@ def _get_group_ep(
 
 
 def _set_forward_context_connector_data(
-    data: CAMP2PAFDConnectorMetadata,
+    data: CAMP2PTransferState,
     *,
     ubatch_idx: int | None = None,
 ) -> None:
@@ -649,11 +649,11 @@ def _set_forward_context_connector_data(
         forward_context.ubatch_idx = int(ubatch_idx)
 
 
-def _get_forward_context_connector_data() -> CAMP2PAFDConnectorMetadata | None:
+def _get_forward_context_connector_data() -> CAMP2PTransferState | None:
     data = getattr(get_forward_context(), "cam_afdconnector_data", None)
     if data is None:
         return None
-    if not isinstance(data, CAMP2PAFDConnectorMetadata):
+    if not isinstance(data, CAMP2PTransferState):
         raise TypeError("forward_context.cam_afdconnector_data has wrong type")
     return data
 
@@ -679,7 +679,7 @@ def _register_camp2p_custom_ops() -> None:
     ) -> torch.Tensor:
         connector_data = _get_forward_context_connector_data()
         if connector_data is None:
-            connector_data = CAMP2PAFDConnectorMetadata()
+            connector_data = CAMP2PTransferState()
         connector_data.batch_size = int(batch_size)
         connector_data.h = int(hidden_size)
         connector_data.k = int(topk)
@@ -864,8 +864,8 @@ def _empty_npu_tensor(*, dtype_name: str) -> torch.Tensor:
 __all__ = [
     "CAMP2pAFDConnector",
     "CAMP2PAFDConnectorData",
-    "CAMP2PAFDConnectorMetadata",
+    "CAMP2PTransferState",
     "build_camp2p_topology",
 ]
 
-CAMP2PAFDConnectorData = CAMP2PAFDConnectorMetadata
+CAMP2PAFDConnectorData = CAMP2PTransferState

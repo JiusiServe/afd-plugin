@@ -37,7 +37,11 @@ except ImportError:
     get_ascend_config = None
 
 from afd_plugin.config import parse_afd_config
-from afd_plugin.connectors import AFDConnectorMetadata, AFDFFNOutput, AFDMetadata
+from afd_plugin.connectors import (
+    AFDF2ATransferPayload,
+    AFDForwardContextMetadata,
+    AFDTransferMetadata,
+)
 from afd_plugin.model_executor.models import (
     get_afd_metadata_from_forward_context,
     get_async_moe_ubatch_metadata_from_forward_context,
@@ -301,7 +305,7 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         topk_scales: torch.Tensor | None = None,
         group_list_type: int = 1,
         **kwargs: Any,
-    ) -> torch.Tensor | AFDFFNOutput:
+    ) -> torch.Tensor | AFDF2ATransferPayload:
         if self.compute_gate_on_attention and not self.is_moe_layer:
             raise RuntimeError(
                 "Dense DeepSeek layers are computed on the Attention side "
@@ -472,7 +476,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
         positions: torch.Tensor,
-        afd_metadata: AFDMetadata,
+        afd_metadata: AFDForwardContextMetadata,
         llama_4_scaling: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if self.afd_config.compute_gate_on_attention:
@@ -499,17 +503,16 @@ class AFDDeepseekV2Model(torch.nn.Module):
         afd_connector = afd_metadata.afd_connector
         forward_context = get_forward_context()
         stage_idx = int(
-            getattr(forward_context, "ubatch_idx", afd_metadata.afd_stage_idx),
+            getattr(forward_context, "ubatch_idx", afd_metadata.stage_idx),
         )
 
         for layer_offset, layer in enumerate(
             islice(self.layers, self.start_layer, self.end_layer),
         ):
             stage_idx = int(
-                getattr(forward_context, "ubatch_idx", afd_metadata.afd_stage_idx),
+                getattr(forward_context, "ubatch_idx", afd_metadata.stage_idx),
             )
-            afd_metadata.ubatch_idx = stage_idx
-            afd_metadata.afd_stage_idx = stage_idx
+            afd_metadata.stage_idx = stage_idx
             if layer_offset > 0:
                 hidden_states = afd_connector.recv_ffn_output(
                     ref_tensor=hidden_states,
@@ -522,7 +525,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
                 residual,
                 llama_4_scaling,
             )
-            metadata = AFDConnectorMetadata.create_attention_metadata(
+            metadata = AFDTransferMetadata.create_attention_metadata(
                 layer_idx=layer.layer_idx,
                 stage_idx=stage_idx,
                 seq_len=int(hidden_states.shape[0]),
@@ -544,7 +547,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
         positions: torch.Tensor,
-        afd_metadata: AFDMetadata,
+        afd_metadata: AFDForwardContextMetadata,
         llama_4_scaling: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         from afd_plugin.model_executor.models.npu import (
@@ -565,7 +568,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
         positions: torch.Tensor,
-        afd_metadata: AFDMetadata,
+        afd_metadata: AFDForwardContextMetadata,
         llama_4_scaling: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         forward_context = get_forward_context()
@@ -599,7 +602,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
         hidden_states: torch.Tensor,
         layer_idx: int,
         **kwargs: Any,
-    ) -> torch.Tensor | AFDFFNOutput:
+    ) -> torch.Tensor | AFDF2ATransferPayload:
         return self.layers[layer_idx].compute_ffn_output(
             hidden_states,
             **kwargs,
@@ -658,7 +661,7 @@ class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
         hidden_states: torch.Tensor,
         layer_idx: int,
         **kwargs: Any,
-    ) -> torch.Tensor | AFDFFNOutput:
+    ) -> torch.Tensor | AFDF2ATransferPayload:
         return self.model.compute_ffn_output(hidden_states, layer_idx, **kwargs)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
