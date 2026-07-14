@@ -66,7 +66,38 @@ The same high-level exchange—Attention output to FFN, FFN output back to Atten
 
 ### Synchronous AFD Decode Throughput with `CAMP2pAFDConnector`
 
-<!-- TODO: Add the synchronous AFD decode benchmark setup, results, figure, and analysis. -->
+The synchronous decode recipe in [JiusiServe/afd-plugin#67](https://github.com/JiusiServe/afd-plugin/pull/67) compares a conventional EP64 deployment with `CAMP2pAFDConnector`-based AFD deployments for DeepSeek-V3.2 W8A8 on Ascend 910C. The benchmark measures saturated decode throughput rather than online-serving latency.
+
+| Deployment | Physical topology | Total dies |
+| --- | --- | ---: |
+| EP64 | DP64, EP64, TP1 | 64 |
+| 48A16F | 48 Attention ranks, 16 FFN ranks | 64 |
+| 64A16F | 64 Attention ranks, 16 FFN ranks | 80 |
+
+Throughput is normalized by the total number of deployed dies:
+
+```text
+tokens/s/die = aggregate output token throughput / total deployed dies
+```
+
+Both workloads use fixed-length inputs and uniformly distributed outputs from 512 to 1,536 tokens.
+
+#### 16K fixed input
+
+![DeepSeek-V3.2 16K decode throughput per die](../assets/throughput_dsv3-2_16k.png)
+
+EP64 achieves **232.6 tokens/s/die**, 48A16F achieves **220.3 tokens/s/die**, and 64A16F achieves **258.9 tokens/s/die**. Relative to EP64, the AFD results are **-5.3%** for 48A16F and **+11.3%** for 64A16F.
+
+#### 32K fixed input
+
+![DeepSeek-V3.2 32K decode throughput per die](../assets/throughput_dsv3-2_32k.png)
+
+EP64 achieves **168.2 tokens/s/die**, 48A16F achieves **151.4 tokens/s/die**, and 64A16F achieves **183.3 tokens/s/die**. Relative to EP64, the AFD results are **-10.0%** for 48A16F and **+9.0%** for 64A16F.
+
+Across both input lengths, 48A16F is below the EP64 baseline, while 64A16F delivers the highest normalized throughput: **+11.3% at 16K** and **+9.0% at 32K**. This result shows that the Attention-to-FFN allocation matters; disaggregation alone does not guarantee a throughput gain.
+
+> [!NOTE]
+> These are controlled performance results, not accuracy or production-serving results. The experiment replaces natural routed expert IDs with a deterministic forced-balancing cycle, which changes model outputs. Under this setup, the physical 48A16F and 64A16F deployments simulate logical 192A64F and 256A64F scales. `AFDDecodeBenchConnector` supplies the decode-only KV state, and DBO is enabled for AFD. See [PR #67](https://github.com/JiusiServe/afd-plugin/pull/67) for the complete experiment matrix, launch configuration, and limitations.
 
 ### Asynchronous AFD Prefill Performance with `CAMAsyncAFDConnector`
 
