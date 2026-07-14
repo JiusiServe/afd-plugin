@@ -1,12 +1,16 @@
-# vllm-afd-plugin
+# afd-plugin
 
 ## Overview
 
-**vllm-afd-plugin** is a [vLLM](https://github.com/vllm-project/vllm)
+**afd-plugin** is a [vLLM](https://github.com/vllm-project/vllm)
 external plugin for **Attention-FFN Disaggregation (AFD)**. It provides
 plugin-owned worker classes, model runners, model wrappers, connectors,
 configuration validation, compatibility shims, and hardware-gated integration
 tests for GPU and Ascend NPU deployments.
+
+> [!NOTE]
+> This project is still experimental and needs more large-scale testing across
+> different hardware backends.
 
 The target runtime is **vLLM `v0.19.1`**. The plugin does not modify the vLLM
 source tree. AFD behavior is installed through the `vllm.general_plugins` entry
@@ -15,7 +19,7 @@ model wrappers, and narrow version-scoped compatibility shims.
 
 ## Architecture
 
-![vLLM AFD plugin architecture](docs/assets/vllm-afd-plugin-architecture.svg)
+![afd-plugin architecture](docs/assets/vllm-afd-plugin-architecture.svg)
 
 ## Current Status
 
@@ -58,6 +62,7 @@ Connector support:
 Connector implementations are grouped by backend package:
 `afd_plugin.connectors.gpu` for GPU-only connectors,
 `afd_plugin.connectors.npu` for NPU-only connectors.
+
 Known gaps:
 
 - vLLM versions other than `0.19.1` are not claimed as supported.
@@ -234,16 +239,16 @@ AFD_NPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite uv run pytest -q -m npu
 
 ## License
 
-vLLM AFD Plugin is licensed under the [Apache License 2.0](LICENSE).
+afd-plugin is licensed under the [Apache License 2.0](LICENSE).
 
 ## Cite
 
-If you find vLLM AFD Plugin helpful in your research or projects, please
+If you find afd-plugin helpful in your research or projects, please
 consider citing it:
 
 ```bibtex
-@misc{vllmafdplugin2026,
-  title={vLLM AFD Plugin: Attention-FFN Disaggregation for vLLM},
+@misc{afdplugin2026,
+  title={afd-plugin: Attention-FFN Disaggregation for vLLM},
   author={AFD Plugin Contributors},
   year={2026},
   howpublished={\url{https://github.com/vllm-project/afd-plugin}},
