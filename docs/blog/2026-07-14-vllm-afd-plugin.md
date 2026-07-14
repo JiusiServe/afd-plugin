@@ -82,43 +82,12 @@ Across the measured request rates, the AFD configuration lowers median/P50 time 
 
 The current implementation requires Python 3.10–3.13 and targets vLLM `0.19.1`.
 
-```bash
-git clone https://github.com/vllm-project/afd-plugin.git
-cd afd-plugin
-uv sync --group dev --extra vllm
-```
+Deployment commands depend on the backend, connector, model, and rank topology. Instead of duplicating configurations here, use the maintained [AFD Plugin recipes](https://github.com/vllm-project/afd-plugin/tree/main/recipe):
 
-AFD is configured through `additional_config["afd"]`. The following minimal CUDA example uses one GPU for each role. Start the FFN service first:
+* **GPU synchronous AFD:** the [DeepSeek V2 Lite P2P NCCL recipes](https://github.com/vllm-project/afd-plugin/tree/main/recipe/gpu/p2p_nccl/deepseek_v2_lite) cover decode-oriented colocated and prefill/decode-disaggregated deployments, eager and CUDA graph execution, and multiple DP/TP layouts.
+* **Ascend NPU asynchronous prefill AFD:** the [DeepSeek V3.2 CAM async recipe](https://github.com/vllm-project/afd-plugin/blob/main/recipe/npu/cam_async/DeepSeek-V3.2.md) documents the required environment, topology, AFD configuration, benchmark setup, and current limitations.
 
-```bash
-CUDA_VISIBLE_DEVICES=1 vllm serve /path/to/DeepSeek-V2-Lite \
-  --worker-cls afd_plugin.v1.worker.AFDFFNWorker \
-  --data-parallel-size 1 \
-  --tensor-parallel-size 1 \
-  --enable-expert-parallel \
-  --enforce-eager \
-  --host 127.0.0.1 \
-  --port 18001 \
-  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
-```
-
-Then start the Attention service:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 vllm serve /path/to/DeepSeek-V2-Lite \
-  --worker-cls afd_plugin.v1.worker.AFDAttentionWorker \
-  --data-parallel-size 1 \
-  --tensor-parallel-size 1 \
-  --enable-expert-parallel \
-  --enforce-eager \
-  --host 127.0.0.1 \
-  --port 18000 \
-  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
-```
-
-Send client traffic only to port `18000`. The FFN process on port `18001` is a connector-driven service and should not receive inference requests.
-
-For Ascend NPU, use the `afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker` and `AFDNPUFFNWorker` class paths together with `CAMP2pAFDConnector` or `CAMAsyncAFDConnector`. The repository provides complete [GPU DeepSeek V2 Lite recipes](https://github.com/vllm-project/afd-plugin/tree/main/recipe/gpu/p2p_nccl/deepseek_v2_lite) and an [Ascend DeepSeek V3.2 CAM async recipe](https://github.com/vllm-project/afd-plugin/blob/main/recipe/npu/cam_async/DeepSeek-V3.2.md).
+Refer to the repository [README](https://github.com/vllm-project/afd-plugin#readme) and recipe directory for the latest installation steps, supported connector matrix, configuration fields, and complete launch commands.
 
 ## Current Scope and Roadmap
 
