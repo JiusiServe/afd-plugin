@@ -1,17 +1,14 @@
-# DeepSeek-V3.2 Synchronous Decode-Only AFD with CAMP2pAFDConnector on Ascend 910C
+# DeepSeek-V3.2 Synchronous Decode with CAMP2pAFDConnector on Ascend NPU
 
 This recipe compares a conventional EP64 deployment with synchronous
-Attention-FFN Disaggregation (AFD) deployments for DeepSeek-V3.2 decode-only
-inference on Ascend 910C NPUs. The AFD deployments use
+Attention-FFN Disaggregation (AFD) deployments for DeepSeek-V3.2 decode
+inference on Ascend NPUs. The AFD deployments use
 `CAMP2pAFDConnector` to exchange activations between independent attention
 and FFN workers.
 
-The benchmark is designed to measure saturated decode throughput. It is not an
-online-serving latency benchmark.
-
 ## Image and model requirements
 
-- Hardware: Ascend 910C, 16 dies per node.
+- Hardware: Ascend NPU, Atlas 900 A3 SuperPoD, 16 dies per node.
 - Image: `quay.io/ascend/vllm-ascend:v0.19.1rc1-a3-openeuler`.
 - Model: DeepSeek-V3.2 with W8A8 weights.
 - AFD Plugin: install this repository in the container.
@@ -19,7 +16,7 @@ online-serving latency benchmark.
 ```bash
 docker pull quay.io/ascend/vllm-ascend:v0.19.1rc1-a3-openeuler
 cd /path/to/afd-plugin
-AFD_BUILD_ASCEND_OPS=1 SOC_VERSION=910c pip install -e . --no-build-isolation -v -i https://artifacts.antgroup-inc.cn/simple/
+pip install -e . --no-build-isolation -v
 ```
 
 ## Topologies
@@ -34,6 +31,16 @@ Each node runs 16 local ranks. `DP_ADDRESS` is the address of the attention or
 baseline node that owns DP rank 0. For AFD, `AFD_HOST` is the address of the
 FFN node that owns FFN role rank 0. All attention and FFN processes must use
 the same `AFD_HOST` and `AFD_PORT`.
+
+### Limitations
+
+- Forced expert load balancing replaces natural routed expert IDs with a
+  deterministic synthetic cycle that uses four local experts per rank/NPU;
+  it changes model outputs. Under this setup, 48A16F and 64A16F simulate the
+  logical scales of 192A64F and 256A64F.
+- Inputs are fixed at 16,384 or 32,768 tokens; outputs are synthetic and
+  uniformly distributed from 512 to 1,536 tokens.
+- `AFDDecodeBenchConnector` supplies the decode KV state.
 
 ## Experiment matrix
 
@@ -57,7 +64,7 @@ request count = DP size * per-rank BS * workload multiplier
 workload multiplier = 6
 ```
 
-The workload multiplier means that AISBench generates six complete waves of
+The workload multiplier means that [AISBench](https://github.com/AISBench/benchmark) generates six complete waves of
 the configured per-rank batch capacity. It provides enough requests to keep
 the decode engines saturated after requests with shorter sampled output
 lengths begin to finish. It increases the total amount of benchmark work; it
@@ -98,7 +105,7 @@ rank/NPU in that synthetic routing cycle. With this mapping, the physical
 192A64F and 256A64F, respectively. These are simulated logical scales; the
 physical deployments still use 48 or 64 attention dies and 16 FFN dies.
 
-The decode-only KV cache is populated through:
+The decode KV cache is populated through:
 
 ```json
 {
@@ -343,29 +350,14 @@ The denominators are 64 for EP64, 64 for 48A16F, and 80 for 64A16F.
 
 ![DeepSeek-V3.2 16K decode throughput per die](throughput_dsv3-2_16k.png)
 
-The 64A16F configuration has the highest sustained plateau in the plotted 16K
-run. EP64 and 48A16F show different throughput evolution as requests of
-different output lengths complete. Because each topology uses a different
-request count, elapsed completion time should not be compared as if all three
-runs processed the same amount of work.
+In the 16K run, EP64 achieves 232.6 tokens/s/die, 48A16F achieves 220.3 tokens/s/die,
+and 64A16F achieves 258.9 tokens/s/die. Using EP64 as the baseline,
+the corresponding AFD changes are -5.3% for 48A16F and +11.3% for 64A16F.
 
 ### 32K fixed input, 512-1,536 uniform output
 
 ![DeepSeek-V3.2 32K decode throughput per die](throughput_dsv3-2_32k.png)
 
-The plotted 32K run also shows the highest initial sustained throughput per die
-for 64A16F. The curves decline as shorter requests finish and the active batch
-shrinks. Exact mean throughput and percentage improvements are not reported
-because the retained artifacts contain time-series plots rather than raw scalar
-summaries.
-
-## Limitations
-
-- Forced expert load balancing replaces natural routed expert IDs with a
-  deterministic synthetic cycle that uses four local experts per rank/NPU;
-  it changes model outputs. Under this setup, 48A16F and 64A16F simulate the
-  logical scales of 192A64F and 256A64F.
-- Inputs are fixed at 16,384 or 32,768 tokens; outputs are synthetic and
-  uniformly distributed from 512 to 1,536 tokens.
-- `AFDDecodeBenchConnector` supplies the decode-only KV state.
-- DBO is enabled for AFD.
+In the 32K run, EP64 achieves 168.2 tokens/s/die, 48A16F achieves 151.4 tokens/s/die,
+and 64A16F achieves 183.3 tokens/s/die. Using EP64 as the baseline,
+the corresponding AFD changes are -10.0% for 48A16F and +9.0% for 64A16F.

@@ -7,11 +7,12 @@ set -euo pipefail
 : "${ATTENTION_RANKS:?Set ATTENTION_RANKS to 48 or 64}"
 : "${INPUT_LENGTH:?Set INPUT_LENGTH to 16384 or 32768}"
 : "${BATCH_SIZE:?Set BATCH_SIZE to the attention-side per-rank batch size}"
-: "${NIC_NAME:?Set NIC_NAME to the NPU node communication interface; check it with ifconfig}"
+: "${NIC_NAME:?Set NIC_NAME; find the NPU network interface with ifconfig}"
 
-SERVER_PORT="${SERVER_PORT:-8338}"
+SERVER_PORT="${SERVER_PORT:-8006}"
 AFD_PORT="${AFD_PORT:-29666}"
-VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}"
+DEFAULT_VISIBLE_DEVICES="0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-$DEFAULT_VISIBLE_DEVICES}"
 FFN_RANKS=16
 
 case "$INPUT_LENGTH" in
@@ -31,7 +32,7 @@ case "$ATTENTION_RANKS" in
     ;;
 esac
 
-if [[ "$INPUT_LENGTH" == 16384 && "$BATCH_SIZE" != 28 ]] || \
+if [[ "$INPUT_LENGTH" == 16384 && "$BATCH_SIZE" != 28 ]] ||
    [[ "$INPUT_LENGTH" == 32768 && "$BATCH_SIZE" != 14 ]]; then
   echo "AFD FFN requires BATCH_SIZE=28 for 16K or BATCH_SIZE=14 for 32K" >&2
   exit 2
@@ -57,9 +58,43 @@ export GLOO_SOCKET_IFNAME="$NIC_NAME"
 export TP_SOCKET_IFNAME="$NIC_NAME"
 export HCCL_SOCKET_IFNAME="$NIC_NAME"
 
-ADDITIONAL_CONFIG="$(printf \
-  '{"enable_force_load_balance":true,"force_load_balance_topn_per_rank":4,"afd":{"enabled":true,"role":"ffn","connector":"CAMP2pAFDConnector","host":"%s","port":%s,"num_attention_ranks":%s,"num_ffn_ranks":16,"extra_config":{"afd_size":"%sA16F"}}}' \
-  "$AFD_HOST" "$AFD_PORT" "$ATTENTION_RANKS" "$ATTENTION_RANKS")"
+ADDITIONAL_CONFIG="$(cat <<EOF
+{
+  "enable_force_load_balance": true,
+  "force_load_balance_topn_per_rank": 4,
+  "afd": {
+    "enabled": true,
+    "role": "ffn",
+    "connector": "CAMP2pAFDConnector",
+    "host": "$AFD_HOST",
+    "port": $AFD_PORT,
+    "num_attention_ranks": $ATTENTION_RANKS,
+    "num_ffn_ranks": 16,
+    "extra_config": {
+      "afd_size": "${ATTENTION_RANKS}A16F"
+    }
+  }
+}
+EOF
+)"
+
+COMPILATION_CONFIG="$(cat <<EOF
+{
+  "cudagraph_mode": "FULL_DECODE_ONLY",
+  "cudagraph_capture_sizes": [$FFN_BATCH_SIZE]
+}
+EOF
+)"
+
+KV_TRANSFER_CONFIG='{
+  "kv_connector": "AFDDecodeBenchConnector",
+  "kv_connector_module_path": "tools.benchmarks.decode_bench",
+  "kv_role": "kv_both",
+  "kv_connector_extra_config": {
+    "fill_mean": 0.015,
+    "fill_std": 0.0
+  }
+}'
 
 exec env VLLM_USE_V1=1 vllm serve "$MODEL_PATH" \
   --host 0.0.0.0 \
@@ -84,8 +119,6 @@ exec env VLLM_USE_V1=1 vllm serve "$MODEL_PATH" \
   --quantization ascend \
   --tokenizer-mode deepseek_v32 \
   --reasoning-parser deepseek_v3 \
-  --compilation-config \
-    "{\"cudagraph_mode\":\"FULL_DECODE_ONLY\",\"cudagraph_capture_sizes\":[$FFN_BATCH_SIZE]}" \
-  --kv-transfer-config \
-    '{"kv_connector":"AFDDecodeBenchConnector","kv_connector_module_path":"tools.benchmarks.decode_bench","kv_role":"kv_both","kv_connector_extra_config":{"fill_mean":0.015,"fill_std":0.0}}' \
+  --compilation-config "$COMPILATION_CONFIG" \
+  --kv-transfer-config "$KV_TRANSFER_CONFIG" \
   --additional-config "$ADDITIONAL_CONFIG"

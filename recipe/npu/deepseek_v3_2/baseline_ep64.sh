@@ -7,11 +7,12 @@ set -euo pipefail
 : "${DP_START_RANK:?Set DP_START_RANK to 0, 16, 32, or 48}"
 : "${INPUT_LENGTH:?Set INPUT_LENGTH to 16384 or 32768}"
 : "${BATCH_SIZE:?Set BATCH_SIZE to 16 for 16K or 8 for 32K}"
-: "${NIC_NAME:?Set NIC_NAME to the NPU node communication interface; check it with ifconfig}"
+: "${NIC_NAME:?Set NIC_NAME; find the NPU network interface with ifconfig}"
 
 SERVER_PORT="${SERVER_PORT:-8006}"
 DP_RPC_PORT="${DP_RPC_PORT:-13345}"
-VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}"
+DEFAULT_VISIBLE_DEVICES="0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-$DEFAULT_VISIBLE_DEVICES}"
 
 case "$INPUT_LENGTH" in
   16384) MAX_MODEL_LEN=18432 ;;
@@ -30,7 +31,7 @@ case "$DP_START_RANK" in
     ;;
 esac
 
-if [[ "$INPUT_LENGTH" == 16384 && "$BATCH_SIZE" != 16 ]] || \
+if [[ "$INPUT_LENGTH" == 16384 && "$BATCH_SIZE" != 16 ]] ||
    [[ "$INPUT_LENGTH" == 32768 && "$BATCH_SIZE" != 8 ]]; then
   echo "EP64 requires BATCH_SIZE=16 for 16K or BATCH_SIZE=8 for 32K" >&2
   exit 2
@@ -58,6 +59,29 @@ else
   HEADLESS_ARGS=(--headless)
 fi
 
+COMPILATION_CONFIG="$(cat <<EOF
+{
+  "cudagraph_mode": "FULL_DECODE_ONLY",
+  "cudagraph_capture_sizes": [$BATCH_SIZE]
+}
+EOF
+)"
+
+KV_TRANSFER_CONFIG='{
+  "kv_connector": "AFDDecodeBenchConnector",
+  "kv_connector_module_path": "tools.benchmarks.decode_bench",
+  "kv_role": "kv_both",
+  "kv_connector_extra_config": {
+    "fill_mean": 0.015,
+    "fill_std": 0.0
+  }
+}'
+
+ADDITIONAL_CONFIG='{
+  "enable_force_load_balance": true,
+  "force_load_balance_topn_per_rank": 4
+}'
+
 exec env VLLM_USE_V1=1 vllm serve "$MODEL_PATH" \
   --host 0.0.0.0 \
   --port "$SERVER_PORT" \
@@ -80,11 +104,8 @@ exec env VLLM_USE_V1=1 vllm serve "$MODEL_PATH" \
   --quantization ascend \
   --tokenizer-mode deepseek_v32 \
   --reasoning-parser deepseek_v3 \
-  --compilation-config \
-    "{\"cudagraph_mode\":\"FULL_DECODE_ONLY\",\"cudagraph_capture_sizes\":[$BATCH_SIZE]}" \
-  --kv-transfer-config \
-    '{"kv_connector":"AFDDecodeBenchConnector","kv_connector_module_path":"tools.benchmarks.decode_bench","kv_role":"kv_both","kv_connector_extra_config":{"fill_mean":0.015,"fill_std":0.0}}' \
-  --additional-config \
-    '{"enable_force_load_balance":true,"force_load_balance_topn_per_rank":4}' \
+  --compilation-config "$COMPILATION_CONFIG" \
+  --kv-transfer-config "$KV_TRANSFER_CONFIG" \
+  --additional-config "$ADDITIONAL_CONFIG" \
   "${API_SERVER_ARGS[@]}" \
   "${HEADLESS_ARGS[@]}"
