@@ -468,7 +468,7 @@ def test_npu_request_boundary_ubatch_slices_balance_tokens(monkeypatch):
     fake_vllm_ubatch_utils.check_ubatch_thresholds = lambda *_args, **_kwargs: False
     fake_vllm_ascend = ModuleType("vllm_ascend")
     fake_forward_context = ModuleType("vllm_ascend.ascend_forward_context")
-    fake_forward_context.MoECommType = SimpleNamespace()
+    fake_forward_context.MoECommType = type("MoECommType", (), {})
     fake_attention = ModuleType("vllm_ascend.attention")
     fake_attention_utils = ModuleType("vllm_ascend.attention.utils")
     fake_attention_utils.AscendCommonAttentionMetadata = object

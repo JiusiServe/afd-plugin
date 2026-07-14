@@ -457,7 +457,6 @@ class AFDAttentionModelRunner(GPUModelRunner):
     def shutdown(self) -> None:
         stop_afd_gpu_profiler(self.prof)
         self.afd_connector.close()
-        super().shutdown()
 
     def _next_afd_transaction_id(self) -> str:
         counter = self._afd_transaction_counter

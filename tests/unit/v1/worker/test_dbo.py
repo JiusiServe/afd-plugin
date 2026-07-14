@@ -73,7 +73,6 @@ def test_dbo_yield_prefers_plugin_ascend_context(monkeypatch):
             dbo_yield=lambda: calls.append("vllm"),
         ),
     )
-
     dbo._yield_if_dbo_enabled()
 
     assert calls == ["ascend"]
@@ -98,6 +97,8 @@ def test_dbo_yield_falls_back_to_vllm_context(monkeypatch):
             dbo_yield=lambda: calls.append("vllm"),
         ),
     )
+    monkeypatch.setattr(dbo, "dbo_enabled", lambda: True)
+    monkeypatch.setattr(dbo, "dbo_yield", lambda: calls.append("vllm"))
 
     dbo._yield_if_dbo_enabled()
 
