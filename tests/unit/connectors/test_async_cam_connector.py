@@ -8,6 +8,7 @@ import pytest
 from afd_plugin.config import AFDConfig, afd_config_from_mapping
 
 pytest.importorskip("torch")
+pytest.importorskip("torch_npu")
 
 from afd_plugin.connectors import (  # noqa: E402
     AFDAttnOutput,
