@@ -22,6 +22,7 @@ from afd_plugin.connectors.metadata import (
     AFDTransferMetadata,
     AFDControlPayload,
     AFDF2ATransferPayload,
+    AFDTransferState,
 )
 from afd_plugin.distributed import init_afd_process_group
 

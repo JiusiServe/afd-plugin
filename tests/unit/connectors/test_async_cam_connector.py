@@ -16,6 +16,7 @@ from afd_plugin.connectors import (  # noqa: E402
     AFDDPMetadata,
     AFDControlPayload,
     AFDF2ATransferPayload,
+    AFDTransferState,
 )
 from afd_plugin.connectors.npu import async_cam as async_cam_module  # noqa: E402
 from afd_plugin.connectors.npu.async_cam import (  # noqa: E402
@@ -325,6 +326,7 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][5:11] == (3, 16, 2, 2, 4, 4)
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][14] == 3
     assert isinstance(metadata.connector_data, AFDAsyncTransferState)
+    assert isinstance(metadata.connector_data, AFDTransferState)
 
 
 def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
