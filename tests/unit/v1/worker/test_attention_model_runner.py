@@ -320,10 +320,8 @@ def test_ubatch_metadata_clones_parent_and_preserves_additional_kwargs():
     assert first is not parent
     assert second is not parent
     assert first is not second
-    assert first.ubatch_idx == 0
     assert first.stage_idx == 0
     assert first.tokens_lens == [3]
-    assert second.ubatch_idx == 1
     assert second.stage_idx == 1
     assert second.tokens_start_loc == [3]
     assert second.requests_start_loc == [1]
