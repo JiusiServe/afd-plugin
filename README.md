@@ -25,38 +25,24 @@ model wrappers, and narrow version-scoped compatibility shims.
 
 Core runtime support:
 
-- Python package metadata for the `vllm-afd-plugin` distribution.
-- `vllm.general_plugins` entry point named `afd`, implemented by
-  `afd_plugin:register_afd`.
-- Plugin-owned `AFDConfig`, parsed from vLLM
-  `additional_config["afd"]`.
-- GPU Attention and FFN workers:
-  `afd_plugin.v1.worker.AFDAttentionWorker` and
-  `afd_plugin.v1.worker.AFDFFNWorker`.
-- NPU Attention and FFN workers:
-  `afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker` and
-  `afd_plugin.v1.worker.ascend.AFDNPUFFNWorker`.
-- Plugin-owned DeepSeekV2-family wrappers and forward-context helpers.
-- Connector-driven FFN daemon loops for GPU and NPU.
-- GPU P2P connector and Ascend CAMP2P connector.
-- GPU `FULL_DECODE_ONLY` CUDA graph support for the current Attention/FFN
-  runtime shape, including FFN graph-keyed capture/replay.
-- NPU ACL graph plumbing in the FFN runner, with eager and graph/capture paths
-  driven by metadata from the Attention side.
-- GPU and NPU profiler helpers controlled by plugin-owned environment variables.
+- vLLM plugin registration, AFD configuration, and runtime validation.
+- Attention/FFN workers, model runners, model wrappers, and connector-driven
+  execution for CUDA and Ascend NPU.
+- Eager and `FULL_DECODE_ONLY` graph execution, plus backend-specific profiling
+  support.
 
 Model support:
 
 | Model family | Registered architectures | Notes |
 | --- | --- | --- |
-| DeepSeekV2 / DeepSeekV3 / GLM MoE DSA | `DeepseekForCausalLM`, `DeepseekV2ForCausalLM`, `DeepseekV3ForCausalLM`, `GlmMoeDsaForCausalLM` | Uses `afd_plugin.model_executor.models.deepseek_v2` wrappers. Attention and FFN sides currently load full model weights. |
+| DeepSeekV2 / DeepSeekV3 | `DeepseekForCausalLM`, `DeepseekV2ForCausalLM`, `DeepseekV3ForCausalLM` | Uses `afd_plugin.model_executor.models.deepseek_v2` wrappers. Attention and FFN sides currently load full model weights. |
 
 Connector support:
 
 | Connector | Platform | Recommend Stage | Sync or Async | Graph Support | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `P2pNcclAFDConnector` | CUDA | Prefill and Decode | Sync | `FULL_DECODE_ONLY` CUDA graph | FFN ranks are ordered before Attention ranks. `num_attention_ranks` must be greater than or equal to `num_ffn_ranks` and divisible by it. See the [DeepSeek V2 Lite recipe](recipe/gpu/p2p_nccl/deepseek_v2_lite/README.md). |
-| `CAMP2pAFDConnector` | Ascend NPU | Prefill and Decode | Sync | `FULL_DECODE_ONLY` ACL graph | Uses HCCL/CAMP2P custom ops. Ascend ops build by default on NPU platforms; set `AFD_BUILD_ASCEND_OPS=0` to skip them. |
+| `CAMP2pAFDConnector` | Ascend NPU | Prefill and Decode | Sync | `FULL_DECODE_ONLY` ACL graph | Uses HCCL/CAMP2P custom ops. Ascend ops build by default on NPU platforms. |
 | `CAMAsyncAFDConnector` | Ascend NPU | Prefill | Async | Not supported | Uses CAM async-DP custom ops and requires `async=true` with the Ascend NPU workers. See the [DeepSeek V3.2 recipe](recipe/npu/cam_async/DeepSeek-V3.2.md). |
 
 Connector implementations are grouped by backend package:
@@ -212,19 +198,9 @@ variables, or the default Ascend toolkit path are present. GPU builds skip
 Ascend ops by default. Set `AFD_BUILD_ASCEND_OPS=1` or
 `AFD_BUILD_ASCEND_OPS=0` to override the auto-detection.
 
-Opt-in GPU E2E tests require a CUDA-capable vLLM environment and a DeepSeekV2
-Lite model path:
+## E2E Test
 
-```bash
-AFD_GPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite uv run pytest -q -m gpu
-```
-
-Opt-in NPU E2E tests require vLLM-Ascend, torch-npu, CANN, built AFD Ascend
-custom ops, and a DeepSeekV2 Lite model path:
-
-```bash
-AFD_NPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite uv run pytest -q -m npu
-```
+To run E2E tests, use the [`run-e2e` skill](.agents/skills/run-e2e/SKILL.md).
 
 ## Docs
 
