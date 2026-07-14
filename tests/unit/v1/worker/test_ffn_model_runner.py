@@ -93,7 +93,16 @@ def _metadata_for_stage(stage_idx):
 
 def _runner_with_connector_and_model(model, *, num_layers=1):
     runner = object.__new__(GPUFFNModelRunner)
-    runner.vllm_config = SimpleNamespace()
+    runner.vllm_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            data_parallel_size=1,
+            is_moe_model=True,
+        ),
+        compilation_config=SimpleNamespace(
+            fast_moe_cold_start=False,
+            static_forward_context={},
+        ),
+    )
     runner.connector = _FakeConnector()
     runner.model = model
     runner.num_layers = num_layers
@@ -149,7 +158,7 @@ def test_ffn_runner_passthrough_without_model_compute_hook():
     metadata = _metadata()
     runner.connector.attn_outputs.append(("hidden", metadata))
 
-    runner.execute_model(dp_metadata_list={0: "dp"})
+    runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
 
     assert runner.connector.ffn_outputs == [("hidden", metadata)]
 
@@ -161,7 +170,7 @@ def test_ffn_runner_accepts_unified_recv_output_payload():
         AFDA2FTransferPayload(hidden_states="hidden", metadata=metadata),
     )
 
-    runner.execute_model(dp_metadata_list={0: "dp"})
+    runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
 
     assert runner.connector.ffn_outputs == [
         ("ffn(hidden, layer=0)", metadata),

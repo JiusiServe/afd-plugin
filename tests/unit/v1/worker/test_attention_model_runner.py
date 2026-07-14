@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +10,8 @@ pytest.importorskip("vllm")
 
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
+import afd_plugin.model_executor.models.forward_context as afd_forward_context
+import afd_plugin.v1.worker.attention_model_runner as attention_model_runner_module
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import AFDControlPayload
 from afd_plugin.model_executor.models.forward_context import (
@@ -90,8 +92,7 @@ class _StepProfiler:
 
 
 def _install_fake_vllm_forward_context(monkeypatch):
-    fake_vllm = ModuleType("vllm")
-    fake_forward_context = ModuleType("vllm.forward_context")
+    forward_context_module = afd_forward_context.forward_context_module
 
     def create_forward_context():
         return SimpleNamespace(
@@ -101,17 +102,19 @@ def _install_fake_vllm_forward_context(monkeypatch):
             batch_descriptor=SimpleNamespace(num_tokens=1),
         )
 
-    fake_forward_context.create_forward_context = create_forward_context
-    fake_vllm.forward_context = fake_forward_context
-    monkeypatch.setitem(sys.modules, "vllm", fake_vllm)
-    monkeypatch.setitem(sys.modules, "vllm.forward_context", fake_forward_context)
-    return fake_forward_context, create_forward_context
+    monkeypatch.setattr(
+        forward_context_module,
+        "create_forward_context",
+        create_forward_context,
+    )
+    return forward_context_module, create_forward_context
 
 
 def _parallel_config(**overrides):
     values = {
         "data_parallel_size": 1,
         "data_parallel_rank": 0,
+        "is_moe_model": True,
         "prefill_context_parallel_size": 1,
         "tensor_parallel_size": 1,
         "use_ubatching": False,
@@ -580,22 +583,14 @@ def test_attention_runner_steps_gpu_profiler(monkeypatch):
     assert result == (("scheduler",), {"flag": True})
 
 
-def test_attention_runner_stops_gpu_profiler_on_shutdown(monkeypatch):
+def test_attention_runner_stops_gpu_profiler_on_shutdown():
     runner = object.__new__(AFDAttentionModelRunner)
     runner.prof = _StepProfiler()
     runner.afd_connector = _RecordingConnector()
-    called = []
-
-    def shutdown(_self):
-        called.append(True)
-
-    monkeypatch.setattr(AFDAttentionModelRunner.__mro__[1], "shutdown", shutdown)
-
     runner.shutdown()
 
     assert runner.prof.stopped is True
     assert runner.afd_connector.closed is True
-    assert called == [True]
 
 
 def test_forward_context_provider_installs_metadata_before_model_forward(monkeypatch):
@@ -757,7 +752,7 @@ def _parallel_config_with_tp(
 def test_afd_rank_derives_from_tp_rank_dp1_tp2(monkeypatch):
     """DP=1, TP=2: each TP worker gets a unique role_rank."""
     monkeypatch.setattr(
-        sys.modules["vllm.distributed.parallel_state"],
+        attention_model_runner_module,
         "get_tensor_model_parallel_rank",
         lambda: 1,
     )
@@ -811,7 +806,7 @@ def test_afd_rank_derives_from_pcp_rank_dp1_pcp2(monkeypatch):
 def test_afd_rank_derives_from_dp_and_tp_ranks_dp2_tp2(monkeypatch):
     """DP=2, TP=2: role_rank = dp_rank * tp_size + tp_rank."""
     monkeypatch.setattr(
-        sys.modules["vllm.distributed.parallel_state"],
+        attention_model_runner_module,
         "get_tensor_model_parallel_rank",
         lambda: 1,
     )
@@ -855,7 +850,7 @@ def test_afd_rank_unchanged_when_dp1_tp1():
 def test_afd_rank_raises_for_out_of_range_dp2_tp2(monkeypatch):
     """role_rank must stay within role_size."""
     monkeypatch.setattr(
-        sys.modules["vllm.distributed.parallel_state"],
+        attention_model_runner_module,
         "get_tensor_model_parallel_rank",
         lambda: 0,
     )

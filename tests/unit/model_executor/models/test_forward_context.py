@@ -185,7 +185,7 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
     assert "from afd_plugin.model_executor.models.npu import (" in forward_with_afd_v3
     assert "deepseek_v2_async_cam_forward," in forward_with_afd_v3
     assert "_log_async_moe_forward_step(" not in async_ubatch_forward
-    assert "first_moe_layer = int(self.config.first_k_dense_replace)" in (
+    assert "first_moe_layer = int(model.config.first_k_dense_replace)" in (
         async_ubatch_forward
     )
     assert "dense_end_layer = min(model.end_layer, first_moe_layer)" in (
@@ -220,16 +220,16 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
     )
     assert async_ubatch_forward.index("recv_stage_ffn(0)") < (
         async_ubatch_forward.index(
-            "send_stage_attention(\n                current_layer,\n                1",
+            "send_stage_attention(\n            current_layer,\n            1",
         )
     )
     assert async_ubatch_forward.index("recv_stage_ffn(1)") < (
         async_ubatch_forward.index(
-            "send_stage_attention(\n                next_layer,\n                0",
+            "send_stage_attention(\n            next_layer,\n            0",
         )
     )
     assert async_ubatch_forward.index(
-        "send_stage_attention(\n            last_layer,\n            1",
+        "send_stage_attention(\n        last_layer,\n        1",
     ) < (async_ubatch_forward.rindex("recv_stage_ffn(1)"))
 
 
