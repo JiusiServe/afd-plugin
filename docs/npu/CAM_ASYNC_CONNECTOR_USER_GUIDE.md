@@ -17,15 +17,21 @@ prefill path when all of the following are true:
 
 - CAM operator packages are installed on every node;
 - Attention performs MoE gating before dispatch to FFN ranks;
-- execution is eager and AFD async-DP is enabled with `async=true`;
+- execution is eager and AFD async-DP is enabled; **`async=true` is required**;
 - the service is the prefill stage of a prefill/decode-disaggregated deployment;
 - optional MoE ubatching is managed by AFD as two request-boundary stages.
 
-For CUDA deployments use `P2pNcclAFDConnector`. For synchronous Ascend P2P use
-`CAMP2pAFDConnector`. CAM async currently does not support decode, ACL graph
-execution, vLLM native DBO, or multistream.
+CAM async currently does not support decode, ACL graph execution, or vLLM
+native DBO.
 
 ## CAM async data flow
+
+CAM async removes synchronization between data-parallel replicas and avoids the
+rank-wide synchronization imposed by dispatch/combine all-to-all communication
+at large expert-parallel sizes. When requests are unevenly distributed across
+DP replicas, each replica can continue its CAM dispatch/combine work without
+waiting for every other replica to reach the same communication point. This
+eliminates unnecessary idle time caused by DP request imbalance.
 
 One MoE layer follows this sequence:
 
@@ -106,7 +112,6 @@ key. There is no separate `--afd-config` option.
     "afd_role_rank": 0,
     "compute_gate_on_attention": true,
     "extra_config": {
-      "quant_mode": 0,
       "dynamicQuant": 1,
       "attn_ranks_per_dp": 8,
       "async_moe_ubatching": true,
@@ -125,12 +130,12 @@ key. There is no separate `--afd-config` option.
 | `role` | `"attention" \| "ffn"` | `"attention"` | Role owned by this process. |
 | `connector` | `str` | `"P2pNcclAFDConnector"` | Must be `CAMAsyncAFDConnector`. |
 | `async` / `async_dp` | `bool` | `false` | Must be `true`. `async` is the accepted compatibility alias for canonical `async_dp`. |
-| `host` | `str` | `"127.0.0.1"` | HCCL rendezvous host, reachable with the same value from every rank. In the multi-node recipe it is the node owning Attention rank 0. |
+| `host` | `str` | `"127.0.0.1"` | **Must be the IP address of the node that owns Attention rank 0.** Every rank must use the same reachable value. |
 | `port` | `int` | `1239` | HCCL rendezvous port in `1..65535`; it must be free and reachable. |
 | `num_attention_ranks` | `int` | `1` | Total Attention ranks, including all DP/PCP-derived ranks. |
 | `num_ffn_ranks` | `int` | `1` | Total FFN expert ranks. |
 | `afd_role_rank` | `int` | `0` | Role-local starting rank. Account for `attn_ranks_per_dp` on Attention. |
-| `compute_gate_on_attention` | `bool` | `false` | Runs MoE routing on Attention. Required when async MoE ubatching is enabled. |
+| `compute_gate_on_attention` | `bool` | `false` | Must be `true`; CAM async runs MoE routing on Attention before dispatching to FFN ranks. |
 | `extra_config` | `dict` | `{}` | Connector-specific settings. Unknown top-level AFD fields are rejected. |
 
 Compatibility aliases `afd_role`, `afd_connector`, `afd_host`, `afd_port`, and
@@ -143,15 +148,10 @@ compatibility spelling used by the recipes.
 | Field | Type | Default | Meaning and constraint |
 | --- | --- | --- | --- |
 | `dynamicQuant` | `int` | `0` | Enables CAM dispatch/combine dynamic-quant metadata. Only `0` and `1` are accepted. With `1`, FFN receives quantized routed activations plus scale tensors and must return output compatible with combine-send. |
-| `quant_mode` | `int` | `0` | Recipe-level Ascend/CAM quantization setting for the surrounding model/operator path; the connector itself does not read it. Only `0` is verified by the checked-in recipe. This is separate from `dynamicQuant`. |
 | `attn_ranks_per_dp` | `int` | `1` | Positive Attention rank count per DP replica, normally the PCP width. It affects Attention role-rank derivation and CAM TP size. |
 | `async_moe_ubatching` | `bool` | `false` | Enables AFD-managed asynchronous MoE-only ubatching. |
 | `async_moe_num_ubatches` | `int` | `2` | Number of asynchronous MoE stages. Only `2` is supported. |
-| `async_moe_split` | `str` | `"request"` | Stage split policy. Only request-boundary splitting is supported. |
-| `is_multistream` | `bool` | `false` | Must remain disabled. |
-| `is_attn_multistream` | `bool` | `false` | Must remain disabled. |
-| `is_ffn_multistream` | `bool` | `false` | Must remain disabled. |
-| `multistream_info` | mapping | unset | Any enabled global, Attention, or FFN multistream entry is rejected. |
+| `async_moe_split` | `str` | `"request"` | Stage split policy. The current async connector supports request-boundary splitting only. |
 
 ## Native DBO and async MoE ubatching are different
 
@@ -200,10 +200,7 @@ The checked-in recipe has been verified with:
 - Ascend 910C;
 - `quay.io/ascend/vllm-ascend:v0.19.1rc1-a3-openeuler`;
 - the included `CAM_ascend910_93_openEuler_aarch64.run` installer;
-- `umdk_cam_op_lib-208.1.0b1-cp311-cp311-linux_aarch64.whl`;
-- DeepSeek-V3.2 W8A8, using the reduced 10-layer experiment model described in
-  the recipe;
-- two nodes with `DP3PCP8` Attention and `EP8` FFN.
+- `umdk_cam_op_lib-208.1.0b1-cp311-cp311-linux_aarch64.whl`.
 
 Install the CAM packages from the repository root inside the container:
 
@@ -217,7 +214,6 @@ the Ascend plugin enabled. The complete recipe includes all tuning variables;
 the essential setup is:
 
 ```bash
-export VLLM_PLUGINS=ascend,afd
 export LD_LIBRARY_PATH=/usr/local/Ascend/cann-8.5.1/opp/vendors/CAM/op_api/lib:${LD_LIBRARY_PATH:-}
 export HCCL_BUFFSIZE=4096
 export VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1
@@ -229,44 +225,14 @@ At initialization, the runtime verifies that `torch`, `torch_npu`,
 available: `async_dispatch_send`, `async_dispatch_recv`,
 `async_combine_send`, and `async_combine_recv`.
 
-## Launch checklist
-
-Use the three complete commands in the
-[DeepSeek-V3.2 recipe](../../recipe/npu/CAMAsyncAFDConnector/deepseek_v3_2/README.md#afd-cam-async):
-
-1. Start the Attention rank-0 node first; it hosts the vLLM API and the HCCL
-   rendezvous address.
-2. Start remaining headless Attention nodes with their DP-derived
-   `afd_role_rank` values.
-3. Start the FFN process with the same model, topology, quantization, async MoE,
-   `host`, and `port` settings.
-4. Send prefill requests only to the non-headless Attention API endpoint (port
-   `8000` in the recipe). The FFN port is not a request endpoint.
-
-All CAM async commands must use the Ascend worker classes, `--enforce-eager`,
-`--quantization ascend`, `--enable-expert-parallel`, and no native DBO flags:
-
-```text
-Attention: afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker
-FFN:       afd_plugin.v1.worker.ascend.AFDNPUFFNWorker
-```
-
-HCCL initialization is collective. Missing ranks, duplicate role ranks,
-unreachable rendezvous addresses, or inconsistent world sizes/configuration can
-fail or wait until the connector's initialization timeout.
-
 ## Current limitations
 
 - Eager execution only; ACL graph mode is unsupported.
 - Prefill stage only in a prefill/decode-disaggregated deployment.
 - vLLM native DBO/ubatching is unsupported.
 - AFD-managed MoE ubatching supports exactly two request-boundary stages.
-- Global, Attention, and FFN multistream modes are unsupported.
-- `dynamicQuant` accepts only `0` or `1`; only `quant_mode=0` is verified.
 - Decode context parallel metadata is unsupported with async MoE ubatching.
 - Routed experts should divide evenly across FFN ranks.
 - Other Ascend hardware, full unmodified DeepSeek-V3.2, different model
   families, CAM/CANN/container versions, cross-version combinations, and
   topologies other than the recipe should be treated as unverified.
-- There is no automatic transport fallback. Select a synchronous connector
-  explicitly if CAM async does not match the deployment.
