@@ -11,7 +11,6 @@ pytest.importorskip("torch_npu")
 
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
-    AFDA2FTransferPayload,
     AFDConnectorFactory,
     AFDTransferMetadata,
     AFDTransferState,
@@ -93,7 +92,7 @@ def test_camp2p_topology_matches_original_rank_layout():
     assert (ffn1.world_rank, ffn1.p2p_rank) == (1, 1)
 
 
-def test_camp2p_create_recv_metadata_uses_original_contiguous_af_grouping():
+def test_camp2p_create_transfer_metadata_uses_original_contiguous_af_grouping():
     rank0 = CAMP2pAFDConnector(
         0,
         0,
@@ -107,17 +106,11 @@ def test_camp2p_create_recv_metadata_uses_original_contiguous_af_grouping():
         _afd_config(role="ffn", rank=1),
     )
     dp_metadata_list = {0: _FakeDPMetadata([2, 3, 5, 7])}
+    rank0.dp_metadata_list = dp_metadata_list
+    rank1.dp_metadata_list = dp_metadata_list
 
-    metadata0 = rank0.create_recv_metadata(
-        dp_metadata_list=dp_metadata_list,
-        ubatch_idx=0,
-        layer_idx=3,
-    )
-    metadata1 = rank1.create_recv_metadata(
-        dp_metadata_list=dp_metadata_list,
-        ubatch_idx=0,
-        layer_idx=3,
-    )
+    metadata0 = rank0._create_transfer_metadata(ubatch_idx=0, layer_idx=3)
+    metadata1 = rank1._create_transfer_metadata(ubatch_idx=0, layer_idx=3)
 
     assert metadata0.seq_lens == [5]
     assert metadata1.seq_lens == [12]
@@ -140,48 +133,12 @@ def test_camp2p_ignores_mix_placement_for_connector_metadata():
         ),
     )
 
-    metadata = connector.create_recv_metadata(
-        dp_metadata_list={0: _FakeDPMetadata([2, 3, 5, 7])},
-        ubatch_idx=0,
-        layer_idx=3,
-    )
+    connector.dp_metadata_list = {0: _FakeDPMetadata([2, 3, 5, 7])}
+    metadata = connector._create_transfer_metadata(ubatch_idx=0, layer_idx=3)
 
     assert metadata.transfer_state.k == 2
     assert metadata.transfer_state.moe_expert_num == 4
     assert metadata.transfer_state.shared_expert_num == 0
-
-
-def test_camp2p_update_metadata_keeps_original_handle_shape():
-    connector = CAMP2pAFDConnector(
-        0,
-        0,
-        _vllm_config(),
-        _afd_config(role="ffn", rank=0),
-    )
-    metadata = connector.create_recv_metadata(
-        dp_metadata_list={0: _FakeDPMetadata([2, 3, 5, 7])},
-        ubatch_idx=0,
-        layer_idx=0,
-    )
-    recv_output = AFDA2FTransferPayload(
-        hidden_states="hidden",
-        metadata=metadata,
-        topk_ids="ids",
-        topk_weights="weights",
-        expand_idx="expand",
-        ep_recv_counts="counts",
-        atten_batch_size="atten",
-    )
-
-    connector.update_metadata(metadata, recv_output)
-
-    assert metadata.transfer_state.handle == [
-        "ids",
-        "weights",
-        "expand",
-        "counts",
-        "atten",
-    ]
 
 
 def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
