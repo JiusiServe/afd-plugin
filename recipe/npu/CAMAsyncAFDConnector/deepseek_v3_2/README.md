@@ -3,6 +3,10 @@
 This recipe describes how to run DeepSeek-V3.2 with the AFD CAM async
 connector on Ascend NPU.
 
+For the connector's complete configuration contract, rank derivation, data
+flow, native DBO distinction, and limitations, see the
+[CAM Async Connector User Guide](../../../../docs/npu/CAM_ASYNC_CONNECTOR_USER_GUIDE.md).
+
 ## Introduction
 
 `CAMAsyncAFDConnector` provides an Ascend CAM-backed asynchronous AFD connector
@@ -65,6 +69,11 @@ attention and FFN commands so all workers join the same CAM async group.
 | `async_moe_num_ubatches` | Number of async MoE stages. The current CAM async setup uses `2`. |
 | `async_moe_split` | Split policy for async MoE ubatches. This recipe uses request-level splitting. |
 | `attn_ranks_per_dp` | Number of attention ranks per DP replica. With `PCP8`, this value is `8`. |
+
+Do not add `--enable-dbo`, `--dbo-decode-token-threshold`, or
+`--dbo-prefill-token-threshold` to these commands. Those flags enable vLLM
+native DBO, which CAM async rejects. `async_moe_ubatching` is AFD-managed,
+MoE-only request-boundary staging and is not vLLM native DBO.
 
 ## Experiment Configuration
 
