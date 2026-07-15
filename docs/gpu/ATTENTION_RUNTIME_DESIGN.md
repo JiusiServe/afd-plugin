@@ -46,6 +46,9 @@ Current behavior:
 - validates CUDA graph mode with `validate_cuda_graph_mode`;
 - creates and initializes the configured connector through
   `AFDConnectorFactory`;
+- constructs and loads the Attention-side DeepSeek components instead of the
+  FFN MLP/expert components, while retaining shared model components required
+  by the vLLM lifecycle;
 - installs AFD metadata on `ForwardContext.additional_kwargs["afd_metadata"]`;
 - sends DP metadata to FFN ranks before model forward;
 - supports DP=1 fallback metadata when vLLM does not provide `DPMetadata`;
@@ -79,9 +82,9 @@ The canonical metadata location is:
 forward_context.additional_kwargs["afd_metadata"]
 ```
 
-The metadata object is `AFDMetadata`. It carries token slices, request slices,
-stage information, transaction ids, and the connector reference used by
-plugin-owned model wrappers.
+The metadata object is `AFDForwardContextMetadata`. It carries token slices,
+request slices, stage information, transaction ids, and the connector reference
+used by plugin-owned model wrappers.
 
 For DBO, `AFDUBatchWrapper` builds per-ubatch metadata and
 `build_ubatch_dp_metadata_list()` sends one DP metadata entry per stage. The
@@ -112,5 +115,6 @@ divisible by it.
 - Runtime modules import real `torch` and `vllm` dependencies at module import
   time.
 - DBO requires exactly two ubatches.
-- Role-based weight pruning is not implemented.
+- Role-aware model construction and weight loading currently depend on the
+  plugin-owned DeepSeek model wrappers.
 - The only CUDA connector is `P2pNcclAFDConnector`.

@@ -50,7 +50,9 @@ Current behavior:
 - derives `afd_role_rank` from DP/TP ranks when needed;
 - validates CUDA graph mode;
 - creates the configured connector through `AFDConnectorFactory`;
-- loads the model through vLLM's model loader;
+- loads the model through vLLM's model loader; the plugin-owned DeepSeek
+  wrapper constructs and loads FFN MLP/expert components plus shared model
+  components required by the vLLM lifecycle, without Attention modules;
 - returns empty KV cache specs and no-ops KV initialization;
 - rejects sampling and LoRA mutation APIs that are not meaningful for FFN;
 - receives DP metadata, Attention hidden states, and connector payloads;
@@ -85,7 +87,8 @@ For each layer and stage, `GPUFFNModelRunner`:
 
 1. updates connector state from DP metadata;
 2. receives Attention output with `connector.recv_attn_output()`;
-3. normalizes the payload to hidden states and `AFDConnectorMetadata`;
+3. reads hidden states and `AFDTransferMetadata` from the
+   `AFDA2FTransferPayload` returned by the connector;
 4. installs `afd_metadata` in the current forward context;
 5. waits for async receive handles if present;
 6. calls `compute_ffn_output()` when the model wrapper provides it;
@@ -112,4 +115,5 @@ Warmup and capture are driven by flags received from the Attention side through
 - The GPU connector is `P2pNcclAFDConnector`, implemented by
   `afd_plugin.connectors.gpu.p2p`.
 - DBO requires exactly two ubatches.
-- Role-based weight pruning is not implemented.
+- Role-aware model construction and weight loading currently depend on the
+  plugin-owned DeepSeek model wrappers.

@@ -2,9 +2,10 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """DeepSeek V2 AFD model wrapper.
 
-The wrapper does not prune weights by role. Both Attention and FFN sides load
-the full model; only the forward path is split so hidden states can travel
-through the AFD connector.
+The wrapper constructs and loads only the model components required by each
+AFD role. Shared embedding, normalization, and output components remain
+available where required by the model lifecycle. The forward path transfers
+hidden states between the Attention and FFN roles through the AFD connector.
 """
 
 import typing
