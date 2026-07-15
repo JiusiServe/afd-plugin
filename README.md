@@ -33,9 +33,9 @@ Core runtime support:
 
 Model support:
 
-| Model family | Registered architectures | Notes |
-| --- | --- | --- |
-| DeepSeekV2 / DeepSeekV3 | `DeepseekForCausalLM`, `DeepseekV2ForCausalLM`, `DeepseekV3ForCausalLM` | Uses `afd_plugin.model_executor.models.deepseek_v2` wrappers. Attention and FFN sides currently load full model weights. |
+| Model family | Registered architectures | Plugin model wrappers | Notes |
+| --- | --- | --- | --- |
+| DeepSeekV2 / DeepSeekV3 / DeepSeekV3.2 | `DeepseekForCausalLM`, `DeepseekV2ForCausalLM`, `DeepseekV3ForCausalLM`, `DeepseekV32ForCausalLM` | `AFDDeepseekForCausalLM`, `AFDDeepseekV2ForCausalLM`, `AFDDeepseekV3ForCausalLM` | DeepSeekV3.2 uses `AFDDeepseekV3ForCausalLM`. Each AFD role constructs and loads only its role-required model components, while shared embedding, normalization, and output components remain available where required by the model lifecycle. |
 
 Connector support:
 
@@ -203,17 +203,6 @@ Ascend ops by default. Set `AFD_BUILD_ASCEND_OPS=1` or
 ## E2E Test
 
 To run E2E tests, use the [`run-e2e` skill](.agents/skills/run-e2e/SKILL.md).
-
-## Docs
-
-- [docs/gpu/ATTENTION_RUNTIME_DESIGN.md](docs/gpu/ATTENTION_RUNTIME_DESIGN.md)
-  - GPU Attention worker and model-runner design.
-- [docs/gpu/FFN_RUNTIME_DESIGN.md](docs/gpu/FFN_RUNTIME_DESIGN.md) - GPU FFN
-  worker, daemon loop, and connector-driven execution design.
-- [docs/npu/NPU_ATTENTION_RUNTIME_DESIGN.md](docs/npu/NPU_ATTENTION_RUNTIME_DESIGN.md)
-  - Ascend NPU Attention worker and model-runner design.
-- [docs/npu/NPU_FFN_RUNTIME_DESIGN.md](docs/npu/NPU_FFN_RUNTIME_DESIGN.md) -
-  Ascend NPU FFN worker, daemon loop, CAMP2P, and ACL graph design.
 
 ## License
 

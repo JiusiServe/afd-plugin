@@ -69,6 +69,9 @@ Current behavior:
 - validates unsupported NPU feature flags;
 - derives `afd_role_rank` from DP/TP ranks;
 - creates and initializes `CAMP2pAFDConnector`;
+- constructs and loads the Attention-side DeepSeek components instead of the
+  FFN MLP/expert components, while retaining shared model components required
+  by the vLLM lifecycle;
 - injects AFD metadata into Ascend/vLLM forward context;
 - sends DP metadata to FFN ranks before model forward;
 - supports NPU DBO metadata splitting through plugin-owned ubatch utilities;
@@ -141,7 +144,7 @@ Supported:
 - `CAMP2pAFDConnector`;
 - eager Attention path;
 - DBO with exactly two ubatches;
-- full model weight loading.
+- role-aware DeepSeek model construction and Attention-side weight loading.
 
 Rejected by validation:
 
@@ -149,5 +152,4 @@ Rejected by validation:
 - `compute_gate_on_attention=true`;
 - `quant_mode != 0`;
 - attention/FFN multistream communication;
-- DBO with a ubatch count other than two;
-- role-based weight pruning.
+- DBO with a ubatch count other than two.

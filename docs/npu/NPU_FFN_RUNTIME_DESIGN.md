@@ -69,6 +69,8 @@ Current behavior:
 - validates unsupported NPU AFD features;
 - derives `afd_role_rank` from DP/TP ranks;
 - creates `CAMP2pAFDConnector`;
+- constructs and loads the DeepSeek FFN MLP/expert components plus shared model
+  components required by the vLLM lifecycle, without Attention modules;
 - returns empty KV cache specs and no-ops KV initialization;
 - receives DP metadata and Attention outputs from the connector;
 - builds a minimal Ascend forward context for connector-driven FFN steps;
@@ -105,7 +107,8 @@ For each layer and stage, `AFDNPUFFNModelRunner`:
 
 1. updates connector state from DP metadata;
 2. creates receive metadata with `connector.create_recv_metadata(...)`;
-3. receives an `AFDAttnOutput` from `connector.recv_attn_output(...)`;
+3. receives an `AFDA2FTransferPayload` from
+   `connector.recv_attn_output(...)`;
 4. updates connector metadata from the received payload;
 5. installs DP and AFD metadata on Ascend forward context;
 6. waits for async receive handles when present;
@@ -156,7 +159,7 @@ Supported:
 - eager FFN execution;
 - ACL graph warmup/capture/replay path;
 - DBO with exactly two ubatches;
-- full model weight loading.
+- role-aware DeepSeek model construction and FFN-side weight loading.
 
 Rejected by validation:
 
@@ -165,5 +168,4 @@ Rejected by validation:
 - `compute_gate_on_attention=true`;
 - `quant_mode != 0`;
 - attention/FFN multistream communication;
-- DBO with a ubatch count other than two;
-- role-based weight pruning.
+- DBO with a ubatch count other than two.
