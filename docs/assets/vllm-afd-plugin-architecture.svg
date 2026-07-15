@@ -66,16 +66,16 @@
           &lt;mxGeometry x=&quot;810&quot; y=&quot;306&quot; width=&quot;400&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;ffn-worker&quot; value=&quot;AFDFFNWorker&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;810&quot; y=&quot;375&quot; width=&quot;185&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;810&quot; y=&quot;444&quot; width=&quot;185&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;ffn-runner&quot; value=&quot;FFNModelRunner&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;1025&quot; y=&quot;375&quot; width=&quot;185&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
+        &lt;mxCell id=&quot;ffn-runner&quot; value=&quot;AFDFFN&amp;lt;br&amp;gt;ModelRunner&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+          &lt;mxGeometry x=&quot;1025&quot; y=&quot;444&quot; width=&quot;185&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;ffn-loop&quot; value=&quot;FFN Loop&amp;lt;br&amp;gt;connector-driven&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;810&quot; y=&quot;449&quot; width=&quot;185&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;810&quot; y=&quot;518&quot; width=&quot;185&quot; height=&quot;42&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;ffn-cuda&quot; value=&quot;CUDA/ACL Graph&amp;lt;br&amp;gt;Support&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#fff5df;strokeColor=#d9ad5f;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;1025&quot; y=&quot;449&quot; width=&quot;185&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
+        &lt;mxCell id=&quot;ffn-cuda&quot; value=&quot;Graph Support&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#fff5df;strokeColor=#d9ad5f;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+          &lt;mxGeometry x=&quot;1025&quot; y=&quot;518&quot; width=&quot;185&quot; height=&quot;42&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;model-native&quot; value=&quot;vLLM Model / Layers / Ops&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#eaf3ff;strokeColor=#91b6e5;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;40&quot; y=&quot;600&quot; width=&quot;350&quot; height=&quot;62&quot; as=&quot;geometry&quot; /&gt;
@@ -207,14 +207,14 @@
 <g><text x="1010" y="273" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="30" font-weight="600" fill="#111">FFN Role</text></g>
 <rect x="810" y="306" width="400" height="52" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
 <g><text x="1010" y="332" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">FFNEngineCore</text></g>
-<rect x="810" y="375" width="185" height="58" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="902.5" y="404" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">AFDFFNWorker</text></g>
-<rect x="1025" y="375" width="185" height="58" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="1117.5" y="404" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">FFNModelRunner</text></g>
-<rect x="810" y="449" width="185" height="58" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="902.5" y="468.28" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">FFN Loop</text><text x="902.5" y="487.71999999999997" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">connector-driven</text></g>
-<rect x="1025" y="449" width="185" height="58" fill="#fff4c9" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="1117.5" y="468.28" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">CUDA/ACL Graph</text><text x="1117.5" y="487.72" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">Support</text></g>
+<rect x="810" y="444" width="185" height="58" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="902.5" y="473" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">AFDFFNWorker</text></g>
+<rect x="1025" y="444" width="185" height="58" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="1117.5" y="461.66" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">AFDFFN</text><text x="1117.5" y="484.34" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">ModelRunner</text></g>
+<rect x="810" y="518" width="185" height="42" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="902.5" y="529.28" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">FFN Loop</text><text x="902.5" y="548.72" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">connector-driven</text></g>
+<rect x="1025" y="518" width="185" height="42" fill="#fff4c9" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="1117.5" y="539" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">Graph Support</text></g>
 <rect x="40" y="600" width="350" height="62" fill="#d2f1f4" stroke="#b9b9b9" stroke-width="2"/>
 <g><text x="215" y="631" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">vLLM Model / Layers / Ops</text></g>
 <rect x="420" y="600" width="410" height="62" fill="#fff4c9" stroke="#b9b9b9" stroke-width="2"/>
