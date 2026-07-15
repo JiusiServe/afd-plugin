@@ -69,7 +69,6 @@ class _FakeFFNConnector:
         self.attn_outputs = deque()
         self.ffn_outputs = []
         self.updates = []
-        self.metadata_updates = []
         self.attn_size = attn_size
         self.ffn_size = ffn_size
         self.world_rank = world_rank
@@ -88,7 +87,7 @@ class _FakeFFNConnector:
             ),
         )
 
-    def recv_attn_output(self, metadata=None, ubatch_idx=None):
+    def recv_attn_output(self, ubatch_idx=None, **kwargs):
         for item in tuple(self.attn_outputs):
             item_metadata = (
                 item.metadata if isinstance(item, AFDA2FTransferPayload) else item[1]
@@ -100,18 +99,8 @@ class _FakeFFNConnector:
                 return AFDA2FTransferPayload(hidden_states=item[0], metadata=item[1])
         raise IndexError(ubatch_idx)
 
-    def create_recv_metadata(self, **kwargs):
-        return AFDTransferMetadata.create_ffn_metadata(
-            layer_idx=kwargs["layer_idx"],
-            stage_idx=kwargs["ubatch_idx"],
-            seq_lens=[1],
-        )
-
     def send_ffn_output(self, ffn_output, metadata, **kwargs):
         self.ffn_outputs.append((ffn_output, metadata, kwargs))
-
-    def update_metadata(self, metadata, recv_output):
-        self.metadata_updates.append((metadata, recv_output))
 
     def close(self):
         return None
@@ -633,9 +622,6 @@ def test_npu_ffn_runner_executes_eager_ffn_step():
     assert update_flags == {"is_graph_capturing": False, "is_warmup": False}
     assert runner.connector.ffn_outputs == [
         ("npu-ffn(hidden, layer=0)", metadata, {"ubatch_idx": 0}),
-    ]
-    assert runner.connector.metadata_updates == [
-        (metadata, AFDA2FTransferPayload(hidden_states="hidden", metadata=metadata)),
     ]
 
 

@@ -38,8 +38,10 @@ class _FakeScalar:
 
 
 class _FakeTensorLike:
-    def __init__(self, name):
+    def __init__(self, name, *, shape=None, device="npu:0"):
         self.name = name
+        self.shape = shape
+        self.device = device
 
     def __getitem__(self, item):
         start = "" if item.start is None else item.start
@@ -105,6 +107,9 @@ class _FakeTorch:
         self.ops = SimpleNamespace(umdk_cam_op_lib=_FakeCamOps())
 
     def empty(self, shape, *, dtype, device):
+        return _FakeTensor(shape, dtype=dtype, device=device)
+
+    def zeros(self, shape, *, dtype, device):
         return _FakeTensor(shape, dtype=dtype, device=device)
 
 
@@ -255,7 +260,7 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
     assert calls == [
         {
             "backend": "hccl",
-            "init_method": "tcp://127.0.0.1:29500",
+            "init_method": "tcp://127.0.0.1:1239",
             "world_size": 6,
             "rank": 5,
             "group_name": AFD_ASYNC_CAM_GROUP_NAME,
@@ -306,7 +311,6 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
         seq_len=3,
     )
 
-    connector.configure_metadata(metadata, batch_size=3)
     output = connector.send_attn_output(
         hidden_states,
         metadata,
@@ -326,8 +330,8 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][5:11] == (3, 16, 2, 2, 4, 4)
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][5:11] == (3, 16, 2, 2, 4, 4)
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][14] == 3
-    assert isinstance(metadata.connector_data, AFDAsyncTransferState)
-    assert isinstance(metadata.connector_data, AFDTransferState)
+    assert isinstance(metadata.transfer_state, AFDAsyncTransferState)
+    assert isinstance(metadata.transfer_state, AFDTransferState)
 
 
 def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
@@ -375,7 +379,7 @@ def test_async_combine_send_requires_dispatch_recv_token_metadata(monkeypatch):
         stage_idx=0,
         seq_lens=[4],
     )
-    metadata.connector_data = AFDAsyncTransferState(
+    metadata.transfer_state = AFDAsyncTransferState(
         batch_size=4,
         hidden_size=16,
         topk=2,
@@ -396,8 +400,13 @@ def test_async_ffn_work_item_uses_cam_layer_and_token_metadata(monkeypatch):
     )
     connector.ffn_size = 2
 
-    def fake_recv_attn_output(*, metadata, ubatch_idx):
+    def fake_recv_attn_output(*, stage_idx, layer_idx, batch_size, ubatch_idx):
         assert ubatch_idx == 0
+        metadata = connector._create_transfer_metadata(
+            batch_size=batch_size,
+            layer_idx=layer_idx,
+            stage_idx=stage_idx,
+        )
         return AFDA2FTransferPayload(
             hidden_states=_FakeTensorLike("hidden"),
             metadata=metadata,
@@ -430,7 +439,7 @@ def test_async_ffn_work_item_uses_cam_layer_and_token_metadata(monkeypatch):
     assert work_item.recv_output.expand_x_shared == "shared-hidden[:2]"
     assert work_item.recv_output.dynamic_scales_shared == "shared-scales[:2]"
     assert work_item.recv_output.x_active_mask == "active-mask[:5]"
-    assert work_item.metadata.connector_data.layer_idx == 11
+    assert work_item.metadata.transfer_state.layer_idx == 11
 
 
 def test_async_ffn_work_item_uses_expert_counts_for_routed_tokens(monkeypatch):
@@ -441,8 +450,13 @@ def test_async_ffn_work_item_uses_expert_counts_for_routed_tokens(monkeypatch):
         _afd_config(role="ffn"),
     )
 
-    def fake_recv_attn_output(*, metadata, ubatch_idx):
+    def fake_recv_attn_output(*, stage_idx, layer_idx, batch_size, ubatch_idx):
         assert ubatch_idx == 0
+        metadata = connector._create_transfer_metadata(
+            batch_size=batch_size,
+            layer_idx=layer_idx,
+            stage_idx=stage_idx,
+        )
         return AFDA2FTransferPayload(
             hidden_states=_FakeTensorLike("hidden"),
             metadata=metadata,
@@ -537,6 +551,8 @@ def test_async_slice_cam_payload_shared_tensors_fallback_to_100_tokens():
 def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
     monkeypatch,
 ):
+    fake_torch = _FakeTorch()
+    monkeypatch.setattr(async_cam_module, "torch", fake_torch)
     connector = CAMAsyncAFDConnector(
         0,
         0,
@@ -550,9 +566,14 @@ def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
 
     monkeypatch.setattr(connector, "send_ffn_output", fake_send_ffn_output)
 
-    def fake_recv_attn_output(*, metadata, ubatch_idx):
+    def fake_recv_attn_output(*, stage_idx, layer_idx, batch_size, ubatch_idx):
+        metadata = connector._create_transfer_metadata(
+            batch_size=batch_size,
+            layer_idx=layer_idx,
+            stage_idx=stage_idx,
+        )
         return AFDA2FTransferPayload(
-            hidden_states=_FakeTensorLike("hidden"),
+            hidden_states=_FakeTensorLike("hidden", shape=(5, 16)),
             metadata=metadata,
             atten_batch_size=[
                 _FakeScalar(5),
@@ -575,16 +596,20 @@ def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
         ),
     )
 
+    # This FFN rank received no routed tokens, so the connector applies the
+    # empty-rank NPU workaround: it replaces the routed output with a single
+    # fake bf16 token and resizes the metadata to one token, while still
+    # passing the computed shared output through untouched.
     assert work_item.num_tokens == 0
     assert work_item.hidden_states == "hidden[:0]"
-    assert work_item.metadata.seq_lens == [5]
-    assert sent_output == AFDF2ATransferPayload(
-        routed_output=work_item.recv_output.hidden_states,
-        shared_output="computed-shared",
-    )
+    assert work_item.metadata.seq_lens == [1]
+    assert isinstance(sent_output, AFDF2ATransferPayload)
+    assert sent_output.shared_output == "computed-shared"
+    assert sent_output.routed_output.shape == (1, 16)
+    assert sent_output.routed_output.dtype == fake_torch.bfloat16
     assert sent_outputs == [
         (
-            work_item.recv_output.hidden_states,
+            sent_output.routed_output,
             work_item.metadata,
             {"ubatch_idx": 0, "expand_x_shared": "computed-shared"},
         ),

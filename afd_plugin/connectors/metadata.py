@@ -213,7 +213,7 @@ class AFDTransferMetadata:
 
     ``AFDTransferMetadata`` describes the logical tensor transfer for a single
     layer/stage pair. It is intentionally backend-neutral, with
-    ``connector_data`` reserved for backend-specific state.
+    ``transfer_state`` reserved for backend-specific state.
 
     Attributes:
         layer_idx: Model layer index associated with this transfer.
@@ -222,7 +222,7 @@ class AFDTransferMetadata:
             the expected leading dimension for tensors validated against this
             metadata. For one-to-one transfers this is usually a single-item
             list; for fan-in/fan-out paths it can describe split sizes.
-        connector_data: Optional backend-specific payload. For example,
+        transfer_state: Optional backend-specific payload. For example,
             CAMP2P stores ``CAMP2PTransferState`` here so receive-time
             results can be reused by the matching send path. P2P does not
             currently require connector-specific data.
@@ -231,7 +231,7 @@ class AFDTransferMetadata:
     layer_idx: int
     stage_idx: int
     seq_lens: list[int]
-    connector_data: AFDTransferState | None = None
+    transfer_state: AFDTransferState | None = None
 
     def __post_init__(self) -> None:
         if not self.seq_lens:

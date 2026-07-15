@@ -172,18 +172,15 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         with _ffn_forward_context(self.vllm_config) as forward_context:
             for layer_idx in range(num_layers):
                 for stage_idx in stage_ids:
-                    recv_output = self._recv_attn_output(stage_idx)
-                    hidden_states, metadata, _payload = _normalize_recv_output(
-                        recv_output,
-                        stage_idx=stage_idx,
-                        layer_idx=layer_idx,
-                    )
+                    payload = self.connector.recv_attn_output(ubatch_idx=stage_idx)
+                    hidden_states = payload.hidden_states
+                    metadata = payload.metadata
                     metadata.layer_idx = layer_idx
                     metadata.stage_idx = stage_idx
                     if forward_context is not None:
                         forward_context.dp_metadata = dp_metadata_list.get(
                             metadata.stage_idx,
-                        )
+                        )  # type: ignore
                         forward_context.additional_kwargs["afd_metadata"] = metadata
                         _set_moe_layer_index(forward_context, layer_idx)
                     rank_ffn_output = self._execute_eager_mode(hidden_states, layer_idx)
@@ -200,12 +197,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         if callable(compute):
             return compute(hidden_states, layer_idx)
         return hidden_states
-
-    def _recv_attn_output(self, stage_idx: int) -> Any:
-        try:
-            return self.connector.recv_attn_output(ubatch_idx=stage_idx)
-        except TypeError:
-            return self.connector.recv_attn_output()
 
     def update_config(self, overrides: dict[str, Any]) -> None:
         for config_name, config_overrides in overrides.items():

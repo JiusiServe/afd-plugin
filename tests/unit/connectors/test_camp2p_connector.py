@@ -11,7 +11,6 @@ pytest.importorskip("torch_npu")
 
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
-    AFDA2FTransferPayload,
     AFDConnectorFactory,
     AFDTransferMetadata,
     AFDTransferState,
@@ -93,7 +92,7 @@ def test_camp2p_topology_matches_original_rank_layout():
     assert (ffn1.world_rank, ffn1.p2p_rank) == (1, 1)
 
 
-def test_camp2p_create_recv_metadata_uses_original_contiguous_af_grouping():
+def test_camp2p_create_transfer_metadata_uses_original_contiguous_af_grouping():
     rank0 = CAMP2pAFDConnector(
         0,
         0,
@@ -107,25 +106,19 @@ def test_camp2p_create_recv_metadata_uses_original_contiguous_af_grouping():
         _afd_config(role="ffn", rank=1),
     )
     dp_metadata_list = {0: _FakeDPMetadata([2, 3, 5, 7])}
+    rank0.dp_metadata_list = dp_metadata_list
+    rank1.dp_metadata_list = dp_metadata_list
 
-    metadata0 = rank0.create_recv_metadata(
-        dp_metadata_list=dp_metadata_list,
-        ubatch_idx=0,
-        layer_idx=3,
-    )
-    metadata1 = rank1.create_recv_metadata(
-        dp_metadata_list=dp_metadata_list,
-        ubatch_idx=0,
-        layer_idx=3,
-    )
+    metadata0 = rank0._create_transfer_metadata(ubatch_idx=0, layer_idx=3)
+    metadata1 = rank1._create_transfer_metadata(ubatch_idx=0, layer_idx=3)
 
     assert metadata0.seq_lens == [5]
     assert metadata1.seq_lens == [12]
-    assert isinstance(metadata0.connector_data, CAMP2PTransferState)
-    assert isinstance(metadata0.connector_data, AFDTransferState)
-    assert metadata0.connector_data.batch_size == 5
-    assert metadata0.connector_data.h == 16
-    assert metadata0.connector_data.k == 2
+    assert isinstance(metadata0.transfer_state, CAMP2PTransferState)
+    assert isinstance(metadata0.transfer_state, AFDTransferState)
+    assert metadata0.transfer_state.batch_size == 5
+    assert metadata0.transfer_state.h == 16
+    assert metadata0.transfer_state.k == 2
 
 
 def test_camp2p_ignores_mix_placement_for_connector_metadata():
@@ -140,48 +133,12 @@ def test_camp2p_ignores_mix_placement_for_connector_metadata():
         ),
     )
 
-    metadata = connector.create_recv_metadata(
-        dp_metadata_list={0: _FakeDPMetadata([2, 3, 5, 7])},
-        ubatch_idx=0,
-        layer_idx=3,
-    )
+    connector.dp_metadata_list = {0: _FakeDPMetadata([2, 3, 5, 7])}
+    metadata = connector._create_transfer_metadata(ubatch_idx=0, layer_idx=3)
 
-    assert metadata.connector_data.k == 2
-    assert metadata.connector_data.moe_expert_num == 4
-    assert metadata.connector_data.shared_expert_num == 0
-
-
-def test_camp2p_update_metadata_keeps_original_handle_shape():
-    connector = CAMP2pAFDConnector(
-        0,
-        0,
-        _vllm_config(),
-        _afd_config(role="ffn", rank=0),
-    )
-    metadata = connector.create_recv_metadata(
-        dp_metadata_list={0: _FakeDPMetadata([2, 3, 5, 7])},
-        ubatch_idx=0,
-        layer_idx=0,
-    )
-    recv_output = AFDA2FTransferPayload(
-        hidden_states="hidden",
-        metadata=metadata,
-        topk_ids="ids",
-        topk_weights="weights",
-        expand_idx="expand",
-        ep_recv_counts="counts",
-        atten_batch_size="atten",
-    )
-
-    connector.update_metadata(metadata, recv_output)
-
-    assert metadata.connector_data.handle == [
-        "ids",
-        "weights",
-        "expand",
-        "counts",
-        "atten",
-    ]
+    assert metadata.transfer_state.k == 2
+    assert metadata.transfer_state.moe_expert_num == 4
+    assert metadata.transfer_state.shared_expert_num == 0
 
 
 def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
@@ -259,8 +216,8 @@ def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
         seq_len=3,
     )
 
-    def fake_set_forward_context_connector_data(data, *, ubatch_idx=None):
-        captured["connector_data"] = data
+    def fake_set_forward_context_transfer_state(data, *, ubatch_idx=None):
+        captured["transfer_state"] = data
         captured["ubatch_idx"] = ubatch_idx
 
     def fake_send_attn_output(*args):
@@ -269,8 +226,8 @@ def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
 
     monkeypatch.setattr(
         camp2p_module,
-        "_set_forward_context_connector_data",
-        fake_set_forward_context_connector_data,
+        "_set_forward_context_transfer_state",
+        fake_set_forward_context_transfer_state,
     )
     monkeypatch.setattr(
         torch.ops.vllm,
@@ -285,15 +242,30 @@ def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
     assert captured["ubatch_idx"] == 1
     assert captured["args"][1:4] == ("hccl0", "hccl1", "")
     assert captured["args"][4] == 3
-    assert captured["connector_data"].batch_size == 3
+    assert captured["transfer_state"].batch_size == 3
 
 
-def test_camp2p_init_fails_cleanly_without_ascend_runtime():
+def test_camp2p_init_fails_cleanly_without_ascend_runtime(monkeypatch):
     connector = CAMP2pAFDConnector(
         0,
         0,
         _vllm_config(),
         _afd_config(role="attention", rank=0),
+    )
+
+    def _raise_missing_ops():
+        raise RuntimeError(
+            "CAMP2P Ascend custom ops are not available. Build the package with "
+            "Ascend ops enabled in a torch-npu/CANN environment.",
+        )
+
+    # Force the "ascend runtime missing" path so the test is deterministic on
+    # real NPU hosts too: otherwise init proceeds into init_afd_process_group
+    # and blocks forever on the HCCL rendezvous waiting for absent peers.
+    monkeypatch.setattr(
+        camp2p_module,
+        "ensure_cam_p2p_ops_available",
+        _raise_missing_ops,
     )
 
     with pytest.raises(RuntimeError, match="AFD Ascend custom ops|torch-npu"):

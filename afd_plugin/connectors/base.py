@@ -13,13 +13,11 @@ from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
     AFDControlPayload,
-    AFDDPMetadata,
     AFDTransferMetadata,
 )
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
-    from vllm.forward_context import DPMetadata
 
 
 class AFDConnectorBase(ABC):
@@ -37,7 +35,7 @@ class AFDConnectorBase(ABC):
     Implementations may use very different transport mechanisms. For example,
     the GPU P2P connector uses explicit point-to-point tensor transfers, while
     the NPU CAMP2P connector carries additional backend state through
-    ``AFDTransferMetadata.connector_data``. This base class documents the
+    ``AFDTransferMetadata.transfer_state``. This base class documents the
     common runtime contract shared by those implementations.
     """
 
@@ -127,7 +125,7 @@ class AFDConnectorBase(ABC):
                 backend explicitly supports a different compiled/captured
                 calling convention.
             metadata: Per-transfer metadata describing layer, stage, and token
-                layout. Backends may also consume ``metadata.connector_data``.
+                layout. Backends may also consume ``metadata.transfer_state``.
             **kwargs: Optional backend-specific arguments.
 
         Raises:
@@ -200,7 +198,7 @@ class AFDConnectorBase(ABC):
                 calling convention.
             metadata: Metadata associated with the matching
                 ``recv_attn_output`` call. Backends may depend on
-                ``metadata.connector_data`` that was prepared before receive or
+                ``metadata.transfer_state`` that was prepared before receive or
                 updated after receive.
             **kwargs: Optional backend-specific send arguments such as
                 ``ubatch_idx`` or op-specific metadata.
@@ -263,93 +261,6 @@ class AFDConnectorBase(ABC):
                 initialized or unsupported by this connector.
         """
         raise NotImplementedError
-
-    # ==============================
-    # Metadata helpers
-    # ==============================
-
-    def create_recv_metadata(self, **kwargs: Any) -> AFDTransferMetadata:
-        """Create metadata for an FFN-side receive operation.
-
-        This helper is used before ``recv_attn_output`` when the runner needs a
-        metadata object to describe the expected receive. Backends may override
-        it to compute role-specific batch sizes or attach connector-specific
-        data.
-
-        Args:
-            **kwargs: Optional metadata inputs. The base implementation
-                recognizes:
-
-                * ``dp_metadata_list``: Mapping from stage index to DP metadata.
-                * ``ubatch_idx``: Stage/microbatch index. Defaults to ``0``.
-                * ``layer_idx``: Layer index. Defaults to ``0``.
-                * ``seq_lens``: Explicit sequence lengths. If omitted, the base
-                  implementation derives one length from ``dp_metadata_list``.
-
-        Returns:
-            ``AFDTransferMetadata`` for the receive operation.
-        """
-        dp_metadata_list = kwargs.get("dp_metadata_list") or {}
-        ubatch_idx = int(kwargs.get("ubatch_idx", 0))
-        layer_idx = int(kwargs.get("layer_idx", 0))
-        seq_lens = kwargs.get("seq_lens")
-        if seq_lens is None:
-            seq_lens = [_num_tokens_for_stage(dp_metadata_list, ubatch_idx)]
-        return AFDTransferMetadata.create_ffn_metadata(
-            layer_idx=layer_idx,
-            stage_idx=ubatch_idx,
-            seq_lens=list(seq_lens),
-        )
-
-    def configure_metadata(  # noqa: B027
-        self,
-        metadata: AFDTransferMetadata,
-        **kwargs: Any,
-    ) -> None:
-        """Attach or update backend-specific data on existing metadata.
-
-        The base implementation is a no-op. Backends override this when they
-        need to populate ``metadata.connector_data`` before a send or receive
-        path consumes it.
-
-        Args:
-            metadata: Metadata object to mutate in place.
-            **kwargs: Backend-specific values used to build connector data, such
-                as ``batch_size`` or layer/op parameters.
-        """
-        pass
-
-    def update_metadata(
-        self,
-        metadata: AFDTransferMetadata,
-        recv_output: AFDA2FTransferPayload,
-    ) -> None:
-        """Update metadata after an Attention-to-FFN receive completes.
-
-        This hook lets a backend copy runtime values from ``recv_output`` into
-        ``metadata`` or ``metadata.connector_data`` so that the following
-        ``send_ffn_output`` call has the backend state it needs.
-
-        Args:
-            metadata: Metadata object associated with the receive. It is mutated
-                in place.
-            recv_output: Payload returned by ``recv_attn_output``.
-        """
-        metadata.seq_lens = list(recv_output.metadata.seq_lens)
-
-
-def _num_tokens_for_stage(
-    dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
-    stage_idx: int,
-) -> int:
-    dp_metadata = dp_metadata_list.get(int(stage_idx))
-    if dp_metadata is None:
-        return 1
-    token_counts = dp_metadata.num_tokens_across_dp_cpu
-    item = token_counts[0]
-    if not isinstance(item, (int, float)):
-        item = item.item()
-    return max(1, int(item))
 
 
 __all__ = ["AFDConnectorBase"]

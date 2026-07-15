@@ -25,7 +25,6 @@ from afd_plugin.compat.ascend.profiler import (
 )
 from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
-    AFDA2FTransferPayload,
     AFDConnectorFactory,
     AFDControlPayload,
     AFDDPMetadata,
@@ -239,13 +238,13 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         ) as forward_context:
             for layer_idx in _ffn_layer_indices(self):
                 for stage_idx in stage_ids:
-                    recv_output = self._recv_attn_output(stage_idx, layer_idx)
-                    hidden_states, metadata, payload = _normalize_recv_output(
-                        recv_output,
-                        stage_idx=stage_idx,
+                    payload = self.connector.recv_attn_output(
+                        ubatch_idx=stage_idx,
                         layer_idx=layer_idx,
+                        max_num_tokens=self.max_num_tokens,
                     )
-                    self.connector.update_metadata(metadata, payload)
+                    metadata = payload.metadata
+                    hidden_states = payload.hidden_states
                     metadata.layer_idx = layer_idx
                     metadata.stage_idx = stage_idx
                     forward_context.dp_metadata = dp_metadata_list.get(stage_idx)
@@ -423,20 +422,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         }
         logger.debug("AFD NPU FFN captured ACL graph for key=%s", graph_key)
 
-    def _recv_attn_output(self, stage_idx: int, layer_idx: int) -> Any:
-        recv_metadata_kwargs = {
-            "ubatch_idx": stage_idx,
-            "layer_idx": layer_idx,
-            "max_num_tokens": self.max_num_tokens,
-            "dp_metadata_list": self.connector.dp_metadata_list,
-        }
-        metadata = self.connector.create_recv_metadata(**recv_metadata_kwargs)
-        output = self.connector.recv_attn_output(
-            metadata=metadata,
-            ubatch_idx=stage_idx,
-        )
-        return output
-
     def sample_tokens(self, grammar_output: Any = None) -> Any:
         raise RuntimeError("AFD NPU FFN runners do not sample tokens")
 
@@ -447,32 +432,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             super().shutdown()
         except AttributeError:
             logger.debug("AFD NPU FFN parent model runner has no shutdown()")
-
-
-def _normalize_recv_output(
-    recv_output: AFDA2FTransferPayload | tuple[torch.Tensor, AFDTransferMetadata],
-    *,
-    stage_idx: int,
-    layer_idx: int,
-) -> tuple[torch.Tensor, AFDTransferMetadata, AFDA2FTransferPayload]:
-    if isinstance(recv_output, tuple):
-        hidden_states, metadata = recv_output
-        payload = AFDA2FTransferPayload(hidden_states=hidden_states, metadata=metadata)
-        return hidden_states, metadata, payload
-    hidden_states = recv_output.hidden_states
-    metadata = recv_output.metadata
-    if metadata is None:
-        metadata = AFDTransferMetadata.create_ffn_metadata(
-            layer_idx=layer_idx,
-            stage_idx=stage_idx,
-            seq_lens=[
-                1
-                if getattr(hidden_states, "shape", None) is None
-                else max(1, int(hidden_states.shape[0])),
-            ],
-        )
-        recv_output.metadata = metadata
-    return hidden_states, metadata, recv_output
 
 
 def _send_ffn_output(

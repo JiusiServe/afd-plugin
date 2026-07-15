@@ -43,10 +43,7 @@ class _FakeConnector:
         if ubatch_idx is None:
             return self.attn_outputs.popleft()
         for item in tuple(self.attn_outputs):
-            metadata = (
-                item.metadata if isinstance(item, AFDA2FTransferPayload) else item[1]
-            )
-            if getattr(metadata, "ubatch_idx", metadata.stage_idx) == ubatch_idx:
+            if item.metadata.stage_idx == ubatch_idx:
                 self.attn_outputs.remove(item)
                 return item
         raise IndexError(ubatch_idx)
@@ -89,6 +86,10 @@ def _metadata_for_stage(stage_idx):
         stage_idx=stage_idx,
         seq_len=1,
     )
+
+
+def _payload(hidden_states, metadata):
+    return AFDA2FTransferPayload(hidden_states=hidden_states, metadata=metadata)
 
 
 def _runner_with_connector_and_model(model, *, num_layers=1):
@@ -135,7 +136,7 @@ class _FakeGraph:
 def test_ffn_runner_executes_model_compute_ffn_output():
     runner = _runner_with_connector_and_model(_FakeModel())
     metadata = _metadata()
-    runner.connector.attn_outputs.append(("hidden", metadata))
+    runner.connector.attn_outputs.append(_payload("hidden", metadata))
 
     runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
 
@@ -156,25 +157,11 @@ def test_ffn_runner_executes_model_compute_ffn_output():
 def test_ffn_runner_passthrough_without_model_compute_hook():
     runner = _runner_with_connector_and_model(SimpleNamespace())
     metadata = _metadata()
-    runner.connector.attn_outputs.append(("hidden", metadata))
+    runner.connector.attn_outputs.append(_payload("hidden", metadata))
 
     runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
 
     assert runner.connector.ffn_outputs == [("hidden", metadata)]
-
-
-def test_ffn_runner_accepts_unified_recv_output_payload():
-    runner = _runner_with_connector_and_model(_FakeModel())
-    metadata = _metadata()
-    runner.connector.attn_outputs.append(
-        AFDA2FTransferPayload(hidden_states="hidden", metadata=metadata),
-    )
-
-    runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
-
-    assert runner.connector.ffn_outputs == [
-        ("ffn(hidden, layer=0)", metadata),
-    ]
 
 
 def test_ffn_runner_processes_each_ubatch_for_each_layer():
@@ -185,10 +172,10 @@ def test_ffn_runner_processes_each_ubatch_for_each_layer():
     metadata_1_layer_1 = _metadata_for_stage(1)
     runner.connector.attn_outputs.extend(
         [
-            ("hidden-1-l0", metadata_1_layer_0),
-            ("hidden-0-l0", metadata_0_layer_0),
-            ("hidden-1-l1", metadata_1_layer_1),
-            ("hidden-0-l1", metadata_0_layer_1),
+            _payload("hidden-1-l0", metadata_1_layer_0),
+            _payload("hidden-0-l0", metadata_0_layer_0),
+            _payload("hidden-1-l1", metadata_1_layer_1),
+            _payload("hidden-0-l1", metadata_0_layer_1),
         ],
     )
 
@@ -245,7 +232,7 @@ def test_ffn_runner_cuda_graph_miss_falls_back_to_eager():
     runner = _runner_with_connector_and_model(_FakeModel())
     runner.use_cuda_graph = True
     metadata = _metadata()
-    runner.connector.attn_outputs.append(("hidden", metadata))
+    runner.connector.attn_outputs.append(_payload("hidden", metadata))
 
     runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
 
@@ -257,7 +244,7 @@ def test_ffn_runner_cuda_graph_miss_falls_back_to_eager():
 def test_ffn_runner_steps_gpu_profiler():
     runner = _runner_with_connector_and_model(_FakeModel())
     runner.prof = _StepProfiler()
-    runner.connector.attn_outputs.append(("hidden", _metadata()))
+    runner.connector.attn_outputs.append(_payload("hidden", _metadata()))
 
     runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
 
@@ -277,7 +264,7 @@ def test_ffn_runner_stops_gpu_profiler_on_shutdown():
 def test_ffn_forward_can_skip_connector_state_update_for_capture():
     runner = _runner_with_connector_and_model(_FakeModel())
     metadata = _metadata()
-    runner.connector.attn_outputs.append(("hidden", metadata))
+    runner.connector.attn_outputs.append(_payload("hidden", metadata))
 
     runner._ffn_forward(
         dp_metadata_list={0: _FakeDPMetadata([1])},
