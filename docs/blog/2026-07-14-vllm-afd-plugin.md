@@ -133,7 +133,7 @@ The project intentionally exposes its current boundaries: exact vLLM version pin
 
 The next phase of development will focus on:
 
-* **Broader vLLM compatibility and upstream alignment:** track newer vLLM and vLLM-Ascend releases, evaluate model runner v2, keep compatibility patches minimal, and contribute generally useful abstractions upstream as they mature.
+* **Broader vLLM compatibility and upstream alignment:** track newer vLLM releases, evaluate model runner v2, keep compatibility patches minimal, and contribute generally useful abstractions upstream as they mature.
 * **More flexible execution:** extend graph modes, ubatch counts, asynchronous stages, and validated rank topologies.
 * **Production-scale validation:** publish repeatable accuracy, latency, throughput, stability, and multi-node results on full models and realistic workloads.
 * **Expanded model and connector coverage:** add MoE architectures and backend transports through the existing model-wrapper and connector interfaces, together with corresponding deployment recipes for each newly supported model and connector.
