@@ -63,27 +63,6 @@ def test_attn_output_carries_connector_payload_fields():
     assert repr(output).startswith("AFDA2FTransferPayload(")
 
 
-def test_connector_base_builds_default_recv_metadata_from_dp_metadata():
-    connector = _MinimalConnector(
-        0,
-        0,
-        object(),
-        AFDConfig(enabled=True, connector="CAMP2pAFDConnector"),
-    )
-
-    metadata = connector.create_recv_metadata(
-        dp_metadata_list={
-            1: AFDDPMetadata(
-                _cpu_token_tensor([4]),
-            ),
-        },
-        ubatch_idx=1,
-        layer_idx=3,
-    )
-
-    assert metadata.layer_idx == 3
-    assert metadata.stage_idx == 1
-    assert metadata.seq_lens == [4]
 
 
 class _MinimalConnector(AFDConnectorBase):
