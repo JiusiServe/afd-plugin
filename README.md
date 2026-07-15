@@ -39,11 +39,13 @@ Model support:
 
 Connector support:
 
+See the [recipe index](recipe/README.md) for deployment and benchmark examples.
+
 | Connector | Platform | Recommend Stage | Sync or Async | Graph Support | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `P2pNcclAFDConnector` | CUDA | Decode | Sync | `FULL_DECODE_ONLY` CUDA graph | FFN ranks are ordered before Attention ranks. `num_attention_ranks` must be greater than or equal to `num_ffn_ranks` and divisible by it. See the [DeepSeek V2 Lite recipe](recipe/gpu/p2p_nccl/deepseek_v2_lite/README.md). |
-| `CAMP2pAFDConnector` | Ascend NPU | Decode | Sync | `FULL_DECODE_ONLY` ACL graph | Uses HCCL/CAMP2P custom ops. Ascend ops build by default on NPU platforms. |
-| `CAMAsyncAFDConnector` | Ascend NPU | Prefill | Async | Not supported | Uses CAM async-DP custom ops and requires `async=true` with the Ascend NPU workers. See the [DeepSeek V3.2 recipe](recipe/npu/cam_async/DeepSeek-V3.2.md). |
+| `P2pNcclAFDConnector` | CUDA | Decode | Sync | `FULL_DECODE_ONLY` CUDA graph | FFN ranks are ordered before Attention ranks. `num_attention_ranks` must be greater than or equal to `num_ffn_ranks` and divisible by it. See the [DeepSeek V2 Lite recipe](recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite/README.md). |
+| `CAMP2pAFDConnector` | Ascend NPU | Decode | Sync | `FULL_DECODE_ONLY` ACL graph | Uses HCCL/CAMP2P custom ops. Ascend ops build by default on NPU platforms. See the [synchronous DeepSeek V3.2 recipe](recipe/npu/CAMP2pAFDConnector/deepseek_v3_2/README.md). |
+| `CAMAsyncAFDConnector` | Ascend NPU | Prefill | Async | Not supported | Uses CAM async-DP custom ops and requires `async=true` with the Ascend NPU workers. See the [asynchronous DeepSeek V3.2 recipe](recipe/npu/CAMAsyncAFDConnector/deepseek_v3_2/README.md). |
 
 Connector implementations are grouped by backend package:
 `afd_plugin.connectors.gpu` for GPU-only connectors,
