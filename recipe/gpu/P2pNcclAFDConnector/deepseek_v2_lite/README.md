@@ -68,14 +68,14 @@ before sending traffic.
 ### prefill_decode_colocation
 ```bash
 export MODEL_PATH=/path/model_weights/DeepSeek-V2-Lite
-bash recipe/gpu/p2p_nccl/deepseek_v2_lite/prefill_decode_colocation/2a2f_graph_dbo_dp1tp2.sh
+bash recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite/prefill_decode_colocation/2a2f_graph_dbo_dp1tp2.sh
 ```
 
 ### prefill_decode_disaggregation
 
 ```bash
 export MODEL_PATH=/path/model_weights/DeepSeek-V2-Lite
-bash recipe/gpu/p2p_nccl/deepseek_v2_lite/prefill_decode_disaggregation/2p1a1f_graph_dbo.sh
+bash recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite/prefill_decode_disaggregation/2p1a1f_graph_dbo.sh
 ```
 
 ### Running the benchmark
