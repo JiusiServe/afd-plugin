@@ -4,7 +4,6 @@ import pytest
 
 pytest.importorskip("torch")
 
-from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
     AFDA2FTransferPayload,
     AFDConnectorBase,
@@ -61,8 +60,6 @@ def test_attn_output_carries_connector_payload_fields():
     assert output.topk_ids == "ids"
     assert output.cam_p2p_ep_name == "ep"
     assert repr(output).startswith("AFDA2FTransferPayload(")
-
-
 
 
 class _MinimalConnector(AFDConnectorBase):

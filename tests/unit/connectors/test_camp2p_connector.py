@@ -245,12 +245,27 @@ def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
     assert captured["transfer_state"].batch_size == 3
 
 
-def test_camp2p_init_fails_cleanly_without_ascend_runtime():
+def test_camp2p_init_fails_cleanly_without_ascend_runtime(monkeypatch):
     connector = CAMP2pAFDConnector(
         0,
         0,
         _vllm_config(),
         _afd_config(role="attention", rank=0),
+    )
+
+    def _raise_missing_ops():
+        raise RuntimeError(
+            "CAMP2P Ascend custom ops are not available. Build the package with "
+            "Ascend ops enabled in a torch-npu/CANN environment.",
+        )
+
+    # Force the "ascend runtime missing" path so the test is deterministic on
+    # real NPU hosts too: otherwise init proceeds into init_afd_process_group
+    # and blocks forever on the HCCL rendezvous waiting for absent peers.
+    monkeypatch.setattr(
+        camp2p_module,
+        "ensure_cam_p2p_ops_available",
+        _raise_missing_ops,
     )
 
     with pytest.raises(RuntimeError, match="AFD Ascend custom ops|torch-npu"):
