@@ -80,7 +80,7 @@
         &lt;mxCell id=&quot;model-native&quot; value=&quot;vLLM Model / Layers / Ops&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#eaf3ff;strokeColor=#91b6e5;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;40&quot; y=&quot;600&quot; width=&quot;350&quot; height=&quot;62&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;model-wrappers&quot; value=&quot;AFD Model Wrappers&amp;lt;br&amp;gt;DeepSeek V2/V3, Step3, ... FFN split hooks&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#fff5df;strokeColor=#d9ad5f;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;model-wrappers&quot; value=&quot;AFD Model Wrappers&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#fff5df;strokeColor=#d9ad5f;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;420&quot; y=&quot;600&quot; width=&quot;410&quot; height=&quot;62&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;runtime-helpers&quot; value=&quot;Plugin Runtime Helpers&amp;lt;br&amp;gt;ubatching / tracing / validation&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
@@ -90,10 +90,13 @@
           &lt;mxGeometry x=&quot;535&quot; y=&quot;306&quot; width=&quot;210&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;connector-camp2p&quot; value=&quot;CAMP2pAFDConnector&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;535&quot; y=&quot;393&quot; width=&quot;210&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;535&quot; y=&quot;373&quot; width=&quot;210&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;connector-cam-async&quot; value=&quot;CAMAsyncAFDConnector&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;535&quot; y=&quot;480&quot; width=&quot;210&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;535&quot; y=&quot;440&quot; width=&quot;210&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
+        &lt;/mxCell&gt;
+        &lt;mxCell id=&quot;connector-others&quot; value=&quot;Others&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+          &lt;mxGeometry x=&quot;535&quot; y=&quot;507&quot; width=&quot;210&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;legend-imported&quot; value=&quot;&quot; style=&quot;rounded=0;whiteSpace=wrap;html=1;fillColor=#eaf3ff;strokeColor=none;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;95&quot; y=&quot;682&quot; width=&quot;72&quot; height=&quot;24&quot; as=&quot;geometry&quot; /&gt;
@@ -218,15 +221,17 @@
 <rect x="40" y="600" width="350" height="62" fill="#d2f1f4" stroke="#b9b9b9" stroke-width="2"/>
 <g><text x="215" y="631" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">vLLM Model / Layers / Ops</text></g>
 <rect x="420" y="600" width="410" height="62" fill="#fff4c9" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="625" y="621.28" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">AFD Model Wrappers</text><text x="625" y="640.72" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">DeepSeek V2/V3, Step3, ... FFN split hooks</text></g>
+<g><text x="625" y="631" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">AFD Model Wrappers</text></g>
 <rect x="860" y="600" width="380" height="62" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
 <g><text x="1050" y="621.28" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">Plugin Runtime Helpers</text><text x="1050" y="640.72" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">ubatching / tracing / validation</text></g>
 <rect x="535" y="306" width="210" height="52" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
 <g><text x="640" y="332" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">P2pNcclAFDConnector</text></g>
-<rect x="535" y="393" width="210" height="52" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="640" y="419" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">CAMP2pAFDConnector</text></g>
-<rect x="535" y="480" width="210" height="52" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="640" y="506" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">CAMAsyncAFDConnector</text></g>
+<rect x="535" y="373" width="210" height="52" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="640" y="399" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">CAMP2pAFDConnector</text></g>
+<rect x="535" y="440" width="210" height="52" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="640" y="466" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">CAMAsyncAFDConnector</text></g>
+<rect x="535" y="507" width="210" height="52" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="640" y="533" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">Others</text></g>
 <rect x="95" y="682" width="72" height="24" fill="#d2f1f4"/>
 <g><text x="188" y="694" text-anchor="start" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">imported</text></g>
 <rect x="335" y="682" width="72" height="24" fill="#fff4c9"/>
