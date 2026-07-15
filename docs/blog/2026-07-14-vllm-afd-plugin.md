@@ -16,7 +16,8 @@ Mixture-of-Experts (MoE) inference combines two very different kinds of work ins
 
 vLLM AFD Plugin separates these paths into independently deployed Attention and FFN services while preserving vLLM's request lifecycle and OpenAI-compatible API on the Attention side. The project currently supports NVIDIA GPUs and Ascend NPUs, synchronous and asynchronous connectors, DeepSeek V2/V3-family model wrappers, and eager, graph, and dual-batch execution paths within clearly validated limits.
 
-> vLLM AFD Plugin is currently experimental. The initial implementation targets vLLM `0.19.1`, and more large-scale testing is still needed across models, topologies, and hardware.
+> [!NOTE]
+> This project is still experimental and needs more large-scale testing across different hardware backends.
 
 ## Why Attention–FFN Disaggregation?
 
