@@ -1,6 +1,27 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""Ascend CAM async-DP connector skeleton for NPU AFD."""
+"""Ascend CAM asynchronous connector for Attention/FFN disaggregation.
+
+``CAMAsyncAFDConnector`` is the eager-only Ascend prefill data path. Attention
+ranks run MoE routing, submit activations with CAM async dispatch-send, and
+receive combined expert output with combine-recv. FFN ranks receive routed and
+shared-expert activations with dispatch-recv, execute their local experts, and
+return the results with combine-send.
+
+The connector creates one HCCL world ordered as
+``[A0, A1, ..., F0, F1, ...]``. Attention world ranks therefore equal their
+role ranks, while FFN world ranks start at ``num_attention_ranks``. Unlike the
+synchronous connectors, CAM async carries routing and token-count metadata in
+the CAM operator payload and does not create a separate Gloo DP-metadata
+control plane.
+
+The supported deployment requires ``async=true``, eager execution, Ascend CAM
+operator packages, and matching topology/configuration on every rank. vLLM
+native DBO, ACL graph execution, decode, and multistream are not supported.
+Optional AFD-managed MoE ubatching is a separate two-stage request-boundary
+pipeline. See ``docs/npu/CAM_ASYNC_CONNECTOR_USER_GUIDE.md`` for configuration,
+rank derivation, launch guidance, and the full limitations.
+"""
 
 from __future__ import annotations
 
@@ -74,6 +95,8 @@ class AFDAsyncFFNWorkItem:
 
 @dataclass(frozen=True, slots=True)
 class AFDAsyncTopology:
+    """Role-local and HCCL-world rank information for one CAM participant."""
+
     role: str
     role_rank: int
     world_rank: int
@@ -83,11 +106,18 @@ class AFDAsyncTopology:
 
     @property
     def world_size(self) -> int:
+        """Return the total number of Attention and FFN ranks."""
         return self.attention_rank_size + self.expert_rank_size
 
 
 class CAMAsyncAFDConnector(AFDConnectorBase):
-    """CAM-backed async-DP connector for Ascend NPU AFD."""
+    """CAM-backed asynchronous connector for Ascend NPU AFD.
+
+    Attention ranks occupy the first part of the HCCL world and FFN ranks the
+    second. CAM dispatch/combine operators own both the collective data motion
+    and its routing metadata, so ``uses_dp_metadata_control_plane`` is false
+    and FFN work is triggered directly by the connector receive loop.
+    """
 
     uses_dp_metadata_control_plane = False
     ffn_step_trigger = "connector"
@@ -99,6 +129,13 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         vllm_config: VllmConfig,
         afd_config: AFDConfig,
     ) -> None:
+        """Derive CAM topology, tensor dimensions, and connector state.
+
+        Communication resources are created collectively by
+        ``init_afd_connector``. ``afd_role_rank`` must already contain the
+        process's role-local DP/PCP-derived offset; ``attn_ranks_per_dp`` is
+        used as the CAM Attention TP width.
+        """
         super().__init__(rank, local_rank, vllm_config, afd_config)
         self._initialized = False
         hf_config = vllm_config.model_config.hf_config
@@ -134,9 +171,16 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
 
     @property
     def is_initialized(self) -> bool:
+        """Return whether the CAM HCCL group and operator buffers are ready."""
         return self._initialized
 
     def init_afd_connector(self) -> None:
+        """Collectively initialize the CAM HCCL world and operator buffers.
+
+        All Attention and FFN ranks must call this method with identical
+        rendezvous and topology settings. Missing/duplicate ranks or mismatched
+        world sizes fail or time out during the 30-minute rendezvous.
+        """
         if self._initialized:
             return
 
@@ -160,6 +204,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self._initialized = True
 
     def close(self) -> None:
+        """Destroy the HCCL process group and clear pending transfer state."""
         if self.cam_pg is not None:
             import torch.distributed as dist
 
@@ -174,20 +219,24 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self,
         payload: AFDControlPayload,
     ) -> None:
+        """No-op because CAM async carries metadata in dispatch payloads."""
         return None
 
     def send_dp_metadata_list(
         self,
         payload: AFDControlPayload,
     ) -> None:
+        """No-op because CAM async has no separate DP-metadata control plane."""
         return None
 
     def recv_dp_metadata_list(self) -> AFDControlPayload:
+        """Reject control-plane receives, which CAM async never performs."""
         raise RuntimeError(
             "CAMAsyncAFDConnector does not use the DP metadata control plane",
         )
 
     def select_experts(self, **kwargs: Any) -> tuple[Tensor, Tensor]:
+        """Run the vLLM Ascend expert selector on the Attention side."""
         from vllm_ascend.ops.fused_moe.experts_selector import select_experts
 
         if "global_num_experts" in kwargs:
@@ -219,6 +268,11 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         stage_idx: int,
         max_num_tokens: int,
     ) -> AFDAsyncFFNWorkItem:
+        """Receive and normalize one connector-driven FFN dispatch item.
+
+        CAM metadata supplies the actual layer and routed/shared token counts;
+        returned tensors are sliced from operator capacity to those counts.
+        """
         recv_output = self.recv_attn_output(
             stage_idx=stage_idx,
             layer_idx=0,
@@ -267,6 +321,12 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         work_item: AFDAsyncFFNWorkItem,
         ffn_output: Tensor | AFDF2ATransferPayload,
     ) -> Tensor | AFDF2ATransferPayload:
+        """Return one FFN work item's routed/shared outputs through CAM.
+
+        A one-token BF16 routed placeholder is used when a rank receives no
+        routed tokens because CAM combine-send cannot consume the dynamic
+        quantized dispatch buffer as an empty routed result.
+        """
         if int(work_item.num_tokens) > 0:
             _send_ffn_output_payload(
                 self,
@@ -307,6 +367,12 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         metadata: AFDTransferMetadata,
         **kwargs: Any,
     ) -> None:
+        """Dispatch Attention activations and top-k routing to FFN ranks.
+
+        The matching metadata and routing tensors are queued per async stage
+        for ``recv_ffn_output``. The input token count and top-k tensor shapes
+        must match the transfer metadata and model configuration.
+        """
         self._require_initialized()
         if not metadata.validate_tensor_shape(tuple(hidden_states.shape)):
             raise ValueError(
@@ -374,6 +440,12 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         return None
 
     def recv_ffn_output(self, **kwargs: Any) -> Tensor:
+        """Receive and combine expert output on an Attention rank.
+
+        Routing tensors may be supplied explicitly or recovered FIFO from the
+        matching stage's pending dispatch. ``ref_tensor`` selects the output
+        device and dtype used to construct the CAM receive placeholder.
+        """
         self._require_initialized()
         ref_tensor = cast(Tensor, kwargs["ref_tensor"])
         metadata = kwargs.get("metadata")
@@ -444,6 +516,13 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         ubatch_idx: int | None = None,
         **kwargs: Any,
     ) -> AFDA2FTransferPayload:
+        """Receive CAM-dispatched routed/shared activations on an FFN rank.
+
+        The returned payload preserves dynamic-quant scales, per-expert token
+        counts, shared-expert activations, and CAM token/rank/layer metadata so
+        local expert execution and the subsequent combine-send use the same
+        routing contract.
+        """
         self._require_initialized()
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
         metadata = self._create_transfer_metadata(
@@ -547,6 +626,11 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         metadata: AFDTransferMetadata,
         **kwargs: Any,
     ) -> None:
+        """Send routed and optional shared-expert outputs for CAM combination.
+
+        ``TokenNums_Rankid_Layeridx`` from the matching dispatch-recv is
+        mandatory because CAM uses it to return results to Attention ranks.
+        """
         self._require_initialized()
         data = self._metadata_data_or_default(metadata)
         expand_x_shared = kwargs.get("expand_x_shared")
@@ -703,6 +787,14 @@ def build_async_topology(
     *,
     num_routed_experts: int | None = None,
 ) -> AFDAsyncTopology:
+    """Validate role-local rank settings and derive the CAM HCCL world rank.
+
+    The world is Attention-first: Attention role rank ``i`` maps to world rank
+    ``i`` and FFN role rank ``j`` maps to
+    ``num_attention_ranks + j``. Routed experts are distributed across FFN
+    ranks using a ceiling division; production model layouts should keep the
+    routed-expert count divisible by the FFN rank count.
+    """
     attention_size = int(afd_config.num_attention_ranks)
     expert_rank_size = int(afd_config.num_ffn_ranks)
     role_rank = int(afd_config.afd_role_rank if role_rank is None else role_rank)
@@ -741,6 +833,7 @@ def build_async_topology(
 
 
 def _resolve_cam_tp_size(afd_config: AFDConfig) -> int:
+    """Return the positive ``attn_ranks_per_dp`` CAM topology width."""
     value = afd_config.extra_config.get(ATTN_RANKS_PER_DP_CONFIG_KEY, 1)
     if isinstance(value, bool):
         raise TypeError(
