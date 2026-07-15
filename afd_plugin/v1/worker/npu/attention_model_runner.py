@@ -1245,9 +1245,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         if forward_context.additional_kwargs is None:
             forward_context.additional_kwargs = {}
         forward_context.additional_kwargs["afd_metadata"] = self._afd_pending_metadata
-        if not bool(
-            getattr(self.afd_connector, "uses_dp_metadata_control_plane", True),
-        ):
+        if self.afd_connector.control_plane is None:
             return
         if bool(getattr(self, "_afd_suppress_metadata_send", False)):
             return
@@ -1292,7 +1290,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,
         )
-        self.afd_connector.update_state_from_dp_metadata(payload)
+        self.afd_connector.control_plane.update_state_from_dp_metadata(payload)
         logger.warning(
             "AFD NPU Attention send_dp_metadata decision; world_rank=%d "
             "key=%s is_graph_capturing=%s is_warmup=%s",
@@ -1301,7 +1299,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             is_graph_capturing,
             is_warmup,
         )
-        self.afd_connector.send_dp_metadata_list(payload)
+        self.afd_connector.control_plane.send_dp_metadata_list(payload)
 
     def _ensure_dp_metadata(
         self,
@@ -1402,9 +1400,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             )
             return should_ubatch, num_tokens_padded, None, cudagraph_mode
 
-        if not bool(
-            getattr(self.afd_connector, "uses_dp_metadata_control_plane", True),
-        ):
+        if self.afd_connector.control_plane is None:
             num_tokens_after_padding = torch.tensor(
                 [num_tokens_padded] * self.dp_size,
                 device="cpu",

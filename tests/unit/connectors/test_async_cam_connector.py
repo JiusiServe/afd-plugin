@@ -13,11 +13,10 @@ pytest.importorskip("torch_npu")
 from afd_plugin.connectors import (  # noqa: E402
     AFDA2FTransferPayload,
     AFDConnectorFactory,
-    AFDControlPayload,
-    AFDDPMetadata,
     AFDF2ATransferPayload,
     AFDTransferMetadata,
     AFDTransferState,
+    Trigger,
 )
 from afd_plugin.connectors.npu import async_cam as async_cam_module  # noqa: E402
 from afd_plugin.connectors.npu.async_cam import (  # noqa: E402
@@ -193,9 +192,9 @@ def test_async_connector_factory_creates_import_safe_connector():
 
     assert isinstance(connector, CAMAsyncAFDConnector)
     assert not connector.is_initialized
-    assert connector.uses_dp_metadata_control_plane is False
-    assert connector.ffn_step_trigger == "connector"
-    assert connector.tp_size == 2
+    assert connector.control_plane is None
+    assert connector.ffn_step_trigger is Trigger.CONNECTOR
+    assert connector.tp_size == 1
 
 
 def test_async_connector_uses_attn_ranks_per_dp_for_cam_tp_size():
@@ -300,17 +299,9 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
 
 def test_async_connector_disables_dp_metadata_control_plane():
     connector = CAMAsyncAFDConnector(0, 0, _vllm_config(), _afd_config(role="ffn"))
-    payload = AFDControlPayload(
-        dp_metadata_list={0: AFDDPMetadata([1])},
-        is_graph_capturing=False,
-        is_warmup=False,
-    )
 
-    connector.update_state_from_dp_metadata(payload)
-    connector.send_dp_metadata_list(payload)
-
-    with pytest.raises(RuntimeError, match="does not use the DP metadata"):
-        connector.recv_dp_metadata_list()
+    assert connector.control_plane is None
+    assert connector.ffn_step_trigger is Trigger.CONNECTOR
 
 
 def test_async_connector_calls_cam_shaped_ops(monkeypatch):

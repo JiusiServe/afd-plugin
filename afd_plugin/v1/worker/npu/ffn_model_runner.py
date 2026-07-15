@@ -126,7 +126,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         return None
 
     def execute_connector_driven_step(self) -> None:
-        if bool(getattr(self.connector, "uses_dp_metadata_control_plane", True)):
+        if self.connector.control_plane is not None:
             raise RuntimeError(
                 "execute_connector_driven_step requires a connector-driven "
                 "AFD connector",
@@ -195,7 +195,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         update_connector_state: bool = True,
     ) -> torch.Tensor | None:
         if update_connector_state:
-            self.connector.update_state_from_dp_metadata(
+            self.connector.control_plane.update_state_from_dp_metadata(
                 _make_dp_metadata_payload(
                     dp_metadata_list,
                     is_graph_capturing=is_graph_capturing,
@@ -398,7 +398,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         logger.debug("AFD NPU FFN capturing ACL graph for key=%s", graph_key)
         graph = torch.npu.NPUGraph()
         logger.debug("AFD NPU FFN created NPUGraph for key=%s", graph_key)
-        self.connector.update_state_from_dp_metadata(
+        self.connector.control_plane.update_state_from_dp_metadata(
             _make_dp_metadata_payload(
                 dp_metadata_list,
                 is_graph_capturing=is_attn_graph_capturing,

@@ -2,7 +2,12 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """AFD connector namespace."""
 
-from afd_plugin.connectors.base import AFDConnectorBase, ConnectorExtraInfo
+from afd_plugin.connectors.base import (
+    AFDConnectorBase,
+    AFDControlPlane,
+    ConnectorExtraInfo,
+    Trigger,
+)
 from afd_plugin.connectors.factory import AFDConnectorFactory
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
@@ -17,6 +22,8 @@ from afd_plugin.connectors.metadata import (
 
 __all__ = [
     "AFDConnectorBase",
+    "AFDControlPlane",
+    "Trigger",
     "ConnectorExtraInfo",
     "AFDTransferState",
     "AFDConnectorFactory",

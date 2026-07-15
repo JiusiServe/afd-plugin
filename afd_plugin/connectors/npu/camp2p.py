@@ -37,7 +37,9 @@ from afd_plugin.config_utils import (
 )
 from afd_plugin.connectors.base import (
     AFDConnectorBase,
+    AFDControlPlane,
     ConnectorExtraInfo,
+    Trigger,
 )
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
@@ -223,6 +225,13 @@ class CAMP2pAFDConnector(AFDConnectorBase):
     The connector owns HCCL process-group setup and CAMP2P custom-op transfers.
     Runtime validation rejects unsupported nonzero quantization modes and
     compute-gate-on-attention settings.
+
+    DP metadata operations do not live on the connector itself: they are
+    provided by the pluggable ``CAMP2pAFDControlPlane`` instance created at
+    construction time and exposed as ``control_plane``. The connector still
+    owns the ``p2p`` process group the control plane transmits over, because
+    creating that group is part of the collective ``init_afd_connector``
+    ordering.
     """
 
     @classmethod
@@ -289,6 +298,8 @@ class CAMP2pAFDConnector(AFDConnectorBase):
             "n_routed_experts",
             default=0,
         )
+        self.control_plane = CAMP2pAFDControlPlane(self)
+        self.ffn_step_trigger = Trigger.DP_METADATA
 
     @property
     def is_initialized(self) -> bool:
@@ -396,67 +407,6 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         self.hccl_comm_name1 = ""
         self.hccl_comm_name_list = []
         self._initialized = False
-
-    def update_state_from_dp_metadata(
-        self,
-        payload: AFDControlPayload,
-    ) -> None:
-        """Save the latest batch information received from Attention.
-
-        The saved information includes token counts for each ubatch and whether
-        the model is warming up or capturing an ACL graph.
-
-        Args:
-            payload: Batch information prepared by the Attention worker.
-        """
-        self.dp_metadata_list = dict(payload.dp_metadata_list)
-        self.is_graph_capturing = payload.is_graph_capturing
-        self.is_warmup = payload.is_warmup
-
-    def send_dp_metadata_list(
-        self,
-        payload: AFDControlPayload,
-    ) -> None:
-        """Send token counts and batch information from Attention to FFN.
-
-        Only the Attention ranks assigned to send this information take part.
-        Other Attention ranks return without sending anything. The information
-        travels as small CPU tensors through Gloo, not through the NPU data path.
-
-        Args:
-            payload: Token counts, ubatch information, and graph/warmup state.
-        """
-        if self.p2p_pg is None:
-            return
-        if not self.topology.is_attn_top_min_size_rank:
-            return
-        # The CAMP2P DP-metadata group runs on gloo, so the wire tensors stay on
-        # CPU rather than the NPU device.
-        device = torch.device("cpu")
-        send_control_payload(
-            payload,
-            dst=self.dst_list,
-            group=self.p2p_pg,
-            device=device,
-        )
-
-    def recv_dp_metadata_list(self) -> AFDControlPayload:
-        """Wait for Attention to send this FFN rank's batch information.
-
-        Returns:
-            Token counts, ubatch information, and graph/warmup state.
-
-        Raises:
-            RuntimeError: If the Gloo group was not created for this process.
-        """
-        if self.p2p_pg is None:
-            raise RuntimeError("CAMP2P metadata process group is not initialized")
-        src = self.p2p_rank % self.min_size + self.ffn_size
-        return recv_control_payload(
-            src=src,
-            group=self.p2p_pg,
-            device=torch.device("cpu"),
-        )
 
     def _create_transfer_metadata(
         self, ubatch_idx: int = 0, layer_idx: int = 0, max_num_tokens: int = 1
@@ -715,6 +665,59 @@ class CAMP2pAFDConnector(AFDConnectorBase):
             batch_size=max(1, int(batch_size)),
             h=self.hidden_size,
             k=max(1, int(k)),
+        )
+
+
+class CAMP2pAFDControlPlane(AFDControlPlane):
+    """DP metadata control plane for ``CAMP2pAFDConnector``.
+
+    Applies DP metadata payloads to the owning connector's state and moves
+    them between Attention and FFN ranks over the connector's dedicated
+    ``p2p`` gloo process group. The connector creates one instance at
+    construction time and exposes it through ``control_plane``; the process
+    group itself is created by ``init_afd_connector``.
+    """
+
+    def __init__(self, connector: CAMP2pAFDConnector) -> None:
+        self.connector = connector
+
+    def update_state_from_dp_metadata(
+        self,
+        payload: AFDControlPayload,
+    ) -> None:
+        connector = self.connector
+        connector.dp_metadata_list = dict(payload.dp_metadata_list)
+        connector.is_graph_capturing = payload.is_graph_capturing
+        connector.is_warmup = payload.is_warmup
+
+    def send_dp_metadata_list(
+        self,
+        payload: AFDControlPayload,
+    ) -> None:
+        connector = self.connector
+        if connector.p2p_pg is None:
+            return
+        if not connector.topology.is_attn_top_min_size_rank:
+            return
+        # The CAMP2P DP-metadata group runs on gloo, so the wire tensors stay on
+        # CPU rather than the NPU device.
+        device = torch.device("cpu")
+        send_control_payload(
+            payload,
+            dst=connector.dst_list,
+            group=connector.p2p_pg,
+            device=device,
+        )
+
+    def recv_dp_metadata_list(self) -> AFDControlPayload:
+        connector = self.connector
+        if connector.p2p_pg is None:
+            raise RuntimeError("CAMP2P metadata process group is not initialized")
+        src = connector.p2p_rank % connector.min_size + connector.ffn_size
+        return recv_control_payload(
+            src=src,
+            group=connector.p2p_pg,
+            device=torch.device("cpu"),
         )
 
 
@@ -1132,6 +1135,7 @@ def _empty_npu_tensor(*, dtype_name: str) -> torch.Tensor:
 
 __all__ = [
     "CAMP2pAFDConnector",
+    "CAMP2pAFDControlPlane",
     "CAMP2PAFDConnectorData",
     "CAMP2PExtraInfo",
     "CAMP2PTransferState",

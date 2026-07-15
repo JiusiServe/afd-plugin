@@ -22,16 +22,19 @@ from afd_plugin.connectors import (
     AFDF2ATransferPayload,
     AFDForwardContextMetadata,
     AFDTransferMetadata,
+    Trigger,
 )
 
 
 class _RecordingConnector:
     world_rank = 0
-    uses_dp_metadata_control_plane = True
 
     def __init__(self):
         self.dp_metadata_updates = []
         self.sent_dp_metadata_lists = []
+        # The runners reach the control plane through connector.control_plane;
+        # the fake serves as both.
+        self.control_plane = self
 
     def update_state_from_dp_metadata(self, payload):
         assert isinstance(payload, AFDControlPayload)
@@ -55,11 +58,11 @@ class _RecordingConnector:
 
 
 class _AsyncRecordingConnector(_RecordingConnector):
-    uses_dp_metadata_control_plane = False
-    ffn_step_trigger = "connector"
+    ffn_step_trigger = Trigger.CONNECTOR
 
     def __init__(self):
         super().__init__()
+        self.control_plane = None
 
 
 class _FakeFFNConnector:
@@ -72,6 +75,9 @@ class _FakeFFNConnector:
         self.ffn_size = ffn_size
         self.world_rank = world_rank
         self.topology = SimpleNamespace(role_rank=role_rank)
+        # The runners reach the control plane through connector.control_plane;
+        # the fake serves as both.
+        self.control_plane = self
 
     def update_state_from_dp_metadata(self, payload):
         assert isinstance(payload, AFDControlPayload)
@@ -694,7 +700,7 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
     )
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
-    runner.connector = SimpleNamespace(uses_dp_metadata_control_plane=False)
+    runner.connector = SimpleNamespace(control_plane=None)
     runner.model = _RecordingFakeModel()
     runner.num_layers = 1
     runner.max_num_tokens = 16

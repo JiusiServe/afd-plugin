@@ -24,7 +24,7 @@ Topology:
 
 Control and data planes:
     DP metadata handling is a pluggable control plane, not part of the
-    connector interface: ``P2pNcclAFDControlPlain`` (an ``AFDControlPlain``
+    connector interface: ``P2pNcclAFDControlPlane`` (an ``AFDControlPlane``
     implementation exposed as ``connector.control_plane``) sends, receives,
     and applies the per-stage token-count payloads that determine wire
     tensor shapes, moving them over a separate NCCL process group. The
@@ -75,7 +75,7 @@ from vllm.utils.torch_utils import direct_register_custom_op
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors.base import (
     AFDConnectorBase,
-    AFDControlPlain,
+    AFDControlPlane,
     ConnectorExtraInfo,
     Trigger,
 )
@@ -122,7 +122,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
     DP metadata that determines per-stage tensor shapes.
 
     DP metadata operations do not live on the connector itself: they are
-    provided by the pluggable ``P2pNcclAFDControlPlain`` instance created at
+    provided by the pluggable ``P2pNcclAFDControlPlane`` instance created at
     construction time and exposed as ``control_plane``. The connector still
     owns the ``p2p`` process group the control plane transmits over, because
     creating that group is part of the collective ``init_afd_connector``
@@ -154,7 +154,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
     ) -> None:
         """Derive the P2P rank mapping and prepare per-stage state caches.
 
-        Also creates the ``P2pNcclAFDControlPlain`` instance exposed as
+        Also creates the ``P2pNcclAFDControlPlane`` instance exposed as
         ``control_plane``. Communication resources are not created here;
         ``init_afd_connector`` performs the collective initialization.
 
@@ -209,7 +209,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         self.e2a_pynccl: PyNcclCommunicator | None = None
         self.a2e_comm_id: int | None = None
         self.e2a_comm_id: int | None = None
-        self.control_plane = P2pNcclAFDControlPlain(self)
+        self.control_plane = P2pNcclAFDControlPlane(self)
         self.ffn_step_trigger = Trigger.DP_METADATA
 
     def close(self) -> None:
@@ -603,7 +603,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             return 0
 
 
-class P2pNcclAFDControlPlain(AFDControlPlain):
+class P2pNcclAFDControlPlane(AFDControlPlane):
     """DP metadata control plane for ``P2pNcclAFDConnector``.
 
     Applies DP metadata payloads to the owning connector's per-stage tensor
@@ -908,4 +908,4 @@ def _register_p2p_custom_ops() -> None:
     _AFD_CUSTOM_OPS_REGISTERED = True
 
 
-__all__ = ["P2pNcclAFDConnector", "P2pNcclAFDControlPlain"]
+__all__ = ["P2pNcclAFDConnector", "P2pNcclAFDControlPlane"]

@@ -59,7 +59,7 @@ class AFDConnectorBase(ABC):
     common runtime contract shared by those implementations.
     """
 
-    control_plane: AFDControlPlain | None = None
+    control_plane: AFDControlPlane | None = None
     ffn_step_trigger: Trigger = Trigger.DP_METADATA
 
     @classmethod
@@ -243,7 +243,7 @@ class AFDConnectorBase(ABC):
         raise NotImplementedError
 
 
-class AFDControlPlain(ABC):
+class AFDControlPlane(ABC):
     """DP metadata control plane"""
 
     @abstractmethod
@@ -295,4 +295,4 @@ class AFDControlPlain(ABC):
         raise NotImplementedError
 
 
-__all__ = ["AFDConnectorBase", "Trigger", "AFDControlPlain", "ConnectorExtraInfo"]
+__all__ = ["AFDConnectorBase", "Trigger", "AFDControlPlane", "ConnectorExtraInfo"]

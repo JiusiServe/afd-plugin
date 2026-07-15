@@ -18,6 +18,7 @@ from afd_plugin.compat.npu import (
     fix_all2all_backend_for_afd,
     npu_afd_num_ubatches,
 )
+from afd_plugin.connectors import Trigger
 from afd_plugin.v1.worker.npu.ffn_model_runner import AFDNPUFFNModelRunner
 from afd_plugin.validation import NPU_FFN_WORKER_FQCN, assert_compatible_afd_stack
 
@@ -111,12 +112,12 @@ class AFDNPUFFNWorker(NPUWorker):
 
         torch.npu.set_device(self.device)
         while not event.is_set():
-            if self.model_runner.connector.ffn_step_trigger == "connector":
+            if self.model_runner.connector.ffn_step_trigger is Trigger.CONNECTOR:
                 self.model_runner.execute_connector_driven_step()
                 torch.npu.synchronize()
                 continue
 
-            payload = self.model_runner.connector.recv_dp_metadata_list()
+            payload = self.model_runner.connector.control_plane.recv_dp_metadata_list()
             dp_metadata_list = payload.dp_metadata_list
             is_attn_graph_capturing = payload.is_graph_capturing
             is_warmup = payload.is_warmup
