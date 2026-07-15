@@ -123,7 +123,7 @@ class AFDFFNWorker(Worker):
             torch.cuda.set_device(self.device)
 
         while not event.is_set():
-            payload = self.model_runner.connector.recv_dp_metadata_list()
+            payload = self.model_runner.connector.control_plane.recv_dp_metadata_list()
             dp_metadata_list = payload.dp_metadata_list
             is_attn_graph_capturing = payload.is_graph_capturing
             is_warmup = payload.is_warmup

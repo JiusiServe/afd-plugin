@@ -155,7 +155,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         update_connector_state: bool = True,
     ) -> torch.Tensor | None:
         if update_connector_state:
-            self.connector.update_state_from_dp_metadata(
+            self.connector.control_plane.update_state_from_dp_metadata(
                 _make_dp_metadata_payload(
                     dp_metadata_list,
                     is_graph_capturing=is_graph_capturing,
@@ -222,7 +222,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             cudagraph = torch.cuda.CUDAGraph()
             # DP metadata receive/update is a control-plane side effect and must
             # complete before CUDA graph capture starts.
-            self.connector.update_state_from_dp_metadata(
+            self.connector.control_plane.update_state_from_dp_metadata(
                 _make_dp_metadata_payload(
                     dp_metadata_list,
                     is_graph_capturing=is_attn_graph_capturing,
@@ -264,7 +264,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         try:
             with graph_capture(device=self.device):
                 if is_warmup:
-                    self.connector.update_state_from_dp_metadata(
+                    self.connector.control_plane.update_state_from_dp_metadata(
                         _make_dp_metadata_payload(
                             dp_metadata_list,
                             is_graph_capturing=False,

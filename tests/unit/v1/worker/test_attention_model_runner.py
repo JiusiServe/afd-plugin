@@ -60,6 +60,9 @@ class _RecordingConnector:
         self.dp_metadata_update_flags = []
         self.sent_dp_metadata_flags = []
         self.closed = False
+        # The runners reach the control plane through connector.control_plane;
+        # the fake serves as both.
+        self.control_plane = self
 
     def update_state_from_dp_metadata(self, payload):
         assert isinstance(payload, AFDControlPayload)

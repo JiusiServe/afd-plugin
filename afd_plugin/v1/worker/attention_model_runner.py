@@ -130,8 +130,8 @@ class AFDAttentionModelRunner(GPUModelRunner):
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,
         )
-        self.afd_connector.update_state_from_dp_metadata(payload)
-        self.afd_connector.send_dp_metadata_list(payload)
+        self.afd_connector.control_plane.update_state_from_dp_metadata(payload)
+        self.afd_connector.control_plane.send_dp_metadata_list(payload)
 
     def load_model(self, *args: Any, **kwargs: Any) -> Any:
         use_ubatching = bool(self.vllm_config.parallel_config.use_ubatching)

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import enum
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -34,6 +35,11 @@ class ConnectorExtraInfo:
         return {}
 
 
+class Trigger(enum.Enum):
+    DP_METADATA = 0
+    CONNECTOR = 1
+
+
 class AFDConnectorBase(ABC):
     """Base class for plugin-owned AFD Attention/FFN connectors.
 
@@ -53,8 +59,8 @@ class AFDConnectorBase(ABC):
     common runtime contract shared by those implementations.
     """
 
-    uses_dp_metadata_control_plane = True
-    ffn_step_trigger = "dp_metadata"
+    control_plane: AFDControlPlain | None = None
+    ffn_step_trigger: Trigger = Trigger.DP_METADATA
 
     @classmethod
     @abstractmethod
@@ -236,9 +242,9 @@ class AFDConnectorBase(ABC):
         """
         raise NotImplementedError
 
-    # ==============================
-    # DP metadata control plane
-    # ==============================
+
+class AFDControlPlain(ABC):
+    """DP metadata control plane"""
 
     @abstractmethod
     def update_state_from_dp_metadata(
@@ -289,4 +295,4 @@ class AFDConnectorBase(ABC):
         raise NotImplementedError
 
 
-__all__ = ["AFDConnectorBase", "ConnectorExtraInfo"]
+__all__ = ["AFDConnectorBase", "Trigger", "AFDControlPlain", "ConnectorExtraInfo"]

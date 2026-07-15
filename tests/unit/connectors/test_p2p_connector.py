@@ -174,7 +174,7 @@ def test_p2p_ffn_metadata_tracks_each_attention_peer_in_xayf(
         ),
     )
 
-    connector.update_state_from_dp_metadata(
+    connector.control_plane.update_state_from_dp_metadata(
         AFDControlPayload(
             dp_metadata_list={0: AFDDPMetadata(token_counts)},
             is_graph_capturing=False,
@@ -210,7 +210,7 @@ def test_p2p_tensor_metadata_clamps_idle_attention_rank_to_dummy_token():
         is_warmup=False,
     )
 
-    ffn_connector.update_state_from_dp_metadata(payload)
+    ffn_connector.control_plane.update_state_from_dp_metadata(payload)
 
     assert ffn_connector._recv_attn_tensor_metadata_list[(0, 1)].size == torch.Size(
         [1, 16],
@@ -231,7 +231,7 @@ def test_p2p_tensor_metadata_clamps_idle_attention_rank_to_dummy_token():
             num_ffn_ranks=1,
         ),
     )
-    attention_connector.update_state_from_dp_metadata(payload)
+    attention_connector.control_plane.update_state_from_dp_metadata(payload)
 
     assert attention_connector._tensor_metadata_list[0].size == torch.Size([1, 16])
 

@@ -23,8 +23,14 @@ Topology:
     originating Attention rank.
 
 Control and data planes:
-    A separate NCCL process group carries DP metadata used to determine
-    per-stage tensor shapes. The data path uses
+    DP metadata handling is a pluggable control plane, not part of the
+    connector interface: ``P2pNcclAFDControlPlain`` (an ``AFDControlPlain``
+    implementation exposed as ``connector.control_plane``) sends, receives,
+    and applies the per-stage token-count payloads that determine wire
+    tensor shapes, moving them over a separate NCCL process group. The
+    connector declares ``ffn_step_trigger = Trigger.DP_METADATA``, so each
+    FFN-side step is driven by the arrival of a control-plane payload. The
+    data path stays on the connector and uses
     ``PyNcclCommunicator.send()`` / ``recv()`` on the current CUDA stream,
     wrapped in the ``torch.ops.vllm.afd_p2p_send`` / ``afd_p2p_recv`` custom
     ops so transfers stay usable under ``torch.compile`` and CUDA graph
@@ -67,7 +73,12 @@ from vllm.forward_context import DPMetadata, get_forward_context
 from vllm.utils.torch_utils import direct_register_custom_op
 
 from afd_plugin.config import AFDConfig
-from afd_plugin.connectors.base import AFDConnectorBase, ConnectorExtraInfo
+from afd_plugin.connectors.base import (
+    AFDConnectorBase,
+    AFDControlPlain,
+    ConnectorExtraInfo,
+    Trigger,
+)
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
     AFDControlPayload,
@@ -108,9 +119,15 @@ class P2pNcclAFDConnector(AFDConnectorBase):
 
     Hidden states move through per-subgroup ``PyNcclCommunicator`` instances
     on the current CUDA stream; a separate NCCL process group distributes the
-    DP metadata that determines per-stage tensor shapes. See the module
-    docstring for the topology rules, configuration contract, and
-    requirements.
+    DP metadata that determines per-stage tensor shapes.
+
+    DP metadata operations do not live on the connector itself: they are
+    provided by the pluggable ``P2pNcclAFDControlPlain`` instance created at
+    construction time and exposed as ``control_plane``. The connector still
+    owns the ``p2p`` process group the control plane transmits over, because
+    creating that group is part of the collective ``init_afd_connector``
+    ordering. See the module docstring for the topology rules, configuration
+    contract, and requirements.
     """
 
     @classmethod
@@ -137,8 +154,9 @@ class P2pNcclAFDConnector(AFDConnectorBase):
     ) -> None:
         """Derive the P2P rank mapping and prepare per-stage state caches.
 
-        Communication resources are not created here; ``init_afd_connector``
-        performs the collective initialization.
+        Also creates the ``P2pNcclAFDControlPlain`` instance exposed as
+        ``control_plane``. Communication resources are not created here;
+        ``init_afd_connector`` performs the collective initialization.
 
         Args:
             rank: Process rank passed by the owning vLLM worker; not the same
@@ -191,6 +209,8 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         self.e2a_pynccl: PyNcclCommunicator | None = None
         self.a2e_comm_id: int | None = None
         self.e2a_comm_id: int | None = None
+        self.control_plane = P2pNcclAFDControlPlain(self)
+        self.ffn_step_trigger = Trigger.DP_METADATA
 
     def close(self) -> None:
         """Release NCCL communicators and their custom-op registrations.
@@ -227,8 +247,8 @@ class P2pNcclAFDConnector(AFDConnectorBase):
            instances over it (Attention-to-FFN and FFN-to-Attention), each
            registered for use by the P2P custom ops.
         3. On ranks that participate in the DP metadata control plane, joins
-           the ``p2p`` process group used to distribute per-stage token
-           counts.
+           the ``p2p`` process group that ``control_plane`` uses to
+           distribute per-stage token counts.
 
         Idempotent: returns immediately if already initialized.
         """
@@ -282,137 +302,6 @@ class P2pNcclAFDConnector(AFDConnectorBase):
     def is_initialized(self) -> bool:
         """Return whether the NCCL groups and communicators are ready."""
         return self._initialized
-
-    def update_state_from_dp_metadata(
-        self,
-        payload: AFDControlPayload,
-    ) -> None:
-        """Derive per-stage tensor shapes from a DP metadata payload.
-
-        Stores the payload's DP metadata and graph-capturing/warmup flags,
-        then computes the expected wire-tensor metadata for each stage:
-
-        - On Attention ranks, the shape of this rank's own send/receive
-          tensor.
-        - On FFN ranks, one entry per Attention peer in the subgroup plus the
-          concatenated total, and (when CUDA graphs are enabled) preallocated
-          receive buffers so graph capture and replay reuse stable
-          allocations.
-
-        Args:
-            payload: DP metadata control-plane payload with per-stage token
-                counts and graph-capturing/warmup flags.
-        """
-        self.dp_metadata_list = payload.dp_metadata_list
-        self.is_graph_capturing = payload.is_graph_capturing
-        self.is_warmup = payload.is_warmup
-        self._tensor_metadata_list = {}
-        self._recv_attn_tensor_metadata_list = {}
-        device = torch.device(f"cuda:{self.local_rank}")
-        dtype = self.vllm_config.model_config.dtype
-        for stage_idx, dp_metadata in payload.dp_metadata_list.items():
-            stage_idx = int(stage_idx)
-            if self.afd_config.role == "ffn":
-                peer_metadata: list[_TensorMetadata] = []
-                for src_rank in range(1, self.group_size):
-                    attention_rank = self._attention_rank_for_subgroup_rank(src_rank)
-                    tensor_metadata = _TensorMetadata(
-                        device,
-                        dtype,
-                        torch.Size(
-                            [
-                                _num_tokens_for_attention_rank(
-                                    dp_metadata,
-                                    attention_rank=attention_rank,
-                                    attention_size=self.attn_size,
-                                ),
-                                self.hidden_size,
-                            ],
-                        ),
-                    )
-                    self._recv_attn_tensor_metadata_list[(stage_idx, src_rank)] = (
-                        tensor_metadata
-                    )
-                    peer_metadata.append(tensor_metadata)
-                num_tokens = sum(
-                    int(tensor_metadata.size[0]) for tensor_metadata in peer_metadata
-                )
-            else:
-                num_tokens = _num_tokens_for_attention_rank(
-                    dp_metadata,
-                    attention_rank=self.mapping.role_rank,
-                    attention_size=self.attn_size,
-                )
-            self._tensor_metadata_list[stage_idx] = _TensorMetadata(
-                device,
-                dtype,
-                torch.Size([max(1, num_tokens), self.hidden_size]),
-            )
-
-        if (
-            self.afd_config.role == "ffn"
-            and not self.vllm_config.model_config.enforce_eager
-        ):
-            for (
-                stage_idx,
-                src_rank,
-            ), tensor_metadata in self._recv_attn_tensor_metadata_list.items():
-                buffer_key = (stage_idx, src_rank, tuple(tensor_metadata.size))
-                existing = self._recv_attn_buffers.get(buffer_key)
-                if existing is not None:
-                    continue
-                self._recv_attn_buffers[buffer_key] = torch.empty(
-                    tuple(tensor_metadata.size),
-                    dtype=tensor_metadata.dtype,
-                    device=tensor_metadata.device,
-                )
-
-    def send_dp_metadata_list(
-        self,
-        payload: AFDControlPayload,
-    ) -> None:
-        """Send the DP metadata payload from Attention to the FFN ranks.
-
-        No-ops on ranks that are not designated DP metadata senders (only the
-        first ``min_size`` Attention ranks in the ``p2p`` group transmit) or
-        that do not participate in the DP metadata group at all.
-
-        Args:
-            payload: DP metadata payload to distribute to the FFN-side
-                connector loop.
-        """
-        if self.p2p_pg is None:
-            return
-        if not (self.ffn_size <= self.world_rank < self.ffn_size + self.min_size):
-            return
-        # NCCL transport requires the wire tensors to live on the CUDA device.
-        device = torch.device(f"cuda:{self.local_rank}")
-        send_control_payload(
-            payload,
-            dst=self.dst_list,
-            group=self.p2p_pg,
-            device=device,
-        )
-
-    def recv_dp_metadata_list(self) -> AFDControlPayload:
-        """Receive a DP metadata payload on an FFN rank.
-
-        Blocks on the ``p2p`` process group until the mapped Attention sender
-        rank transmits the next payload.
-
-        Returns:
-            The DP metadata payload sent by the Attention side.
-
-        Raises:
-            RuntimeError: If the DP metadata process group is not initialized
-                on this rank.
-        """
-        if self.p2p_pg is None:
-            raise RuntimeError("P2P DP metadata process group is not initialized")
-
-        src = self.p2p_rank % self.min_size + self.ffn_size
-        device = torch.device(f"cuda:{self.local_rank}")
-        return recv_control_payload(src=src, group=self.p2p_pg, device=device)
 
     def send_attn_output(
         self,
@@ -496,7 +385,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         token dimension, and records each peer's sequence length in the
         returned metadata so ``send_ffn_output`` can split the FFN output
         back per peer. When CUDA graphs are enabled, receives reuse the
-        buffers preallocated by ``update_state_from_dp_metadata``.
+        buffers preallocated by ``control_plane.update_state_from_dp_metadata``.
 
         Args:
             ubatch_idx: Stage/microbatch index to receive. ``None`` means
@@ -714,6 +603,172 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             return 0
 
 
+class P2pNcclAFDControlPlain(AFDControlPlain):
+    """DP metadata control plane for ``P2pNcclAFDConnector``.
+
+    Applies DP metadata payloads to the owning connector's per-stage tensor
+    metadata caches and moves payloads between Attention and FFN ranks over
+    the connector's dedicated ``p2p`` NCCL process group. The connector
+    creates one instance at construction time and exposes it through
+    ``control_plane``; the process group itself is created by
+    ``init_afd_connector``.
+    """
+
+    def __init__(self, connector: P2pNcclAFDConnector) -> None:
+        """Bind the control plane to its owning connector.
+
+        Args:
+            connector: The P2P connector whose topology, configuration, and
+                per-stage state this control plane reads and updates.
+        """
+        self.connector = connector
+
+    def update_state_from_dp_metadata(
+        self,
+        payload: AFDControlPayload,
+    ) -> None:
+        """Derive per-stage tensor shapes from a DP metadata payload.
+
+        Stores the payload's DP metadata and graph-capturing/warmup flags on
+        the connector, then computes the expected wire-tensor metadata for
+        each stage:
+
+        - On Attention ranks, the shape of this rank's own send/receive
+          tensor.
+        - On FFN ranks, one entry per Attention peer in the subgroup plus the
+          concatenated total, and (when CUDA graphs are enabled) preallocated
+          receive buffers so graph capture and replay reuse stable
+          allocations.
+
+        Args:
+            payload: DP metadata control-plane payload with per-stage token
+                counts and graph-capturing/warmup flags.
+        """
+        connector = self.connector
+        connector.dp_metadata_list = payload.dp_metadata_list
+        connector.is_graph_capturing = payload.is_graph_capturing
+        connector.is_warmup = payload.is_warmup
+        connector._tensor_metadata_list = {}
+        connector._recv_attn_tensor_metadata_list = {}
+        device = torch.device(f"cuda:{connector.local_rank}")
+        dtype = connector.vllm_config.model_config.dtype
+        for stage_idx, dp_metadata in payload.dp_metadata_list.items():
+            stage_idx = int(stage_idx)
+            if connector.afd_config.role == "ffn":
+                peer_metadata: list[_TensorMetadata] = []
+                for src_rank in range(1, connector.group_size):
+                    attention_rank = connector._attention_rank_for_subgroup_rank(
+                        src_rank,
+                    )
+                    tensor_metadata = _TensorMetadata(
+                        device,
+                        dtype,
+                        torch.Size(
+                            [
+                                _num_tokens_for_attention_rank(
+                                    dp_metadata,
+                                    attention_rank=attention_rank,
+                                    attention_size=connector.attn_size,
+                                ),
+                                connector.hidden_size,
+                            ],
+                        ),
+                    )
+                    connector._recv_attn_tensor_metadata_list[(stage_idx, src_rank)] = (
+                        tensor_metadata
+                    )
+                    peer_metadata.append(tensor_metadata)
+                num_tokens = sum(
+                    int(tensor_metadata.size[0]) for tensor_metadata in peer_metadata
+                )
+            else:
+                num_tokens = _num_tokens_for_attention_rank(
+                    dp_metadata,
+                    attention_rank=connector.mapping.role_rank,
+                    attention_size=connector.attn_size,
+                )
+            connector._tensor_metadata_list[stage_idx] = _TensorMetadata(
+                device,
+                dtype,
+                torch.Size([max(1, num_tokens), connector.hidden_size]),
+            )
+
+        if (
+            connector.afd_config.role == "ffn"
+            and not connector.vllm_config.model_config.enforce_eager
+        ):
+            for (
+                stage_idx,
+                src_rank,
+            ), tensor_metadata in connector._recv_attn_tensor_metadata_list.items():
+                buffer_key = (stage_idx, src_rank, tuple(tensor_metadata.size))
+                existing = connector._recv_attn_buffers.get(buffer_key)
+                if existing is not None:
+                    continue
+                connector._recv_attn_buffers[buffer_key] = torch.empty(
+                    tuple(tensor_metadata.size),
+                    dtype=tensor_metadata.dtype,
+                    device=tensor_metadata.device,
+                )
+
+    def send_dp_metadata_list(
+        self,
+        payload: AFDControlPayload,
+    ) -> None:
+        """Send the DP metadata payload from Attention to the FFN ranks.
+
+        No-ops on ranks that are not designated DP metadata senders (only the
+        first ``min_size`` Attention ranks in the ``p2p`` group transmit) or
+        that do not participate in the DP metadata group at all.
+
+        Args:
+            payload: DP metadata payload to distribute to the FFN-side
+                connector loop.
+        """
+        connector = self.connector
+        if connector.p2p_pg is None:
+            return
+        if not (
+            connector.ffn_size
+            <= connector.world_rank
+            < connector.ffn_size + connector.min_size
+        ):
+            return
+        # NCCL transport requires the wire tensors to live on the CUDA device.
+        device = torch.device(f"cuda:{connector.local_rank}")
+        send_control_payload(
+            payload,
+            dst=connector.dst_list,
+            group=connector.p2p_pg,
+            device=device,
+        )
+
+    def recv_dp_metadata_list(self) -> AFDControlPayload:
+        """Receive a DP metadata payload on an FFN rank.
+
+        Blocks on the ``p2p`` process group until the mapped Attention sender
+        rank transmits the next payload.
+
+        Returns:
+            The DP metadata payload sent by the Attention side.
+
+        Raises:
+            RuntimeError: If the DP metadata process group is not initialized
+                on this rank.
+        """
+        connector = self.connector
+        if connector.p2p_pg is None:
+            raise RuntimeError("P2P DP metadata process group is not initialized")
+
+        src = connector.p2p_rank % connector.min_size + connector.ffn_size
+        device = torch.device(f"cuda:{connector.local_rank}")
+        return recv_control_payload(
+            src=src,
+            group=connector.p2p_pg,
+            device=device,
+        )
+
+
 def _torch_is_compiling() -> bool:
     """Return whether ``torch.compile`` is currently tracing this code."""
     try:
@@ -853,4 +908,4 @@ def _register_p2p_custom_ops() -> None:
     _AFD_CUSTOM_OPS_REGISTERED = True
 
 
-__all__ = ["P2pNcclAFDConnector"]
+__all__ = ["P2pNcclAFDConnector", "P2pNcclAFDControlPlain"]
