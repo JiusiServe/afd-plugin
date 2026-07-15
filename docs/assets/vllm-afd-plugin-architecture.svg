@@ -1,18 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="1280px" height="790px" viewBox="0 0 1280 790" content="&lt;mxfile host=&quot;app.diagrams.net&quot; modified=&quot;2026-05-19T00:00:00.000Z&quot; agent=&quot;Codex&quot; version=&quot;26.0.0&quot; type=&quot;device&quot;&gt;
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="1280px" height="720px" viewBox="0 0 1280 720" content="&lt;mxfile host=&quot;app.diagrams.net&quot; modified=&quot;2026-07-14T00:00:00.000Z&quot; agent=&quot;Codex&quot; version=&quot;26.0.0&quot; type=&quot;device&quot;&gt;
   &lt;diagram id=&quot;vllm-afd-plugin-architecture&quot; name=&quot;vLLM-AFD-Plugin&quot;&gt;
-    &lt;mxGraphModel dx=&quot;1280&quot; dy=&quot;790&quot; grid=&quot;1&quot; gridSize=&quot;10&quot; guides=&quot;1&quot; tooltips=&quot;1&quot; connect=&quot;1&quot; arrows=&quot;1&quot; fold=&quot;1&quot; page=&quot;1&quot; pageScale=&quot;1&quot; pageWidth=&quot;1280&quot; pageHeight=&quot;790&quot; math=&quot;0&quot; shadow=&quot;0&quot;&gt;
+    &lt;mxGraphModel dx=&quot;1280&quot; dy=&quot;720&quot; grid=&quot;1&quot; gridSize=&quot;10&quot; guides=&quot;1&quot; tooltips=&quot;1&quot; connect=&quot;1&quot; arrows=&quot;1&quot; fold=&quot;1&quot; page=&quot;1&quot; pageScale=&quot;1&quot; pageWidth=&quot;1280&quot; pageHeight=&quot;720&quot; math=&quot;0&quot; shadow=&quot;0&quot;&gt;
       &lt;root&gt;
         &lt;mxCell id=&quot;0&quot; /&gt;
         &lt;mxCell id=&quot;1&quot; parent=&quot;0&quot; /&gt;
         &lt;mxCell id=&quot;bg&quot; value=&quot;&quot; style=&quot;rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f7fa;strokeColor=none;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;0&quot; y=&quot;0&quot; width=&quot;1280&quot; height=&quot;790&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;0&quot; y=&quot;0&quot; width=&quot;1280&quot; height=&quot;720&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;title&quot; value=&quot;vLLM-AFD-Plugin&quot; style=&quot;text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=36;fontStyle=1;fontColor=#172033;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;390&quot; y=&quot;16&quot; width=&quot;500&quot; height=&quot;48&quot; as=&quot;geometry&quot; /&gt;
-        &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;subtitle&quot; value=&quot;external plugin for vLLM v0.19.1&quot; style=&quot;text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=17;fontStyle=0;fontColor=#5d6978;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;390&quot; y=&quot;66&quot; width=&quot;500&quot; height=&quot;24&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;entry-section&quot; value=&quot;&quot; style=&quot;rounded=1;arcSize=12;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d8dee8;strokeWidth=1.5;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;40&quot; y=&quot;100&quot; width=&quot;1200&quot; height=&quot;116&quot; as=&quot;geometry&quot; /&gt;
@@ -27,85 +24,100 @@
           &lt;mxGeometry x=&quot;760&quot; y=&quot;157&quot; width=&quot;255&quot; height=&quot;46&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;attention-section&quot; value=&quot;&quot; style=&quot;rounded=1;arcSize=12;whiteSpace=wrap;html=1;fillColor=#f8fbff;strokeColor=#aac6e8;strokeWidth=1.5;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;40&quot; y=&quot;240&quot; width=&quot;575&quot; height=&quot;330&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;40&quot; y=&quot;240&quot; width=&quot;460&quot; height=&quot;330&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;attention-title&quot; value=&quot;Attention Role&quot; style=&quot;text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=23;fontStyle=1;fontColor=#172033;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;205&quot; y=&quot;252&quot; width=&quot;245&quot; height=&quot;40&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;148&quot; y=&quot;252&quot; width=&quot;245&quot; height=&quot;40&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;attention-engine&quot; value=&quot;EngineCore + Executor&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#eaf3ff;strokeColor=#91b6e5;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;70&quot; y=&quot;306&quot; width=&quot;515&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;70&quot; y=&quot;306&quot; width=&quot;400&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;attention-scheduler&quot; value=&quot;Scheduler&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#eaf3ff;strokeColor=#91b6e5;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;70&quot; y=&quot;375&quot; width=&quot;240&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;70&quot; y=&quot;375&quot; width=&quot;185&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;attention-kv&quot; value=&quot;KV Cache&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#eaf3ff;strokeColor=#91b6e5;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;345&quot; y=&quot;375&quot; width=&quot;240&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;285&quot; y=&quot;375&quot; width=&quot;185&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;attention-worker&quot; value=&quot;AFDAttentionWorker&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;70&quot; y=&quot;444&quot; width=&quot;240&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;70&quot; y=&quot;444&quot; width=&quot;185&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;attention-runner&quot; value=&quot;AFDAttention&amp;lt;br&amp;gt;ModelRunner&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;fontSize=16;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;345&quot; y=&quot;444&quot; width=&quot;240&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;285&quot; y=&quot;444&quot; width=&quot;185&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;attention-metadata&quot; value=&quot;AFD Metadata&amp;lt;br&amp;gt;DP / ubatch / graph&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;fontSize=13;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;207&quot; y=&quot;518&quot; width=&quot;240&quot; height=&quot;42&quot; as=&quot;geometry&quot; /&gt;
+        &lt;mxCell id=&quot;attention-metadata&quot; value=&quot;AFD Metadata&amp;lt;br&amp;gt;DP / ubatch / graph&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+          &lt;mxGeometry x=&quot;150&quot; y=&quot;518&quot; width=&quot;240&quot; height=&quot;42&quot; as=&quot;geometry&quot; /&gt;
+        &lt;/mxCell&gt;
+        &lt;mxCell id=&quot;connector-section&quot; value=&quot;&quot; style=&quot;rounded=1;arcSize=12;whiteSpace=wrap;html=1;fillColor=#f6fcf9;strokeColor=#9ccdbb;strokeWidth=1.5;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+          &lt;mxGeometry x=&quot;520&quot; y=&quot;240&quot; width=&quot;240&quot; height=&quot;330&quot; as=&quot;geometry&quot; /&gt;
+        &lt;/mxCell&gt;
+        &lt;mxCell id=&quot;connector-title&quot; value=&quot;AFDConnector&quot; style=&quot;text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=23;fontStyle=1;fontColor=#172033;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+          &lt;mxGeometry x=&quot;530&quot; y=&quot;252&quot; width=&quot;220&quot; height=&quot;40&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;ffn-section&quot; value=&quot;&quot; style=&quot;rounded=1;arcSize=12;whiteSpace=wrap;html=1;fillColor=#fbf9ff;strokeColor=#baaadd;strokeWidth=1.5;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;665&quot; y=&quot;240&quot; width=&quot;575&quot; height=&quot;330&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;780&quot; y=&quot;240&quot; width=&quot;460&quot; height=&quot;330&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;ffn-blue-outline&quot; value=&quot;&quot; style=&quot;rounded=1;arcSize=12;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#baaadd;strokeWidth=1.5;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;665&quot; y=&quot;240&quot; width=&quot;575&quot; height=&quot;330&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;780&quot; y=&quot;240&quot; width=&quot;460&quot; height=&quot;330&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;ffn-title&quot; value=&quot;FFN Role&quot; style=&quot;text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=23;fontStyle=1;fontColor=#172033;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;830&quot; y=&quot;252&quot; width=&quot;245&quot; height=&quot;40&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;888&quot; y=&quot;252&quot; width=&quot;245&quot; height=&quot;40&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;ffn-engine-shim&quot; value=&quot;FFNEngineCore&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;695&quot; y=&quot;306&quot; width=&quot;515&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;810&quot; y=&quot;306&quot; width=&quot;400&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;ffn-worker&quot; value=&quot;AFDFFNWorker&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;695&quot; y=&quot;375&quot; width=&quot;230&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;810&quot; y=&quot;375&quot; width=&quot;185&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;ffn-runner&quot; value=&quot;GPUFFN&amp;lt;br&amp;gt;ModelRunner&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;fontSize=16;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;980&quot; y=&quot;375&quot; width=&quot;230&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
+        &lt;mxCell id=&quot;ffn-runner&quot; value=&quot;AFDFFN&amp;lt;br&amp;gt;ModelRunner&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+          &lt;mxGeometry x=&quot;1025&quot; y=&quot;375&quot; width=&quot;185&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;ffn-loop&quot; value=&quot;FFN Loop&amp;lt;br&amp;gt;connector-driven&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;fontSize=13;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;695&quot; y=&quot;449&quot; width=&quot;230&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
+        &lt;mxCell id=&quot;ffn-loop&quot; value=&quot;FFN Loop&amp;lt;br&amp;gt;connector-driven&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+          &lt;mxGeometry x=&quot;810&quot; y=&quot;449&quot; width=&quot;185&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;ffn-cuda&quot; value=&quot;CUDA Graph&amp;lt;br&amp;gt;Support&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#fff5df;strokeColor=#d9ad5f;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;fontSize=13;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;980&quot; y=&quot;449&quot; width=&quot;230&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
+        &lt;mxCell id=&quot;ffn-cuda&quot; value=&quot;Graph Support&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#fff5df;strokeColor=#d9ad5f;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+          &lt;mxGeometry x=&quot;1025&quot; y=&quot;449&quot; width=&quot;185&quot; height=&quot;58&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;model-native&quot; value=&quot;vLLM Model / Layers / Ops&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#eaf3ff;strokeColor=#91b6e5;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;40&quot; y=&quot;600&quot; width=&quot;350&quot; height=&quot;62&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;model-wrappers&quot; value=&quot;AFD Model Wrappers&amp;lt;br&amp;gt;DeepSeek V2/V3, Step3, ... FFN split hooks&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#fff5df;strokeColor=#d9ad5f;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;fontSize=13;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;model-wrappers&quot; value=&quot;AFD Model Wrappers&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#fff5df;strokeColor=#d9ad5f;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;420&quot; y=&quot;600&quot; width=&quot;410&quot; height=&quot;62&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;runtime-helpers&quot; value=&quot;Plugin Runtime Helpers&amp;lt;br&amp;gt;ubatching / tracing / validation&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;fontSize=13;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;runtime-helpers&quot; value=&quot;Plugin Runtime Helpers&amp;lt;br&amp;gt;ubatching / tracing / validation&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;spacingTop=0;spacingBottom=0;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;860&quot; y=&quot;600&quot; width=&quot;380&quot; height=&quot;62&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;connector&quot; value=&quot;AFD Connector: P2P(PyNccl) ...&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;40&quot; y=&quot;682&quot; width=&quot;1200&quot; height=&quot;54&quot; as=&quot;geometry&quot; /&gt;
+        &lt;mxCell id=&quot;connector-p2p-nccl&quot; value=&quot;P2pNcclAFDConnector&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+          &lt;mxGeometry x=&quot;535&quot; y=&quot;306&quot; width=&quot;210&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
+        &lt;/mxCell&gt;
+        &lt;mxCell id=&quot;connector-camp2p&quot; value=&quot;CAMP2pAFDConnector&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+          &lt;mxGeometry x=&quot;535&quot; y=&quot;373&quot; width=&quot;210&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
+        &lt;/mxCell&gt;
+        &lt;mxCell id=&quot;connector-cam-async&quot; value=&quot;CAMAsyncAFDConnector&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+          &lt;mxGeometry x=&quot;535&quot; y=&quot;440&quot; width=&quot;210&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
+        &lt;/mxCell&gt;
+        &lt;mxCell id=&quot;connector-others&quot; value=&quot;Others&quot; style=&quot;rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=#a996d8;strokeWidth=1.5;fontSize=16;fontStyle=1;fontColor=#172033;align=center;verticalAlign=middle;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+          &lt;mxGeometry x=&quot;535&quot; y=&quot;507&quot; width=&quot;210&quot; height=&quot;52&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;legend-imported&quot; value=&quot;&quot; style=&quot;rounded=0;whiteSpace=wrap;html=1;fillColor=#eaf3ff;strokeColor=none;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;95&quot; y=&quot;752&quot; width=&quot;72&quot; height=&quot;24&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;95&quot; y=&quot;682&quot; width=&quot;72&quot; height=&quot;24&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;legend-imported-label&quot; value=&quot;imported&quot; style=&quot;text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=12;fontStyle=1;fontColor=#5d6978;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;188&quot; y=&quot;747&quot; width=&quot;135&quot; height=&quot;34&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;188&quot; y=&quot;677&quot; width=&quot;135&quot; height=&quot;34&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;legend-modified&quot; value=&quot;&quot; style=&quot;rounded=0;whiteSpace=wrap;html=1;fillColor=#fff5df;strokeColor=none;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;335&quot; y=&quot;752&quot; width=&quot;72&quot; height=&quot;24&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;335&quot; y=&quot;682&quot; width=&quot;72&quot; height=&quot;24&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;legend-modified-label&quot; value=&quot;modified&quot; style=&quot;text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=12;fontStyle=1;fontColor=#5d6978;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;428&quot; y=&quot;747&quot; width=&quot;135&quot; height=&quot;34&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;428&quot; y=&quot;677&quot; width=&quot;135&quot; height=&quot;34&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;legend-new&quot; value=&quot;&quot; style=&quot;rounded=0;whiteSpace=wrap;html=1;fillColor=#f1edff;strokeColor=none;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;575&quot; y=&quot;752&quot; width=&quot;72&quot; height=&quot;24&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;575&quot; y=&quot;682&quot; width=&quot;72&quot; height=&quot;24&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;legend-new-label&quot; value=&quot;new&quot; style=&quot;text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=12;fontStyle=1;fontColor=#5d6978;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;668&quot; y=&quot;747&quot; width=&quot;80&quot; height=&quot;34&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;668&quot; y=&quot;677&quot; width=&quot;80&quot; height=&quot;34&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
         &lt;mxCell id=&quot;no-source-edits&quot; value=&quot;No vLLM source-tree edits&quot; style=&quot;text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;fontColor=#5d6978;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
-          &lt;mxGeometry x=&quot;1000&quot; y=&quot;750&quot; width=&quot;230&quot; height=&quot;28&quot; as=&quot;geometry&quot; /&gt;
+          &lt;mxGeometry x=&quot;1000&quot; y=&quot;680&quot; width=&quot;230&quot; height=&quot;28&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
       &lt;/root&gt;
     &lt;/mxGraphModel&gt;
@@ -134,16 +146,11 @@
       font-weight: 700;
     }
     text[font-size="18"] {
-      font-size: 13px;
-      font-weight: 400;
-      fill: #536070;
+      font-size: 16px;
+      font-weight: 700;
+      fill: #172033;
     }
-    text[x="640"][y="80"] {
-      font-size: 17px;
-      font-weight: 400;
-      fill: #5d6978;
-    }
-    text[y="764"] {
+    text[y="694"] {
       font-size: 12px;
       font-weight: 600;
       fill: #5d6978;
@@ -174,55 +181,62 @@
     }
   </style>
 </defs>
-<rect x="0" y="0" width="1280" height="790" fill="#f5f7fa" stroke="none" stroke-width="0"/>
+<rect x="0" y="0" width="1280" height="720" fill="#f5f7fa" stroke="none" stroke-width="0"/>
 <g><text x="640" y="43" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="44" font-weight="700" fill="#111">vLLM-AFD-Plugin</text></g>
-<g><text x="640" y="80" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">external plugin for vLLM v0.19.1</text></g>
 <rect x="40" y="100" width="1200" height="116" rx="14" fill="#ffffff" stroke="#d8dee8" stroke-width="1.5"/>
 <g><text x="640" y="129" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="30" font-weight="600" fill="#111">EntryPoints</text></g>
 <rect x="265" y="157" width="255" height="46" fill="#d2f1f4" stroke="#b9b9b9" stroke-width="2"/>
 <g><text x="392.5" y="180" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">OpenAI / API Server</text></g>
 <rect x="760" y="157" width="255" height="46" fill="#d2f1f4" stroke="#b9b9b9" stroke-width="2"/>
 <g><text x="887.5" y="180" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">vLLM serve</text></g>
-<rect x="40" y="240" width="575" height="330" rx="18" fill="#f8fbff" stroke="#aac6e8" stroke-width="1.5"/>
-<g><text x="327.5" y="273" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="30" font-weight="600" fill="#111">Attention Role</text></g>
-<rect x="70" y="306" width="515" height="52" fill="#d2f1f4" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="327.5" y="332" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">EngineCore + Executor</text></g>
-<rect x="70" y="375" width="240" height="52" fill="#d2f1f4" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="190" y="401" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">Scheduler</text></g>
-<rect x="345" y="375" width="240" height="52" fill="#d2f1f4" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="465" y="401" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">KV Cache</text></g>
-<rect x="70" y="444" width="240" height="58" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="190" y="473" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">AFDAttentionWorker</text></g>
-<rect x="345" y="444" width="240" height="58" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="465" y="461.66" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">AFDAttention</text><text x="465" y="484.34000000000003" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">ModelRunner</text></g>
-<rect x="207" y="518" width="240" height="42" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="327" y="529.28" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">AFD Metadata</text><text x="327" y="548.72" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">DP / ubatch / graph</text></g>
-<rect x="665" y="240" width="575" height="330" rx="18" fill="#fbf9ff" stroke="#baaadd" stroke-width="1.5"/>
-<rect x="665" y="240" width="575" height="330" rx="18" fill="none" stroke="#baaadd" stroke-width="1.5"/>
-<g><text x="952.5" y="273" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="30" font-weight="600" fill="#111">FFN Role</text></g>
-<rect x="695" y="306" width="515" height="52" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="952.5" y="332" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">FFNEngineCore</text></g>
-<rect x="695" y="375" width="230" height="58" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="810" y="404" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">AFDFFNWorker</text></g>
-<rect x="980" y="375" width="230" height="58" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="1095" y="392.66" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">GPUFFN</text><text x="1095" y="415.34000000000003" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">ModelRunner</text></g>
-<rect x="695" y="449" width="230" height="58" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="810" y="468.28" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">FFN Loop</text><text x="810" y="487.71999999999997" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">connector-driven</text></g>
-<rect x="980" y="449" width="230" height="58" fill="#fff4c9" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="1095" y="468.28" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">CUDA Graph</text><text x="1095" y="487.71999999999997" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">Support</text></g>
+<rect x="40" y="240" width="460" height="330" rx="18" fill="#f8fbff" stroke="#aac6e8" stroke-width="1.5"/>
+<g><text x="270" y="273" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="30" font-weight="600" fill="#111">Attention Role</text></g>
+<rect x="70" y="306" width="400" height="52" fill="#d2f1f4" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="270" y="332" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">EngineCore + Executor</text></g>
+<rect x="70" y="375" width="185" height="52" fill="#d2f1f4" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="162.5" y="401" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">Scheduler</text></g>
+<rect x="285" y="375" width="185" height="52" fill="#d2f1f4" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="377.5" y="401" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">KV Cache</text></g>
+<rect x="70" y="444" width="185" height="58" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="162.5" y="473" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">AFDAttentionWorker</text></g>
+<rect x="285" y="444" width="185" height="58" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="377.5" y="461.66" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">AFDAttention</text><text x="377.5" y="484.34000000000003" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">ModelRunner</text></g>
+<rect x="150" y="518" width="240" height="42" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="270" y="529.28" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">AFD Metadata</text><text x="270" y="548.72" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">DP / ubatch / graph</text></g>
+<rect x="520" y="240" width="240" height="330" rx="18" fill="#f6fcf9" stroke="#9ccdbb" stroke-width="1.5"/>
+<g><text x="640" y="273" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="30" font-weight="600" fill="#111">AFDConnector</text></g>
+<rect x="780" y="240" width="460" height="330" rx="18" fill="#fbf9ff" stroke="#baaadd" stroke-width="1.5"/>
+<rect x="780" y="240" width="460" height="330" rx="18" fill="none" stroke="#baaadd" stroke-width="1.5"/>
+<g><text x="1010" y="273" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="30" font-weight="600" fill="#111">FFN Role</text></g>
+<rect x="810" y="306" width="400" height="52" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="1010" y="332" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">FFNEngineCore</text></g>
+<rect x="810" y="375" width="185" height="58" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="902.5" y="404" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">AFDFFNWorker</text></g>
+<rect x="1025" y="375" width="185" height="58" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="1117.5" y="392.66" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">AFDFFN</text><text x="1117.5" y="415.34" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="21" font-weight="600" fill="#111">ModelRunner</text></g>
+<rect x="810" y="449" width="185" height="58" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="902.5" y="468.28" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">FFN Loop</text><text x="902.5" y="487.72" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">connector-driven</text></g>
+<rect x="1025" y="449" width="185" height="58" fill="#fff4c9" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="1117.5" y="478" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">Graph Support</text></g>
 <rect x="40" y="600" width="350" height="62" fill="#d2f1f4" stroke="#b9b9b9" stroke-width="2"/>
 <g><text x="215" y="631" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">vLLM Model / Layers / Ops</text></g>
 <rect x="420" y="600" width="410" height="62" fill="#fff4c9" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="625" y="621.28" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">AFD Model Wrappers</text><text x="625" y="640.72" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">DeepSeek V2/V3, Step3, ... FFN split hooks</text></g>
+<g><text x="625" y="631" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">AFD Model Wrappers</text></g>
 <rect x="860" y="600" width="380" height="62" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
 <g><text x="1050" y="621.28" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">Plugin Runtime Helpers</text><text x="1050" y="640.72" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">ubatching / tracing / validation</text></g>
-<rect x="40" y="682" width="1200" height="54" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
-<g><text x="640" y="709" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">AFD Connector: P2P(PyNccl) ...</text></g>
-<rect x="95" y="752" width="72" height="24" fill="#d2f1f4"/>
-<g><text x="188" y="764" text-anchor="start" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">imported</text></g>
-<rect x="335" y="752" width="72" height="24" fill="#fff4c9"/>
-<g><text x="428" y="764" text-anchor="start" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">modified</text></g>
-<rect x="575" y="752" width="72" height="24" fill="#ffc2d2"/>
-<g><text x="668" y="764" text-anchor="start" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">new</text></g>
-<g><text x="1115" y="764" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">No vLLM source-tree edits</text></g>
+<rect x="535" y="306" width="210" height="52" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="640" y="332" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">P2pNcclAFDConnector</text></g>
+<rect x="535" y="373" width="210" height="52" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="640" y="399" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">CAMP2pAFDConnector</text></g>
+<rect x="535" y="440" width="210" height="52" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="640" y="466" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">CAMAsyncAFDConnector</text></g>
+<rect x="535" y="507" width="210" height="52" fill="#ffc2d2" stroke="#b9b9b9" stroke-width="2"/>
+<g><text x="640" y="533" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">Others</text></g>
+<rect x="95" y="682" width="72" height="24" fill="#d2f1f4"/>
+<g><text x="188" y="694" text-anchor="start" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">imported</text></g>
+<rect x="335" y="682" width="72" height="24" fill="#fff4c9"/>
+<g><text x="428" y="694" text-anchor="start" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">modified</text></g>
+<rect x="575" y="682" width="72" height="24" fill="#ffc2d2"/>
+<g><text x="668" y="694" text-anchor="start" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" fill="#111">new</text></g>
+<g><text x="1115" y="694" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" fill="#111">No vLLM source-tree edits</text></g>
 </svg>
