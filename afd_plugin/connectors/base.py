@@ -36,8 +36,17 @@ class ConnectorExtraInfo:
 
 
 class Trigger(enum.Enum):
-    DP_METADATA = 0
-    CONNECTOR = 1
+    """
+    Enum class for 'AFDConnectorBase' transfer triggering
+    Args:
+        DP_METADATA: Transfer is triggered through control plane
+            DP metadata. A control plane is required.
+        CONNECTOR: Transfer is triggerd through async connector
+            itself. No control plane is required.
+    """
+
+    DP_METADATA = "dp_metadata"
+    CONNECTOR = "connector"
 
 
 class AFDConnectorBase(ABC):
