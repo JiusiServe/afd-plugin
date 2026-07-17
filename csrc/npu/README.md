@@ -84,5 +84,5 @@ ensure_afd_ascend_ops_loaded()
 ## Current Scope
 
 This build path covers the AFD A2E/E2A operators required by the first CAMP2P
-connector path. Multi-stream, quantized, ACL graph, and gate-on-attention paths
-are handled separately.
+connector path. Quantized, ACL graph, and gate-on-attention paths are handled
+separately.

@@ -88,8 +88,8 @@ class CAMP2pAFDConnector(AFDConnectorBase):
     """HCCL/CAMP2P-backed Attention <-> FFN connector for NPU.
 
     The connector owns HCCL process-group setup and CAMP2P custom-op transfers.
-    Runtime validation rejects unsupported communication multistream, nonzero
-    quantization modes, and compute-gate-on-attention settings.
+    Runtime validation rejects unsupported nonzero quantization modes and
+    compute-gate-on-attention settings.
     """
 
     def __init__(

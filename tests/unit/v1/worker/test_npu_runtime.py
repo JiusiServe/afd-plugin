@@ -1040,8 +1040,6 @@ def test_npu_feature_validation_rejects_unsupported_switches():
     for extra_config, message in [
         ({"compute_gate_on_attention": True}, "compute_gate_on_attention"),
         ({"quant_mode": 1}, "quant_mode=0"),
-        ({"is_attn_multistream": True}, "multistream"),
-        ({"multistream_info": {"attn_enable": "True"}}, "multistream_info"),
     ]:
         with pytest.raises(RuntimeError, match=message):
             fail_if_unsupported_npu_afd_features(
@@ -1086,22 +1084,13 @@ def test_npu_async_feature_validation_requires_async_config_and_eager():
         fail_if_unsupported_npu_afd_features(config)
 
 
-def test_npu_async_feature_validation_rejects_ubatching_and_multistream():
+def test_npu_async_feature_validation_rejects_ubatching():
     with pytest.raises(RuntimeError, match="ubatching"):
         fail_if_unsupported_npu_afd_features(
             _vllm_config(
                 connector="CAMAsyncAFDConnector",
                 async_dp=True,
                 use_ubatching=True,
-            ),
-        )
-
-    with pytest.raises(RuntimeError, match="multistream"):
-        fail_if_unsupported_npu_afd_features(
-            _vllm_config(
-                connector="CAMAsyncAFDConnector",
-                async_dp=True,
-                extra_config={"multistream_info": {"ffn_enable": "true"}},
             ),
         )
 

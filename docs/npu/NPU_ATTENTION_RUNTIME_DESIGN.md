@@ -151,5 +151,4 @@ Rejected by validation:
 - vLLM-Ascend model runner v2;
 - `compute_gate_on_attention=true`;
 - `quant_mode != 0`;
-- attention/FFN multistream communication;
 - DBO with a ubatch count other than two.

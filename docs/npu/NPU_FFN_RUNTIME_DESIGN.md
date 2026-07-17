@@ -167,5 +167,4 @@ Rejected by validation:
 - scheduler-driven FFN requests;
 - `compute_gate_on_attention=true`;
 - `quant_mode != 0`;
-- attention/FFN multistream communication;
 - DBO with a ubatch count other than two.

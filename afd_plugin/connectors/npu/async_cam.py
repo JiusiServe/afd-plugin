@@ -17,7 +17,7 @@ control plane.
 
 The supported deployment requires ``async=true``, eager execution, Ascend CAM
 operator packages, and matching topology/configuration on every rank. vLLM
-native DBO, ACL graph execution, decode, and multistream are not supported.
+native DBO, ACL graph execution, and decode are not supported.
 Optional AFD-managed MoE ubatching is a separate two-stage request-boundary
 pipeline. See ``docs/npu/CAM_ASYNC_CONNECTOR_USER_GUIDE.md`` for configuration,
 rank derivation, launch guidance, and the full limitations.
