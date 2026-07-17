@@ -1,6 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""CAMP2P NPU connector for AFD execution."""
+"""Synchronous CAMP2p connector for Attention-FFN Disaggregation on NPU.
+
+``CAMP2pAFDConnector`` exchanges hidden states and FFN outputs through Ascend
+CAMP2p custom operators backed by HCCL. A separate Gloo group carries DP
+metadata from Attention to FFN so each FFN rank can determine the tensor size
+for its mapped Attention ranks.
+
+The data path supports eager execution and ``FULL_DECODE_ONLY`` ACL graphs.
+
+See ``docs/npu/CAMP2P_CONNECTOR_USER_GUIDE.md`` for configuration and launch
+examples.
+"""
 
 from __future__ import annotations
 
@@ -39,10 +50,16 @@ logger = init_logger(__name__)
 
 @dataclass(slots=True)
 class CAMP2PTransferState(AFDTransferState):
-    """CAMP2P payload metadata carried between recv and send phases.
+    """State shared by the CAMP2p Attention-to-FFN and FFN-to-Attention phases.
 
-    This mirrors ``vllm_ascend.distributed.metadata.CAMP2PTransferState``
-    while keeping the class plugin-owned.
+    This class stores the information CAMP2p needs while data travels from
+    Attention to FFN and then back to Attention. It follows the layout of
+    ``vllm_ascend.distributed.metadata.CAMP2PTransferState`` but is defined in
+    the AFD plugin. Fields such as the tensor shape, expert count, AIV count,
+    quantization mode, and communication group describe how to run the CAMP2p
+    operators. After the Attention-to-FFN transfer, ``handle``,
+    ``atten_batch_size``, and ``x_active_mask`` save the returned information
+    needed to send the FFN result back to Attention.
     """
 
     moe_expert_num: int = 0
@@ -62,6 +79,14 @@ class CAMP2PTransferState(AFDTransferState):
 
 @dataclass(frozen=True, slots=True)
 class _CAMP2PTopology:
+    """Describe where one connector process sits in the communication groups.
+
+    ``world_rank`` is the process number in the complete AFD group.
+    ``p2p_rank`` is its number in the smaller Gloo group used to exchange metadata.
+    For an Attention rank, ``dp_metadata_destinations`` lists the FFN ranks
+    that should receive its metadata.
+    """
+
     role: str
     role_rank: int
     world_rank: int
@@ -73,19 +98,22 @@ class _CAMP2PTopology:
 
     @property
     def p2p_world_size(self) -> int:
+        """Return the number of FFN and participating Attention metadata ranks."""
         return self.ffn_size + self.min_size
 
     @property
     def participates_in_p2p_group(self) -> bool:
+        """Return whether this process joins the Gloo DP-metadata group."""
         return self.world_rank < self.ffn_size or self.is_attn_top_min_size_rank
 
     @property
     def is_attn_top_min_size_rank(self) -> bool:
+        """Return whether this is an Attention metadata-sender rank."""
         return self.ffn_size <= self.world_rank < self.ffn_size + self.min_size
 
 
 class CAMP2pAFDConnector(AFDConnectorBase):
-    """HCCL/CAMP2P-backed Attention <-> FFN connector for NPU.
+    """Move model data between Attention and FFN workers on Ascend NPU.
 
     The connector owns HCCL process-group setup and CAMP2P custom-op transfers.
     Runtime validation rejects unsupported nonzero quantization modes and
@@ -99,6 +127,18 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         vllm_config: VllmConfig,
         afd_config: AFDConfig,
     ) -> None:
+        """Read the configuration and prepare this connector's local state.
+
+        This method calculates the process ranks and reads the model dimensions.
+        It does not connect to the other Attention or FFN processes yet;
+        :meth:`init_afd_connector` creates those connections later.
+
+        Args:
+            rank: Rank provided by the vLLM worker.
+            local_rank: NPU device number used by this worker.
+            vllm_config: Model, scheduler, and parallel configuration from vLLM.
+            afd_config: AFD role, host, port, rank counts, and extra settings.
+        """
         super().__init__(rank, local_rank, vllm_config, afd_config)
         self._initialized = False
         self._role_rank = int(afd_config.afd_role_rank)
@@ -139,9 +179,24 @@ class CAMP2pAFDConnector(AFDConnectorBase):
 
     @property
     def is_initialized(self) -> bool:
+        """Return ``True`` after all CAMP2p connections have been created."""
         return self._initialized
 
     def init_afd_connector(self) -> None:
+        """Connect this process to the other Attention and FFN processes.
+
+        The method creates one HCCL group for each batch or ubatch. These groups
+        carry hidden states and FFN results. FFN processes also create a group
+        for MoE communication. A smaller Gloo group carries token counts and
+        other batch information from Attention to FFN.
+
+        The method returns immediately if initialization already succeeded.
+        Otherwise, it may wait until every required process joins.
+
+        Raises:
+            RuntimeError: If the CAMP2p operators are unavailable or a
+                communication group cannot be created.
+        """
         if self._initialized:
             return
         ensure_cam_p2p_ops_available()
@@ -200,6 +255,11 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         self._initialized = True
 
     def close(self) -> None:
+        """Close all communication groups created by this connector.
+
+        The method also clears saved HCCL group names and marks the connector as
+        uninitialized. It is safe to initialize the connector again afterward.
+        """
         groups = [self.p2p_pg, self.ffn_pg, *self.afd_pg_list]
         if self.afd_pg is not None and not self.afd_pg_list:
             groups.append(self.afd_pg)
@@ -226,6 +286,14 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         self,
         payload: AFDControlPayload,
     ) -> None:
+        """Save the latest batch information received from Attention.
+
+        The saved information includes token counts for each ubatch and whether
+        the model is warming up or capturing an ACL graph.
+
+        Args:
+            payload: Batch information prepared by the Attention worker.
+        """
         self.dp_metadata_list = dict(payload.dp_metadata_list)
         self.is_graph_capturing = payload.is_graph_capturing
         self.is_warmup = payload.is_warmup
@@ -234,6 +302,15 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         self,
         payload: AFDControlPayload,
     ) -> None:
+        """Send token counts and batch information from Attention to FFN.
+
+        Only the Attention ranks assigned to send this information take part.
+        Other Attention ranks return without sending anything. The information
+        travels as small CPU tensors through Gloo, not through the NPU data path.
+
+        Args:
+            payload: Token counts, ubatch information, and graph/warmup state.
+        """
         if self.p2p_pg is None:
             return
         if not self.topology.is_attn_top_min_size_rank:
@@ -249,6 +326,14 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         )
 
     def recv_dp_metadata_list(self) -> AFDControlPayload:
+        """Wait for Attention to send this FFN rank's batch information.
+
+        Returns:
+            Token counts, ubatch information, and graph/warmup state.
+
+        Raises:
+            RuntimeError: If the Gloo group was not created for this process.
+        """
         if self.p2p_pg is None:
             raise RuntimeError("CAMP2P metadata process group is not initialized")
         src = self.p2p_rank % self.min_size + self.ffn_size
@@ -286,6 +371,23 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         metadata: AFDTransferMetadata,
         **kwargs: Any,
     ) -> None:
+        """Send hidden states from an Attention rank to its FFN rank.
+
+        The ubatch number selects the matching HCCL communication group. The
+        method saves the values returned by CAMP2p so Attention can later
+        receive the FFN result for the same ubatch.
+
+        Args:
+            hidden_states: Model data with shape ``(tokens, hidden_size)``.
+            metadata: Layer number, ubatch number, token count, and CAMP2p
+                settings for this transfer.
+            **kwargs: Extra arguments accepted for interface compatibility.
+
+        Raises:
+            RuntimeError: If the communication groups are not ready.
+            ValueError: If the number of tokens in ``hidden_states`` does not
+                match ``metadata`` outside a ``torch.compile`` trace.
+        """
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
         if not _is_torch_compiling() and not metadata.validate_tensor_shape(
@@ -315,6 +417,19 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         return None
 
     def recv_ffn_output(self, **kwargs: Any) -> torch.Tensor:
+        """Receive the processed model data from FFN on an Attention rank.
+
+        Args:
+            **kwargs: ``ref_tensor`` supplies the expected shape and storage.
+                ``ubatch_idx`` optionally selects the ubatch to receive.
+
+        Returns:
+            The model data returned by FFN.
+
+        Raises:
+            RuntimeError: If communication is not ready, ``ref_tensor`` is
+                missing, or the matching Attention send information was lost.
+        """
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
         ref_tensor = kwargs.get("ref_tensor")
@@ -342,6 +457,25 @@ class CAMP2pAFDConnector(AFDConnectorBase):
     def recv_attn_output(
         self, ubatch_idx: int | None = None, **kwargs: Any
     ) -> AFDA2FTransferPayload:
+        """Receive hidden states from Attention on an FFN rank.
+
+        The ubatch number selects the expected token count and HCCL group.
+        Values returned by CAMP2p are saved so the FFN result can be sent back
+        to the correct Attention ranks.
+
+        Args:
+            ubatch_idx: Ubatch number, starting from ``0``.
+            **kwargs: May provide existing transfer information or the layer
+                number needed to create it.
+
+        Returns:
+            The received hidden states and the information FFN needs to process
+            them and send the result back.
+
+        Raises:
+            RuntimeError: If communication is not ready, transfer information
+                is missing, or the requested ubatch group does not exist.
+        """
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
@@ -390,6 +524,18 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         metadata: AFDTransferMetadata,
         **kwargs: Any,
     ) -> None:
+        """Send processed model data from an FFN rank back to Attention.
+
+        Args:
+            ffn_output: Model data produced by the FFN layers.
+            metadata: Information saved when FFN received the Attention output.
+            **kwargs: An optional ``ubatch_idx``. If omitted, the method uses
+                the ubatch number stored in ``metadata``.
+
+        Raises:
+            RuntimeError: If communication is not ready, required receive
+                information is missing, or the ubatch group does not exist.
+        """
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
         transfer_state = _ensure_transfer_state(metadata)
@@ -438,6 +584,11 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         batch_size: int,
         layer_idx: int,
     ) -> CAMP2PTransferState:
+        """Build the CAMP2p settings used to transfer one layer's data.
+
+        Returns:
+            Tensor sizes, expert counts, core count, and quantization settings.
+        """
         k = self.num_experts_per_tok
         moe_experts = self.num_routed_experts
         shared_experts = 0
@@ -456,6 +607,23 @@ def build_camp2p_topology(
     afd_config: AFDConfig,
     role_rank: int | None = None,
 ) -> _CAMP2PTopology:
+    """Calculate the communication rank numbers for one process.
+
+    FFN processes come first in the main AFD group, followed by Attention
+    processes. All FFN ranks and the first ``min(A, F)`` Attention ranks also
+    join the smaller Gloo group that exchanges token counts and batch details.
+
+    Args:
+        afd_config: Process role and total Attention/FFN rank counts.
+        role_rank: This process's number within its own role. If omitted, the
+            value comes from ``afd_config``.
+
+    Returns:
+        This process's rank numbers and metadata destinations.
+
+    Raises:
+        ValueError: If the rank counts or this process's role rank are invalid.
+    """
     attention_size, ffn_size = topology_from_config(afd_config)
     role_rank = afd_config.afd_role_rank if role_rank is None else int(role_rank)
     if attention_size <= 0 or ffn_size <= 0:
@@ -517,6 +685,23 @@ def _num_tokens_for_ffn_rank(
     ffn_size: int,
     fallback: int,
 ) -> int:
+    """Count the tokens that one FFN rank will receive from Attention.
+
+    An FFN rank may receive data from several consecutive Attention ranks. This
+    function adds their token counts. When TP creates several Attention workers
+    for one DP rank, it first copies the DP token count to those TP workers.
+
+    Args:
+        dp_metadata_list: Token counts received from Attention for each ubatch.
+        stage_idx: Ubatch number to inspect.
+        ffn_rank: FFN rank whose token count is needed.
+        attention_size: Total number of Attention ranks.
+        ffn_size: Total number of FFN ranks.
+        fallback: Value used when the token counts are missing or incomplete.
+
+    Returns:
+        The number of tokens this FFN rank should receive, always at least one.
+    """
     dp_metadata = dp_metadata_list.get(int(stage_idx))
     if dp_metadata is None:
         return max(1, int(fallback))
@@ -540,6 +725,7 @@ def _num_tokens_for_ffn_rank(
 
 
 def _resolve_aiv_num(afd_config: AFDConfig) -> int:
+    """Return the number of AIV cores configured for this process's role."""
     extra = afd_config.extra_config
     key = "attn_core_num" if afd_config.role == "attention" else "ffn_core_num"
     value = extra.get(key, extra.get("core_num", 8))
@@ -547,6 +733,7 @@ def _resolve_aiv_num(afd_config: AFDConfig) -> int:
 
 
 def _resolve_num_ubatches(vllm_config: VllmConfig) -> int:
+    """Return the configured ubatch count, or one if the value is invalid."""
     parallel_config = getattr(vllm_config, "parallel_config", None)
     raw_num_ubatches = getattr(parallel_config, "num_ubatches", 1)
     try:
@@ -627,6 +814,11 @@ def _get_forward_context_transfer_state() -> CAMP2PTransferState | None:
 
 
 def _register_camp2p_custom_ops() -> None:
+    """Register the CAMP2P send and receive operations once per process.
+
+    The A2E operation sends Attention output to FFN. The E2A operation sends
+    the FFN result back to Attention.
+    """
     global _CAMP2P_CUSTOM_OPS_REGISTERED
     if _CAMP2P_CUSTOM_OPS_REGISTERED:
         return
@@ -694,6 +886,7 @@ def _register_camp2p_custom_ops() -> None:
         aiv_num: int,
         compute_gate: int,
     ) -> torch.Tensor:
+        """Return the input unchanged while PyTorch inspects the send operation."""
         return hidden_states
 
     def recv_ffn_output_impl(
@@ -750,6 +943,7 @@ def _register_camp2p_custom_ops() -> None:
         world_rank: int,
         aiv_num: int,
     ) -> torch.Tensor:
+        """Return the reference tensor while PyTorch inspects the receive."""
         return ref_tensor
 
     send_annotations = {
