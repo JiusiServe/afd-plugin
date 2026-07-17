@@ -32,17 +32,17 @@ last_reviewed: 2026-07-17
 This directory is the routing and ownership layer for AFD module design. The
 documents are `draft` until their owners verify boundaries, invariants, and
 validation evidence. The role and platform content from the former GPU/NPU
-runtime documents was migrated here in Phase 2; the former locations now
-contain compatibility pointers. Phase 3 now records the current plugin,
-connector, model, and patch contracts with direct source/test evidence; open
-interfaces remain explicitly draft.
+runtime documents was migrated here in Phase 2 and the former files were
+removed. Phase 3 now records the current plugin, connector, model, and patch
+contracts with direct source/test evidence; open interfaces remain explicitly
+draft.
 
 ## Migration progress
 
 | Phase | Documentation result | Status |
 | --- | --- | --- |
 | 1 | Eight module documents, metadata, ownership, and unique production-path routing. | Complete |
-| 2 | Unified role runtime and platform design; former GPU/NPU runtime files reduced to compatibility pointers. | Complete |
+| 2 | Unified role runtime and platform design; former GPU/NPU runtime files removed after migration. | Complete |
 | 3 | Plugin boundary, connector lifecycle/payloads, model integration, and full compatibility/Patch inventory linked to implementation and tests. | Complete; owner review still required before any document becomes `normative` |
 
 ## Reading order
@@ -105,14 +105,7 @@ and design documents are outside the production ownership inventory.
 Only identified invariant blocks in a `normative` document may use `MUST`,
 `MUST NOT`, or `SHOULD` as contract terms.
 
-## Legacy pointers and user guides
-
-The former role-by-platform documents now point to their owning module docs:
-
-- [GPU Attention runtime](../../gpu/ATTENTION_RUNTIME_DESIGN.md)
-- [GPU FFN runtime](../../gpu/FFN_RUNTIME_DESIGN.md)
-- [NPU Attention runtime](../../npu/NPU_ATTENTION_RUNTIME_DESIGN.md)
-- [NPU FFN runtime](../../npu/NPU_FFN_RUNTIME_DESIGN.md)
+## User and operational guides
 
 Operational guides remain separate from normative module design:
 
@@ -135,7 +128,8 @@ Operational guides remain separate from normative module design:
 - GPU and NPU FFN behavior is consolidated in `ffn_runtime.md`;
 - cross-cutting CUDA and Ascend mechanisms live in
   `execution_platforms.md`;
-- the four former runtime documents contain short compatibility pointers.
+- the four former role-by-platform runtime documents are removed after their
+  content and ownership move to the module documents.
 
 ## Phase 3 completion criteria
 
