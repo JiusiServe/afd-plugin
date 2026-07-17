@@ -63,7 +63,6 @@ attention and FFN commands so all workers join the same CAM async group.
 
 | Field | Meaning |
 |-------|---------|
-| `quant_mode` | CAM operator quantization mode. `0` keeps the base non-quantized CAM path. |
 | `dynamicQuant` | Enables dynamic quantization metadata for CAM dispatch/combine. |
 | `async_moe_ubatching` | Enables AFD-managed MoE ubatching instead of vLLM native DBO. |
 | `async_moe_num_ubatches` | Number of async MoE stages. The current CAM async setup uses `2`. |
@@ -268,7 +267,6 @@ vllm serve /path/to/DeepSeek-V3.2 \
       "afd_role_rank": 0,
       "compute_gate_on_attention": true,
       "extra_config": {
-        "quant_mode": 0,
         "dynamicQuant": 1,
         "async_moe_ubatching": true,
         "async_moe_num_ubatches": 2,
@@ -337,7 +335,6 @@ vllm serve /path/to/DeepSeek-V3.2 \
       "afd_role_rank": 16,
       "compute_gate_on_attention": true,
       "extra_config": {
-        "quant_mode": 0,
         "dynamicQuant": 1,
         "async_moe_ubatching": true,
         "async_moe_num_ubatches": 2,
@@ -395,7 +392,6 @@ vllm serve /path/to/DeepSeek-V3.2 \
       "afd_role_rank": 0,
       "compute_gate_on_attention": true,
       "extra_config": {
-        "quant_mode": 0,
         "dynamicQuant": 1,
         "async_moe_ubatching": true,
         "async_moe_num_ubatches": 2,

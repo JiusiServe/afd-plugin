@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from afd_plugin.config import (
@@ -41,23 +40,6 @@ def fail_if_unsupported_npu_afd_features(vllm_config: VllmConfig) -> None:
     if quant_mode not in (None, "", 0, "0"):
         raise RuntimeError("AFD NPU runtime currently supports only quant_mode=0")
 
-    if _truthy(extra.get("is_multistream")):
-        raise RuntimeError("AFD NPU runtime does not support multistream yet")
-    if _truthy(extra.get("is_attn_multistream")):
-        raise RuntimeError(
-            "AFD NPU runtime does not support attention multistream yet",
-        )
-    if _truthy(extra.get("is_ffn_multistream")):
-        raise RuntimeError("AFD NPU runtime does not support FFN multistream yet")
-
-    multistream_info = extra.get("multistream_info")
-    if isinstance(multistream_info, Mapping):
-        for key in ("enable", "enabled", "attn_enable", "ffn_enable"):
-            if _truthy(multistream_info.get(key)):
-                raise RuntimeError(
-                    "AFD NPU runtime does not support multistream_info enabled",
-                )
-
     if bool(vllm_config.parallel_config.use_ubatching) and (
         int(vllm_config.parallel_config.num_ubatches) != 2
     ):
@@ -90,23 +72,6 @@ def _fail_if_unsupported_npu_afd_async_features(
             vllm_config,
             afd_config,
         )
-    if _truthy(extra.get("is_multistream")):
-        raise RuntimeError("CAMAsyncAFDConnector does not support multistream")
-    if _truthy(extra.get("is_attn_multistream")):
-        raise RuntimeError(
-            "CAMAsyncAFDConnector does not support attention multistream",
-        )
-    if _truthy(extra.get("is_ffn_multistream")):
-        raise RuntimeError("CAMAsyncAFDConnector does not support FFN multistream")
-
-    multistream_info = extra.get("multistream_info")
-    if isinstance(multistream_info, Mapping):
-        for key in ("enable", "enabled", "attn_enable", "ffn_enable"):
-            if _truthy(multistream_info.get(key)):
-                raise RuntimeError(
-                    "CAMAsyncAFDConnector does not support multistream_info enabled",
-                )
-
     quant_mode = extra.get("dynamicQuant", 0)
     if quant_mode not in (None, "", 0, "0", 1, "1"):
         raise RuntimeError(
