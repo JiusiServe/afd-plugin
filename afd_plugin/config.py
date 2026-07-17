@@ -6,18 +6,17 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal
+
+from afd_plugin.config_utils import coerce_extra_bool as _coerce_bool
+from afd_plugin.config_utils import coerce_extra_int as _coerce_int
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
 
 AFD_ADDITIONAL_CONFIG_KEY: Final[str] = "afd"
 AFD_ASYNC_CONNECTOR: Final[str] = "CAMAsyncAFDConnector"
-ASYNC_MOE_UBATCHING_CONFIG_KEY: Final[str] = "async_moe_ubatching"
-ASYNC_MOE_NUM_UBATCHES_CONFIG_KEY: Final[str] = "async_moe_num_ubatches"
-ASYNC_MOE_SPLIT_CONFIG_KEY: Final[str] = "async_moe_split"
-ASYNC_MOE_REQUEST_SPLIT: Final[str] = "request"
 AFDRole = Literal["attention", "ffn"]
 
 SUPPORTED_AFD_ROLES: Final[tuple[str, ...]] = ("attention", "ffn")
@@ -32,7 +31,6 @@ _ALIASES: Final[dict[str, str]] = {
     "afd_role": "role",
     "afd_port": "port",
     "afd_host": "host",
-    "afd_extra_config": "extra_config",
     "async": "async_dp",
 }
 
@@ -46,10 +44,6 @@ class AFDConfig:
     names.
     """
 
-    # Enables the AFD runtime for the selected worker role.
-    enabled: bool = False
-    # Open connector/plugin extension namespace, aligned with vLLM extra config.
-    extra_config: dict[str, Any] = field(default_factory=dict)
     # Connector implementation name used to create the backend data path.
     connector: str = "P2pNcclAFDConnector"
     # Whether AFD owns async data-parallel runtime patches for this process.
@@ -68,10 +62,6 @@ class AFDConfig:
     afd_role_rank: int = 0
     # Whether Attention computes MoE gate outputs before sending to FFN.
     compute_gate_on_attention: bool = False
-
-    @property
-    def afd_extra_config(self) -> dict[str, Any]:
-        return self.extra_config
 
     @property
     def afd_connector(self) -> str:
@@ -100,8 +90,7 @@ class AFDConfig:
     def compute_hash(self) -> str:
         """Return a stable hash for graph-affecting AFD settings."""
 
-        factors: list[Any] = [
-            self.enabled,
+        factors: list[str | bool | int] = [
             self.connector,
             self.async_dp,
             self.role,
@@ -114,71 +103,23 @@ class AFDConfig:
         validate_afd_config(self, expected_role=expected_role)
 
 
-def _coerce_bool(value: object, *, field_name: str) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off"}:
-            return False
-    raise TypeError(f"{field_name} must be a boolean, got {value!r}")
-
-
-def _coerce_int(value: object, *, field_name: str) -> int:
-    if isinstance(value, bool):
-        raise TypeError(f"{field_name} must be an integer, got {value!r}")
-    try:
-        return int(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise TypeError(
-            f"{field_name} must be an integer, got {value!r}",
-        ) from exc
-
-
-def _extra_bool(config: AFDConfig, key: str, *, default: bool = False) -> bool:
-    value = (config.extra_config or {}).get(key, default)
-    return _coerce_bool(value, field_name=f"extra_config.{key}")
-
-
-def async_moe_ubatching_enabled(config: AFDConfig) -> bool:
-    """Return whether async connector MoE-only request ubatching is enabled."""
-
-    return _extra_bool(config, ASYNC_MOE_UBATCHING_CONFIG_KEY)
-
-
-def async_moe_num_ubatches(config: AFDConfig) -> int:
-    value = (config.extra_config or {}).get(ASYNC_MOE_NUM_UBATCHES_CONFIG_KEY, 2)
-    return _coerce_int(
-        value,
-        field_name=f"extra_config.{ASYNC_MOE_NUM_UBATCHES_CONFIG_KEY}",
-    )
-
-
-def async_moe_split(config: AFDConfig) -> str:
-    value = (config.extra_config or {}).get(
-        ASYNC_MOE_SPLIT_CONFIG_KEY,
-        ASYNC_MOE_REQUEST_SPLIT,
-    )
-    if not isinstance(value, str):
-        raise TypeError(
-            f"extra_config.{ASYNC_MOE_SPLIT_CONFIG_KEY} must be a string, "
-            f"got {value!r}",
-        )
-    return value.strip().lower()
-
-
-def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
+def _normalize_mapping(raw: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     normalized: dict[str, Any] = {}
+    connector_extra_config: dict[str, Any] | None = None
     valid_fields = set(AFDConfig.__dataclass_fields__)  # type: ignore[attr-defined]
 
     for key, value in raw.items():
         normalized_key = _ALIASES.get(key, key)
+        if normalized_key == "connector_extra_config":
+            if not isinstance(value, Mapping):
+                raise TypeError(f"{key} must be a mapping")
+            connector_extra_config = dict(value)
+            continue
         if normalized_key not in valid_fields:
             raise ValueError(
                 "unknown AFD config field "
-                f"{key!r}; put connector-specific values under 'extra_config'",
+                f"{key!r}; put connector-specific values under "
+                "'connector_extra_config'",
             )
         if normalized_key in normalized:
             raise ValueError(
@@ -187,11 +128,6 @@ def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
             )
         normalized[normalized_key] = value
 
-    if "enabled" in normalized:
-        normalized["enabled"] = _coerce_bool(
-            normalized["enabled"],
-            field_name="enabled",
-        )
     if "async_dp" in normalized:
         normalized["async_dp"] = _coerce_bool(
             normalized["async_dp"],
@@ -210,76 +146,91 @@ def _normalize_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
                 field_name=field_name,
             )
 
-    if "extra_config" in normalized and not isinstance(
-        normalized["extra_config"],
-        dict,
-    ):
-        raise TypeError("extra_config must be a dict")
-
     if "compute_gate_on_attention" in normalized:
         normalized["compute_gate_on_attention"] = _coerce_bool(
             normalized["compute_gate_on_attention"],
             field_name="compute_gate_on_attention",
         )
-    elif "extra_config" in normalized:
-        extra_config = normalized["extra_config"]
-        if "compute_gate_on_attention" in extra_config:
-            normalized["compute_gate_on_attention"] = _coerce_bool(
-                extra_config["compute_gate_on_attention"],
-                field_name="extra_config.compute_gate_on_attention",
-            )
 
-    return normalized
+    return normalized, connector_extra_config or {}
 
 
 def afd_config_from_mapping(
-    raw: Mapping[str, Any] | None,
+    raw: Mapping[str, Any],
     *,
     validate: bool = True,
     expected_role: str | None = None,
 ) -> AFDConfig:
-    if raw is None:
-        config = AFDConfig()
-    elif not isinstance(raw, Mapping):
+    if not isinstance(raw, Mapping):
         raise TypeError(
             f"AFD config must be a mapping, got {type(raw).__name__}",
         )
-    else:
-        config = AFDConfig(**_normalize_mapping(raw))
+    normalized, _connector_extra_config = _normalize_mapping(raw)
+    config = AFDConfig(**normalized)
 
     if validate:
         config.validate(expected_role=expected_role)
     return config
 
 
-def parse_afd_config(
-    source: Mapping[str, Any] | object | None,
-    *,
-    validate: bool = True,
-    expected_role: str | None = None,
-) -> AFDConfig:
-    """Parse ``additional_config["afd"]`` or a vLLM-like config object."""
-
-    if source is None:
-        return afd_config_from_mapping(
-            None,
-            validate=validate,
-            expected_role=expected_role,
+def connector_extra_config_from_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        raise TypeError(
+            f"AFD config must be a mapping, got {type(raw).__name__}",
         )
+    _normalized, connector_extra_config = _normalize_mapping(raw)
+    return connector_extra_config
 
-    additional_config = (
-        source if isinstance(source, Mapping) else source.additional_config
-    )
+
+def _additional_config_from_source(source: Any) -> Mapping[str, Any] | None:
+    if source is None:
+        return None
+    if isinstance(source, Mapping):
+        additional_config = source
+    else:
+        additional_config = source.additional_config
     if additional_config is None:
-        afd_raw = None
-    elif not isinstance(additional_config, Mapping):
+        return None
+    if not isinstance(additional_config, Mapping):
         raise TypeError(
             "additional_config must be a mapping when parsing AFD config, "
             f"got {type(additional_config).__name__}",
         )
-    else:
-        afd_raw = additional_config.get(AFD_ADDITIONAL_CONFIG_KEY)
+    return additional_config
 
+
+def _afd_raw_from_source(source: Any) -> Mapping[str, Any] | None:
+    additional_config = _additional_config_from_source(source)
+    if additional_config is None:
+        return None
+    if AFD_ADDITIONAL_CONFIG_KEY not in additional_config:
+        return None
+    afd_raw = additional_config[AFD_ADDITIONAL_CONFIG_KEY]
+    if not isinstance(afd_raw, Mapping):
+        raise TypeError(
+            f"AFD config must be a mapping, got {type(afd_raw).__name__}",
+        )
+    return afd_raw
+
+
+def has_afd_config(source: Any) -> bool:
+    additional_config = _additional_config_from_source(source)
+    return bool(
+        additional_config is not None and AFD_ADDITIONAL_CONFIG_KEY in additional_config
+    )
+
+
+def parse_optional_afd_config(
+    source: Any,
+    *,
+    validate: bool = True,
+    expected_role: str | None = None,
+) -> AFDConfig | None:
+    """Parse ``additional_config["afd"]`` when present."""
+
+    afd_raw = _afd_raw_from_source(source)
+    if afd_raw is None:
+        return None
     return afd_config_from_mapping(
         afd_raw,
         validate=validate,
@@ -287,12 +238,52 @@ def parse_afd_config(
     )
 
 
-def is_afd_async_dp(vllm_config: VllmConfig) -> bool:
-    """Return whether ``vllm_config`` selects AFD's async connector mode."""
+def parse_afd_config(
+    source: Any,
+    *,
+    validate: bool = True,
+    expected_role: str | None = None,
+) -> AFDConfig:
+    """Parse required active ``additional_config["afd"]``."""
 
-    config = parse_afd_config(vllm_config, validate=False)
+    config = parse_optional_afd_config(
+        source,
+        validate=validate,
+        expected_role=expected_role,
+    )
+    if config is None:
+        raise ValueError(
+            'AFD config requires additional_config["afd"]; omit it to disable AFD',
+        )
+    return config
+
+
+def connector_extra_config_from_source(source: Any) -> dict[str, Any]:
+    afd_raw = _afd_raw_from_source(source)
+    if afd_raw is None:
+        return {}
+    return connector_extra_config_from_mapping(afd_raw)
+
+
+def is_afd_active(source: Any) -> bool:
+    """Return true only when a present AFD config passes common validation."""
+
+    return parse_optional_afd_config(source, validate=True) is not None
+
+
+def is_afd_async_dp(vllm_config: VllmConfig) -> bool:
+    """Return whether ``vllm_config`` selects AFD's async connector mode.
+
+    This is a lightweight selector for import-time async-DP patches, not a full
+    activation validator. Use ``is_afd_active`` or ``parse_afd_config`` when
+    common config validity is required.
+    """
+
+    config = parse_optional_afd_config(vllm_config, validate=False)
     return (
-        config.enabled and config.async_dp and config.connector == AFD_ASYNC_CONNECTOR
+        config is not None
+        and config.async_dp
+        and config.connector == AFD_ASYNC_CONNECTOR
     )
 
 
@@ -356,19 +347,17 @@ def validate_afd_config(
 __all__ = [
     "AFDConfig",
     "AFD_ASYNC_CONNECTOR",
-    "ASYNC_MOE_NUM_UBATCHES_CONFIG_KEY",
-    "ASYNC_MOE_REQUEST_SPLIT",
-    "ASYNC_MOE_SPLIT_CONFIG_KEY",
-    "ASYNC_MOE_UBATCHING_CONFIG_KEY",
     "afd_config_from_mapping",
     "AFD_ADDITIONAL_CONFIG_KEY",
     "AFDRole",
     "SUPPORTED_AFD_CONNECTORS",
     "SUPPORTED_AFD_ROLES",
-    "async_moe_num_ubatches",
-    "async_moe_split",
-    "async_moe_ubatching_enabled",
+    "connector_extra_config_from_mapping",
+    "connector_extra_config_from_source",
+    "has_afd_config",
     "is_afd_async_dp",
+    "is_afd_active",
     "parse_afd_config",
+    "parse_optional_afd_config",
     "validate_afd_config",
 ]

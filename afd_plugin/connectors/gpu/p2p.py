@@ -55,6 +55,7 @@ deployments.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -66,7 +67,7 @@ from vllm.forward_context import DPMetadata, get_forward_context
 from vllm.utils.torch_utils import direct_register_custom_op
 
 from afd_plugin.config import AFDConfig
-from afd_plugin.connectors.base import AFDConnectorBase
+from afd_plugin.connectors.base import AFDConnectorBase, ConnectorExtraInfo
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
     AFDControlPayload,
@@ -111,6 +112,21 @@ class P2pNcclAFDConnector(AFDConnectorBase):
     docstring for the topology rules, configuration contract, and
     requirements.
     """
+
+    @classmethod
+    def parse_extra_config(
+        cls,
+        raw: Mapping[str, Any] | None,
+    ) -> ConnectorExtraInfo:
+        # P2P currently has no connector-specific options, so only an empty
+        # connector_extra_config is accepted.
+        if raw is not None and not isinstance(raw, Mapping):
+            raise TypeError("P2P connector_extra_config must be a mapping")
+        if raw:
+            raise ValueError(
+                "P2pNcclAFDConnector does not support connector_extra_config",
+            )
+        return ConnectorExtraInfo()
 
     def __init__(
         self,

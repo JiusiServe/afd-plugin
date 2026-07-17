@@ -40,7 +40,7 @@ from vllm.v1.engine.core import EngineCoreProc
 from vllm.v1.engine.core_client import DPAsyncMPClient
 
 from afd_plugin.compat.vllm import TARGET_VLLM_VERSION
-from afd_plugin.config import is_afd_async_dp, parse_afd_config
+from afd_plugin.config import is_afd_async_dp, parse_optional_afd_config
 
 if TYPE_CHECKING:
     from multiprocessing.queues import Queue
@@ -365,8 +365,12 @@ async def add_request_async(
 
 
 def _is_afd_async_attention_config(vllm_config: VllmConfig) -> bool:
-    afd_config = parse_afd_config(vllm_config, validate=False)
-    return is_afd_async_dp(vllm_config) and afd_config.role == "attention"
+    afd_config = parse_optional_afd_config(vllm_config, validate=False)
+    return (
+        afd_config is not None
+        and is_afd_async_dp(vllm_config)
+        and afd_config.role == "attention"
+    )
 
 
 def _is_target_vllm_compatible() -> bool:

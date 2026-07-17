@@ -16,7 +16,6 @@ from afd_plugin.compat.ascend import (
     fail_if_unsupported_npu_afd_features,
     npu_afd_num_ubatches,
 )
-from afd_plugin.compat.ascend import runtime as ascend_runtime
 from afd_plugin.connectors import (
     AFDA2FTransferPayload,
     AFDControlPayload,
@@ -159,14 +158,17 @@ def _vllm_config(
     **parallel_overrides,
 ):
     async_dp = bool(parallel_overrides.pop("async_dp", False))
+    compute_gate_on_attention = bool(
+        parallel_overrides.pop("compute_gate_on_attention", False),
+    )
     return SimpleNamespace(
         additional_config={
             "afd": {
-                "enabled": True,
                 "role": role,
                 "connector": connector,
                 "async": async_dp,
-                "extra_config": extra_config or {},
+                "compute_gate_on_attention": compute_gate_on_attention,
+                "connector_extra_config": extra_config or {},
             },
         },
         parallel_config=_parallel_config(**parallel_overrides),
@@ -1041,10 +1043,20 @@ def test_npu_feature_validation_rejects_unsupported_switches():
         ({"compute_gate_on_attention": True}, "compute_gate_on_attention"),
         ({"quant_mode": 1}, "quant_mode=0"),
     ]:
-        with pytest.raises(RuntimeError, match=message):
+        with pytest.raises((RuntimeError, ValueError), match=message):
             fail_if_unsupported_npu_afd_features(
                 _vllm_config(extra_config=extra_config),
             )
+
+
+def test_npu_feature_validation_uses_selected_connector_extra_info_parser():
+    with pytest.raises(ValueError, match="does not support connector_extra_config"):
+        fail_if_unsupported_npu_afd_features(
+            _vllm_config(
+                connector="P2pNcclAFDConnector",
+                extra_config={"core_num": 8},
+            ),
+        )
 
 
 def test_npu_feature_validation_allows_two_ubatches_only():
@@ -1119,9 +1131,9 @@ def test_npu_async_moe_ubatching_validation_requires_supported_shape():
         _vllm_config(
             connector="CAMAsyncAFDConnector",
             async_dp=True,
+            compute_gate_on_attention=True,
             extra_config={
                 "async_moe_ubatching": True,
-                "compute_gate_on_attention": True,
             },
         ),
     )
@@ -1140,9 +1152,9 @@ def test_npu_async_moe_ubatching_validation_requires_supported_shape():
             _vllm_config(
                 connector="CAMAsyncAFDConnector",
                 async_dp=True,
+                compute_gate_on_attention=True,
                 extra_config={
                     "async_moe_ubatching": True,
-                    "compute_gate_on_attention": True,
                     "async_moe_num_ubatches": 3,
                 },
             ),
@@ -1153,9 +1165,9 @@ def test_npu_async_moe_ubatching_validation_requires_supported_shape():
             _vllm_config(
                 connector="CAMAsyncAFDConnector",
                 async_dp=True,
+                compute_gate_on_attention=True,
                 extra_config={
                     "async_moe_ubatching": True,
-                    "compute_gate_on_attention": True,
                     "async_moe_split": "token",
                 },
             ),
@@ -1165,10 +1177,10 @@ def test_npu_async_moe_ubatching_validation_requires_supported_shape():
         _vllm_config(
             connector="CAMAsyncAFDConnector",
             async_dp=True,
+            compute_gate_on_attention=True,
             prefill_context_parallel_size=2,
             extra_config={
                 "async_moe_ubatching": True,
-                "compute_gate_on_attention": True,
             },
         ),
     )
@@ -1178,10 +1190,10 @@ def test_npu_async_moe_ubatching_validation_requires_supported_shape():
             _vllm_config(
                 connector="CAMAsyncAFDConnector",
                 async_dp=True,
+                compute_gate_on_attention=True,
                 decode_context_parallel_size=2,
                 extra_config={
                     "async_moe_ubatching": True,
-                    "compute_gate_on_attention": True,
                 },
             ),
         )
@@ -1277,58 +1289,6 @@ def test_npu_ubatch_allows_mc2_comm_when_thresholds_are_met(monkeypatch):
         sys.modules.pop(module_name, None)
         if original_module is not None:
             sys.modules[module_name] = original_module
-
-
-def test_npu_afd_config_patch_restores_dbo_for_afd(monkeypatch):
-    fake_package = ModuleType("vllm_ascend")
-    fake_package.__path__ = []
-    fake_platform = ModuleType("vllm_ascend.platform")
-
-    class FakeParallelConfig:
-        def __init__(self, *, enable_dbo, ubatch_size):
-            self.enable_dbo = enable_dbo
-            self.ubatch_size = ubatch_size
-
-        @property
-        def use_ubatching(self):
-            return self.enable_dbo or self.ubatch_size > 1
-
-        @property
-        def num_ubatches(self):
-            return 2 if self.enable_dbo else self.ubatch_size
-
-    class NPUPlatform:
-        @staticmethod
-        def _fix_incompatible_config(vllm_config):
-            parallel_config = vllm_config.parallel_config
-            parallel_config.enable_dbo = False
-            parallel_config.ubatch_size = 0
-            return "fixed"
-
-    fake_platform.NPUPlatform = NPUPlatform
-    monkeypatch.setitem(sys.modules, "vllm_ascend", fake_package)
-    monkeypatch.setitem(sys.modules, "vllm_ascend.platform", fake_platform)
-    monkeypatch.setattr(ascend_runtime, "_PATCHES_APPLIED", False)
-
-    ascend_runtime.apply_afd_ascend_patches_if_needed()
-
-    config = _vllm_config()
-    config.parallel_config = FakeParallelConfig(enable_dbo=True, ubatch_size=4)
-    assert NPUPlatform._fix_incompatible_config(config) == "fixed"
-    assert config.parallel_config.enable_dbo is True
-    assert config.parallel_config.use_ubatching is True
-    assert config.parallel_config.num_ubatches == 2
-    assert config.parallel_config.ubatch_size == 4
-
-    disabled_config = _vllm_config()
-    disabled_config.parallel_config = FakeParallelConfig(
-        enable_dbo=True,
-        ubatch_size=4,
-    )
-    disabled_config.additional_config["afd"]["enabled"] = False
-    assert NPUPlatform._fix_incompatible_config(disabled_config) == "fixed"
-    assert disabled_config.parallel_config.enable_dbo is False
-    assert disabled_config.parallel_config.use_ubatching is False
 
 
 def _tokens(dp_metadata):

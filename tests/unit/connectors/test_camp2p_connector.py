@@ -18,6 +18,7 @@ from afd_plugin.connectors import (
 from afd_plugin.connectors.npu import camp2p as camp2p_module
 from afd_plugin.connectors.npu.camp2p import (
     CAMP2pAFDConnector,
+    CAMP2PExtraInfo,
     CAMP2PTransferState,
     build_camp2p_topology,
 )
@@ -28,8 +29,14 @@ class _FakeDPMetadata:
         self.num_tokens_across_dp_cpu = values
 
 
-def _vllm_config(*, num_ubatches: int = 1, n_shared_experts: int = 0):
+def _vllm_config(
+    *,
+    num_ubatches: int = 1,
+    n_shared_experts: int = 0,
+    extra_config=None,
+):
     return SimpleNamespace(
+        additional_config={"afd": {"connector_extra_config": extra_config or {}}},
         parallel_config=SimpleNamespace(
             data_parallel_size=1,
             data_parallel_rank=0,
@@ -47,15 +54,13 @@ def _vllm_config(*, num_ubatches: int = 1, n_shared_experts: int = 0):
     )
 
 
-def _afd_config(*, role: str, rank: int = 0, extra_config: dict | None = None):
+def _afd_config(*, role: str, rank: int = 0):
     return AFDConfig(
-        enabled=True,
         connector="CAMP2pAFDConnector",
         role=role,
         afd_role_rank=rank,
         num_attention_ranks=4,
         num_ffn_ranks=2,
-        extra_config=extra_config or {},
     )
 
 
@@ -63,13 +68,14 @@ def test_camp2p_factory_creates_connector():
     connector = AFDConnectorFactory.create_connector(
         0,
         0,
-        _vllm_config(),
+        _vllm_config(extra_config={"core_num": 12}),
         _afd_config(role="attention"),
     )
 
     assert isinstance(connector, CAMP2pAFDConnector)
     assert not connector.is_initialized
     assert connector.max_num_reqs == 8
+    assert connector.camp2p_extra_info.core_num == 12
 
 
 def test_camp2p_topology_matches_original_rank_layout():
@@ -121,16 +127,45 @@ def test_camp2p_create_transfer_metadata_uses_original_contiguous_af_grouping():
     assert metadata0.transfer_state.k == 2
 
 
-def test_camp2p_ignores_mix_placement_for_connector_metadata():
+def test_camp2p_extra_info_rejects_unknown_mix_placement():
+    with pytest.raises(ValueError, match="unknown CAMP2P connector_extra_config"):
+        CAMP2PExtraInfo.from_mapping({"mix_placement": True})
+
+
+def test_camp2p_extra_info_validates_values():
+    with pytest.raises(ValueError, match="core_num must be positive"):
+        CAMP2PExtraInfo.from_mapping({"core_num": 0})
+    with pytest.raises(TypeError, match="core_num must be an integer"):
+        CAMP2PExtraInfo.from_mapping({"core_num": 8.5})
+
+
+def test_camp2p_extra_info_coerces_integer_bool_values():
+    assert (
+        CAMP2PExtraInfo.from_mapping(
+            {"compute_gate_on_attention": 1},
+        ).compute_gate_on_attention
+        is True
+    )
+    assert (
+        CAMP2PExtraInfo.from_mapping(
+            {"compute_gate_on_attention": 0},
+        ).compute_gate_on_attention
+        is False
+    )
+
+
+def test_camp2p_connector_uses_role_specific_core_num():
     connector = CAMP2pAFDConnector(
         0,
         0,
-        _vllm_config(n_shared_experts=3),
-        _afd_config(
-            role="ffn",
-            rank=0,
-            extra_config={"mix_placement": True},
+        _vllm_config(
+            n_shared_experts=3,
+            extra_config={
+                "core_num": 8,
+                "ffn_core_num": 13,
+            },
         ),
+        _afd_config(role="ffn", rank=0),
     )
 
     connector.dp_metadata_list = {0: _FakeDPMetadata([2, 3, 5, 7])}
@@ -139,6 +174,7 @@ def test_camp2p_ignores_mix_placement_for_connector_metadata():
     assert metadata.transfer_state.k == 2
     assert metadata.transfer_state.moe_expert_num == 4
     assert metadata.transfer_state.shared_expert_num == 0
+    assert metadata.transfer_state.aiv_num == 13
 
 
 def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):

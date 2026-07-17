@@ -17,7 +17,7 @@ from vllm.model_executor.offloader.base import get_offloader
 from vllm.v1.worker.gpu_ubatch_wrapper import UbatchMetadata, UBatchWrapper
 from vllm.v1.worker.ubatching import make_ubatch_contexts
 
-from afd_plugin.config import parse_afd_config
+from afd_plugin.config import is_afd_active
 from afd_plugin.connectors import AFDDPMetadata, AFDForwardContextMetadata
 
 
@@ -35,7 +35,7 @@ class AFDUBatchWrapper(UBatchWrapper):
     def _create_sm_control_context(
         vllm_config: VllmConfig,
     ) -> AbstractContextManager[None]:
-        if parse_afd_config(vllm_config).enabled:
+        if is_afd_active(vllm_config):
             return nullcontext()
         return UBatchWrapper._create_sm_control_context(vllm_config)
 

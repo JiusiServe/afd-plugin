@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("torch")
@@ -17,6 +19,23 @@ from afd_plugin.connectors import (
 def test_dummy_connector_is_not_registered():
     with pytest.raises(ValueError, match="unsupported AFD connector type"):
         AFDConnectorFactory.get_connector_class("dummy")
+
+
+def test_p2p_extra_info_rejects_unknown_fields():
+    source = SimpleNamespace(
+        additional_config={
+            "afd": {
+                "role": "attention",
+                "connector_extra_config": {"core_num": 8},
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="does not support connector_extra_config"):
+        AFDConnectorFactory.parse_connector_extra_info(
+            "P2pNcclAFDConnector",
+            source,
+        )
 
 
 def test_backend_connector_modules_are_registered_by_backend_package():

@@ -59,9 +59,9 @@ def _load_patch_module():
     return importlib.import_module(module_name)
 
 
-def _engine_args(*, enabled):
+def _engine_args(*, active):
     args = sys.modules["vllm.engine.arg_utils"].EngineArgs()
-    args.additional_config = {"afd": {"enabled": enabled, "role": "attention"}}
+    args.additional_config = {"afd": {"role": "attention"}} if active else {}
     args.enable_dbo = True
     args.ubatch_size = 1
     args.all2all_backend = "allgather_reducescatter"
@@ -72,7 +72,7 @@ def test_config_validation_patch_relaxes_backend_for_afd_ubatching(monkeypatch):
     arg_utils_module, _config_module = _install_fake_vllm_config(monkeypatch)
     patch_module = _load_patch_module()
     importlib.reload(patch_module)
-    args = _engine_args(enabled=True)
+    args = _engine_args(active=True)
 
     cfg = arg_utils_module.EngineArgs.create_engine_config(args)
 
@@ -83,7 +83,7 @@ def test_config_validation_patch_relaxes_backend_for_afd_ubatching(monkeypatch):
 def test_config_validation_patch_preserves_non_afd_validation(monkeypatch):
     arg_utils_module, _config_module = _install_fake_vllm_config(monkeypatch)
     _load_patch_module()
-    args = _engine_args(enabled=False)
+    args = _engine_args(active=False)
 
     try:
         arg_utils_module.EngineArgs.create_engine_config(args)
@@ -97,7 +97,7 @@ def test_config_validation_patch_allows_vllm_dev_checkout(monkeypatch):
     arg_utils_module, _config_module = _install_fake_vllm_config(monkeypatch)
     sys.modules["vllm"].__version__ = "0.1.dev14230+g68b0c3135"
     _load_patch_module()
-    args = _engine_args(enabled=True)
+    args = _engine_args(active=True)
 
     cfg = arg_utils_module.EngineArgs.create_engine_config(args)
 
@@ -107,7 +107,7 @@ def test_config_validation_patch_allows_vllm_dev_checkout(monkeypatch):
 def test_config_validation_patch_relaxes_repeated_vllm_post_init(monkeypatch):
     arg_utils_module, _config_module = _install_fake_vllm_config(monkeypatch)
     _load_patch_module()
-    args = _engine_args(enabled=True)
+    args = _engine_args(active=True)
 
     cfg = arg_utils_module.EngineArgs.create_engine_config(args)
     cfg.additional_config = args.additional_config

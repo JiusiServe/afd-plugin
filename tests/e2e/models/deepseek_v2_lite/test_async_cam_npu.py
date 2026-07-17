@@ -23,7 +23,7 @@ from tests.e2e.runner import ASYNC_AFD_CONNECTOR
 REPO_ROOT = Path(__file__).resolve().parents[4]
 RUNNER = REPO_ROOT / "tests" / "e2e" / "runner.py"
 ASYNC_CAM_EXTRA_CONFIG = (
-    '{"quant_mode":0,"dynamicQuant":0,"async_moe_ubatching":false,'
+    '{"dynamicQuant":0,"async_moe_ubatching":false,'
     '"async_moe_num_ubatches":2,"async_moe_split":"request",'
     '"attn_ranks_per_dp":2}'
 )
@@ -125,7 +125,7 @@ def test_deepseek_v2_lite_async_cam_attn_dp1tp2_ffn_dp2ep2_smoke():
         ASYNC_AFD_CONNECTOR,
         "--afd-async",
         "--compute-gate-on-attention",
-        "--afd-extra-config",
+        "--afd-connector-extra-config",
         ASYNC_CAM_EXTRA_CONFIG,
         "--num-attention-ranks",
         "2",

@@ -22,7 +22,6 @@ def _config(
     return SimpleNamespace(
         additional_config={
             "afd": {
-                "enabled": True,
                 "connector": connector,
                 "role": role,
                 "async": async_dp,
@@ -221,6 +220,21 @@ def test_async_dp_engine_patch_preserves_non_async_moe_dp(monkeypatch):
 
     core_module.EngineCoreProc.run_engine_core(
         vllm_config=_config(connector="CAMP2pAFDConnector", async_dp=False),
+        dp_rank=1,
+    )
+    engine = core_module.last_engine
+
+    assert engine.kind == "dp"
+
+
+def test_async_dp_engine_patch_preserves_moe_dp_without_afd_config(monkeypatch):
+    _load_patch_module(monkeypatch)
+    core_module = sys.modules["vllm.v1.engine.core"]
+    config = _config()
+    config.additional_config = {}
+
+    core_module.EngineCoreProc.run_engine_core(
+        vllm_config=config,
         dp_rank=1,
     )
     engine = core_module.last_engine

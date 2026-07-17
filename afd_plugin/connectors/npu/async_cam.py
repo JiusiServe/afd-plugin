@@ -27,9 +27,10 @@ from __future__ import annotations
 
 import inspect
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import torch
 from torch import Tensor
@@ -37,7 +38,16 @@ from vllm.logger import init_logger
 
 from afd_plugin.compat.ascend.ops import ensure_cam_async_ops_available
 from afd_plugin.config import AFDConfig
-from afd_plugin.connectors.base import AFDConnectorBase
+from afd_plugin.config_utils import (
+    coerce_extra_bool,
+    coerce_extra_int,
+    coerce_extra_positive_int,
+    coerce_extra_str,
+)
+from afd_plugin.connectors.base import (
+    AFDConnectorBase,
+    ConnectorExtraInfo,
+)
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
     AFDControlPayload,
@@ -54,8 +64,88 @@ if TYPE_CHECKING:
 AFD_ASYNC_CAM_GROUP_NAME = "afd_async_cam"
 CAM_COMM_ID = 0
 ATTN_RANKS_PER_DP_CONFIG_KEY = "attn_ranks_per_dp"
+ASYNC_MOE_REQUEST_SPLIT = "request"
+
+_AFD_ASYNC_EXTRA_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "dynamicQuant",
+        "attn_ranks_per_dp",
+        "async_moe_ubatching",
+        "async_moe_num_ubatches",
+        "async_moe_split",
+    },
+)
 
 logger = init_logger(__name__)
+
+
+@dataclass(frozen=True)
+class AFDAsyncExtraInfo(ConnectorExtraInfo):
+    """Typed async CAM connector configuration.
+
+    Attributes:
+        dynamic_quant: Dynamic quantization mode accepted by CAM operators.
+        attn_ranks_per_dp: Number of Attention ranks in each data-parallel group.
+        async_moe_ubatching: Whether request-boundary async MoE ubatching is used.
+        async_moe_num_ubatches: Number of stages used by async MoE ubatching.
+        async_moe_split: Boundary at which async MoE work is split.
+    """
+
+    dynamic_quant: int = 0
+    attn_ranks_per_dp: int = 1
+    async_moe_ubatching: bool = False
+    async_moe_num_ubatches: int = 2
+    async_moe_split: str = ASYNC_MOE_REQUEST_SPLIT
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any] | None) -> AFDAsyncExtraInfo:
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, Mapping):
+            raise TypeError(
+                f"{cls.__name__} connector_extra_config must be a mapping, "
+                f"got {type(raw).__name__}",
+            )
+        unknown = sorted(
+            str(key) for key in raw if key not in _AFD_ASYNC_EXTRA_CONFIG_FIELDS
+        )
+        if unknown:
+            raise ValueError(
+                "unknown AFD async connector_extra_config field(s): "
+                + ", ".join(unknown),
+            )
+
+        return cls(
+            dynamic_quant=coerce_extra_int(
+                raw.get("dynamicQuant", 0),
+                field_name="dynamicQuant",
+            ),
+            attn_ranks_per_dp=coerce_extra_positive_int(
+                raw.get("attn_ranks_per_dp", 1),
+                field_name="attn_ranks_per_dp",
+            ),
+            async_moe_ubatching=coerce_extra_bool(
+                raw.get("async_moe_ubatching", False),
+                field_name="async_moe_ubatching",
+            ),
+            async_moe_num_ubatches=coerce_extra_positive_int(
+                raw.get("async_moe_num_ubatches", 2),
+                field_name="async_moe_num_ubatches",
+            ),
+            async_moe_split=coerce_extra_str(
+                raw.get("async_moe_split", ASYNC_MOE_REQUEST_SPLIT),
+                field_name="async_moe_split",
+            ),
+        )
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {
+            "dynamicQuant": self.dynamic_quant,
+            "attn_ranks_per_dp": self.attn_ranks_per_dp,
+            "async_moe_ubatching": self.async_moe_ubatching,
+            "async_moe_num_ubatches": self.async_moe_num_ubatches,
+            "async_moe_split": self.async_moe_split,
+        }
 
 
 @dataclass(slots=True)
@@ -122,6 +212,13 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
     uses_dp_metadata_control_plane = False
     ffn_step_trigger = "connector"
 
+    @classmethod
+    def parse_extra_config(
+        cls,
+        raw: Mapping[str, Any] | None,
+    ) -> AFDAsyncExtraInfo:
+        return AFDAsyncExtraInfo.from_mapping(raw)
+
     def __init__(
         self,
         rank: int,
@@ -137,21 +234,22 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         used as the CAM Attention TP width.
         """
         super().__init__(rank, local_rank, vllm_config, afd_config)
+        async_extra_info = cast(AFDAsyncExtraInfo, self.extra_info)
+        self.async_extra_info = async_extra_info
         self._initialized = False
         hf_config = vllm_config.model_config.hf_config
         self._role_rank = int(afd_config.afd_role_rank)
         self.hidden_size = int(hf_config.hidden_size)
         self.topk = max(1, int(hf_config.num_experts_per_tok))
         self.num_routed_experts = max(1, int(hf_config.n_routed_experts))
-        dynamic_quant = afd_config.extra_config.get("dynamicQuant", 0)
-        self.dynamic_quant = 1 if int(dynamic_quant or 0) == 1 else 0
+        self.dynamic_quant = async_extra_info.dynamic_quant
         self.group_name = ""
         self.max_seq_len = max(
             1,
             int(vllm_config.scheduler_config.max_num_batched_tokens),
         )
         self.comm_id = CAM_COMM_ID
-        self.tp_size = _resolve_cam_tp_size(afd_config)
+        self.tp_size = async_extra_info.attn_ranks_per_dp
         self.cam_pg: ProcessGroup | None = None
         self.topology = build_async_topology(
             afd_config,
@@ -830,29 +928,6 @@ def build_async_topology(
         expert_rank_size=expert_rank_size,
         expert_per_rank=expert_per_rank,
     )
-
-
-def _resolve_cam_tp_size(afd_config: AFDConfig) -> int:
-    """Return the positive ``attn_ranks_per_dp`` CAM topology width."""
-    value = afd_config.extra_config.get(ATTN_RANKS_PER_DP_CONFIG_KEY, 1)
-    if isinstance(value, bool):
-        raise TypeError(
-            f"extra_config.{ATTN_RANKS_PER_DP_CONFIG_KEY} must be an integer, "
-            f"got {value!r}",
-        )
-    try:
-        size = int(value)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(
-            f"extra_config.{ATTN_RANKS_PER_DP_CONFIG_KEY} must be an integer, "
-            f"got {value!r}",
-        ) from exc
-    if size <= 0:
-        raise ValueError(
-            f"extra_config.{ATTN_RANKS_PER_DP_CONFIG_KEY} must be positive, "
-            f"got {value!r}",
-        )
-    return size
 
 
 def _connector_driven_batch_size(

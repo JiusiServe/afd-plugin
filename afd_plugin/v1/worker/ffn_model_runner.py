@@ -24,11 +24,9 @@ from afd_plugin.compat.profiler import (
 )
 from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
-    AFDA2FTransferPayload,
     AFDConnectorFactory,
     AFDControlPayload,
     AFDDPMetadata,
-    AFDTransferMetadata,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
     _with_dp_derived_afd_rank,
@@ -59,8 +57,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         self.device = device
         self.dtype = self.model_config.dtype
         self.afd_config = self.parse_config(vllm_config)
-        if not self.afd_config.enabled:
-            raise ValueError("AFD FFN runtime requires enabled=true")
         fail_if_unsupported_ubatching(vllm_config)
         self.afd_cudagraph_policy = validate_cuda_graph_mode(
             vllm_config,
@@ -358,34 +354,6 @@ def _make_dp_metadata_payload(
         is_graph_capturing=is_graph_capturing,
         is_warmup=is_warmup,
     )
-
-
-def _normalize_recv_output(
-    recv_output: Any,
-    *,
-    stage_idx: int,
-    layer_idx: int,
-) -> tuple[torch.Tensor, AFDTransferMetadata, Any]:
-    if isinstance(recv_output, tuple):
-        hidden_states, metadata = recv_output
-        return hidden_states, metadata, recv_output
-
-    if isinstance(recv_output, AFDA2FTransferPayload):
-        return recv_output.hidden_states, recv_output.metadata, recv_output
-
-    hidden_states = recv_output.hidden_states
-    metadata = getattr(recv_output, "metadata", None)
-    if metadata is None:
-        metadata = AFDTransferMetadata.create_ffn_metadata(
-            layer_idx=layer_idx,
-            stage_idx=stage_idx,
-            seq_lens=[
-                1
-                if getattr(hidden_states, "shape", None) is None
-                else max(1, int(hidden_states.shape[0])),
-            ],
-        )
-    return hidden_states, metadata, recv_output
 
 
 __all__ = ["GPUFFNModelRunner"]

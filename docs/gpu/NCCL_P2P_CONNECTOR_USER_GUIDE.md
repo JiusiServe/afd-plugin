@@ -57,12 +57,11 @@ All three groups are derived from just `host`, `port`, the role, and the rank co
 
 ## Configuration
 
-AFD configuration is supplied through vLLM's `--additional-config` under the `afd` key. Attention and FFN processes must use the same rendezvous address and topology counts; only `role` (and the worker class/device assignment) differs.
+AFD configuration is supplied through vLLM's `--additional-config` under the `afd` key. The presence of the `afd` object enables AFD; omit it to disable AFD. Attention and FFN processes must use the same rendezvous address and topology counts; only `role` (and the worker class/device assignment) differs.
 
 ```jsonc
 {
   "afd": {
-    "enabled": true,
     "role": "attention",
     "connector": "P2pNcclAFDConnector",
     "host": "127.0.0.1",
@@ -71,7 +70,7 @@ AFD configuration is supplied through vLLM's `--additional-config` under the `af
     "num_ffn_ranks": 1,
     "afd_role_rank": 0,
     "compute_gate_on_attention": false,
-    "extra_config": {}
+    "connector_extra_config": {}
   }
 }
 ```
@@ -80,7 +79,6 @@ AFD configuration is supplied through vLLM's `--additional-config` under the `af
 
 | Field | Type | Default | Required / meaning |
 | --- | --- | --- | --- |
-| `enabled` | `bool` | `false` | Must be `true` to enable the AFD runtime. |
 | `role` | `"attention" \| "ffn"` | `"attention"` | Role owned by this process. Attention sends hidden states; FFN receives and returns FFN outputs. |
 | `connector` | `str` | `"P2pNcclAFDConnector"` | Must be `P2pNcclAFDConnector` for this GPU path. |
 | `host` | `str` | `"127.0.0.1"` | Non-empty rendezvous/control-plane host. All participating ranks must use a reachable, identical value. Host must be the first rank of FFN.|
@@ -89,10 +87,10 @@ AFD configuration is supplied through vLLM's `--additional-config` under the `af
 | `num_ffn_ranks` | `int` | `1` | Total number of AFD FFN ranks, including DP/TP-derived worker ranks. Must be positive. |
 | `afd_role_rank` | `int` | `0` | Rank within the selected role group. Must satisfy `0 <= rank < num_<role>_ranks`. Runners normally derive it from DP/PCP/TP placement; users should not assign duplicate role ranks. |
 | `compute_gate_on_attention` | `bool` | `false` | Must be `false`. Whether Attention computes MoE gate outputs before sending work to FFN. This is a general AFD field, not a PyNccl transport setting. |
-| `extra_config` | `dict` | `{}` | Connector/plugin extension namespace. Unknown top-level AFD fields are rejected; connector-specific values belong here. Recipe metadata such as `afd_size` may be placed here. |
+| `connector_extra_config` | `dict` | `{}` | Must remain empty; `P2pNcclAFDConnector` does not currently support connector-specific options. |
 | `async` / `async_dp` | `bool` | `false` | Must remain `false` for `P2pNcclAFDConnector`; AFD async mode requires `CAMAsyncAFDConnector`. |
 
-Compatibility aliases currently accepted are `afd_role`, `afd_connector`, `afd_host`, `afd_port`, and `afd_extra_config`. Canonical field names should be used in new examples.
+Compatibility aliases currently accepted are `afd_role`, `afd_connector`, `afd_host`, and `afd_port`. Canonical field names should be used in new examples.
 
 ## Topology rules
 
@@ -131,7 +129,7 @@ CUDA_VISIBLE_DEVICES=0 vllm serve /path/to/model \
   --dbo-prefill-token-threshold 12 \
   --host 127.0.0.1 \
   --port 18000 \
-  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"role":"attention","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 FFN side:
@@ -148,7 +146,7 @@ CUDA_VISIBLE_DEVICES=1 vllm serve /path/to/model \
   --dbo-prefill-token-threshold 12 \
   --host 127.0.0.1 \
   --port 18001 \
-  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"role":"ffn","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 The HTTP ports (`18000` / `18001` above) are vLLM service ports and are separate from the AFD NCCL rendezvous base port (`6239`). Use distinct CUDA devices for the two roles.

@@ -84,33 +84,34 @@ Once the serving stack is up, run:
 
 ```bash
 export MODEL_PATH=/path/model_weights/DeepSeek-V2-Lite
-export RESULT_DIR=/path/results
+export MODEL_NAME=$MODEL_PATH
+export RESULT_DIR=/tmp/results
 export RESULT_FILENAME=2a2f_graph_dbo_dp1tp2.json
-bash tools/benchmarks/request_generator.sh
+bash tools/benchmarks/benchmark.sh
 ```
 
-It fires 1024 random requests (1024 input tokens / 128 output tokens) at
-5 request rate with `--max-concurrency 32` against `127.0.0.1:18305`,
-and dumps the JSON result to `$RESULT_DIR/$RESULT_FILENAME`.
+The script waits for `http://$HOST:$PORT/v1/models`, sends one completion
+smoke request, then runs `vllm bench serve`. By default it fires 1024 random
+requests (1024 input tokens / 128 output tokens) at request rate 5 with
+`--max-concurrency 32` against `127.0.0.1:18305`, and dumps the JSON result to
+`$RESULT_DIR/$RESULT_FILENAME`. Override `HOST`, `PORT`, `MODEL_NAME`,
+`NUM_PROMPTS`, `REQUEST_RATE`, `MAX_CONCURRENCY`, `INPUT_LEN`, and `OUTPUT_LEN`
+for smaller smoke runs or larger throughput sweeps.
 
 ## Common AFD configuration
 
 Every AFD worker is wired through `--additional-config` with the same
-shape; only `role` and `afd_size` differ between attention and FFN:
+shape; `role` differs between attention and FFN:
 
 ```jsonc
 {
   "afd": {
-    "enabled": true,
     "role": "attention",            // or "ffn"
     "connector": "P2pNcclAFDConnector",
     "host": "127.0.0.1",
     "port": 6269,
     "num_attention_ranks": 1,      // 2 in 2A2F
-    "num_ffn_ranks": 1,            // 2 in 2A2F
-    "extra_config": {
-      "afd_size": "1A1F"             // "2A2F" in 2A2F
-    }
+    "num_ffn_ranks": 1             // 2 in 2A2F
   }
 }
 ```

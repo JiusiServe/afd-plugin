@@ -15,7 +15,6 @@ def _config(*, connector: str = "CAMAsyncAFDConnector", async_dp: bool = True):
     return SimpleNamespace(
         additional_config={
             "afd": {
-                "enabled": True,
                 "connector": connector,
                 "role": "attention",
                 "async": async_dp,

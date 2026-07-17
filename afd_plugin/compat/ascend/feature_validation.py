@@ -7,11 +7,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from afd_plugin.config import (
-    ASYNC_MOE_REQUEST_SPLIT,
+    AFD_ASYNC_CONNECTOR,
     AFDConfig,
-    async_moe_num_ubatches,
-    async_moe_split,
-    async_moe_ubatching_enabled,
     is_afd_async_dp,
     parse_afd_config,
 )
@@ -19,26 +16,45 @@ from afd_plugin.config import (
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
 
+    from afd_plugin.connectors.base import ConnectorExtraInfo
 
-def fail_if_unsupported_npu_afd_features(vllm_config: VllmConfig) -> None:
+
+def fail_if_unsupported_npu_afd_features(
+    vllm_config: VllmConfig,
+    *,
+    afd_config: AFDConfig | None = None,
+) -> None:
     """Fail fast for NPU AFD settings that are not currently supported."""
 
-    afd_config = parse_afd_config(vllm_config)
-    extra = afd_config.extra_config or {}
-    if afd_config.connector == "CAMAsyncAFDConnector":
-        _fail_if_unsupported_npu_afd_async_features(vllm_config, afd_config)
+    afd_config = afd_config or parse_afd_config(vllm_config)
+    from afd_plugin.connectors.factory import AFDConnectorFactory
+
+    extra_info = AFDConnectorFactory.parse_connector_extra_info(
+        afd_config.connector,
+        vllm_config,
+    )
+
+    if afd_config.connector == AFD_ASYNC_CONNECTOR:
+        _fail_if_unsupported_npu_afd_async_features(
+            vllm_config,
+            afd_config,
+            extra_info,
+        )
         return
 
-    if afd_config.compute_gate_on_attention or _truthy(
-        extra.get("compute_gate_on_attention"),
-    ):
+    if afd_config.compute_gate_on_attention:
         raise RuntimeError(
             "AFD NPU runtime does not support compute_gate_on_attention=true yet",
         )
+    if afd_config.connector == "CAMP2pAFDConnector":
+        from afd_plugin.connectors.npu.camp2p import CAMP2PExtraInfo
 
-    quant_mode = extra.get("quant_mode", 0)
-    if quant_mode not in (None, "", 0, "0"):
-        raise RuntimeError("AFD NPU runtime currently supports only quant_mode=0")
+        if not isinstance(extra_info, CAMP2PExtraInfo):
+            raise TypeError(
+                "CAMP2pAFDConnector requires CAMP2PExtraInfo, got "
+                f"{type(extra_info).__name__}",
+            )
+        extra_info.validate_supported()
 
     if bool(vllm_config.parallel_config.use_ubatching) and (
         int(vllm_config.parallel_config.num_ubatches) != 2
@@ -51,8 +67,16 @@ def fail_if_unsupported_npu_afd_features(vllm_config: VllmConfig) -> None:
 def _fail_if_unsupported_npu_afd_async_features(
     vllm_config: VllmConfig,
     afd_config: AFDConfig,
+    extra_info: ConnectorExtraInfo,
 ) -> None:
-    extra = afd_config.extra_config or {}
+    from afd_plugin.connectors.npu.async_cam import AFDAsyncExtraInfo
+
+    if not isinstance(extra_info, AFDAsyncExtraInfo):
+        raise TypeError(
+            "CAMAsyncAFDConnector requires AFDAsyncExtraInfo, got "
+            f"{type(extra_info).__name__}",
+        )
+
     parallel_config = vllm_config.parallel_config
     if not is_afd_async_dp(vllm_config):
         raise RuntimeError(
@@ -67,13 +91,14 @@ def _fail_if_unsupported_npu_afd_async_features(
         raise RuntimeError(
             "CAMAsyncAFDConnector does not support vLLM native ubatching/DBO",
         )
-    if async_moe_ubatching_enabled(afd_config):
+    if extra_info.async_moe_ubatching:
         _fail_if_unsupported_npu_async_moe_ubatching_features(
             vllm_config,
             afd_config,
+            num_ubatches=extra_info.async_moe_num_ubatches,
+            split=extra_info.async_moe_split,
         )
-    quant_mode = extra.get("dynamicQuant", 0)
-    if quant_mode not in (None, "", 0, "0", 1, "1"):
+    if extra_info.dynamic_quant not in (0, 1):
         raise RuntimeError(
             "CAMAsyncAFDConnector currently supports only dynamicQuant 0 or 1",
         )
@@ -82,19 +107,22 @@ def _fail_if_unsupported_npu_afd_async_features(
 def _fail_if_unsupported_npu_async_moe_ubatching_features(
     vllm_config: VllmConfig,
     afd_config: AFDConfig,
+    *,
+    num_ubatches: int,
+    split: str,
 ) -> None:
+    from afd_plugin.connectors.npu.async_cam import ASYNC_MOE_REQUEST_SPLIT
+
     parallel_config = vllm_config.parallel_config
-    if not bool(afd_config.compute_gate_on_attention):
+    if not afd_config.compute_gate_on_attention:
         raise RuntimeError(
             "async_moe_ubatching requires compute_gate_on_attention=true",
         )
-    num_ubatches = async_moe_num_ubatches(afd_config)
     if num_ubatches != 2:
         raise RuntimeError(
             "async_moe_ubatching currently supports exactly two stages; "
             f"got async_moe_num_ubatches={num_ubatches}",
         )
-    split = async_moe_split(afd_config)
     if split != ASYNC_MOE_REQUEST_SPLIT:
         raise RuntimeError(
             "async_moe_ubatching currently supports only request-boundary split; "
@@ -104,12 +132,6 @@ def _fail_if_unsupported_npu_async_moe_ubatching_features(
         raise RuntimeError(
             "async_moe_ubatching does not support decode context parallel metadata yet",
         )
-
-
-def _truthy(value: object) -> bool:
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
 
 
 __all__ = ["fail_if_unsupported_npu_afd_features"]

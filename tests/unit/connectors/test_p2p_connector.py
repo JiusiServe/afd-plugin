@@ -26,6 +26,7 @@ def _fake_vllm_config(
     enforce_eager=True,
 ):
     return SimpleNamespace(
+        additional_config={},
         model_config=SimpleNamespace(
             dtype=torch.bfloat16,
             enforce_eager=enforce_eager,
@@ -59,7 +60,6 @@ def test_p2p_connector_can_be_constructed_without_runtime_initialization():
         0,
         _fake_vllm_config(),
         AFDConfig(
-            enabled=True,
             role="attention",
             connector="P2pNcclAFDConnector",
             num_attention_ranks=2,
@@ -82,6 +82,7 @@ def test_p2p_connector_uses_config_role_rank_not_dp_rank():
         3,
         3,
         SimpleNamespace(
+            additional_config={},
             model_config=SimpleNamespace(
                 dtype="bf16",
                 enforce_eager=True,
@@ -93,7 +94,6 @@ def test_p2p_connector_uses_config_role_rank_not_dp_rank():
             ),
         ),
         AFDConfig(
-            enabled=True,
             role="attention",
             connector="P2pNcclAFDConnector",
             num_attention_ranks=4,
@@ -126,7 +126,6 @@ def test_p2p_topology_supports_equal_and_integer_multiple_attention_counts(
 ):
     mapping = build_rank_mapping(
         AFDConfig(
-            enabled=True,
             role=role,
             connector="P2pNcclAFDConnector",
             num_attention_ranks=attention_size,
@@ -167,7 +166,6 @@ def test_p2p_ffn_metadata_tracks_each_attention_peer_in_xayf(
         0,
         _fake_vllm_config(),
         AFDConfig(
-            enabled=True,
             role="ffn",
             connector="P2pNcclAFDConnector",
             num_attention_ranks=attention_size,
@@ -200,7 +198,6 @@ def test_p2p_tensor_metadata_clamps_idle_attention_rank_to_dummy_token():
         0,
         _fake_vllm_config(),
         AFDConfig(
-            enabled=True,
             role="ffn",
             connector="P2pNcclAFDConnector",
             num_attention_ranks=2,
@@ -228,7 +225,6 @@ def test_p2p_tensor_metadata_clamps_idle_attention_rank_to_dummy_token():
         1,
         _fake_vllm_config(data_parallel_size=2, data_parallel_rank=0),
         AFDConfig(
-            enabled=True,
             role="attention",
             connector="P2pNcclAFDConnector",
             num_attention_ranks=2,
@@ -344,7 +340,6 @@ def test_p2p_hidden_state_send_uses_registered_custom_op(monkeypatch):
         0,
         _fake_vllm_config(),
         AFDConfig(
-            enabled=True,
             role="attention",
             connector="P2pNcclAFDConnector",
             num_attention_ranks=2,
@@ -390,7 +385,6 @@ def test_p2p_recv_preserves_dynamic_ref_tensor_first_dim(monkeypatch):
         0,
         _fake_vllm_config(),
         AFDConfig(
-            enabled=True,
             role="attention",
             connector="P2pNcclAFDConnector",
             num_attention_ranks=2,
@@ -445,7 +439,6 @@ def test_p2p_recv_single_rank_requires_ref_tensor():
         0,
         _fake_vllm_config(),
         AFDConfig(
-            enabled=True,
             role="attention",
             connector="P2pNcclAFDConnector",
             num_attention_ranks=2,

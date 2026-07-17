@@ -4,7 +4,7 @@
 
 vLLM 0.19.1 validates native microbatching by requiring a DeepEP all2all
 backend. AFD ubatching uses plugin connectors instead, so this patch only
-relaxes that assertion for configs with ``additional_config["afd"].enabled``.
+relaxes that assertion for configs with active ``additional_config["afd"]``.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import vllm.config.vllm as config_module
 import vllm.engine.arg_utils as arg_utils_module
 
 from afd_plugin.compat.vllm import TARGET_VLLM_VERSION
-from afd_plugin.config import parse_afd_config
+from afd_plugin.config import parse_optional_afd_config
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -106,12 +106,12 @@ def _should_relax_engine_args_backend(engine_args: EngineArgs) -> bool:
     if not _is_target_vllm_compatible():
         return False
     try:
-        afd_config = parse_afd_config(
+        afd_config = parse_optional_afd_config(
             getattr(engine_args, "additional_config", None),
         )
     except Exception:
         return False
-    if not afd_config.enabled:
+    if afd_config is None:
         return False
     if (
         not bool(getattr(engine_args, "enable_dbo", False))
@@ -130,10 +130,10 @@ def _should_relax_vllm_config_backend(vllm_config: VllmConfig) -> bool:
     if not _is_target_vllm_compatible():
         return False
     try:
-        afd_config = parse_afd_config(vllm_config)
+        afd_config = parse_optional_afd_config(vllm_config)
     except Exception:
         return False
-    if not afd_config.enabled:
+    if afd_config is None:
         return False
 
     parallel_config = getattr(vllm_config, "parallel_config", None)

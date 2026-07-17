@@ -22,7 +22,7 @@ def _vllm_like_config(*, afd, worker_cls):
 
 def test_attention_stack_validation_accepts_matching_worker():
     vllm_config = _vllm_like_config(
-        afd={"enabled": True, "role": "attention"},
+        afd={"role": "attention"},
         worker_cls=ATTENTION_WORKER_FQCN,
     )
 
@@ -37,7 +37,7 @@ def test_attention_stack_validation_accepts_matching_worker():
 
 def test_ffn_stack_validation_accepts_matching_worker():
     vllm_config = _vllm_like_config(
-        afd={"enabled": True, "role": "ffn"},
+        afd={"role": "ffn"},
         worker_cls=FFN_WORKER_FQCN,
     )
 
@@ -50,19 +50,19 @@ def test_ffn_stack_validation_accepts_matching_worker():
     assert config.role == "ffn"
 
 
-def test_stack_validation_rejects_disabled_config():
-    vllm_config = _vllm_like_config(
-        afd={"enabled": False, "role": "attention"},
-        worker_cls=ATTENTION_WORKER_FQCN,
+def test_stack_validation_rejects_missing_afd_config():
+    vllm_config = SimpleNamespace(
+        additional_config={},
+        parallel_config=SimpleNamespace(worker_cls=ATTENTION_WORKER_FQCN),
     )
 
-    with pytest.raises(ValueError, match="AFD is not enabled"):
+    with pytest.raises(ValueError, match="requires additional_config"):
         assert_compatible_afd_stack(vllm_config, caller="test")
 
 
 def test_stack_validation_rejects_wrong_worker():
     vllm_config = _vllm_like_config(
-        afd={"enabled": True, "role": "ffn"},
+        afd={"role": "ffn"},
         worker_cls=ATTENTION_WORKER_FQCN,
     )
 
@@ -72,7 +72,7 @@ def test_stack_validation_rejects_wrong_worker():
 
 def test_stack_validation_rejects_auto_worker():
     vllm_config = _vllm_like_config(
-        afd={"enabled": True, "role": "attention"},
+        afd={"role": "attention"},
         worker_cls="auto",
     )
 
@@ -83,7 +83,6 @@ def test_stack_validation_rejects_auto_worker():
 def test_stack_validation_accepts_npu_worker_override():
     vllm_config = _vllm_like_config(
         afd={
-            "enabled": True,
             "role": "attention",
             "connector": "CAMP2pAFDConnector",
         },
@@ -103,7 +102,6 @@ def test_stack_validation_accepts_npu_worker_override():
 def test_async_connector_requires_npu_attention_worker():
     vllm_config = _vllm_like_config(
         afd={
-            "enabled": True,
             "role": "attention",
             "connector": "CAMAsyncAFDConnector",
         },
@@ -129,7 +127,6 @@ def test_async_connector_requires_npu_attention_worker():
 def test_async_connector_requires_npu_ffn_worker():
     vllm_config = _vllm_like_config(
         afd={
-            "enabled": True,
             "role": "ffn",
             "connector": "CAMAsyncAFDConnector",
         },

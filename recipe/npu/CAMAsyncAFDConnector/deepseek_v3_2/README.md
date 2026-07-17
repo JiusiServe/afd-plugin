@@ -49,7 +49,6 @@ attention and FFN commands so all workers join the same CAM async group.
 
 | Field | Meaning |
 |-------|---------|
-| `enabled` | Enables the AFD runtime path for this vLLM process. |
 | `connector` | Selects the AFD connector implementation. Use `CAMAsyncAFDConnector` for CAM async. |
 | `async` | Enables async-DP execution, which is required by `CAMAsyncAFDConnector`. |
 | `role` | Worker role in the AFD split. Use `attention` for prefill attention workers and `ffn` for expert workers. |
@@ -59,7 +58,7 @@ attention and FFN commands so all workers join the same CAM async group.
 | `afd_role_rank` | Role-local starting rank for the process. For attention workers, this is the data-parallel starting rank multiplied by `attn_ranks_per_dp`. |
 | `compute_gate_on_attention` | Runs MoE routing/gating on the attention side before dispatching activations to FFN ranks. |
 
-`extra_config` carries CAM async-specific knobs:
+`connector_extra_config` carries CAM async-specific knobs:
 
 | Field | Meaning |
 |-------|---------|
@@ -256,7 +255,6 @@ vllm serve /path/to/DeepSeek-V3.2 \
   --gpu-memory-utilization 0.8 \
   --additional-config '{
     "afd": {
-      "enabled": true,
       "connector": "CAMAsyncAFDConnector",
       "async": true,
       "role": "attention",
@@ -266,7 +264,7 @@ vllm serve /path/to/DeepSeek-V3.2 \
       "num_ffn_ranks": 8,
       "afd_role_rank": 0,
       "compute_gate_on_attention": true,
-      "extra_config": {
+      "connector_extra_config": {
         "dynamicQuant": 1,
         "async_moe_ubatching": true,
         "async_moe_num_ubatches": 2,
@@ -324,7 +322,6 @@ vllm serve /path/to/DeepSeek-V3.2 \
   --enable-expert-parallel \
   --additional-config '{
     "afd": {
-      "enabled": true,
       "connector": "CAMAsyncAFDConnector",
       "async": true,
       "role": "attention",
@@ -334,7 +331,7 @@ vllm serve /path/to/DeepSeek-V3.2 \
       "num_ffn_ranks": 8,
       "afd_role_rank": 16,
       "compute_gate_on_attention": true,
-      "extra_config": {
+      "connector_extra_config": {
         "dynamicQuant": 1,
         "async_moe_ubatching": true,
         "async_moe_num_ubatches": 2,
@@ -381,7 +378,6 @@ vllm serve /path/to/DeepSeek-V3.2 \
   --enable-expert-parallel \
   --additional-config '{
     "afd": {
-      "enabled": true,
       "connector": "CAMAsyncAFDConnector",
       "async": true,
       "role": "ffn",
@@ -391,7 +387,7 @@ vllm serve /path/to/DeepSeek-V3.2 \
       "num_ffn_ranks": 8,
       "afd_role_rank": 0,
       "compute_gate_on_attention": true,
-      "extra_config": {
+      "connector_extra_config": {
         "dynamicQuant": 1,
         "async_moe_ubatching": true,
         "async_moe_num_ubatches": 2,

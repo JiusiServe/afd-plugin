@@ -15,13 +15,13 @@ examples.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import torch
 import torch.distributed as dist
-import torch_npu  # noqa: F401
 from torch.distributed.distributed_c10d import ProcessGroup
 from vllm.forward_context import DPMetadata, get_forward_context
 from vllm.logger import init_logger
@@ -29,7 +29,16 @@ from vllm.utils.torch_utils import direct_register_custom_op
 
 from afd_plugin.compat.ascend import ensure_cam_p2p_ops_available
 from afd_plugin.config import AFDConfig
-from afd_plugin.connectors.base import AFDConnectorBase
+from afd_plugin.config_utils import (
+    coerce_extra_bool,
+    coerce_extra_int,
+    coerce_extra_positive_int,
+    coerce_optional_extra_positive_int,
+)
+from afd_plugin.connectors.base import (
+    AFDConnectorBase,
+    ConnectorExtraInfo,
+)
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
     AFDControlPayload,
@@ -46,6 +55,102 @@ if TYPE_CHECKING:
 
 _CAMP2P_CUSTOM_OPS_REGISTERED = False
 logger = init_logger(__name__)
+
+_CAMP2P_EXTRA_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "core_num",
+        "attn_core_num",
+        "ffn_core_num",
+        "compute_gate_on_attention",
+        "quant_mode",
+    },
+)
+
+
+@dataclass(frozen=True)
+class CAMP2PExtraInfo(ConnectorExtraInfo):
+    """Typed CAMP2P connector configuration.
+
+    Attributes:
+        core_num: Default number of AIV cores used by each AFD role.
+        attn_core_num: Optional Attention-role override for ``core_num``.
+        ffn_core_num: Optional FFN-role override for ``core_num``.
+        compute_gate_on_attention: Whether Attention computes MoE gate outputs.
+        quant_mode: CAM quantization mode; the current runtime supports only 0.
+    """
+
+    core_num: int = 8
+    attn_core_num: int | None = None
+    ffn_core_num: int | None = None
+    compute_gate_on_attention: bool = False
+    quant_mode: int = 0
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any] | None) -> CAMP2PExtraInfo:
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, Mapping):
+            raise TypeError(
+                f"{cls.__name__} connector_extra_config must be a mapping, "
+                f"got {type(raw).__name__}",
+            )
+        unknown = sorted(
+            str(key) for key in raw if key not in _CAMP2P_EXTRA_CONFIG_FIELDS
+        )
+        if unknown:
+            raise ValueError(
+                "unknown CAMP2P connector_extra_config field(s): " + ", ".join(unknown),
+            )
+
+        return cls(
+            core_num=coerce_extra_positive_int(
+                raw.get("core_num", 8),
+                field_name="core_num",
+            ),
+            attn_core_num=coerce_optional_extra_positive_int(
+                raw.get("attn_core_num"),
+                field_name="attn_core_num",
+            ),
+            ffn_core_num=coerce_optional_extra_positive_int(
+                raw.get("ffn_core_num"),
+                field_name="ffn_core_num",
+            ),
+            compute_gate_on_attention=coerce_extra_bool(
+                raw.get("compute_gate_on_attention", False),
+                field_name="compute_gate_on_attention",
+            ),
+            quant_mode=coerce_extra_int(
+                raw.get("quant_mode", 0),
+                field_name="quant_mode",
+            ),
+        )
+
+    def aiv_num_for_role(self, role: str) -> int:
+        if role == "attention" and self.attn_core_num is not None:
+            return self.attn_core_num
+        if role == "ffn" and self.ffn_core_num is not None:
+            return self.ffn_core_num
+        return self.core_num
+
+    def validate_supported(self) -> None:
+        if self.compute_gate_on_attention:
+            raise RuntimeError(
+                "AFD NPU runtime does not support compute_gate_on_attention=true yet",
+            )
+        if self.quant_mode != 0:
+            raise RuntimeError("AFD NPU runtime currently supports only quant_mode=0")
+
+    def to_mapping(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "core_num": self.core_num,
+            "compute_gate_on_attention": self.compute_gate_on_attention,
+            "quant_mode": self.quant_mode,
+        }
+        if self.attn_core_num is not None:
+            result["attn_core_num"] = self.attn_core_num
+        if self.ffn_core_num is not None:
+            result["ffn_core_num"] = self.ffn_core_num
+        return result
 
 
 @dataclass(slots=True)
@@ -120,6 +225,13 @@ class CAMP2pAFDConnector(AFDConnectorBase):
     compute-gate-on-attention settings.
     """
 
+    @classmethod
+    def parse_extra_config(
+        cls,
+        raw: Mapping[str, Any] | None,
+    ) -> CAMP2PExtraInfo:
+        return CAMP2PExtraInfo.from_mapping(raw)
+
     def __init__(
         self,
         rank: int,
@@ -140,6 +252,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
             afd_config: AFD role, host, port, rank counts, and extra settings.
         """
         super().__init__(rank, local_rank, vllm_config, afd_config)
+        self.camp2p_extra_info = cast(CAMP2PExtraInfo, self.extra_info)
         self._initialized = False
         self._role_rank = int(afd_config.afd_role_rank)
         self.topology = build_camp2p_topology(afd_config, self._role_rank)
@@ -164,7 +277,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         self.hccl_comm_name3 = ""
         self.hccl_comm_name1 = ""
         self.hccl_comm_name_list: list[str] = []
-        self.aiv_num = _resolve_aiv_num(afd_config)
+        self.aiv_num = self.camp2p_extra_info.aiv_num_for_role(afd_config.role)
         self.hidden_size = _resolve_int_attr(vllm_config, "hidden_size", default=1)
         self.num_experts_per_tok = _resolve_int_attr(
             vllm_config,
@@ -199,6 +312,8 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         """
         if self._initialized:
             return
+        import torch_npu  # noqa: F401
+
         ensure_cam_p2p_ops_available()
 
         _register_camp2p_custom_ops()
@@ -724,14 +839,6 @@ def _num_tokens_for_ffn_rank(
     return max(1, int(fallback))
 
 
-def _resolve_aiv_num(afd_config: AFDConfig) -> int:
-    """Return the number of AIV cores configured for this process's role."""
-    extra = afd_config.extra_config
-    key = "attn_core_num" if afd_config.role == "attention" else "ffn_core_num"
-    value = extra.get(key, extra.get("core_num", 8))
-    return max(1, int(value or 8))
-
-
 def _resolve_num_ubatches(vllm_config: VllmConfig) -> int:
     """Return the configured ubatch count, or one if the value is invalid."""
     parallel_config = getattr(vllm_config, "parallel_config", None)
@@ -1026,6 +1133,7 @@ def _empty_npu_tensor(*, dtype_name: str) -> torch.Tensor:
 __all__ = [
     "CAMP2pAFDConnector",
     "CAMP2PAFDConnectorData",
+    "CAMP2PExtraInfo",
     "CAMP2PTransferState",
     "build_camp2p_topology",
 ]
