@@ -1,0 +1,278 @@
+---
+title: Attention runtime
+kind: module
+status: draft
+owners:
+  - "@hsliuustc0106"
+  - "@jiangkuaixue123"
+primary_code_paths:
+  - "afd_plugin/v1/worker/attention_model_runner.py"
+  - "afd_plugin/v1/worker/attention_worker.py"
+  - "afd_plugin/v1/worker/ubatch_wrapper.py"
+  - "afd_plugin/v1/worker/ascend/attention_model_runner.py"
+  - "afd_plugin/v1/worker/ascend/attention_worker.py"
+related_code_paths:
+  - "afd_plugin/connectors/**"
+  - "afd_plugin/model_executor/**"
+  - "afd_plugin/v1/worker/ascend/{forward_context,npu_ubatch_wrapper,ubatch_utils,ubatching}.py"
+depends_on:
+  - "plugin_boundary.md"
+  - "connector_contracts.md"
+  - "model_integration.md"
+  - "execution_platforms.md"
+  - "compatibility_and_patches.md"
+validation_paths:
+  - "tests/unit/v1/worker/test_attention_model_runner.py"
+  - "tests/unit/v1/worker/test_npu_runtime.py"
+  - "tests/e2e/features/test_serving_gpu.py"
+  - "tests/e2e/features/test_serving_npu.py"
+  - "tests/e2e/accuracy/**"
+  - "tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py"
+upstream_refs:
+  - "vLLM 0.19.1 vllm.v1.worker.gpu_worker.Worker"
+  - "vLLM 0.19.1 vllm.v1.worker.gpu_model_runner.GPUModelRunner"
+  - "vLLM-Ascend vllm_ascend.worker.worker.NPUWorker (tested environment evidence only)"
+  - "vLLM-Ascend vllm_ascend.worker.model_runner_v1.NPUModelRunner (tested environment evidence only)"
+verified_platform_refs:
+  - "CUDA paths marked gpu in tests/e2e"
+  - "Ascend image quay.io/ascend/vllm-ascend:v0.19.1rc1-a3-openeuler (test evidence only)"
+related_issues:
+  - "#86"
+  - "#88"
+  - "#105"
+  - "#129"
+last_reviewed: 2026-07-17
+---
+
+# Attention runtime
+
+## Purpose and boundary
+
+This document is the primary design for Attention-side request and lifecycle
+orchestration. Attention owns the external API request, vLLM scheduler
+execution, KV cache, sampling/output path, AFD metadata installation, and the
+handoff to FFN. Backend graph, stream, profiler, native-op, and build
+mechanisms belong to [execution platforms](execution_platforms.md). Connector
+wire semantics and process-group ownership belong to
+[connector contracts](connector_contracts.md).
+
+## Ownership and dependency direction
+
+Attention consumes plugin configuration, connector transport, model-side AFD
+execution, platform mechanisms, and upstream compatibility. Connector and
+model modules must not depend on the Attention worker implementation.
+
+## Runtime selection
+
+AFD uses explicit worker class paths; it does not add an AFD-specific CLI
+flag. Configuration is read from vLLM `additional_config["afd"]`.
+
+| Platform | Worker | Model runner | Current connectors |
+| --- | --- | --- | --- |
+| CUDA | `afd_plugin.v1.worker.AFDAttentionWorker` | `AFDAttentionModelRunner` | `P2pNcclAFDConnector` |
+| Ascend | `afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker` | `AFDNPUAttentionModelRunner` | `CAMP2pAFDConnector`, `CAMAsyncAFDConnector` |
+
+CUDA launch shape:
+
+```bash
+vllm serve <model> \
+  --worker-cls afd_plugin.v1.worker.AFDAttentionWorker \
+  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+```
+
+Ascend launch shape:
+
+```bash
+VLLM_PLUGINS=ascend,afd vllm serve <model> \
+  --worker-cls afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker \
+  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+```
+
+Operational connector options and complete launch recipes remain in the
+[NCCL P2P](../../gpu/NCCL_P2P_CONNECTOR_USER_GUIDE.md) and
+[CAM async](../../npu/CAM_ASYNC_CONNECTOR_USER_GUIDE.md) guides. Requests are
+sent only to the Attention API process.
+
+## Initialization and ownership
+
+The common Attention initialization sequence is:
+
+```text
+vLLM worker construction
+  -> validate AFD config, role, connector, and explicit worker class
+  -> reject model runner v2 and unsupported feature combinations
+  -> initialize the matching upstream device worker
+  -> construct the AFD Attention model runner
+  -> derive the role-local AFD rank from DP/TP ranks when needed
+  -> create and initialize the configured connector
+  -> load the role-aware model
+```
+
+The worker retains upstream ownership of device/distributed initialization,
+model loading entry points, KV-cache allocation, memory profiling, request
+execution, sleep/wake, and normal output handling. The model runner owns its
+connector, AFD profiler, pending request metadata, and graph/ubatch
+coordination state. It closes the connector and profiler during shutdown.
+
+CUDA calls the native `Worker.init_device()`, then replaces the native runner
+with `AFDAttentionModelRunner`. Ascend applies the AFD-scoped Ascend patches,
+fixes the all-to-all backend when required, initializes the vLLM workspace
+manager, and constructs `AFDNPUAttentionModelRunner` directly. Their exact
+inheritance and device mechanisms are specified in
+[execution platforms](execution_platforms.md).
+
+## Request and forward flow
+
+```text
+OpenAI request
+  -> vLLM scheduler and Attention worker
+  -> AFD Attention model runner builds native attention inputs/metadata
+  -> install plugin-owned AFD metadata in ForwardContext
+  -> optionally send an AFD control payload to FFN
+  -> role-aware model executes one Attention layer
+  -> model sends Attention output through the connector
+  -> FFN computes and returns its output
+  -> model continues with the returned hidden states
+  -> native vLLM sampling and output path
+```
+
+Attention remains request-driven even when the selected connector makes FFN
+connector-driven. Idle DP ranks use the upstream dummy-batch path; the CUDA
+runner installs AFD metadata lazily for that path because native dummy
+execution bypasses `_model_forward()`.
+
+## Forward-context metadata
+
+The canonical metadata location on both CUDA and Ascend is:
+
+```python
+forward_context.additional_kwargs["afd_metadata"]
+```
+
+The installed object is `AFDForwardContextMetadata`. For the current model
+path it carries stage token/request starts, padded and unpadded token lengths,
+stage count/index, a transaction id, and the connector reference consumed by
+plugin-owned model code. These fields describe the current implementation;
+the open metadata issues prevent the object shape and live connector reference
+from becoming a long-term API.
+
+The runner creates pending AFD metadata while native attention metadata is
+built and installs it immediately before model forward. For native ubatching,
+each child forward context receives stage-local metadata. When vLLM does not
+produce `DPMetadata` for DP size 1, the runner creates `AFDDPMetadata` from the
+pending stage token count. DP greater than 1 requires native DP metadata.
+
+The previous NPU design described a separate forward-context metadata mirror.
+That is no longer the contract: current CUDA and Ascend model paths read the
+canonical `additional_kwargs` entry.
+
+## Control-plane coordination
+
+For connectors whose `uses_dp_metadata_control_plane` capability is true, the
+runner sends an `AFDControlPayload` before model/data-plane transfer. It
+contains a stage-indexed DP metadata map plus `is_warmup` and
+`is_graph_capturing` flags.
+
+- A non-ubatched request sends stage `0` and uses native or fallback DP
+  metadata.
+- Native ubatching sends one DP metadata item per stage.
+- A padded full-graph request sends metadata for the padded capture token
+  count.
+- Connector state is updated locally before the payload is sent.
+
+`P2pNcclAFDConnector` and `CAMP2pAFDConnector` use this control plane.
+`CAMAsyncAFDConnector` sets the capability to false, so the Attention runner
+does not send DP metadata; CAM dispatch payloads carry the routing and token
+metadata required to trigger FFN work.
+
+## Model handoff paths
+
+### DP-metadata-triggered path
+
+The standard model path iterates layers and stages. After Attention compute,
+the plugin-owned model creates transfer metadata, sends hidden states, and
+receives FFN output before continuing. Role-aware construction loads the
+Attention modules and the shared components required by the vLLM lifecycle,
+without loading FFN expert/MLP components on this role.
+
+### CAM asynchronous path
+
+The documented `CAMAsyncAFDConnector` configuration uses
+`compute_gate_on_attention=true`. Attention computes MoE routing data and sends
+hidden states together with `topk_weights`, `topk_ids`, and optional
+`router_logits`. FFN receive is delayed until the next layer when possible,
+which permits CAM dispatch/combine overlap. Dense layers remain local to the
+Attention model path.
+
+The optional `async_moe_ubatching` mode is distinct from vLLM native DBO. It:
+
+- requires `compute_gate_on_attention=true`;
+- splits at request boundaries into exactly two stages;
+- runs the dense prefix before the split;
+- pipelines stage Attention send and FFN receive through the MoE layers;
+- rejoins stage outputs after the pipeline;
+- does not support decode context parallel metadata.
+
+CAM async requires eager execution and rejects vLLM native ubatching. Its
+feature limits are recorded in the
+[platform matrix](execution_platforms.md#tested-runtime-matrix).
+
+## Native ubatching and graph orchestration
+
+When native vLLM ubatching is enabled, AFD currently accepts exactly two
+ubatches. The Attention runner chooses or normalizes slices, creates
+stage-local AFD/DP metadata, and installs the platform wrapper during model
+load. The role-level contract is that control-plane side effects complete
+before replayable model work enters formal graph capture.
+
+During graph warmup/capture, the Attention runner marks control payloads so the
+FFN daemon can warm or capture the matching shape. A non-ubatched capture sends
+the control payload explicitly before formal capture; an ubatched capture lets
+the platform wrapper send the exact per-stage shape. CUDA Graph, ACL Graph,
+stream, and wrapper implementation details are owned by
+[execution platforms](execution_platforms.md).
+
+## Failure and cleanup behavior
+
+Initialization fails early for a disabled or role-mismatched AFD config, an
+unsupported connector/feature combination, an implicit or incorrect worker
+class, model runner v2, invalid native ubatch count, or unsupported graph mode.
+Missing DP metadata for DP greater than 1 and missing pending metadata for a
+fallback are runtime errors rather than silently guessed shapes.
+
+Connector initialization failures remain visible from runner construction.
+Shutdown stops the platform profiler and closes connector-owned resources;
+the Ascend runner also delegates to upstream shutdown.
+
+## Candidate invariants
+
+The following RFC candidate remains non-normative while this document is
+draft:
+
+- `ROLE-INV-001` (Attention part): Attention owns external requests,
+  scheduler execution, and KV cache.
+
+The canonical metadata location is tracked by `MODEL-INV-001` in
+[model integration](model_integration.md); the long-term metadata payload shape
+is not fixed here.
+
+## Upstream relationship and validation requirements
+
+Changes must be compared with the pinned vLLM `0.19.1` worker and model-runner
+symbols. Ascend claims must cite the tested environment and existing NPU
+evidence. Run the role-specific unit tests plus the affected serving, model,
+and accuracy E2E paths. Control-plane, graph, DBO, or async-CAM changes require
+the matching platform and connector tests as well.
+
+## Limitations and open issues
+
+Current shared limits are vLLM `0.19.1`, model runner v1, exactly two native
+ubatches, and role-aware DeepSeek model integration. Platform/connector limits
+are intentionally centralized in
+[execution platforms](execution_platforms.md#tested-runtime-matrix).
+
+This document does not decide the runtime refactor, connector metadata
+ownership, or transfer metadata/state shape. See
+[#86](https://github.com/JiusiServe/afd-plugin/issues/86),
+[#88](https://github.com/JiusiServe/afd-plugin/issues/88), and
+[#105](https://github.com/JiusiServe/afd-plugin/issues/105).
