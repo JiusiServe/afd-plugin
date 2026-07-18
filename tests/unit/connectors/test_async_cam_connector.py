@@ -23,6 +23,7 @@ from afd_plugin.connectors.npu import async_cam as async_cam_module  # noqa: E40
 from afd_plugin.connectors.npu.async_cam import (  # noqa: E402
     AFD_ASYNC_CAM_GROUP_NAME,
     CAM_COMM_ID,
+    AFDAsyncExtraInfo,
     AFDAsyncTransferState,
     CAMAsyncAFDConnector,
     build_async_topology,
@@ -113,8 +114,9 @@ class _FakeTorch:
         return _FakeTensor(shape, dtype=dtype, device=device)
 
 
-def _vllm_config(*, tp_size: int = 1, pcp_size: int = 1):
+def _vllm_config(*, tp_size: int = 1, pcp_size: int = 1, extra_config=None):
     return SimpleNamespace(
+        additional_config={"afd": {"connector_extra_config": extra_config or {}}},
         parallel_config=SimpleNamespace(
             data_parallel_size=1,
             data_parallel_rank=0,
@@ -132,15 +134,13 @@ def _vllm_config(*, tp_size: int = 1, pcp_size: int = 1):
     )
 
 
-def _afd_config(*, role: str, rank: int = 0, extra_config=None):
+def _afd_config(*, role: str, rank: int = 0):
     return AFDConfig(
-        enabled=True,
         connector="CAMAsyncAFDConnector",
         role=role,
         afd_role_rank=rank,
         num_attention_ranks=4,
         num_ffn_ranks=2,
-        extra_config={} if extra_config is None else dict(extra_config),
     )
 
 
@@ -154,7 +154,6 @@ def _topk_payload(batch_size: int, topk: int = 2):
 def test_config_accepts_async_connector_name():
     config = afd_config_from_mapping(
         {
-            "enabled": True,
             "role": "attention",
             "connector": "CAMAsyncAFDConnector",
         },
@@ -163,11 +162,32 @@ def test_config_accepts_async_connector_name():
     assert config.connector == "CAMAsyncAFDConnector"
 
 
+def test_async_extra_info_rejects_unknown_and_invalid_fields():
+    with pytest.raises(ValueError, match="unknown AFD async connector_extra_config"):
+        AFDAsyncExtraInfo.from_mapping({"core_num": 8})
+    with pytest.raises(ValueError, match="attn_ranks_per_dp must be positive"):
+        AFDAsyncExtraInfo.from_mapping({"attn_ranks_per_dp": 0})
+
+
+def test_async_extra_info_parses_async_moe_fields():
+    extra_info = AFDAsyncExtraInfo.from_mapping(
+        {
+            "async_moe_ubatching": "true",
+            "async_moe_num_ubatches": "2",
+            "async_moe_split": "Request",
+        },
+    )
+
+    assert extra_info.async_moe_ubatching is True
+    assert extra_info.async_moe_num_ubatches == 2
+    assert extra_info.async_moe_split == "request"
+
+
 def test_async_connector_factory_creates_import_safe_connector():
     connector = AFDConnectorFactory.create_connector(
         0,
         0,
-        _vllm_config(),
+        _vllm_config(extra_config={"attn_ranks_per_dp": 2}),
         _afd_config(role="attention"),
     )
 
@@ -175,15 +195,19 @@ def test_async_connector_factory_creates_import_safe_connector():
     assert not connector.is_initialized
     assert connector.uses_dp_metadata_control_plane is False
     assert connector.ffn_step_trigger == "connector"
-    assert connector.tp_size == 1
+    assert connector.tp_size == 2
 
 
 def test_async_connector_uses_attn_ranks_per_dp_for_cam_tp_size():
     connector = CAMAsyncAFDConnector(
         0,
         0,
-        _vllm_config(tp_size=4, pcp_size=2),
-        _afd_config(role="attention", extra_config={"attn_ranks_per_dp": "3"}),
+        _vllm_config(
+            tp_size=4,
+            pcp_size=2,
+            extra_config={"attn_ranks_per_dp": "3"},
+        ),
+        _afd_config(role="attention"),
     )
 
     assert connector.tp_size == 3
@@ -191,22 +215,22 @@ def test_async_connector_uses_attn_ranks_per_dp_for_cam_tp_size():
 
 @pytest.mark.parametrize("value", [True, "bad"])
 def test_async_connector_rejects_invalid_attn_ranks_per_dp(value):
-    with pytest.raises(TypeError, match="extra_config.attn_ranks_per_dp"):
+    with pytest.raises(TypeError, match="attn_ranks_per_dp"):
         CAMAsyncAFDConnector(
             0,
             0,
-            _vllm_config(),
-            _afd_config(role="attention", extra_config={"attn_ranks_per_dp": value}),
+            _vllm_config(extra_config={"attn_ranks_per_dp": value}),
+            _afd_config(role="attention"),
         )
 
 
 def test_async_connector_rejects_nonpositive_attn_ranks_per_dp():
-    with pytest.raises(ValueError, match="extra_config.attn_ranks_per_dp"):
+    with pytest.raises(ValueError, match="attn_ranks_per_dp"):
         CAMAsyncAFDConnector(
             0,
             0,
-            _vllm_config(),
-            _afd_config(role="attention", extra_config={"attn_ranks_per_dp": 0}),
+            _vllm_config(extra_config={"attn_ranks_per_dp": 0}),
+            _afd_config(role="attention"),
         )
 
 
@@ -295,11 +319,11 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
     connector = CAMAsyncAFDConnector(
         0,
         0,
-        _vllm_config(pcp_size=3),
-        _afd_config(
-            role="attention",
+        _vllm_config(
+            pcp_size=3,
             extra_config={"attn_ranks_per_dp": 3},
         ),
+        _afd_config(role="attention"),
     )
     connector._initialized = True
     connector.comm_args = _FakeTensor((1,), dtype="fp16")
@@ -340,8 +364,11 @@ def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
     connector = CAMAsyncAFDConnector(
         0,
         0,
-        _vllm_config(pcp_size=2),
-        _afd_config(role="ffn", extra_config={"attn_ranks_per_dp": 2}),
+        _vllm_config(
+            pcp_size=2,
+            extra_config={"attn_ranks_per_dp": 2},
+        ),
+        _afd_config(role="ffn"),
     )
     connector._initialized = True
     connector.comm_args = _FakeTensor((1,), dtype="fp16")

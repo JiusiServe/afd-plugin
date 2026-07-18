@@ -63,9 +63,10 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         super().__init__(vllm_config, device)
 
         self.afd_config = afd_config
-        if not self.afd_config.enabled:
-            raise ValueError("AFD NPU FFN runtime requires enabled=true")
-        fail_if_unsupported_npu_afd_features(vllm_config)
+        fail_if_unsupported_npu_afd_features(
+            vllm_config,
+            afd_config=afd_config,
+        )
         self.afd_config = _with_dp_derived_afd_rank(vllm_config, self.afd_config)
         rank, local_rank = _resolve_world_ranks()
         self.connector = AFDConnectorFactory.create_connector(

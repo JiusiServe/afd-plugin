@@ -8,8 +8,12 @@ import importlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from afd_plugin.config import AFDConfig, parse_afd_config
-from afd_plugin.connectors.base import AFDConnectorBase
+from afd_plugin.config import (
+    AFDConfig,
+    connector_extra_config_from_source,
+    parse_afd_config,
+)
+from afd_plugin.connectors.base import AFDConnectorBase, ConnectorExtraInfo
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -60,6 +64,17 @@ class AFDConnectorFactory:
         if connector_name not in cls._registry:
             raise ValueError(f"unsupported AFD connector type: {connector_name}")
         return cls._registry[connector_name]()
+
+    @classmethod
+    def parse_connector_extra_info(
+        cls,
+        connector_name: str,
+        source: VllmConfig,
+    ) -> ConnectorExtraInfo:
+        connector_cls = cls.get_connector_class(connector_name)
+        return connector_cls.parse_extra_config(
+            connector_extra_config_from_source(source),
+        )
 
 
 AFDConnectorFactory.register_connector(

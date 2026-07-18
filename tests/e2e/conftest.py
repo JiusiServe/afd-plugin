@@ -53,7 +53,7 @@ def _make_args(
     afd_connector: str | None = None,
     afd_async: bool = False,
     compute_gate_on_attention: bool = False,
-    afd_extra_config: list[str] | None = None,
+    afd_connector_extra_config: list[str] | None = None,
     device_backend: str = "gpu",
 ) -> dict[str, Any]:
     """Build a dict mimicking the runner's argparse Namespace."""
@@ -88,7 +88,7 @@ def _make_args(
         "afd_connector": afd_connector,
         "afd_async": afd_async,
         "compute_gate_on_attention": compute_gate_on_attention,
-        "afd_extra_config": afd_extra_config or [],
+        "afd_connector_extra_config": afd_connector_extra_config or [],
         "device_backend": device_backend,
     }
 

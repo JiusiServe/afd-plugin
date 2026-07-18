@@ -9,7 +9,7 @@ import logging
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from afd_plugin.config import AFDConfig, parse_afd_config
+from afd_plugin.config import AFDConfig, parse_afd_config, parse_optional_afd_config
 
 
 def __getattr__(name: str):
@@ -141,6 +141,7 @@ __all__ = [
     "GPUFFNModelRunner",
     "assert_compatible_afd_stack",
     "parse_afd_config",
+    "parse_optional_afd_config",
     "__version__",
     "_DEEPSEEK_MODEL_REGISTRATIONS",
     "register_afd",

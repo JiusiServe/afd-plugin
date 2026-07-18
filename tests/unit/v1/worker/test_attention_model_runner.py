@@ -143,7 +143,7 @@ def test_attention_runner_builds_single_stage_metadata():
 
 def test_attention_runner_installs_afd_metadata_on_forward_context():
     runner = object.__new__(AFDAttentionModelRunner)
-    runner.afd_config = AFDConfig(enabled=True, role="attention")
+    runner.afd_config = AFDConfig(role="attention")
     runner.afd_connector = _RecordingConnector()
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
@@ -168,7 +168,7 @@ def test_attention_runner_installs_afd_metadata_on_forward_context():
 
 def test_attention_runner_initializes_missing_forward_context_kwargs():
     runner = object.__new__(AFDAttentionModelRunner)
-    runner.afd_config = AFDConfig(enabled=True, role="attention")
+    runner.afd_config = AFDConfig(role="attention")
     runner.afd_connector = _RecordingConnector()
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
@@ -188,7 +188,7 @@ def test_attention_runner_initializes_missing_forward_context_kwargs():
 
 def test_attention_runner_uses_padded_full_graph_tokens_for_afd_metadata():
     runner = object.__new__(AFDAttentionModelRunner)
-    runner.afd_config = AFDConfig(enabled=True, role="attention")
+    runner.afd_config = AFDConfig(role="attention")
     runner.vllm_config = SimpleNamespace(
         parallel_config=_parallel_config(),
     )
@@ -218,7 +218,7 @@ def test_attention_runner_uses_padded_full_graph_tokens_for_afd_metadata():
 
 def test_attention_runner_sends_per_ubatch_dp_metadata():
     runner = object.__new__(AFDAttentionModelRunner)
-    runner.afd_config = AFDConfig(enabled=True, role="attention")
+    runner.afd_config = AFDConfig(role="attention")
     runner.vllm_config = SimpleNamespace(
         parallel_config=_parallel_config(),
     )
@@ -237,7 +237,7 @@ def test_attention_runner_sends_per_ubatch_dp_metadata():
 
 def test_attention_runner_skips_dp_metadata_send_for_ubatch_child_context():
     runner = object.__new__(AFDAttentionModelRunner)
-    runner.afd_config = AFDConfig(enabled=True, role="attention")
+    runner.afd_config = AFDConfig(role="attention")
     runner.vllm_config = SimpleNamespace(
         parallel_config=_parallel_config(),
     )
@@ -273,7 +273,7 @@ def test_attention_runner_skips_dp_metadata_send_for_ubatch_child_context():
 
 def test_attention_runner_does_not_skip_single_stage_context():
     runner = object.__new__(AFDAttentionModelRunner)
-    runner.afd_config = AFDConfig(enabled=True, role="attention")
+    runner.afd_config = AFDConfig(role="attention")
     runner.vllm_config = SimpleNamespace(
         parallel_config=_parallel_config(),
     )
@@ -595,7 +595,7 @@ def test_attention_runner_stops_gpu_profiler_on_shutdown():
 
 def test_forward_context_provider_installs_metadata_before_model_forward(monkeypatch):
     runner = object.__new__(AFDAttentionModelRunner)
-    runner.afd_config = AFDConfig(enabled=True, role="attention")
+    runner.afd_config = AFDConfig(role="attention")
     runner.vllm_config = SimpleNamespace(
         parallel_config=_parallel_config(),
     )
@@ -625,7 +625,7 @@ def test_forward_context_provider_installs_metadata_before_model_forward(monkeyp
 
 def test_forward_context_provider_can_install_without_sending_metadata(monkeypatch):
     runner = object.__new__(AFDAttentionModelRunner)
-    runner.afd_config = AFDConfig(enabled=True, role="attention")
+    runner.afd_config = AFDConfig(role="attention")
     runner.vllm_config = SimpleNamespace(
         parallel_config=_parallel_config(),
     )
@@ -675,7 +675,7 @@ def test_attention_runtime_allows_full_decode_only_cuda_graph():
 
 def test_attention_runner_forwards_capture_and_warmup_flags():
     runner = object.__new__(AFDAttentionModelRunner)
-    runner.afd_config = AFDConfig(enabled=True, role="attention")
+    runner.afd_config = AFDConfig(role="attention")
     runner.vllm_config = SimpleNamespace(
         parallel_config=_parallel_config(),
     )
@@ -708,7 +708,6 @@ def test_attention_runner_builds_capture_dp_metadata_for_native_dp():
 
 def test_afd_rank_derives_from_data_parallel_rank():
     config = AFDConfig(
-        enabled=True,
         role="attention",
         connector="P2pNcclAFDConnector",
         num_attention_ranks=2,
@@ -757,7 +756,6 @@ def test_afd_rank_derives_from_tp_rank_dp1_tp2(monkeypatch):
         lambda: 1,
     )
     config = AFDConfig(
-        enabled=True,
         role="attention",
         connector="P2pNcclAFDConnector",
         num_attention_ranks=4,
@@ -782,7 +780,6 @@ def test_afd_rank_derives_from_pcp_rank_dp1_pcp2(monkeypatch):
         lambda: SimpleNamespace(rank_in_group=1),
     )
     config = AFDConfig(
-        enabled=True,
         role="attention",
         connector="P2pNcclAFDConnector",
         num_attention_ranks=2,
@@ -811,7 +808,6 @@ def test_afd_rank_derives_from_dp_and_tp_ranks_dp2_tp2(monkeypatch):
         lambda: 1,
     )
     config = AFDConfig(
-        enabled=True,
         role="attention",
         connector="P2pNcclAFDConnector",
         num_attention_ranks=4,
@@ -831,7 +827,6 @@ def test_afd_rank_derives_from_dp_and_tp_ranks_dp2_tp2(monkeypatch):
 def test_afd_rank_unchanged_when_dp1_tp1():
     """DP=1, TP=1: no derivation needed, config returned as-is."""
     config = AFDConfig(
-        enabled=True,
         role="attention",
         connector="P2pNcclAFDConnector",
         num_attention_ranks=1,
@@ -855,7 +850,6 @@ def test_afd_rank_raises_for_out_of_range_dp2_tp2(monkeypatch):
         lambda: 0,
     )
     config = AFDConfig(
-        enabled=True,
         role="attention",
         connector="P2pNcclAFDConnector",
         num_attention_ranks=2,

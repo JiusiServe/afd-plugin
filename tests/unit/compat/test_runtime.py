@@ -149,15 +149,18 @@ def test_npu_afd_config_patch_restores_dbo_for_afd(monkeypatch):
             parallel_config.ubatch_size = 0
             return "fixed"
 
-    def afd_vllm_config(*, enabled=True):
+    def afd_vllm_config(*, active=True):
         config = _vllm_config()
-        config.additional_config = {
-            "afd": {
-                "enabled": enabled,
-                "role": "attention",
-                "connector": "CAMP2pAFDConnector",
-            },
-        }
+        config.additional_config = (
+            {
+                "afd": {
+                    "role": "attention",
+                    "connector": "CAMP2pAFDConnector",
+                },
+            }
+            if active
+            else {}
+        )
         config.parallel_config = FakeParallelConfig(enable_dbo=True, ubatch_size=4)
         return config
 
@@ -174,7 +177,7 @@ def test_npu_afd_config_patch_restores_dbo_for_afd(monkeypatch):
     assert config.parallel_config.use_ubatching is True
     assert config.parallel_config.ubatch_size == 4
 
-    disabled_config = afd_vllm_config(enabled=False)
-    assert NPUPlatform._fix_incompatible_config(disabled_config) == "fixed"
-    assert disabled_config.parallel_config.enable_dbo is False
-    assert disabled_config.parallel_config.use_ubatching is False
+    inactive_config = afd_vllm_config(active=False)
+    assert NPUPlatform._fix_incompatible_config(inactive_config) == "fixed"
+    assert inactive_config.parallel_config.enable_dbo is False
+    assert inactive_config.parallel_config.use_ubatching is False

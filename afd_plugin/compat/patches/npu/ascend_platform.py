@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from afd_plugin.config import parse_afd_config
+from afd_plugin.config import parse_optional_afd_config
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -65,7 +65,7 @@ def apply_afd_ascend_dbo_config_patch() -> None:
 
 
 def _snapshot_afd_dbo_config(vllm_config: VllmConfig) -> dict[str, bool | int] | None:
-    if not _is_afd_config_enabled(vllm_config):
+    if not _has_valid_afd_config(vllm_config):
         return None
     parallel_config = vllm_config.parallel_config
     return {
@@ -90,9 +90,9 @@ def _restore_afd_dbo_config(
     parallel_config.ubatch_size = saved["ubatch_size"]
 
 
-def _is_afd_config_enabled(vllm_config: VllmConfig) -> bool:
+def _has_valid_afd_config(vllm_config: VllmConfig) -> bool:
     try:
-        return parse_afd_config(vllm_config, validate=False).enabled
+        return parse_optional_afd_config(vllm_config, validate=True) is not None
     except Exception:
         return False
 

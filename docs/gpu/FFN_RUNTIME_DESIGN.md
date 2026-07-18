@@ -11,7 +11,7 @@ class:
 ```bash
 vllm serve <model> \
   --worker-cls afd_plugin.v1.worker.AFDFFNWorker \
-  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"role":"ffn","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 The FFN process is not request-driven. Start the FFN process first, then start

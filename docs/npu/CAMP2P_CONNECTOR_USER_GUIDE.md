@@ -95,12 +95,11 @@ scheduling.
 ## AFD configuration
 
 Pass AFD configuration through vLLM's `--additional-config` option under the
-`afd` key.
+`afd` key. The presence of the `afd` object enables AFD; omit it to disable AFD.
 
 ```jsonc
 {
   "afd": {
-    "enabled": true,
     "role": "attention",
     "connector": "CAMP2pAFDConnector",
     "host": "127.0.0.1",
@@ -117,7 +116,6 @@ Pass AFD configuration through vLLM's `--additional-config` option under the
 
 | Field | Type | Default | Meaning and constraints |
 | --- | --- | --- | --- |
-| `enabled` | `bool` | `false` | Must be `true` to enable AFD for the worker. |
 | `role` | `"attention" \| "ffn"` | `"attention"` | Role owned by this process. |
 | `connector` | `str` | `"P2pNcclAFDConnector"` | Set to `CAMP2pAFDConnector` for this synchronous NPU path. |
 | `host` | `str` | `"127.0.0.1"` | Non-empty rendezvous host shared by every rank. It must be reachable from all participating processes. If the Attention and FFN ranks run on different machines, set this field to the FFN machine's reachable IP address. |
@@ -126,6 +124,7 @@ Pass AFD configuration through vLLM's `--additional-config` option under the
 | `num_ffn_ranks` | `int` | `1` | Total number of FFN worker ranks. Must be positive. |
 | `afd_role_rank` | `int` | `0` | Base rank within the selected role. The worker normally derives each local role rank from its DP/PCP/TP placement. |
 | `compute_gate_on_attention` | `bool` | `false` | Controls whether the MoE gate is computed on the Attention side or the FFN side. Currently only `false` is supported. |
+| `connector_extra_config` | `dict` | `{}` | CAMP2P-specific settings such as role-specific core counts and `quant_mode`. Unknown fields are rejected. |
 | `async` / `async_dp` | `bool` | `false` | Must remain `false` for the current synchronous; Ascend async mode requires `CAMAsyncAFDConnector`. |
 
 Compatibility aliases are accepted for `afd_role`, `afd_connector`,
@@ -161,7 +160,6 @@ vllm serve /path/to/model \
   --ubatch-size 2 \
   --additional-config '{
     "afd": {
-      "enabled": true,
       "role": "ffn",
       "connector": "CAMP2pAFDConnector",
       "host": "127.0.0.1",
@@ -169,7 +167,7 @@ vllm serve /path/to/model \
       "num_attention_ranks": 4,
       "num_ffn_ranks": 2,
       "compute_gate_on_attention": false,
-      "extra_config": {
+      "connector_extra_config": {
         "ffn_core_num": 8,
         "quant_mode": 0
       }
@@ -200,7 +198,6 @@ vllm serve /path/to/model \
   --ubatch-size 2 \
   --additional-config '{
     "afd": {
-      "enabled": true,
       "role": "attention",
       "connector": "CAMP2pAFDConnector",
       "host": "127.0.0.1",
@@ -208,7 +205,7 @@ vllm serve /path/to/model \
       "num_attention_ranks": 4,
       "num_ffn_ranks": 2,
       "compute_gate_on_attention": false,
-      "extra_config": {
+      "connector_extra_config": {
         "attn_core_num": 8,
         "quant_mode": 0
       }

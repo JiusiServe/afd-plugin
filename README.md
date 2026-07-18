@@ -99,7 +99,7 @@ vllm serve /path/to/DeepSeek-V2-Lite \
   --enforce-eager \
   --host 127.0.0.1 \
   --port 18000 \
-  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"role":"attention","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 GPU FFN-side shape:
@@ -114,7 +114,7 @@ vllm serve /path/to/DeepSeek-V2-Lite \
   --enforce-eager \
   --host 127.0.0.1 \
   --port 18001 \
-  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"role":"ffn","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 NPU uses the same config channel with Ascend class paths and
@@ -130,7 +130,7 @@ vllm serve /path/to/DeepSeek-V2-Lite \
   --enforce-eager \
   --host 127.0.0.1 \
   --port 18000 \
-  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"role":"attention","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 Start the FFN side first, then start the Attention side and send requests to
@@ -162,7 +162,6 @@ The canonical config shape is:
 ```json
 {
   "afd": {
-    "enabled": true,
     "role": "attention",
     "connector": "P2pNcclAFDConnector",
     "host": "127.0.0.1",
@@ -171,15 +170,19 @@ The canonical config shape is:
     "num_ffn_ranks": 1,
     "afd_role_rank": 0,
     "compute_gate_on_attention": false,
-    "extra_config": {}
+    "connector_extra_config": {}
   }
 }
 ```
 
 `role` must be `attention` or `ffn`. `connector` must be `P2pNcclAFDConnector`,
-`CAMP2pAFDConnector`, or `CAMAsyncAFDConnector`. The plugin also accepts selected
-compatibility aliases such as `afd_role`, `afd_connector`, `afd_host`,
-`afd_port`, and `afd_extra_config`.
+`CAMP2pAFDConnector`, or `CAMAsyncAFDConnector`. AFD is active when
+`additional_config["afd"]` is present and passes common AFD config validation;
+omit `additional_config["afd"]` to disable AFD. Connector-owned
+`connector_extra_config` is strictly validated by the selected connector parser
+when the connector/runtime is constructed. The plugin also accepts selected
+compatibility aliases such as `afd_role`, `afd_connector`, `afd_host`, and
+`afd_port`.
 
 ## Development
 

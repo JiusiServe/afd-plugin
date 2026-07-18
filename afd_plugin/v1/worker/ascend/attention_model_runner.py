@@ -59,9 +59,8 @@ from afd_plugin.compat.ascend.profiler import (
     stop_afd_npu_profiler,
 )
 from afd_plugin.config import (
+    AFD_ASYNC_CONNECTOR,
     AFDConfig,
-    async_moe_num_ubatches,
-    async_moe_ubatching_enabled,
     parse_afd_config,
 )
 from afd_plugin.connectors import (
@@ -70,6 +69,7 @@ from afd_plugin.connectors import (
     AFDDPMetadata,
     AFDForwardContextMetadata,
 )
+from afd_plugin.connectors.npu.async_cam import AFDAsyncExtraInfo
 from afd_plugin.model_executor.models import ASYNC_MOE_UBATCH_METADATA_KEY
 from afd_plugin.v1.worker.ascend.npu_ubatch_wrapper import AscendUBatchWrapper
 from afd_plugin.v1.worker.ascend.pcp_debug import (
@@ -111,9 +111,10 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         super().__init__(vllm_config, device)
 
         self.afd_config = afd_config
-        if not self.afd_config.enabled:
-            raise ValueError("AFD NPU Attention runtime requires enabled=true")
-        fail_if_unsupported_npu_afd_features(vllm_config)
+        fail_if_unsupported_npu_afd_features(
+            vllm_config,
+            afd_config=afd_config,
+        )
         self.afd_config = _with_dp_derived_afd_rank(vllm_config, self.afd_config)
         rank, local_rank = _resolve_world_ranks()
         self.afd_connector = AFDConnectorFactory.create_connector(
@@ -122,6 +123,15 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             vllm_config,
             self.afd_config,
         )
+        self.afd_async_extra_info = AFDAsyncExtraInfo()
+        if afd_config.connector == AFD_ASYNC_CONNECTOR:
+            connector_extra_info = self.afd_connector.extra_info
+            if not isinstance(connector_extra_info, AFDAsyncExtraInfo):
+                raise TypeError(
+                    "CAMAsyncAFDConnector requires AFDAsyncExtraInfo, got "
+                    f"{type(connector_extra_info).__name__}",
+                )
+            self.afd_async_extra_info = connector_extra_info
         self.afd_connector.init_afd_connector()
         self._is_warmup = False
         self._afd_is_graph_capturing = False
@@ -205,7 +215,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 kwargs,
                 ubatch_slices,
             )
-        if async_moe_ubatching_enabled(self.afd_config):
+        if self.afd_async_extra_info.async_moe_ubatching:
             self.ubatch_slices = None
             return self._build_attention_metadata_with_async_moe_ubatches(
                 args,
@@ -240,7 +250,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
         ubatch_slices = create_request_boundary_ubatch_slices(
             num_scheduled_tokens_np,
-            num_ubatches=async_moe_num_ubatches(self.afd_config),
+            num_ubatches=self.afd_async_extra_info.async_moe_num_ubatches,
         )
         if ubatch_slices is None:
             return full_metadata
@@ -1343,9 +1353,12 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
     def initialize_attn_backend(self, *args: Any, **kwargs: Any) -> Any:
         result = super().initialize_attn_backend(*args, **kwargs)
-        if bool(
-            self.vllm_config.parallel_config.use_ubatching,
-        ) or async_moe_ubatching_enabled(self.afd_config):
+        if (
+            bool(
+                self.vllm_config.parallel_config.use_ubatching,
+            )
+            or self.afd_async_extra_info.async_moe_ubatching
+        ):
             self._ensure_two_metadata_builders()
         return result
 

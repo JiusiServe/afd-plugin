@@ -63,16 +63,12 @@ ADDITIONAL_CONFIG="$(cat <<EOF
   "enable_force_load_balance": true,
   "force_load_balance_topn_per_rank": 4,
   "afd": {
-    "enabled": true,
     "role": "ffn",
     "connector": "CAMP2pAFDConnector",
     "host": "$AFD_HOST",
     "port": $AFD_PORT,
     "num_attention_ranks": $ATTENTION_RANKS,
-    "num_ffn_ranks": 16,
-    "extra_config": {
-      "afd_size": "${ATTENTION_RANKS}A16F"
-    }
+    "num_ffn_ranks": 16
   }
 }
 EOF

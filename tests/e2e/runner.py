@@ -227,8 +227,8 @@ def parse_args() -> argparse.Namespace:
         "--afd-connector",
         default=None,
         help=(
-            "AFD connector name. Defaults to p2pconnector for GPU and "
-            "camp2pconnector for NPU."
+            "AFD connector name. Defaults to P2pNcclAFDConnector for GPU and "
+            "CAMP2pAFDConnector for NPU."
         ),
     )
     parser.add_argument(
@@ -242,10 +242,13 @@ def parse_args() -> argparse.Namespace:
         help="Set additional_config['afd']['compute_gate_on_attention']=true.",
     )
     parser.add_argument(
-        "--afd-extra-config",
+        "--afd-connector-extra-config",
         action="append",
         default=[],
-        help="JSON object merged into additional_config['afd']['extra_config'].",
+        help=(
+            "JSON object merged into "
+            "additional_config['afd']['connector_extra_config']."
+        ),
     )
     parser.add_argument(
         "--expect-text",
@@ -327,7 +330,6 @@ def build_vllm_command(
 
     afd_config = {
         "afd": {
-            "enabled": True,
             "role": role,
             "connector": connector,
             "host": args.afd_host,
@@ -340,9 +342,11 @@ def build_vllm_command(
         afd_config["afd"]["async"] = True
     if args.compute_gate_on_attention:
         afd_config["afd"]["compute_gate_on_attention"] = True
-    extra_config = parse_afd_extra_config(args.afd_extra_config)
-    if extra_config:
-        afd_config["afd"]["extra_config"] = extra_config
+    connector_extra_config = parse_afd_connector_extra_config(
+        args.afd_connector_extra_config,
+    )
+    if connector_extra_config:
+        afd_config["afd"]["connector_extra_config"] = connector_extra_config
     if is_npu:
         worker_cls = (
             "afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker"
@@ -433,14 +437,14 @@ def role_tp_size(args: argparse.Namespace, role: str) -> int:
     raise ValueError(f"unknown AFD role {role!r}")
 
 
-def parse_afd_extra_config(values: list[str]) -> dict[str, Any]:
-    extra_config: dict[str, Any] = {}
+def parse_afd_connector_extra_config(values: list[str]) -> dict[str, Any]:
+    connector_extra_config: dict[str, Any] = {}
     for raw_value in values:
         value = json.loads(raw_value)
         if not isinstance(value, dict):
-            raise ValueError("--afd-extra-config must be a JSON object")
-        extra_config.update(value)
-    return extra_config
+            raise ValueError("--afd-connector-extra-config must be a JSON object")
+        connector_extra_config.update(value)
+    return connector_extra_config
 
 
 def uses_async_connector(args: argparse.Namespace) -> bool:

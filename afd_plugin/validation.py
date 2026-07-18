@@ -73,7 +73,6 @@ def assert_compatible_afd_stack(
     caller: str,
     expected_role: str | None = None,
     expected_worker_qualname_override: str | None = None,
-    require_enabled: bool = True,
 ) -> AFDConfig:
     """Validate AFD config and worker class wiring.
 
@@ -85,8 +84,6 @@ def assert_compatible_afd_stack(
         return f" (context: {caller!r})"
 
     config = parse_afd_config(vllm_config, expected_role=expected_role)
-    if require_enabled and not config.enabled:
-        raise ValueError(f"AFD is not enabled in additional_config['afd']{_ctx()}")
 
     parallel_config = vllm_config.parallel_config
     async_expected_worker = (

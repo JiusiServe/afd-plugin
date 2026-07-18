@@ -157,7 +157,7 @@ def _config(role: str):
         cache_config.validated = True
 
     return SimpleNamespace(
-        additional_config={"afd": {"enabled": True, "role": role}},
+        additional_config={"afd": {"role": role}},
         parallel_config=parallel_config,
         scheduler_config=scheduler_config,
         cache_config=cache_config,

@@ -43,7 +43,7 @@ def _args() -> argparse.Namespace:
         afd_connector=None,
         afd_async=False,
         compute_gate_on_attention=False,
-        afd_extra_config=[],
+        afd_connector_extra_config=[],
         device_backend="gpu",
     )
 
@@ -70,7 +70,8 @@ def test_runner_uses_native_dp_for_attention_topology():
     additional_config = json.loads(_arg_value(command, "--additional-config"))
     assert additional_config["afd"]["num_attention_ranks"] == 2
     assert additional_config["afd"]["num_ffn_ranks"] == 2
-    assert "extra_config" not in additional_config["afd"]
+    assert "enabled" not in additional_config["afd"]
+    assert "connector_extra_config" not in additional_config["afd"]
     assert "afd_role_rank" not in additional_config["afd"]
 
 
@@ -108,9 +109,9 @@ def test_runner_builds_npu_async_cam_role_specific_topology():
     args.afd_connector = runner.ASYNC_AFD_CONNECTOR
     args.afd_async = True
     args.compute_gate_on_attention = True
-    args.afd_extra_config = [
+    args.afd_connector_extra_config = [
         (
-            '{"quant_mode":0,"dynamicQuant":0,'
+            '{"dynamicQuant":0,'
             '"async_moe_ubatching":false,"async_moe_num_ubatches":2,'
             '"async_moe_split":"request","attn_ranks_per_dp":2}'
         ),
@@ -137,8 +138,8 @@ def test_runner_builds_npu_async_cam_role_specific_topology():
     assert afd_config["compute_gate_on_attention"] is True
     assert afd_config["num_attention_ranks"] == 2
     assert afd_config["num_ffn_ranks"] == 2
-    assert afd_config["extra_config"]["attn_ranks_per_dp"] == 2
-    assert afd_config["extra_config"]["async_moe_split"] == "request"
+    assert afd_config["connector_extra_config"]["attn_ranks_per_dp"] == 2
+    assert afd_config["connector_extra_config"]["async_moe_split"] == "request"
 
 
 def test_runner_rejects_role_rank_count_not_divisible_by_tp():

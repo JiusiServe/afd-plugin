@@ -96,12 +96,12 @@ settings, and ubatching settings.
 ## AFD configuration
 
 Pass AFD configuration through vLLM's `--additional-config` under the `afd`
-key. There is no separate `--afd-config` option.
+key. The presence of the `afd` object enables AFD; omit it to disable AFD.
+There is no separate `--afd-config` option.
 
 ```jsonc
 {
   "afd": {
-    "enabled": true,
     "role": "attention",
     "connector": "CAMAsyncAFDConnector",
     "async": true,
@@ -111,7 +111,7 @@ key. There is no separate `--afd-config` option.
     "num_ffn_ranks": 8,
     "afd_role_rank": 0,
     "compute_gate_on_attention": true,
-    "extra_config": {
+    "connector_extra_config": {
       "dynamicQuant": 1,
       "attn_ranks_per_dp": 8,
       "async_moe_ubatching": true,
@@ -126,7 +126,6 @@ key. There is no separate `--afd-config` option.
 
 | Field | Type | Default | Meaning and constraint |
 | --- | --- | --- | --- |
-| `enabled` | `bool` | `false` | Must be `true` to enable the AFD runtime. |
 | `role` | `"attention" \| "ffn"` | `"attention"` | Role owned by this process. |
 | `connector` | `str` | `"P2pNcclAFDConnector"` | Must be `CAMAsyncAFDConnector`. |
 | `async` / `async_dp` | `bool` | `false` | Must be `true`. `async` is the accepted compatibility alias for canonical `async_dp`. |
@@ -136,14 +135,14 @@ key. There is no separate `--afd-config` option.
 | `num_ffn_ranks` | `int` | `1` | Total FFN expert ranks. |
 | `afd_role_rank` | `int` | `0` | Role-local starting rank. Account for `attn_ranks_per_dp` on Attention. |
 | `compute_gate_on_attention` | `bool` | `false` | Must be `true`; CAM async runs MoE routing on Attention before dispatching to FFN ranks. |
-| `extra_config` | `dict` | `{}` | Connector-specific settings. Unknown top-level AFD fields are rejected. |
+| `connector_extra_config` | `dict` | `{}` | Connector-specific settings. Unknown top-level AFD fields are rejected. |
 
-Compatibility aliases `afd_role`, `afd_connector`, `afd_host`, `afd_port`, and
-`afd_extra_config` are also accepted. New configurations should use the
-canonical names shown above, except `async`, which is retained as the documented
-compatibility spelling used by the recipes.
+Compatibility aliases `afd_role`, `afd_connector`, `afd_host`, and `afd_port`
+are also accepted. New configurations should use the canonical names shown
+above, except `async`, which is retained as the documented compatibility
+spelling used by the recipes.
 
-### CAM async `extra_config`
+### CAM async `connector_extra_config`
 
 | Field | Type | Default | Meaning and constraint |
 | --- | --- | --- | --- |
@@ -182,7 +181,7 @@ When `async_moe_ubatching=true`, all roles must set:
 ```json
 {
   "compute_gate_on_attention": true,
-  "extra_config": {
+  "connector_extra_config": {
     "async_moe_ubatching": true,
     "async_moe_num_ubatches": 2,
     "async_moe_split": "request"

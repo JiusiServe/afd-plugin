@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import torch
 
-from afd_plugin.config import AFDConfig
+from afd_plugin.config import AFDConfig, connector_extra_config_from_source
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
     AFDControlPayload,
@@ -18,6 +20,18 @@ from afd_plugin.connectors.metadata import (
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
+
+
+@dataclass(frozen=True)
+class ConnectorExtraInfo:
+    """Base type for connector-owned configuration."""
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any] | None) -> ConnectorExtraInfo:
+        raise NotImplementedError
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {}
 
 
 class AFDConnectorBase(ABC):
@@ -42,6 +56,16 @@ class AFDConnectorBase(ABC):
     uses_dp_metadata_control_plane = True
     ffn_step_trigger = "dp_metadata"
 
+    @classmethod
+    @abstractmethod
+    def parse_extra_config(
+        cls,
+        raw: Mapping[str, Any] | None,
+    ) -> ConnectorExtraInfo:
+        """Parse connector-owned config using this connector's schema."""
+
+        raise NotImplementedError
+
     def __init__(
         self,
         rank: int,
@@ -63,13 +87,15 @@ class AFDConnectorBase(ABC):
                 Connectors use it to read model shape, dtype, parallelism, and
                 graph/capture configuration.
             afd_config: Parsed AFD plugin configuration. This contains the AFD
-                role, connector name, topology sizes, host/port, and
-                connector-specific extra config.
+                role, connector name, topology sizes, and host/port.
         """
         self.rank = rank
         self.local_rank = local_rank
         self.vllm_config = vllm_config
         self.afd_config = afd_config
+        self.extra_info = self.parse_extra_config(
+            connector_extra_config_from_source(vllm_config),
+        )
 
     # ==============================
     # Lifecycle methods
@@ -263,4 +289,4 @@ class AFDConnectorBase(ABC):
         raise NotImplementedError
 
 
-__all__ = ["AFDConnectorBase"]
+__all__ = ["AFDConnectorBase", "ConnectorExtraInfo"]

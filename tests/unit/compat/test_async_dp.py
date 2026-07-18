@@ -14,7 +14,6 @@ def _config(
     return SimpleNamespace(
         additional_config={
             "afd": {
-                "enabled": True,
                 "connector": connector,
                 "role": role,
                 "async": async_dp,

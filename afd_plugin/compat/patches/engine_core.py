@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 import vllm.v1.engine.core as core_module
 
-from afd_plugin.config import AFDConfig, parse_afd_config
+from afd_plugin.config import AFDConfig, parse_optional_afd_config
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -537,21 +537,21 @@ def _is_afd_ffn_engine(self) -> bool:
 
 def _is_afd_ffn_config(vllm_config: VllmConfig | None) -> bool:
     config = _get_afd_config(vllm_config)
-    return config.enabled and config.role == "ffn"
+    return config is not None and config.role == "ffn"
 
 
-def _get_afd_config(vllm_config: VllmConfig | None) -> AFDConfig:
+def _get_afd_config(vllm_config: VllmConfig | None) -> AFDConfig | None:
     existing = getattr(vllm_config, "afd_config", None)
     if isinstance(existing, AFDConfig):
         return existing
     try:
-        return parse_afd_config(vllm_config, validate=False)
+        return parse_optional_afd_config(vllm_config, validate=False)
     except Exception:
         core_module.logger.debug(
             "Unable to parse AFD config from vLLM config",
             exc_info=True,
         )
-        return AFDConfig()
+        return None
 
 
 core_module.EngineCore.__init__ = __init__

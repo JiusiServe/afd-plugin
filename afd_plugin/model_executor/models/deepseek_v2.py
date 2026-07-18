@@ -37,7 +37,7 @@ try:
 except ImportError:
     get_ascend_config = None
 
-from afd_plugin.config import parse_afd_config
+from afd_plugin.config import parse_optional_afd_config
 from afd_plugin.connectors import (
     AFDF2ATransferPayload,
     AFDForwardContextMetadata,
@@ -66,8 +66,8 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         vllm_config = args[0] if args else kwargs.get("vllm_config")
-        afd_config = parse_afd_config(vllm_config, validate=False)
-        afd_role = afd_config.role if afd_config.enabled else None
+        afd_config = parse_optional_afd_config(vllm_config, validate=False)
+        afd_role = afd_config.role if afd_config is not None else None
 
         if afd_role is None:
             super().__init__(*args, **kwargs)
@@ -356,7 +356,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
 
         config = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
-        self.afd_config = parse_afd_config(vllm_config, validate=False)
+        self.afd_config = parse_optional_afd_config(vllm_config, validate=False)
         self.config = config
         self.device = native.current_platform.device_type
 
@@ -480,7 +480,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
         afd_metadata: AFDForwardContextMetadata,
         llama_4_scaling: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        if self.afd_config.compute_gate_on_attention:
+        if self.afd_config is not None and self.afd_config.compute_gate_on_attention:
             forward_context = get_forward_context()
             if (
                 get_async_moe_ubatch_metadata_from_forward_context(forward_context)
@@ -631,8 +631,8 @@ class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
     model_cls = AFDDeepseekV2Model
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
-        self.afd_config = parse_afd_config(vllm_config, validate=False)
-        self.afd_role = self.afd_config.role if self.afd_config.enabled else None
+        self.afd_config = parse_optional_afd_config(vllm_config, validate=False)
+        self.afd_role = self.afd_config.role if self.afd_config is not None else None
         super().__init__(vllm_config=vllm_config, prefix=prefix)
 
     def set_moe_parameters(self) -> None:

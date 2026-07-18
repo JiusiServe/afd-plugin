@@ -56,16 +56,12 @@ CUDA_VISIBLE_DEVICES=2 uv run vllm serve "$MODEL_PATH" \
     --enable-expert-parallel \
     --additional-config '{
         "afd": {
-            "enabled": true,
             "role": "attention",
             "connector": "P2pNcclAFDConnector",
             "host": "127.0.0.1",
             "port": 6269,
             "num_attention_ranks": 1,
-            "num_ffn_ranks": 1,
-            "extra_config": {
-                "afd_size": "1A1F"
-            }
+            "num_ffn_ranks": 1
         }
     }' \
     --max-num-seqs 64 \
@@ -94,16 +90,12 @@ CUDA_VISIBLE_DEVICES=3 uv run vllm serve "$MODEL_PATH" \
     --enable-expert-parallel \
     --additional-config '{
         "afd": {
-            "enabled": true,
             "role": "ffn",
             "connector": "P2pNcclAFDConnector",
             "host": "127.0.0.1",
             "port": 6269,
             "num_attention_ranks": 1,
-            "num_ffn_ranks": 1,
-            "extra_config": {
-                "afd_size": "1A1F"
-            }
+            "num_ffn_ranks": 1
         }
     }' \
     --max-num-seqs 64 \

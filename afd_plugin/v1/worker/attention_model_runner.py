@@ -51,8 +51,6 @@ class AFDAttentionModelRunner(GPUModelRunner):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.afd_config = self.parse_config(self.vllm_config)
-        if not self.afd_config.enabled:
-            raise ValueError("AFD Attention runtime requires enabled=true")
         fail_if_unsupported_ubatching(self.vllm_config)
         self.afd_cudagraph_policy = validate_cuda_graph_mode(
             self.vllm_config,
