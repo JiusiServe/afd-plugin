@@ -24,7 +24,7 @@ verified_platform_refs:
   - "Ascend: quay.io/ascend/vllm-ascend:v0.19.1rc1-a3-openeuler (test evidence only)"
 related_issues:
   - "#129"
-last_reviewed: 2026-07-17
+last_reviewed: 2026-07-19
 ---
 
 # AFD module design
@@ -82,7 +82,7 @@ contract. File-level entries deliberately resolve mixed directories.
 
 | Primary document | Production paths |
 | --- | --- |
-| [Plugin boundary](plugin_boundary.md) | `afd_plugin/__init__.py`, `afd_plugin/config.py`, `afd_plugin/envs.py`, `afd_plugin/validation.py`, `afd_plugin/py.typed`, `afd_plugin/v1/__init__.py`, `afd_plugin/v1/worker/__init__.py`, `afd_plugin/v1/worker/ascend/__init__.py`, `pyproject.toml` |
+| [Plugin boundary](plugin_boundary.md) | `afd_plugin/__init__.py`, `afd_plugin/config.py`, `afd_plugin/config_utils.py`, `afd_plugin/envs.py`, `afd_plugin/validation.py`, `afd_plugin/py.typed`, `afd_plugin/v1/__init__.py`, `afd_plugin/v1/worker/__init__.py`, `afd_plugin/v1/worker/ascend/__init__.py`, `pyproject.toml` |
 | [Attention runtime](attention_runtime.md) | `afd_plugin/v1/worker/attention_model_runner.py`, `afd_plugin/v1/worker/attention_worker.py`, `afd_plugin/v1/worker/ubatch_wrapper.py`, `afd_plugin/v1/worker/ascend/attention_model_runner.py`, `afd_plugin/v1/worker/ascend/attention_worker.py` |
 | [FFN runtime](ffn_runtime.md) | `afd_plugin/v1/worker/ffn_model_runner.py`, `afd_plugin/v1/worker/ffn_worker.py`, `afd_plugin/v1/worker/ascend/ffn_model_runner.py`, `afd_plugin/v1/worker/ascend/ffn_worker.py` |
 | [Connector contracts](connector_contracts.md) | `afd_plugin/connectors/**/*.py`, `afd_plugin/connectors/npu/bin/**`, `afd_plugin/distributed/**/*.py` |
@@ -110,6 +110,7 @@ Only identified invariant blocks in a `normative` document may use `MUST`,
 Operational guides remain separate from normative module design:
 
 - [NCCL P2P connector guide](../../gpu/NCCL_P2P_CONNECTOR_USER_GUIDE.md)
+- [CAMP2P connector guide](../../npu/CAMP2P_CONNECTOR_USER_GUIDE.md)
 - [CAM async connector guide](../../npu/CAM_ASYNC_CONNECTOR_USER_GUIDE.md)
 - [Connector overview](../../../afd_plugin/connectors/README.md)
 - [Deployment recipes](../../../recipe/README.md)
@@ -143,8 +144,11 @@ Operational guides remain separate from normative module design:
   guard, non-AFD expectation, focused validation, and removal/upstream plan;
 - behavior descriptions link to source and tests instead of copying
   implementation bodies;
-- interfaces disputed in [#88](https://github.com/JiusiServe/afd-plugin/issues/88),
-  [#89](https://github.com/JiusiServe/afd-plugin/issues/89),
+- the configuration decisions implemented from
+  [#89](https://github.com/JiusiServe/afd-plugin/issues/89) are reflected in
+  the plugin and connector documents;
+- interfaces still disputed in
+  [#88](https://github.com/JiusiServe/afd-plugin/issues/88),
   [#105](https://github.com/JiusiServe/afd-plugin/issues/105), and
   [#107](https://github.com/JiusiServe/afd-plugin/issues/107) remain `draft` and
   link to the corresponding issue.

@@ -34,7 +34,7 @@ related_issues:
   - "#105"
   - "#107"
   - "#129"
-last_reviewed: 2026-07-17
+last_reviewed: 2026-07-19
 ---
 
 # Connector contracts
@@ -75,8 +75,27 @@ initialization.
 The registry method is a usable implementation hook, but the complete public
 extension contract is **draft**. Configuration still rejects names outside its
 separate hard-coded allow-list, so factory registration alone is insufficient
-for an external connector. This split is tracked by
-[#89](https://github.com/JiusiServe/afd-plugin/issues/89).
+for an external connector.
+
+Each connector class implements `parse_extra_config()` and construction stores
+the resulting immutable `ConnectorExtraInfo` as `extra_info`. The factory can
+also parse this information without constructing communication resources,
+which lets feature validation use the same connector-owned schema.
+
+## Connector-owned configuration
+
+`additional_config["afd"]["connector_extra_config"]` is an envelope rather
+than an `AFDConfig` field. Unknown fields fail in the selected connector parser.
+
+| Connector | Accepted connector-specific fields |
+| --- | --- |
+| `P2pNcclAFDConnector` | None; the mapping must be empty. |
+| `CAMP2pAFDConnector` | `core_num`, optional `attn_core_num` / `ffn_core_num`, `compute_gate_on_attention`, and `quant_mode`. Core counts must be positive; the current runtime rejects gate-on-Attention and any nonzero quantization mode. |
+| `CAMAsyncAFDConnector` | `dynamicQuant`, `attn_ranks_per_dp`, `async_moe_ubatching`, `async_moe_num_ubatches`, and `async_moe_split`. Runtime validation further limits dynamic quantization and the optional request-boundary pipeline. |
+
+The common `compute_gate_on_attention` field remains on `AFDConfig` and is the
+model-routing selector. CAMP2P also parses a connector-local field with that
+name for its operator contract; both paths currently reject enabling it.
 
 ## Current connector modes
 
@@ -105,6 +124,7 @@ CAM async overrides these with `False` and `"connector"`.
 
 | Surface | Caller and current responsibility |
 | --- | --- |
+| `parse_extra_config(raw)` | Connector class parses and validates its closed configuration schema without creating communication resources. |
 | `init_afd_connector()` | Owning worker/runner creates backend groups, communicators, operator registrations, and topology-derived state after the device runtime is ready. |
 | `is_initialized` | Reports whether backend communication resources are usable. |
 | `close()` | Owning runtime releases connector-owned resources during shutdown; cleanup is expected to be safe after partial initialization. |
@@ -240,9 +260,11 @@ See [#88](https://github.com/JiusiServe/afd-plugin/issues/88),
 In particular, the base class currently requires control-plane methods that
 CAM async does not semantically support, the configuration allow-list is not
 derived from the factory registry, and `AFDA2FTransferPayload` combines common
-data with backend state. These are documented current facts, not extension
-requirements.
+data with backend state. Connector-owned typed configuration implements the
+decision from [#89](https://github.com/JiusiServe/afd-plugin/issues/89), but it
+does not by itself make factory registration a public extension contract.
 
 Operational material: [NCCL P2P guide](../../gpu/NCCL_P2P_CONNECTOR_USER_GUIDE.md),
+[CAMP2P guide](../../npu/CAMP2P_CONNECTOR_USER_GUIDE.md),
 [CAM async guide](../../npu/CAM_ASYNC_CONNECTOR_USER_GUIDE.md), and
 [connector overview](../../../afd_plugin/connectors/README.md).

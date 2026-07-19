@@ -29,10 +29,9 @@ verified_platform_refs:
 related_issues:
   - "#86"
   - "#88"
-  - "#89"
   - "#105"
   - "#129"
-last_reviewed: 2026-07-17
+last_reviewed: 2026-07-19
 ---
 
 # Model integration
@@ -210,10 +209,9 @@ load evidence.
 
 ## Limitations and open issues
 
-The current implementation is DeepSeek-oriented. Activation, metadata
-ownership, and transfer state decisions remain linked to
-[#89](https://github.com/JiusiServe/afd-plugin/issues/89),
-[#88](https://github.com/JiusiServe/afd-plugin/issues/88), and
+The current implementation is DeepSeek-oriented. Metadata ownership and
+transfer state decisions remain linked to
+[#88](https://github.com/JiusiServe/afd-plugin/issues/88) and
 [#105](https://github.com/JiusiServe/afd-plugin/issues/105).
 
 The current `AFDForwardContextMetadata` shape, connector reference, async MoE

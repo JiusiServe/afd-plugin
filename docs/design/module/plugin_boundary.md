@@ -8,6 +8,7 @@ owners:
 primary_code_paths:
   - "afd_plugin/__init__.py"
   - "afd_plugin/config.py"
+  - "afd_plugin/config_utils.py"
   - "afd_plugin/envs.py"
   - "afd_plugin/validation.py"
   - "afd_plugin/py.typed"
@@ -33,7 +34,7 @@ verified_platform_refs:
 related_issues:
   - "#89"
   - "#129"
-last_reviewed: 2026-07-17
+last_reviewed: 2026-07-19
 ---
 
 # Plugin boundary
@@ -55,13 +56,14 @@ validation imports.
 ## Implementation evidence
 
 The Phase 3 specification records current behavior and links to the source and
-tests that enforce it. It does not make the disputed activation or extension
-interfaces stable.
+tests that enforce it. RFC #89 settled the current activation and connector
+configuration shape; this document does not make the remaining factory or
+runtime extension surfaces stable.
 
 | Area | Source | Focused validation |
 | --- | --- | --- |
 | Package import and registration | [`afd_plugin/__init__.py`](../../../afd_plugin/__init__.py), [`pyproject.toml`](../../../pyproject.toml) | [`test_package.py`](../../../tests/unit/package/test_package.py) |
-| Configuration schema and parsing | [`afd_plugin/config.py`](../../../afd_plugin/config.py) | [`test_config.py`](../../../tests/unit/config/test_config.py) |
+| Configuration schema and parsing | [`afd_plugin/config.py`](../../../afd_plugin/config.py), [`afd_plugin/config_utils.py`](../../../afd_plugin/config_utils.py) | [`test_config.py`](../../../tests/unit/config/test_config.py) |
 | Runtime wiring validation | [`afd_plugin/validation.py`](../../../afd_plugin/validation.py) | [`test_validation.py`](../../../tests/unit/config/test_validation.py), [`test_runtime_classpaths.py`](../../../tests/unit/v1/worker/test_runtime_classpaths.py) |
 | Environment switches | [`afd_plugin/envs.py`](../../../afd_plugin/envs.py) | [`test_envs.py`](../../../tests/unit/test_envs.py) |
 | Lazy runtime exports | [`afd_plugin/v1/worker/__init__.py`](../../../afd_plugin/v1/worker/__init__.py), [`afd_plugin/v1/worker/ascend/__init__.py`](../../../afd_plugin/v1/worker/ascend/__init__.py) | [`test_runtime_classpaths.py`](../../../tests/unit/v1/worker/test_runtime_classpaths.py) |
@@ -102,44 +104,50 @@ owned by [model integration](model_integration.md).
 
 ## Configuration channel
 
-The canonical input is `VllmConfig.additional_config["afd"]`. A missing
-namespace produces a disabled default `AFDConfig`. Unknown top-level AFD keys
-are rejected and connector-specific values must be placed under
-`extra_config`.
+The canonical input is `VllmConfig.additional_config["afd"]`. Namespace
+presence is the activation signal: `parse_optional_afd_config()` returns
+`None` when it is absent, while role runtimes call `parse_afd_config()` and
+raise if the required namespace is missing. There is no separate `enabled`
+field. Unknown top-level AFD keys are rejected and connector-specific values
+must be placed under `connector_extra_config`.
 
 | Canonical key | Default | Current meaning |
 | --- | --- | --- |
-| `enabled` | `false` | Select AFD behavior for this process. Its long-term necessity is **draft** under [#89](https://github.com/JiusiServe/afd-plugin/issues/89). |
-| `connector` | `P2pNcclAFDConnector` | Connector factory name. The hard-coded supported-name check is **draft** under [#89](https://github.com/JiusiServe/afd-plugin/issues/89). |
+| `connector` | `P2pNcclAFDConnector` | Connector factory name selected from the built-in supported-name allow-list. |
 | `async_dp` | `false` | Enables AFD async-DP compatibility behavior; currently valid only with `CAMAsyncAFDConnector`. |
 | `role` | `attention` | Process role: `attention` or `ffn`. |
 | `host`, `port` | `127.0.0.1`, `1239` | Connector rendezvous/control endpoint inputs. |
 | `num_attention_ranks`, `num_ffn_ranks` | `1`, `1` | AFD role-group sizes used by topology construction. |
 | `afd_role_rank` | `0` | Rank within the selected role group. |
 | `compute_gate_on_attention` | `false` | Moves supported gate/MoE routing work to Attention; current implementation is NPU-only. |
-| `extra_config` | `{}` | Untyped connector/experimental namespace. Its schema and ownership are **draft** under [#89](https://github.com/JiusiServe/afd-plugin/issues/89). |
+| `connector_extra_config` | `{}` | Envelope key parsed by the selected connector into a typed `ConnectorExtraInfo`; it is not stored on `AFDConfig`. |
 
 The compatibility aliases `afd_connector`, `afd_role`, `afd_port`, `afd_host`,
-`afd_extra_config`, and `async` normalize to the canonical fields. Supplying an
-alias and its canonical field together is rejected. Boolean-like strings and
-integer-like values are normalized; invalid types fail during parsing.
-`compute_gate_on_attention` is also read from `extra_config` when the canonical
-field is absent. Async MoE ubatching currently reads its experimental keys from
-`extra_config`.
+and `async` normalize to canonical fields. Supplying an alias and its canonical
+field together is rejected. Boolean-like strings and integer-like values are
+normalized; invalid types fail during parsing. The former `afd_extra_config`
+alias and untyped `extra_config` field are no longer accepted.
 
-`AFDConfig.compute_hash()` currently includes activation, connector, async
-mode, role, and both role counts. This is an implementation detail used by
+Connector construction parses `connector_extra_config` through the selected
+connector class. P2P accepts only an empty mapping; CAMP2P and CAM async each
+define a closed, typed schema and reject unknown fields. The detailed schemas
+belong to [connector contracts](connector_contracts.md) and the operational
+connector guides.
+
+`AFDConfig.compute_hash()` currently includes connector, async mode, role, and
+both role counts. This is an implementation detail used by
 graph-affecting configuration paths, not a complete serialization or public
 configuration identity.
 
 ## Validation and public class paths
 
-Configuration validation is CPU-safe and checks role, optional expected role,
-supported connector name, async/connector pairing, P2P topology, endpoint,
-positive role counts, and role-rank range. Runtime wiring validation additionally
-requires an explicit worker class path; `worker_cls="auto"`, role mismatches,
-and platform mismatches fail before device execution. CAM async always selects
-the Ascend worker family.
+Common configuration validation is CPU-safe and checks role, optional expected
+role, supported connector name, async/connector pairing, P2P topology,
+endpoint, positive role counts, and role-rank range. Connector-specific schema
+and feature validation runs when the factory resolves the selected connector.
+Runtime wiring validation additionally requires an explicit worker class path;
+`worker_cls="auto"`, role mismatches, and platform mismatches fail before
+device execution. CAM async always selects the Ascend worker family.
 
 The following paths are intentionally loadable by vLLM today:
 
@@ -195,11 +203,11 @@ evidence.
 
 ## Limitations and open issues
 
-The long-term status of `AFDConfig.enabled`, untyped `extra_config`, hard-coded
-connector names, and optional registration failures is unresolved. See
-[#89](https://github.com/JiusiServe/afd-plugin/issues/89) and
-[#129](https://github.com/JiusiServe/afd-plugin/issues/129).
+RFC [#89](https://github.com/JiusiServe/afd-plugin/issues/89) established the
+current namespace-presence activation rule and connector-owned typed extra
+configuration. The hard-coded connector allow-list, factory extension surface,
+and optional registration failures are still not declared public extension
+contracts; see [#129](https://github.com/JiusiServe/afd-plugin/issues/129).
 
-Until those decisions are closed and owner-reviewed, the configuration table,
-factory name allow-list, and best-effort patch policy remain **draft** even
-though their current behavior is test-backed.
+Until owner review is complete, the factory name allow-list and best-effort
+patch policy remain **draft** even though their current behavior is test-backed.

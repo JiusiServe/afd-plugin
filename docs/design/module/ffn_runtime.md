@@ -41,7 +41,7 @@ related_issues:
   - "#105"
   - "#107"
   - "#129"
-last_reviewed: 2026-07-17
+last_reviewed: 2026-07-19
 ---
 
 # FFN runtime
@@ -77,7 +77,7 @@ CUDA launch shape:
 ```bash
 vllm serve <model> \
   --worker-cls afd_plugin.v1.worker.AFDFFNWorker \
-  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"role":"ffn","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 Ascend launch shape:
@@ -85,7 +85,7 @@ Ascend launch shape:
 ```bash
 VLLM_PLUGINS=ascend,afd vllm serve <model> \
   --worker-cls afd_plugin.v1.worker.ascend.AFDNPUFFNWorker \
-  --additional-config '{"afd":{"enabled":true,"role":"ffn","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"role":"ffn","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 ## Initialization and empty KV cache

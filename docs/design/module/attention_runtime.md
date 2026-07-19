@@ -41,7 +41,7 @@ related_issues:
   - "#88"
   - "#105"
   - "#129"
-last_reviewed: 2026-07-17
+last_reviewed: 2026-07-19
 ---
 
 # Attention runtime
@@ -77,7 +77,7 @@ CUDA launch shape:
 ```bash
 vllm serve <model> \
   --worker-cls afd_plugin.v1.worker.AFDAttentionWorker \
-  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"role":"attention","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 Ascend launch shape:
@@ -85,11 +85,12 @@ Ascend launch shape:
 ```bash
 VLLM_PLUGINS=ascend,afd vllm serve <model> \
   --worker-cls afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker \
-  --additional-config '{"afd":{"enabled":true,"role":"attention","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
+  --additional-config '{"afd":{"role":"attention","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
 Operational connector options and complete launch recipes remain in the
-[NCCL P2P](../../gpu/NCCL_P2P_CONNECTOR_USER_GUIDE.md) and
+[NCCL P2P](../../gpu/NCCL_P2P_CONNECTOR_USER_GUIDE.md),
+[CAMP2P](../../npu/CAMP2P_CONNECTOR_USER_GUIDE.md), and
 [CAM async](../../npu/CAM_ASYNC_CONNECTOR_USER_GUIDE.md) guides. Requests are
 sent only to the Attention API process.
 
@@ -234,7 +235,7 @@ stream, and wrapper implementation details are owned by
 
 ## Failure and cleanup behavior
 
-Initialization fails early for a disabled or role-mismatched AFD config, an
+Initialization fails early for a missing or role-mismatched AFD config, an
 unsupported connector/feature combination, an implicit or incorrect worker
 class, model runner v2, invalid native ubatch count, or unsupported graph mode.
 Missing DP metadata for DP greater than 1 and missing pending metadata for a

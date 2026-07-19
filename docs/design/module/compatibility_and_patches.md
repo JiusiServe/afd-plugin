@@ -36,7 +36,7 @@ verified_platform_refs:
 related_issues:
   - "#86"
   - "#129"
-last_reviewed: 2026-07-17
+last_reviewed: 2026-07-19
 ---
 
 # Compatibility and patches
@@ -119,7 +119,7 @@ These modules adapt upstream behavior without replacing a global symbol:
 | Adapter | Current purpose |
 | --- | --- |
 | [`compat/ascend/runtime_config.py`](../../../afd_plugin/compat/ascend/runtime_config.py) | Mirrors vLLM-Ascend's non-SP all-to-all backend rewrite for custom AFD workers and reports the active NPU ubatch count. |
-| [`compat/ascend/feature_validation.py`](../../../afd_plugin/compat/ascend/feature_validation.py) | Fails before execution for unsupported NPU connector, quantization, graph, DBO, gate, or async MoE combinations. |
+| [`compat/ascend/feature_validation.py`](../../../afd_plugin/compat/ascend/feature_validation.py) | Parses connector-owned typed extra information through the factory and fails before execution for unsupported NPU connector, quantization, graph, DBO, gate, or async MoE combinations. |
 | [`compat/ascend/forward_context.py`](../../../afd_plugin/compat/ascend/forward_context.py) | Enters the pinned Ascend forward context for connector-driven FFN compute and installs AFD metadata in `additional_kwargs`. |
 | [`compat/ascend/ops.py`](../../../afd_plugin/compat/ascend/ops.py) | Discovers plugin-owned CAMP2P operators and external CAM operators with explicit missing-runtime errors; operator build/runtime ownership is documented in [execution platforms](execution_platforms.md). |
 
