@@ -41,6 +41,7 @@ from afd_plugin.config import parse_optional_afd_config
 from afd_plugin.connectors import (
     AFDF2ATransferPayload,
     AFDForwardContextMetadata,
+    AFDTransferContext,
     AFDTransferMetadata,
 )
 from afd_plugin.model_executor.models import (
@@ -531,7 +532,8 @@ class AFDDeepseekV2Model(torch.nn.Module):
                 stage_idx=stage_idx,
                 seq_len=int(hidden_states.shape[0]),
             )
-            afd_connector.send_attn_output(hidden_states, metadata)
+            context = AFDTransferContext(metadata=metadata)
+            afd_connector.send_attn_output(hidden_states, context)
             hidden_states = maybe_apply_dbo_yield(
                 hidden_states,
                 role="attention",

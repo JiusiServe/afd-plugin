@@ -11,10 +11,12 @@ from afd_plugin.connectors.factory import AFDConnectorFactory
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
     AFDControlPayload,
+    AFDCustomTransferState,
     AFDDPMetadata,
     AFDF2ATransferPayload,
     AFDForwardContextMetadata,
     AFDSingleDPMetadata,
+    AFDTransferContext,
     AFDTransferMetadata,
     AFDTransferState,
 )
@@ -23,7 +25,9 @@ __all__ = [
     "AFDConnectorBase",
     "AFDControlPlane",
     "ConnectorExtraInfo",
+    "AFDCustomTransferState",
     "AFDTransferState",
+    "AFDTransferContext",
     "AFDConnectorFactory",
     "AFDTransferMetadata",
     "AFDDPMetadata",

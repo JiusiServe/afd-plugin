@@ -43,7 +43,9 @@ from afd_plugin.connectors.base import (
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
     AFDControlPayload,
+    AFDCustomTransferState,
     AFDDPMetadata,
+    AFDTransferContext,
     AFDTransferMetadata,
     AFDTransferState,
     recv_control_payload,
@@ -155,8 +157,8 @@ class CAMP2PExtraInfo(ConnectorExtraInfo):
 
 
 @dataclass(slots=True)
-class CAMP2PTransferState(AFDTransferState):
-    """State shared by the CAMP2p Attention-to-FFN and FFN-to-Attention phases.
+class CAMP2PTransferState(AFDCustomTransferState):
+    """CAMP2P payload metadata carried between recv and send phases.
 
     This class stores the information CAMP2p needs while data travels from
     Attention to FFN and then back to Attention. It follows the layout of
@@ -406,9 +408,9 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         self.hccl_comm_name_list = []
         self._initialized = False
 
-    def _create_transfer_metadata(
+    def _create_transfer_context(
         self, ubatch_idx: int = 0, layer_idx: int = 0, max_num_tokens: int = 1
-    ) -> AFDTransferMetadata:
+    ) -> AFDTransferContext:
         batch_size = _num_tokens_for_ffn_rank(
             self.dp_metadata_list,
             ubatch_idx,
@@ -422,16 +424,18 @@ class CAMP2pAFDConnector(AFDConnectorBase):
             stage_idx=ubatch_idx,
             seq_lens=[max(1, int(batch_size))],
         )
-        metadata.transfer_state = self._make_transfer_state(
-            batch_size=max(1, int(batch_size)),
-            layer_idx=layer_idx,
+        state = AFDTransferState(
+            custom_states=self._make_transfer_state(
+                batch_size=max(1, int(batch_size)),
+                layer_idx=layer_idx,
+            ),
         )
-        return metadata
+        return AFDTransferContext(metadata=metadata, state=state)
 
     def send_attn_output(
         self,
         hidden_states: torch.Tensor,
-        metadata: AFDTransferMetadata,
+        context: AFDTransferContext,
         **kwargs: Any,
     ) -> None:
         """Send hidden states from an Attention rank to its FFN rank.
@@ -453,6 +457,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         """
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
+        metadata = context.metadata
         if not _is_torch_compiling() and not metadata.validate_tensor_shape(
             tuple(hidden_states.shape),
         ):
@@ -460,7 +465,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
                 f"hidden_states shape {hidden_states.shape!r} does not match "
                 f"CAMP2P metadata token count {metadata.total_tokens}",
             )
-        transfer_state = self._metadata_data_or_default(metadata, hidden_states)
+        transfer_state = self._metadata_data_or_default(context, hidden_states)
         ubatch_idx = int(metadata.stage_idx)
         _set_forward_context_transfer_state(transfer_state, ubatch_idx=ubatch_idx)
         torch.ops.vllm.afd_camp2p_send_attn_output(
@@ -544,8 +549,8 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         ubatch_idx = 0 if ubatch_idx is None else int(ubatch_idx)
         layer_idx: int = kwargs.get("layer_idx", 0)
         max_num_tokens: int = kwargs.get("max_num_tokens", 0)
-        metadata = self._create_transfer_metadata(ubatch_idx, layer_idx, max_num_tokens)
-        transfer_state = _ensure_transfer_state(metadata)
+        context = self._create_transfer_context(ubatch_idx, layer_idx, max_num_tokens)
+        transfer_state = _ensure_transfer_state(context)
         group_ep = _get_group_ep(
             ubatch_idx,
             self.hccl_comm_name,
@@ -571,20 +576,18 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         transfer_state.x_active_mask = outputs[4]
         transfer_state.group_ep = group_ep
         transfer_state.ffn_group_ep = self.hccl_comm_name1
+        context.state.x_active_mask = outputs[4]
+        context.state.cam_p2p_ep_name = self.hccl_comm_name1
+        context.state.atten_batch_size = outputs[3]
         return AFDA2FTransferPayload(
             hidden_states=outputs[0],
-            metadata=metadata,
-            topk_ids=None,
-            topk_weights=None,
-            x_active_mask=outputs[4],
-            cam_p2p_ep_name=self.hccl_comm_name1,
-            atten_batch_size=outputs[3],
+            context=context,
         )
 
     def send_ffn_output(
         self,
         ffn_output: torch.Tensor,
-        metadata: AFDTransferMetadata,
+        context: AFDTransferContext,
         **kwargs: Any,
     ) -> None:
         """Send processed model data from an FFN rank back to Attention.
@@ -601,10 +604,10 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         """
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
-        transfer_state = _ensure_transfer_state(metadata)
+        transfer_state = _ensure_transfer_state(context)
         if transfer_state.atten_batch_size is None:
             raise RuntimeError("CAMP2P FFN side is missing A2E atten_batch_size")
-        ubatch_idx = int(kwargs.get("ubatch_idx", metadata.stage_idx) or 0)
+        ubatch_idx = int(kwargs.get("ubatch_idx", context.metadata.stage_idx) or 0)
         group_ep = _get_group_ep(
             ubatch_idx,
             self.hccl_comm_name,
@@ -627,18 +630,20 @@ class CAMP2pAFDConnector(AFDConnectorBase):
 
     def _metadata_data_or_default(
         self,
-        metadata: AFDTransferMetadata,
+        context: AFDTransferContext,
         hidden_states: torch.Tensor,
     ) -> CAMP2PTransferState:
-        data = metadata.transfer_state
+        data = context.state.custom_states
         if data is None:
             data = self._make_transfer_state(
                 # TODO: Confirm whether Ascend AFD custom ops expect actual
                 # ubatch token count here or the configured request capacity.
-                batch_size=metadata.total_tokens,
-                layer_idx=int(metadata.layer_idx),
+                batch_size=context.metadata.total_tokens,
+                layer_idx=int(context.metadata.layer_idx),
             )
-            metadata.transfer_state = data
+            context.state.custom_states = data
+        if not isinstance(data, CAMP2PTransferState):
+            raise RuntimeError("CAMP2P context has wrong custom_states type")
         return data
 
     def _make_transfer_state(
@@ -876,11 +881,11 @@ def _to_int_list(value: object) -> list[int]:
 
 
 def _ensure_transfer_state(
-    metadata: AFDTransferMetadata,
+    context: AFDTransferContext,
 ) -> CAMP2PTransferState:
-    transfer_state = metadata.transfer_state
+    transfer_state = context.state.custom_states
     if not isinstance(transfer_state, CAMP2PTransferState):
-        raise RuntimeError("CAMP2P metadata is missing transfer_state")
+        raise RuntimeError("CAMP2P context is missing transfer_state")
     return transfer_state
 
 

@@ -15,7 +15,7 @@ from afd_plugin.config import AFDConfig, connector_extra_config_from_source
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
     AFDControlPayload,
-    AFDTransferMetadata,
+    AFDTransferContext,
 )
 
 if TYPE_CHECKING:
@@ -49,7 +49,7 @@ class AFDConnectorBase(ABC):
     Implementations may use very different transport mechanisms. For example,
     the GPU P2P connector uses explicit point-to-point tensor transfers, while
     the NPU CAMP2P connector carries additional backend state through
-    ``AFDTransferMetadata.transfer_state``. This base class documents the
+    ``AFDTransferContext.state.custom_states``. This base class documents the
     common runtime contract shared by those implementations.
     """
 
@@ -140,7 +140,7 @@ class AFDConnectorBase(ABC):
     def send_attn_output(
         self,
         hidden_states: torch.Tensor,
-        metadata: AFDTransferMetadata,
+        context: AFDTransferContext,
         **kwargs: Any,
     ) -> None:
         """Send Attention hidden states to the FFN runtime.
@@ -150,11 +150,12 @@ class AFDConnectorBase(ABC):
 
         Args:
             hidden_states: Tensor to send to the FFN side. The leading
-                dimension should match ``metadata.total_tokens`` unless the
-                backend explicitly supports a different compiled/captured
+                dimension should match ``context.metadata.total_tokens`` unless
+                the backend explicitly supports a different compiled/captured
                 calling convention.
-            metadata: Per-transfer metadata describing layer, stage, and token
-                layout. Backends may also consume ``metadata.transfer_state``.
+            context: Per-transfer context describing layer, stage, and token
+                layout. Backends may also consume
+                ``context.state.custom_states``.
             **kwargs: Optional backend-specific arguments.
 
         Raises:
@@ -205,9 +206,9 @@ class AFDConnectorBase(ABC):
             **kwargs: Optional backend-specific receive arguments.
 
         Returns:
-            ``AFDA2FTransferPayload`` containing received hidden states, transfer
-            metadata, and optional backend-specific fields produced by the
-            receive operation.
+            ``AFDA2FTransferPayload`` containing received hidden states and the
+            transfer context (metadata + backend-produced transfer state)
+            for the receive operation.
         """
         raise NotImplementedError
 
@@ -215,20 +216,20 @@ class AFDConnectorBase(ABC):
     def send_ffn_output(
         self,
         ffn_output: torch.Tensor,
-        metadata: AFDTransferMetadata,
+        context: AFDTransferContext,
         **kwargs: Any,
     ) -> None:
         """Send FFN output back to the Attention runtime.
 
         Args:
             ffn_output: Tensor produced by the FFN computation. The leading
-                dimension should match ``metadata.total_tokens`` unless the
-                backend explicitly supports a different compiled/captured
+                dimension should match ``context.metadata.total_tokens`` unless
+                the backend explicitly supports a different compiled/captured
                 calling convention.
-            metadata: Metadata associated with the matching
+            context: Transfer context associated with the matching
                 ``recv_attn_output`` call. Backends may depend on
-                ``metadata.transfer_state`` that was prepared before receive or
-                updated after receive.
+                ``context.state.custom_states`` that was prepared before
+                receive or updated after receive.
             **kwargs: Optional backend-specific send arguments such as
                 ``ubatch_idx`` or op-specific metadata.
 

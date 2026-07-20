@@ -82,6 +82,7 @@ from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
     AFDControlPayload,
     AFDDPMetadata,
+    AFDTransferContext,
     AFDTransferMetadata,
     recv_control_payload,
     send_control_payload,
@@ -304,15 +305,16 @@ class P2pNcclAFDConnector(AFDConnectorBase):
     def send_attn_output(
         self,
         hidden_states: torch.Tensor,
-        metadata: AFDTransferMetadata,
+        context: AFDTransferContext,
         **kwargs: Any,
     ) -> None:
         """Send Attention hidden states to this rank's mapped FFN rank.
 
         Args:
             hidden_states: CUDA tensor of shape ``(num_tokens, hidden_size)``
-                whose leading dimension matches ``metadata.total_tokens``.
-            metadata: Per-transfer metadata describing the token layout.
+                whose leading dimension matches
+                ``context.metadata.total_tokens``.
+            context: Per-transfer context describing the token layout.
             **kwargs: Unused; accepted for interface compatibility.
 
         Raises:
@@ -321,6 +323,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                 tensor is on CPU.
             RuntimeError: If the connector is not initialized.
         """
+        metadata = context.metadata
         if not _torch_is_compiling() and not metadata.validate_tensor_shape(
             tuple(hidden_states.shape),
         ):
@@ -391,8 +394,9 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             **kwargs: Unused; accepted for interface compatibility.
 
         Returns:
-            ``AFDA2FTransferPayload`` with the concatenated hidden states and
-            FFN transfer metadata carrying the per-peer sequence lengths.
+            ``AFDA2FTransferPayload`` with the concatenated hidden states and a
+            transfer context whose FFN metadata carries the per-peer sequence
+            lengths.
 
         Raises:
             RuntimeError: If the connector is not initialized or the subgroup
@@ -433,12 +437,15 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             stage_idx=ubatch_idx,
             seq_lens=[int(tensor.shape[0]) for tensor in hidden_states_list],
         )
-        return AFDA2FTransferPayload(hidden_states=hidden_states, metadata=metadata)
+        return AFDA2FTransferPayload(
+            hidden_states=hidden_states,
+            context=AFDTransferContext(metadata=metadata),
+        )
 
     def send_ffn_output(
         self,
         ffn_output: torch.Tensor,
-        metadata: AFDTransferMetadata,
+        context: AFDTransferContext,
         **kwargs: Any,
     ) -> None:
         """Split the FFN output and send each slice back to its Attention peer.
@@ -452,8 +459,9 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         Args:
             ffn_output: CUDA tensor of shape ``(num_tokens, hidden_size)``
                 produced by the FFN computation for the whole subgroup.
-            metadata: Metadata from the matching ``recv_attn_output`` call;
-                its ``seq_lens`` determine the per-peer split sizes.
+            context: Transfer context from the matching ``recv_attn_output``
+                call; its ``metadata.seq_lens`` determine the per-peer split
+                sizes.
             **kwargs: Unused; accepted for interface compatibility.
 
         Raises:
@@ -463,6 +471,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                 ``seq_lens`` is unusable.
             RuntimeError: If the connector is not initialized.
         """
+        metadata = context.metadata
         if not _torch_is_compiling() and not metadata.validate_tensor_shape(
             tuple(ffn_output.shape),
         ):

@@ -203,8 +203,69 @@ def _compute_sp_num_tokens(
 
 
 @dataclass(slots=True)
+class AFDCustomTransferState:
+    """Base class for backend-specific connector transfer state.
+
+    Backends subclass this to carry connector-private state (handles, HCCL
+    endpoint names, per-expert token counts, ...) between the receive and send
+    phases of a single transfer. It is held by
+    ``AFDTransferState.custom_states`` rather than by the transfer metadata.
+    """
+
+
+@dataclass(slots=True)
 class AFDTransferState:
-    """Base class for backend-specific connector metadata payloads."""
+    """Backend-neutral transfer state for one AFD Attention/FFN exchange.
+
+    ``AFDTransferState`` carries the routing and quantization payloads that
+    connectors produce on the receive path and consume on the send path. The
+    hidden-state tensor is kept separately on ``AFDA2FTransferPayload``. Any
+    backend-private state is stored under ``custom_states``.
+
+    Attributes:
+        group_list: Optional expert/group token-count payload. CAMP2P and
+            async CAM style connectors use this for MoE routing metadata.
+        topk_weights: Optional top-k routing weights produced or forwarded by
+            the backend receive path.
+        topk_ids: Optional top-k expert ids produced or forwarded by the
+            backend receive path.
+        router_logits: Optional router logits for backends that forward router
+            outputs through the connector payload.
+        row_idx: Optional row-index payload for backend-specific token routing.
+        x_active_mask: Optional active-token mask returned by CAMP2P/CAM ops.
+        dynamic_scales: Optional dynamic quantization scales for routed expert
+            tokens.
+        expand_x_shared: Optional shared-expert activation payload.
+        dynamic_scales_shared: Optional dynamic quantization scales for
+            shared-expert tokens.
+        cam_p2p_ep_name: Optional CAM/HCCL endpoint name associated with the
+            receive path.
+        atten_batch_size: Optional backend-reported Attention batch-size or
+            token-count tensor.
+        expand_idx: Optional expanded-token index payload for MoE routing.
+        ep_recv_counts: Optional expert-parallel receive counts.
+        ep_recv_counts_shared: Optional shared-expert expert-parallel receive
+            counts.
+        custom_states: Optional backend-specific transfer state. For example,
+            CAMP2P stores ``CAMP2PTransferState`` here so receive-time results
+            can be reused by the matching send path.
+    """
+
+    group_list: object = None
+    topk_weights: torch.Tensor | None = None
+    topk_ids: torch.Tensor | None = None
+    router_logits: torch.Tensor | None = None
+    row_idx: torch.Tensor | None = None
+    x_active_mask: torch.Tensor | None = None
+    dynamic_scales: torch.Tensor | None = None
+    expand_x_shared: torch.Tensor | None = None
+    dynamic_scales_shared: torch.Tensor | None = None
+    cam_p2p_ep_name: str | None = None
+    atten_batch_size: torch.Tensor | None = None
+    expand_idx: torch.Tensor | None = None
+    ep_recv_counts: torch.Tensor | None = None
+    ep_recv_counts_shared: torch.Tensor | None = None
+    custom_states: AFDCustomTransferState | None = None
 
 
 @dataclass(slots=True)
@@ -212,8 +273,8 @@ class AFDTransferMetadata:
     """Communication metadata for one AFD Attention/FFN exchange.
 
     ``AFDTransferMetadata`` describes the logical tensor transfer for a single
-    layer/stage pair. It is intentionally backend-neutral, with
-    ``transfer_state`` reserved for backend-specific state.
+    layer/stage pair. It is intentionally backend-neutral; backend-specific
+    state lives on ``AFDTransferState`` instead.
 
     Attributes:
         layer_idx: Model layer index associated with this transfer.
@@ -222,16 +283,11 @@ class AFDTransferMetadata:
             the expected leading dimension for tensors validated against this
             metadata. For one-to-one transfers this is usually a single-item
             list; for fan-in/fan-out paths it can describe split sizes.
-        transfer_state: Optional backend-specific payload. For example,
-            CAMP2P stores ``CAMP2PTransferState`` here so receive-time
-            results can be reused by the matching send path. P2P does not
-            currently require connector-specific data.
     """
 
     layer_idx: int
     stage_idx: int
     seq_lens: list[int]
-    transfer_state: AFDTransferState | None = None
 
     def __post_init__(self) -> None:
         if not self.seq_lens:
@@ -276,55 +332,41 @@ class AFDTransferMetadata:
 
 
 @dataclass(slots=True)
+class AFDTransferContext:
+    """Transfer metadata plus transfer state for one AFD exchange.
+
+    ``AFDTransferContext`` is the object connectors pass through their data
+    path. It binds the backend-neutral ``AFDTransferMetadata`` describing the
+    layer/stage/token layout to the ``AFDTransferState`` carrying routing and
+    backend-specific payloads.
+
+    Attributes:
+        metadata: Metadata describing the layer/stage and token layout.
+        state: Transfer state carrying routing/quantization payloads and any
+            backend-specific ``custom_states``.
+    """
+
+    metadata: AFDTransferMetadata
+    state: AFDTransferState = field(default_factory=AFDTransferState)
+
+
+@dataclass(slots=True)
 class AFDA2FTransferPayload:
     """Unified Attention-to-FFN receive payload.
 
-    ``recv_attn_output()`` returns this object on the FFN side. The first two
-    fields are the common contract; the remaining fields carry backend-specific
-    outputs produced by NPU/CAM-style custom ops.
+    ``recv_attn_output()`` returns this object on the FFN side. It carries the
+    received hidden states alongside the ``AFDTransferContext`` describing the
+    transfer. FFN runners pass the context through the FFN compute and back
+    into ``send_ffn_output()``.
 
     Attributes:
         hidden_states: Hidden-state tensor received from the Attention side.
-        metadata: Metadata describing the received transfer. FFN runners pass
-            this metadata through the FFN compute and back into
-            ``send_ffn_output()``.
-        group_list: Optional expert/group token-count payload. CAMP2P and
-            async CAM style connectors use this for MoE routing metadata.
-        topk_weights: Optional top-k routing weights produced or forwarded by
-            the backend receive path.
-        topk_ids: Optional top-k expert ids produced or forwarded by the
-            backend receive path.
-        router_logits: Optional router logits for backends that forward router
-            outputs through the connector payload.
-        row_idx: Optional row-index payload for backend-specific token routing.
-        x_active_mask: Optional active-token mask returned by CAMP2P/CAM ops.
-        dynamic_scales: Optional dynamic quantization scales for routed expert
-            tokens.
-        cam_p2p_ep_name: Optional CAM/HCCL endpoint name associated with the
-            receive path.
-        atten_batch_size: Optional backend-reported Attention batch-size or
-            token-count tensor. CAMP2P stores it in connector data for the
-            matching FFN-to-Attention send.
-        expand_idx: Optional expanded-token index payload for MoE routing.
-        ep_recv_counts: Optional expert-parallel receive counts.
+        context: Transfer context describing the received transfer, including
+            transfer metadata and backend-produced transfer state.
     """
 
     hidden_states: torch.Tensor
-    metadata: AFDTransferMetadata
-    group_list: object = None
-    topk_weights: torch.Tensor | None = None
-    topk_ids: torch.Tensor | None = None
-    router_logits: torch.Tensor | None = None
-    row_idx: torch.Tensor | None = None
-    x_active_mask: torch.Tensor | None = None
-    dynamic_scales: torch.Tensor | None = None
-    expand_x_shared: torch.Tensor | None = None
-    dynamic_scales_shared: torch.Tensor | None = None
-    cam_p2p_ep_name: str | None = None
-    atten_batch_size: torch.Tensor | None = None
-    expand_idx: torch.Tensor | None = None
-    ep_recv_counts: torch.Tensor | None = None
-    ep_recv_counts_shared: torch.Tensor | None = None
+    context: AFDTransferContext
 
 
 @dataclass(slots=True)
@@ -471,7 +513,9 @@ def recv_control_payload(
 
 
 __all__ = [
+    "AFDCustomTransferState",
     "AFDTransferState",
+    "AFDTransferContext",
     "AFDTransferMetadata",
     "AFDDPMetadata",
     "AFDControlPayload",
