@@ -41,12 +41,12 @@ validation_paths:
   - "tests/e2e/features/test_profiler_npu.py"
   - "tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py"
 upstream_refs:
-  - "vLLM 0.19.1 vllm.compilation and vllm.v1.worker graph/ubatching APIs"
+  - "vLLM vllm.compilation and vllm.v1.worker graph/ubatching APIs"
   - "vLLM-Ascend ACL graph, forward-context, and model-runner v1 APIs in the tested environment"
   - "PyTorch CUDA, torch_npu, CMake, and Ascend CANN build interfaces used by the repository"
 verified_platform_refs:
   - "CUDA graph and profiler E2E paths; no canonical CUDA image is recorded"
-  - "Ascend image quay.io/ascend/vllm-ascend:v0.19.1rc1-a3-openeuler (test evidence only)"
+  - "Ascend E2E environment recorded in the installation and NPU guides"
 related_issues:
   - "#86"
   - "#129"
@@ -272,13 +272,13 @@ an expansion of the supported runtime contract.
 | Ascend + `CAMP2pAFDConnector` | Eager or current ACL Graph path | Native DBO, exactly two ubatches | Common and connector-local `compute_gate_on_attention=false`; `connector_extra_config.quant_mode=0`; plugin CANN ops required | NPU serving, graph, TP, ops, profiler, model, and accuracy E2E tests |
 | Ascend + `CAMAsyncAFDConnector` | Eager only | Native DBO rejected; optional async MoE ubatching uses exactly two request-boundary stages | `async=true`; documented path uses common `compute_gate_on_attention=true`; decode context parallel unsupported for async MoE ubatching; `connector_extra_config.dynamicQuant` is 0 or 1; external CAM ops required | Async CAM connector unit tests and `test_async_cam_npu.py` |
 
-All paths use vLLM `0.19.1` and model runner v1. GPU/NPU rank topology and
-connector resource rules remain owned by
+All paths use the supported vLLM release and model runner v1. GPU/NPU rank
+topology and connector resource rules remain owned by
 [connector contracts](connector_contracts.md).
 
 The repository does not record a canonical CUDA container. Current Ascend
-guides use `quay.io/ascend/vllm-ascend:v0.19.1rc1-a3-openeuler`; this is test
-evidence, not an authoritative vLLM-Ascend package or tag pin.
+guides record the tested container; this is test evidence, not an authoritative
+vLLM-Ascend package or tag pin.
 
 ## Failure and cleanup boundaries
 
@@ -302,8 +302,8 @@ both platforms.
 
 ## Upstream relationship and validation requirements
 
-CUDA behavior is developed against pinned vLLM `0.19.1`. The recorded Ascend
-container is test evidence, not an authoritative package/tag pin. Build,
+CUDA behavior is developed against the pinned vLLM release. The recorded
+Ascend container is test evidence, not an authoritative package/tag pin. Build,
 graph, profiler, and native-op changes require the matching unit and hardware
 E2E paths listed above.
 

@@ -28,13 +28,13 @@ validation_paths:
   - "tests/e2e/features/test_serving_npu.py"
   - "tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py"
 upstream_refs:
-  - "vLLM 0.19.1 vllm.v1.worker.gpu_worker.Worker"
-  - "vLLM 0.19.1 vllm.v1.engine.core.EngineCore"
+  - "vLLM vllm.v1.worker.gpu_worker.Worker"
+  - "vLLM vllm.v1.engine.core.EngineCore"
   - "vLLM-Ascend vllm_ascend.worker.worker.NPUWorker (tested environment evidence only)"
   - "vLLM-Ascend vllm_ascend.worker.model_runner_v1.NPUModelRunner (tested environment evidence only)"
 verified_platform_refs:
   - "CUDA paths marked gpu in tests/e2e"
-  - "Ascend image quay.io/ascend/vllm-ascend:v0.19.1rc1-a3-openeuler (test evidence only)"
+  - "Ascend E2E environment recorded in the installation and NPU guides"
 related_issues:
   - "#86"
   - "#88"
@@ -243,19 +243,20 @@ stable contracts.
 
 ## Upstream relationship and validation requirements
 
-Changes must be compared with pinned vLLM `0.19.1` worker and EngineCore
-behavior and, for Ascend, with the tested runtime evidence. Run the FFN runner,
+Changes must be compared with the pinned vLLM worker and EngineCore behavior
+and, for Ascend, with the tested runtime evidence. Run the FFN runner,
 EngineCore patch, NPU runtime, and serving tests listed in the metadata.
 Trigger-capability or work-item changes also require connector and CAM async
 model E2E coverage.
 
 ## Limitations and open issues
 
-Current shared limits are vLLM `0.19.1`, model runner v1, connector-driven FFN
-only, and role-aware DeepSeek model integration. Native DBO accepts exactly
-two ubatches. CAM async instead uses eager connector work items and may enable
-its distinct two-stage MoE pipeline. Platform-specific limits are centralized
-in [execution platforms](execution_platforms.md#tested-runtime-matrix).
+Current shared limits are the supported vLLM release, model runner v1,
+connector-driven FFN only, and role-aware DeepSeek model integration. Native
+DBO accepts exactly two ubatches. CAM async instead uses eager connector work
+items and may enable its distinct two-stage MoE pipeline. Platform-specific
+limits are centralized in
+[execution platforms](execution_platforms.md#tested-runtime-matrix).
 
 Connector metadata ownership, transfer state separation, and optional
 control-plane capability remain open in

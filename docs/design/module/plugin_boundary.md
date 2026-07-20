@@ -26,8 +26,8 @@ validation_paths:
   - "tests/unit/test_envs.py"
   - "tests/unit/v1/worker/test_runtime_classpaths.py"
 upstream_refs:
-  - "vLLM 0.19.1 vllm.general_plugins entry-point group"
-  - "vLLM 0.19.1 vllm.config.VllmConfig"
+  - "vLLM vllm.general_plugins entry-point group"
+  - "vLLM vllm.config.VllmConfig"
 verified_platform_refs:
   - "CPU-only import and configuration tests in tests/unit"
   - "CUDA and Ascend E2E launch paths in tests/e2e"
@@ -72,8 +72,8 @@ runtime extension surfaces stable.
 
 The installed vLLM entry point is `afd = "afd_plugin:register_afd"` in the
 `vllm.general_plugins` group. The package has no mandatory runtime dependency;
-the `vllm` extra pins `vllm==0.19.1`, and supported Python versions are
-3.10--3.13.
+the `vllm` extra pins the supported vLLM release, and the supported Python
+range is declared in `pyproject.toml`.
 
 Importing `afd_plugin`, `afd_plugin.config`, or `afd_plugin.validation` is
 CPU-safe. The package root imports configuration only. CUDA, Ascend, vLLM
@@ -195,7 +195,7 @@ The following RFC candidates are non-normative while this document is draft:
 
 ## Upstream relationship and validation requirements
 
-Changes must preserve the vLLM `0.19.1` entry-point contract and run the
+Changes must preserve the supported vLLM entry-point contract and run the
 package, configuration, environment, and class-path tests listed in the
 metadata. Changes to a public launch path require a migration note and both
 resolution and runtime tests. Device claims require existing GPU or NPU E2E

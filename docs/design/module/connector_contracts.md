@@ -22,8 +22,8 @@ validation_paths:
   - "tests/e2e/features/test_tp_npu.py"
   - "tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py"
 upstream_refs:
-  - "vLLM 0.19.1 vllm.forward_context.DPMetadata"
-  - "vLLM 0.19.1 vllm.distributed.parallel_state"
+  - "vLLM vllm.forward_context.DPMetadata"
+  - "vLLM vllm.distributed.parallel_state"
   - "PyTorch torch.distributed process-group APIs used by the pinned runtime"
 verified_platform_refs:
   - "P2pNcclAFDConnector GPU unit and E2E paths"

@@ -17,11 +17,11 @@ validation_paths:
   - "tests/unit/**"
   - "tests/e2e/**"
 upstream_refs:
-  - "vLLM 0.19.1"
+  - "vLLM"
   - "vLLM-Ascend environment evidence recorded in the NPU guides"
 verified_platform_refs:
   - "CUDA: tests/e2e tests marked gpu; no canonical image is recorded"
-  - "Ascend: quay.io/ascend/vllm-ascend:v0.19.1rc1-a3-openeuler (test evidence only)"
+  - "Ascend E2E environment recorded in the installation and NPU guides"
 related_issues:
   - "#129"
 last_reviewed: 2026-07-20

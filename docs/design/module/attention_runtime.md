@@ -29,13 +29,13 @@ validation_paths:
   - "tests/e2e/accuracy/**"
   - "tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py"
 upstream_refs:
-  - "vLLM 0.19.1 vllm.v1.worker.gpu_worker.Worker"
-  - "vLLM 0.19.1 vllm.v1.worker.gpu_model_runner.GPUModelRunner"
+  - "vLLM vllm.v1.worker.gpu_worker.Worker"
+  - "vLLM vllm.v1.worker.gpu_model_runner.GPUModelRunner"
   - "vLLM-Ascend vllm_ascend.worker.worker.NPUWorker (tested environment evidence only)"
   - "vLLM-Ascend vllm_ascend.worker.model_runner_v1.NPUModelRunner (tested environment evidence only)"
 verified_platform_refs:
   - "CUDA paths marked gpu in tests/e2e"
-  - "Ascend image quay.io/ascend/vllm-ascend:v0.19.1rc1-a3-openeuler (test evidence only)"
+  - "Ascend E2E environment recorded in the installation and NPU guides"
 related_issues:
   - "#86"
   - "#88"
@@ -259,17 +259,17 @@ is not fixed here.
 
 ## Upstream relationship and validation requirements
 
-Changes must be compared with the pinned vLLM `0.19.1` worker and model-runner
-symbols. Ascend claims must cite the tested environment and existing NPU
+Changes must be compared with the pinned vLLM worker and model-runner symbols.
+Ascend claims must cite the tested environment and existing NPU
 evidence. Run the role-specific unit tests plus the affected serving, model,
 and accuracy E2E paths. Control-plane, graph, DBO, or async-CAM changes require
 the matching platform and connector tests as well.
 
 ## Limitations and open issues
 
-Current shared limits are vLLM `0.19.1`, model runner v1, exactly two native
-ubatches, and role-aware DeepSeek model integration. Platform/connector limits
-are intentionally centralized in
+Current shared limits are the supported vLLM release, model runner v1, exactly
+two native ubatches, and role-aware DeepSeek model integration.
+Platform/connector limits are intentionally centralized in
 [execution platforms](execution_platforms.md#tested-runtime-matrix).
 
 This document does not decide the runtime refactor, connector metadata

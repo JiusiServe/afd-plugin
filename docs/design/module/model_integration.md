@@ -20,9 +20,9 @@ validation_paths:
   - "tests/e2e/models/**"
   - "tests/e2e/accuracy/**"
 upstream_refs:
-  - "vLLM 0.19.1 vllm.model_executor.models.deepseek_v2"
-  - "vLLM 0.19.1 vllm.forward_context.ForwardContext"
-  - "vLLM 0.19.1 vllm.model_executor.model_loader"
+  - "vLLM vllm.model_executor.models.deepseek_v2"
+  - "vLLM vllm.forward_context.ForwardContext"
+  - "vLLM vllm.model_executor.model_loader"
 verified_platform_refs:
   - "DeepSeek V2 Lite GPU and NPU model E2E paths"
   - "CAM async NPU model E2E path"

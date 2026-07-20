@@ -25,10 +25,10 @@ validation_paths:
   - "tests/unit/v1/worker/test_runtime_classpaths.py"
   - "tests/unit/v1/worker/test_npu_runtime.py"
 upstream_refs:
-  - "vLLM 0.19.1 vllm.v1.engine.core.EngineCore and EngineCoreProc"
-  - "vLLM 0.19.1 vllm.v1.engine.core_client.DPAsyncMPClient"
-  - "vLLM 0.19.1 vllm.forward_context.set_forward_context"
-  - "vLLM 0.19.1 vllm.engine.arg_utils.EngineArgs and vllm.config.VllmConfig"
+  - "vLLM vllm.v1.engine.core.EngineCore and EngineCoreProc"
+  - "vLLM vllm.v1.engine.core_client.DPAsyncMPClient"
+  - "vLLM vllm.forward_context.set_forward_context"
+  - "vLLM vllm.engine.arg_utils.EngineArgs and vllm.config.VllmConfig"
   - "vLLM-Ascend platform and fused-MoE symbols referenced by NPU patches"
 verified_platform_refs:
   - "CPU/runtime compatibility tests in tests/unit/compat"
@@ -56,12 +56,11 @@ patch modules must not become a general home for AFD-owned functionality.
 
 ## Supported upstream boundary
 
-The package extra pins `vllm==0.19.1`, and
-[`compat/vllm.py`](../../../afd_plugin/compat/vllm.py) treats only the same
-three-part release as supported. Direct strict calls raise for a missing or
-different vLLM; plugin registration calls the check with `strict=False`, so it
-warns and continues. This warning policy does not make another vLLM release
-supported.
+The package extra pins the supported vLLM release, and
+[`compat/vllm.py`](../../../afd_plugin/compat/vllm.py) enforces the same target.
+Direct strict calls raise for a missing or different vLLM; plugin registration
+calls the check with `strict=False`, so it warns and continues. This warning
+policy does not make another vLLM release supported.
 
 The Ascend patch sources name current vLLM-Ascend modules and are validated by
 the recorded Ascend environment, but the repository does not declare an exact
