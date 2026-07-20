@@ -71,6 +71,11 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             vllm_config,
             self.afd_config,
         )
+        # TODO: Async GPU connector will be supported in the future
+        assert self.connector.control_plane is not None, (
+            "GPU model runner only support control plane driven connectors"
+        )
+
         self.model: Any | None = None
         self.model_memory_usage = 0
         self.num_layers = int(self.model_config.hf_config.num_hidden_layers)

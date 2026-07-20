@@ -195,6 +195,10 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         update_connector_state: bool = True,
     ) -> torch.Tensor | None:
         if update_connector_state:
+            assert self.connector.control_plane, (
+                "Only DP metadata control plane supports ",
+                "update_connector_state == True.",
+            )
             self.connector.control_plane.update_state_from_dp_metadata(
                 _make_dp_metadata_payload(
                     dp_metadata_list,
@@ -387,6 +391,9 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
         is_attn_graph_capturing: bool = True,
     ) -> None:
+        assert self.connector.control_plane, (
+            "Only DP metadata control plane supports graph capturing."
+        )
         graph_key = self._make_graph_key(dp_metadata_list)
         if graph_key in self._acl_graphs:
             logger.debug(

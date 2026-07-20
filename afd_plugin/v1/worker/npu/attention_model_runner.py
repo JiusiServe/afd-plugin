@@ -117,7 +117,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         )
         self.afd_config = _with_dp_derived_afd_rank(vllm_config, self.afd_config)
         rank, local_rank = _resolve_world_ranks()
-        self.afd_connector = AFDConnectorFactory.create_connector(
+        self.connector = AFDConnectorFactory.create_connector(
             rank,
             local_rank,
             vllm_config,
@@ -125,14 +125,14 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         )
         self.afd_async_extra_info = AFDAsyncExtraInfo()
         if afd_config.connector == AFD_ASYNC_CONNECTOR:
-            connector_extra_info = self.afd_connector.extra_info
+            connector_extra_info = self.connector.extra_info
             if not isinstance(connector_extra_info, AFDAsyncExtraInfo):
                 raise TypeError(
                     "CAMAsyncAFDConnector requires AFDAsyncExtraInfo, got "
                     f"{type(connector_extra_info).__name__}",
                 )
             self.afd_async_extra_info = connector_extra_info
-        self.afd_connector.init_afd_connector()
+        self.connector.init_afd_connector()
         self._is_warmup = False
         self._afd_is_graph_capturing = False
         self._afd_pending_metadata: AFDForwardContextMetadata | None = None
@@ -886,10 +886,11 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                     None,
                     int(desc.num_tokens),
                 )
-                self._send_dp_metadata(
-                    self._build_capture_dp_metadata(int(desc.num_tokens)),
-                    None,
-                )
+                if self.connector.control_plane is not None:
+                    self._send_dp_metadata(
+                        self._build_capture_dp_metadata(int(desc.num_tokens)),
+                        None,
+                    )
                 self._afd_suppress_metadata_send = True
 
             return self._dummy_run(
@@ -1225,7 +1226,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             tokens_start_loc=tokens_start_loc,
             requests_start_loc=requests_start_loc,
             stage_idx=0,
-            afd_connector=self.afd_connector,
+            connector=self.connector,
             tokens_lens=tokens_lens,
             num_stages=num_stages,
             transaction_id=self._next_afd_transaction_id(),
@@ -1245,7 +1246,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         if forward_context.additional_kwargs is None:
             forward_context.additional_kwargs = {}
         forward_context.additional_kwargs["afd_metadata"] = self._afd_pending_metadata
-        if self.afd_connector.control_plane is None:
+        if self.connector.control_plane is None:
             return
         if bool(getattr(self, "_afd_suppress_metadata_send", False)):
             return
@@ -1273,6 +1274,10 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         dp_metadata: DPMetadata | AFDDPMetadata | None,
         ubatch_slices: Any,
     ) -> None:
+        assert self.connector.control_plane is not None, (
+            "_send_dp_metadata needs control plane driven connectors"
+        )
+
         if ubatch_slices and len(ubatch_slices) > 1:
             dp_metadata_list = {
                 idx: metadata
@@ -1290,16 +1295,16 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,
         )
-        self.afd_connector.control_plane.update_state_from_dp_metadata(payload)
+        self.connector.control_plane.update_state_from_dp_metadata(payload)
         logger.warning(
             "AFD NPU Attention send_dp_metadata decision; world_rank=%d "
             "key=%s is_graph_capturing=%s is_warmup=%s",
-            self.afd_connector.world_rank,
+            self.connector.world_rank,
             _dp_metadata_debug_key(dp_metadata_list),
             is_graph_capturing,
             is_warmup,
         )
-        self.afd_connector.control_plane.send_dp_metadata_list(payload)
+        self.connector.control_plane.send_dp_metadata_list(payload)
 
     def _ensure_dp_metadata(
         self,
@@ -1400,7 +1405,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             )
             return should_ubatch, num_tokens_padded, None, cudagraph_mode
 
-        if self.afd_connector.control_plane is None:
+        if self.connector.control_plane is None:
             num_tokens_after_padding = torch.tensor(
                 [num_tokens_padded] * self.dp_size,
                 device="cpu",
@@ -1663,7 +1668,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
     def shutdown(self) -> None:
         stop_afd_npu_profiler(self.prof)
-        self.afd_connector.close()
+        self.connector.close()
         super().shutdown()
 
     def _next_afd_transaction_id(self) -> str:

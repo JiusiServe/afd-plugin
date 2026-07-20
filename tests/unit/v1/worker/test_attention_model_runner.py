@@ -169,6 +169,28 @@ def test_attention_runner_installs_afd_metadata_on_forward_context():
     assert runner.afd_connector.sent_dp_metadata_flags == [(False, False)]
 
 
+def test_attention_runner_skips_dp_metadata_send_without_control_plane():
+    runner = object.__new__(AFDAttentionModelRunner)
+    runner.afd_config = AFDConfig(role="attention")
+    runner.afd_connector = _RecordingConnector()
+    runner.afd_connector.control_plane = None
+    runner._is_warmup = False
+    runner._afd_is_graph_capturing = False
+    runner._afd_transaction_counter = 0
+    runner._afd_pending_metadata = runner._build_afd_metadata(None, 5)
+    forward_context = SimpleNamespace(
+        additional_kwargs={},
+        dp_metadata=_dp_metadata([5]),
+        ubatch_slices=None,
+    )
+
+    runner._install_afd_metadata_on_forward_context(forward_context)
+
+    assert forward_context.additional_kwargs["afd_metadata"].tokens_lens == [5]
+    assert runner.afd_connector.dp_metadata_updates == []
+    assert runner.afd_connector.sent_dp_metadata_lists == []
+
+
 def test_attention_runner_initializes_missing_forward_context_kwargs():
     runner = object.__new__(AFDAttentionModelRunner)
     runner.afd_config = AFDConfig(role="attention")

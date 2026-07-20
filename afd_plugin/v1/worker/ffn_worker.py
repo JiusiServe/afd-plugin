@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 from vllm.v1.worker.gpu_worker import Worker
 
+from afd_plugin.connectors import Trigger
 from afd_plugin.v1.worker.attention_model_runner import fail_if_unsupported_ubatching
 from afd_plugin.v1.worker.ffn_model_runner import GPUFFNModelRunner
 from afd_plugin.validation import assert_compatible_afd_stack
@@ -123,6 +124,9 @@ class AFDFFNWorker(Worker):
             torch.cuda.set_device(self.device)
 
         while not event.is_set():
+            if self.model_runner.connector.control_plane is None:
+                raise NotImplementedError
+
             payload = self.model_runner.connector.control_plane.recv_dp_metadata_list()
             dp_metadata_list = payload.dp_metadata_list
             is_attn_graph_capturing = payload.is_graph_capturing

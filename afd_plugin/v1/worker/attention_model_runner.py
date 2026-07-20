@@ -61,13 +61,17 @@ class AFDAttentionModelRunner(GPUModelRunner):
             self.afd_config,
         )
         rank, local_rank = _resolve_world_ranks()
-        self.afd_connector = AFDConnectorFactory.create_connector(
+        self.connector = AFDConnectorFactory.create_connector(
             rank,
             local_rank,
             self.vllm_config,
             self.afd_config,
         )
-        self.afd_connector.init_afd_connector()
+        self.connector.init_afd_connector()
+        # TODO: Async GPU connector will be supported in the future
+        assert self.connector.control_plane is not None, (
+            "GPU model runner only support control plane driven connectors"
+        )
         self._is_warmup = False
         self._afd_is_graph_capturing = False
         self._afd_pending_metadata: AFDForwardContextMetadata | None = None
@@ -101,7 +105,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
             tokens_start_loc=tokens_start_loc,
             requests_start_loc=requests_start_loc,
             stage_idx=0,
-            afd_connector=self.afd_connector,
+            afd_connector=self.connector,
             tokens_lens=tokens_lens,
             num_stages=num_stages,
             transaction_id=self._next_afd_transaction_id(),
@@ -113,6 +117,10 @@ class AFDAttentionModelRunner(GPUModelRunner):
         dp_metadata: DPMetadata | AFDDPMetadata | None,
         ubatch_slices: Any,
     ) -> None:
+        assert self.connector.control_plane is not None, (
+            "_send_dp_metadata needs control plane driven connectors"
+        )
+
         if ubatch_slices and len(ubatch_slices) > 1:
             dp_metadata_list = {
                 idx: metadata
@@ -123,15 +131,15 @@ class AFDAttentionModelRunner(GPUModelRunner):
         else:
             dp_metadata = self._ensure_dp_metadata(dp_metadata)
             dp_metadata_list = {0: dp_metadata}
-        is_warmup = bool(self._is_warmup)
+        is_warmup = self._is_warmup
         is_graph_capturing = bool(getattr(self, "_afd_is_graph_capturing", False))
         payload = AFDControlPayload(
             dp_metadata_list=dp_metadata_list,
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,
         )
-        self.afd_connector.control_plane.update_state_from_dp_metadata(payload)
-        self.afd_connector.control_plane.send_dp_metadata_list(payload)
+        self.connector.control_plane.update_state_from_dp_metadata(payload)
+        self.connector.control_plane.send_dp_metadata_list(payload)
 
     def load_model(self, *args: Any, **kwargs: Any) -> Any:
         use_ubatching = bool(self.vllm_config.parallel_config.use_ubatching)
@@ -454,7 +462,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
 
     def shutdown(self) -> None:
         stop_afd_gpu_profiler(self.prof)
-        self.afd_connector.close()
+        self.connector.close()
 
     def _next_afd_transaction_id(self) -> str:
         counter = self._afd_transaction_counter

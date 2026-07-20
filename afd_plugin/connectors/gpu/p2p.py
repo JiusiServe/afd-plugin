@@ -193,7 +193,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         self.dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata] = {}
         self.is_graph_capturing = False
         self.is_warmup = False
-        self._tensor_metadata_list: dict[int, _TensorMetadata] = {}
+        self.tensor_metadata_list: dict[int, _TensorMetadata] = {}
         self._recv_attn_tensor_metadata_list: dict[
             tuple[int, int],
             _TensorMetadata,
@@ -364,7 +364,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             0,
             self.e2a_group,
             self.e2a_pynccl,
-            self._tensor_metadata_list[int(ubatch_idx)],
+            self.tensor_metadata_list[int(ubatch_idx)],
             ref_tensor=ref_tensor,
         )
         if output is None:
@@ -406,7 +406,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         for src in range(1, self.group_size):
             tensor_metadata = self._recv_attn_tensor_metadata_list.get(
                 (ubatch_idx, src),
-                self._tensor_metadata_list[ubatch_idx],
+                self.tensor_metadata_list[ubatch_idx],
             )
             ref_tensor = None
             if not self.vllm_config.model_config.enforce_eager:
@@ -648,7 +648,7 @@ class P2pNcclAFDControlPlane(AFDControlPlane):
         connector.dp_metadata_list = payload.dp_metadata_list
         connector.is_graph_capturing = payload.is_graph_capturing
         connector.is_warmup = payload.is_warmup
-        connector._tensor_metadata_list = {}
+        connector.tensor_metadata_list = {}
         connector._recv_attn_tensor_metadata_list = {}
         device = torch.device(f"cuda:{connector.local_rank}")
         dtype = connector.vllm_config.model_config.dtype
@@ -687,7 +687,7 @@ class P2pNcclAFDControlPlane(AFDControlPlane):
                     attention_rank=connector.mapping.role_rank,
                     attention_size=connector.attn_size,
                 )
-            connector._tensor_metadata_list[stage_idx] = _TensorMetadata(
+            connector.tensor_metadata_list[stage_idx] = _TensorMetadata(
                 device,
                 dtype,
                 torch.Size([max(1, num_tokens), connector.hidden_size]),
