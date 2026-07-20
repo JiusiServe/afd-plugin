@@ -46,7 +46,13 @@ if TYPE_CHECKING:
 
 
 class GPUFFNModelRunner(LoRAModelRunnerMixin):
-    """FFN model runner for connector-driven AFD GPU execution."""
+    """FFN model runner for AFD GPU execution.
+
+    FFN steps are driven by the connector control plane rather than the vLLM
+    scheduler. GPU only supports control-plane-driven connectors, so the runner
+    asserts ``connector.control_plane is not None`` at construction; connectors
+    without a control plane (``control_plane is None``) are not supported.
+    """
 
     afd_expected_role = "ffn"
 
@@ -73,7 +79,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         )
         # TODO: Async GPU connector will be supported in the future
         assert self.connector.control_plane is not None, (
-            "GPU model runner only support control plane driven connectors"
+            "GPU model runner only supports control-plane-driven connectors"
         )
 
         self.model: Any | None = None

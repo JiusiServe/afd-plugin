@@ -72,29 +72,26 @@ AFDFFNWorker.initialize_from_config(...)
 
 background loop:
   -> if connector.control_plane is None:
-       -> model_runner.execute_connector_driven_step()
-       -> torch.cuda.synchronize(); continue
+       -> raise NotImplementedError  # GPU requires a control-plane connector
   -> control_plane.recv_dp_metadata_list()
   -> if graph warmup/capture: model_runner.capture_model(...)
   -> else: model_runner.execute_model(dp_metadata_list=...)
   -> torch.cuda.synchronize()
 ```
 
-The loop dispatches on whether `connector.control_plane` is set:
-
-- control plane present (current `P2pNcclAFDConnector` behavior): each step is
-  driven by the arrival of a control-plane payload from
-  `connector.control_plane.recv_dp_metadata_list()`, which also carries the
-  warmup/graph-capture flags.
-- `control_plane is None`: the connector has no control plane and drives FFN
-  work itself; the loop calls
-  `model_runner.execute_connector_driven_step()`, which blocks inside the
-  connector's own receive path.
+GPU FFN only supports control-plane-driven connectors. Each step is driven by
+the arrival of a control-plane payload from
+`connector.control_plane.recv_dp_metadata_list()`, which also carries the
+warmup/graph-capture flags. `GPUFFNModelRunner` asserts
+`connector.control_plane is not None` at construction, and the daemon loop
+raises `NotImplementedError` if a connector without a control plane
+(`control_plane is None`) is ever installed. There is no connector-driven GPU
+FFN path.
 
 `AFDFFNWorker.execute_model()` intentionally raises if the native scheduler
 attempts to execute a normal vLLM request on the FFN process.
 
-## FFN Forward (DP-Metadata Trigger)
+## FFN Forward
 
 For each layer and stage, `GPUFFNModelRunner`:
 
@@ -112,19 +109,6 @@ If the model does not expose `compute_ffn_output`, the runner passes hidden
 states through. Production AFD model paths are expected to use plugin-owned
 model wrappers that implement the FFN computation contract.
 
-## FFN Forward (Connector Trigger)
-
-`execute_connector_driven_step()` rejects connectors that have a control plane,
-then runs `_ffn_forward_connector_driven()`: one eager FFN pass driven purely
-by the base-contract data path. There is no DP metadata to apply; for each
-layer the runner receives a payload with `connector.recv_attn_output()`, takes
-the layer index from the payload's `AFDTransferMetadata`, installs the metadata
-on the forward context with `dp_metadata = None`, computes, and sends the
-result back with `connector.send_ffn_output()`.
-
-This path is eager-only and does not use the CUDA graph cache; graph keys are
-derived from DP metadata, which does not exist without a control plane.
-
 ## CUDA Graph
 
 `GPUFFNModelRunner` supports graph-keyed capture/replay for the current
@@ -137,12 +121,14 @@ Warmup and capture are driven by flags received from the Attention side through
 ## Current Limits
 
 - Only vLLM `0.19.1` and model runner v1 are supported.
-- FFN workers are connector-driven only; scheduler-driven request execution is
-  rejected.
+- FFN steps are driven by the connector control plane, not the vLLM scheduler;
+  scheduler-driven request execution is rejected.
+- GPU FFN only supports control-plane-driven connectors. A connector without a
+  control plane (`control_plane is None`) is not supported: `GPUFFNModelRunner`
+  asserts a control plane is present and the daemon loop raises
+  `NotImplementedError` otherwise.
 - The only CUDA connector is `P2pNcclAFDConnector`, implemented by
-  `afd_plugin.connectors.gpu.p2p`; no control-plane-less (`control_plane is
-  None`) GPU connector exists yet, although the daemon loop and runner support
-  one.
+  `afd_plugin.connectors.gpu.p2p`.
 - DBO requires exactly two ubatches.
 - Role-aware model construction and weight loading currently depend on the
   plugin-owned DeepSeek model wrappers.

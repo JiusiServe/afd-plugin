@@ -124,7 +124,11 @@ class AFDFFNWorker(Worker):
 
         while not event.is_set():
             if self.model_runner.connector.control_plane is None:
-                raise NotImplementedError
+                raise NotImplementedError(
+                    "GPU FFN only supports control-plane-driven connectors; "
+                    "connectors without a control plane (control_plane is None) "
+                    "are not supported.",
+                )
 
             payload = self.model_runner.connector.control_plane.recv_dp_metadata_list()
             dp_metadata_list = payload.dp_metadata_list

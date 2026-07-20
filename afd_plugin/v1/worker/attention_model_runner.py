@@ -70,7 +70,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
         self.connector.init_afd_connector()
         # TODO: Async GPU connector will be supported in the future
         assert self.connector.control_plane is not None, (
-            "GPU model runner only support control plane driven connectors"
+            "GPU model runner only supports control-plane-driven connectors"
         )
         self._is_warmup = False
         self._afd_is_graph_capturing = False

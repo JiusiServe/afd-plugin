@@ -73,7 +73,7 @@ Current behavior:
 - constructs and loads the DeepSeek FFN MLP/expert components plus shared model
   components required by the vLLM lifecycle, without Attention modules;
 - returns empty KV cache specs and no-ops KV initialization;
-- executes DP-metadata-triggered steps through `execute_ffn_step()` and
+- executes control-plane-driven steps through `execute_ffn_step()` and
   connector-driven steps through `execute_connector_driven_step()`;
 - builds a minimal Ascend forward context for each FFN step;
 - mirrors AFD metadata into `additional_kwargs["afd_metadata"]` and
@@ -115,7 +115,7 @@ The loop dispatches on whether `connector.control_plane` is set:
   `execute_connector_driven_step()` rejects connectors that do have a control
   plane and blocks inside the connector's own receive path.
 
-## FFN Forward (DP-Metadata Trigger)
+## FFN Forward (Control-Plane Driven)
 
 For each layer and stage, `AFDNPUFFNModelRunner`:
 
@@ -142,7 +142,7 @@ The current compute call forwards these payload fields when available:
 - `x_active_mask`;
 - `cam_p2p_ep_name`.
 
-## FFN Forward (Connector Trigger)
+## FFN Forward (Connector Driven)
 
 `_ffn_forward_connector_driven()` requires the async connector work-item APIs.
 For each layer, the runner:
@@ -179,8 +179,8 @@ configured through `connector_extra_config`, parsed into `AFDAsyncExtraInfo`.
 ## ACL Graph
 
 The NPU FFN runner can use ACL graph when vLLM-Ascend has graph mode enabled
-and the connector is DP-metadata triggered. Graph cache keys are built from DP
-metadata shape plus A/F topology. Capture updates connector state before
+and the connector has a control plane (`CAMP2pAFDConnector`). Graph cache keys
+are built from DP metadata shape plus A/F topology. Capture updates connector state before
 entering the NPU graph context, so connector control-plane state is not
 repeatedly recomputed as part of normal replay.
 
@@ -194,12 +194,12 @@ Supported:
 - vLLM `0.19.1` runtime stack with vLLM-Ascend model runner v1;
 - `--additional-config '{"afd": ...}'` with connector-owned
   `connector_extra_config`;
-- `CAMP2pAFDConnector` (DP-metadata trigger) and `CAMAsyncAFDConnector`
-  (connector trigger);
+- `CAMP2pAFDConnector` (control-plane driven) and `CAMAsyncAFDConnector`
+  (connector driven);
 - connector-driven FFN daemon loop;
 - empty KV cache;
 - eager FFN execution;
-- ACL graph warmup/capture/replay path for the DP-metadata trigger;
+- ACL graph warmup/capture/replay path for control-plane-driven connectors;
 - DBO with exactly two ubatches;
 - role-aware DeepSeek model construction and FFN-side weight loading.
 

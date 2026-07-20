@@ -53,9 +53,9 @@ Current behavior:
   FFN MLP/expert components, while retaining shared model components required
   by the vLLM lifecycle;
 - installs AFD metadata on `ForwardContext.additional_kwargs["afd_metadata"]`;
-- sends DP metadata to FFN ranks before model forward when the connector has a
-  control plane; connector-driven connectors (`control_plane is None`) skip
-  every control-plane send;
+- sends DP metadata to FFN ranks through the connector control plane before
+  model forward; GPU requires a control-plane connector, so the runner asserts
+  `connector.control_plane is not None`;
 - supports DP=1 fallback metadata when vLLM does not provide `DPMetadata`;
 - wraps vLLM's ubatch wrapper with `AFDUBatchWrapper` when DBO is enabled;
 - marks warmup and graph-capture metadata for FFN graph capture/replay;
@@ -66,21 +66,21 @@ Current behavior:
 The runner talks to the FFN side through an `AFDConnectorBase` implementation
 with two planes:
 
-- **Data plane** (always present): `send_attn_output()` /
-  `recv_ffn_output()` move hidden states, driven by the plugin-owned model
-  wrappers via `afd_metadata`.
-- **Control plane** (optional): `connector.control_plane` is an
-  `AFDControlPlane` or `None`. When present, the runner applies and sends
-  per-stage DP metadata payloads (`update_state_from_dp_metadata()` +
-  `send_dp_metadata_list()`) before model forward so the FFN side can derive
-  wire tensor shapes and warmup/capture flags.
+- **Data plane**: `send_attn_output()` / `recv_ffn_output()` move hidden
+  states, driven by the plugin-owned model wrappers via `afd_metadata`.
+- **Control plane**: `connector.control_plane` is an `AFDControlPlane`. The
+  runner applies and sends per-stage DP metadata payloads
+  (`update_state_from_dp_metadata()` + `send_dp_metadata_list()`) before model
+  forward so the FFN side can derive wire tensor shapes and warmup/capture
+  flags.
 
-Whether `connector.control_plane` is set declares how FFN steps are triggered:
-a present control plane means steps are driven by control-plane payload arrival,
-while `control_plane is None` means the connector's own receive loop drives
-them. The current GPU connector, `P2pNcclAFDConnector`, exposes
-`P2pNcclAFDControlPlane` as its control plane; the Attention runner supports
-both modes.
+GPU only supports control-plane-driven connectors, so both planes are always
+present. The runner asserts `connector.control_plane is not None` before every
+control-plane send. FFN steps are driven by control-plane payload arrival on
+the FFN side. The current GPU connector, `P2pNcclAFDConnector`, exposes
+`P2pNcclAFDControlPlane` as its control plane. (The base contract also allows
+control-plane-less connectors that drive FFN steps from their own receive loop,
+but that mode is used only by NPU connectors, not on GPU.)
 
 ## Forward Path
 
@@ -90,7 +90,7 @@ OpenAI request
   -> AFDAttentionWorker.execute_model(...)
   -> AFDAttentionModelRunner.execute_model(...)
   -> build attention metadata and AFD metadata
-  -> send DP metadata through the connector control plane (if present)
+  -> send DP metadata through the connector control plane
   -> model forward
   -> plugin-owned model wrapper sends Attention output
   -> FFN side computes and sends FFN output
@@ -130,8 +130,7 @@ GPU Attention supports the current AFD graph path only for vLLM
 `FULL_DECODE_ONLY` semantics. DP metadata transfer is treated as a control-plane
 side effect and is sent before formal CUDA graph capture, so the capture
 contains only replayable model/data-plane work. FFN receives warmup and capture
-flags through `send_dp_metadata_list()`. When the connector has no control
-plane, the capture-time send is skipped as well.
+flags through `send_dp_metadata_list()`.
 
 Unsupported graph modes fail fast in `validate_cuda_graph_mode`.
 
@@ -154,6 +153,6 @@ divisible by it.
 - DBO requires exactly two ubatches.
 - Role-aware model construction and weight loading currently depend on the
   plugin-owned DeepSeek model wrappers.
-- The only CUDA connector is `P2pNcclAFDConnector`; no connector-driven
-  (`control_plane is None`) GPU connector exists yet, although the runtime
-  supports one.
+- The only CUDA connector is `P2pNcclAFDConnector`. GPU supports only
+  control-plane-driven connectors; a connector without a control plane
+  (`control_plane is None`) is not supported and the runner asserts against it.
