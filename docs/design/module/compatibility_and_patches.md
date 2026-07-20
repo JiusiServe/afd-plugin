@@ -8,10 +8,10 @@ owners:
 primary_code_paths:
   - "afd_plugin/compat/__init__.py"
   - "afd_plugin/compat/vllm.py"
-  - "afd_plugin/compat/ascend/__init__.py"
-  - "afd_plugin/compat/ascend/feature_validation.py"
-  - "afd_plugin/compat/ascend/runtime.py"
-  - "afd_plugin/compat/ascend/runtime_config.py"
+  - "afd_plugin/compat/npu/__init__.py"
+  - "afd_plugin/compat/npu/feature_validation.py"
+  - "afd_plugin/compat/npu/runtime.py"
+  - "afd_plugin/compat/npu/runtime_config.py"
   - "afd_plugin/compat/patches/**/*.py"
 related_code_paths:
   - "afd_plugin/__init__.py"
@@ -36,7 +36,7 @@ verified_platform_refs:
 related_issues:
   - "#86"
   - "#129"
-last_reviewed: 2026-07-19
+last_reviewed: 2026-07-20
 ---
 
 # Compatibility and patches
@@ -75,8 +75,8 @@ copied Ascend function, not only the container image that exercised it.
 | --- | --- | --- |
 | Version policy | [`compat/vllm.py`](../../../afd_plugin/compat/vllm.py) | [`test_package.py`](../../../tests/unit/package/test_package.py) |
 | Core vLLM patches | [`compat/patches/`](../../../afd_plugin/compat/patches) | [`tests/unit/compat/patches/`](../../../tests/unit/compat/patches) |
-| Ascend adapters | [`compat/ascend/`](../../../afd_plugin/compat/ascend) | [`test_runtime.py`](../../../tests/unit/compat/test_runtime.py), [`test_ascend_ops.py`](../../../tests/unit/compat/test_ascend_ops.py) |
-| Ascend patch paths | [`compat/patches/npu/`](../../../afd_plugin/compat/patches/npu) | [`test_force_load_balance.py`](../../../tests/unit/compat/patches/test_force_load_balance.py), [`test_npu_runtime.py`](../../../tests/unit/v1/worker/test_npu_runtime.py) |
+| NPU adapters | [`compat/npu/`](../../../afd_plugin/compat/npu) | [`test_runtime.py`](../../../tests/unit/compat/test_runtime.py), [`test_ascend_ops.py`](../../../tests/unit/compat/test_ascend_ops.py) |
+| NPU patch paths | [`compat/patches/npu/`](../../../afd_plugin/compat/patches/npu) | [`test_force_load_balance.py`](../../../tests/unit/compat/patches/test_force_load_balance.py), [`test_npu_runtime.py`](../../../tests/unit/v1/worker/test_npu_runtime.py) |
 
 ## Patch application lifecycle
 
@@ -118,10 +118,10 @@ These modules adapt upstream behavior without replacing a global symbol:
 
 | Adapter | Current purpose |
 | --- | --- |
-| [`compat/ascend/runtime_config.py`](../../../afd_plugin/compat/ascend/runtime_config.py) | Mirrors vLLM-Ascend's non-SP all-to-all backend rewrite for custom AFD workers and reports the active NPU ubatch count. |
-| [`compat/ascend/feature_validation.py`](../../../afd_plugin/compat/ascend/feature_validation.py) | Parses connector-owned typed extra information through the factory and fails before execution for unsupported NPU connector, quantization, graph, DBO, gate, or async MoE combinations. |
-| [`compat/ascend/forward_context.py`](../../../afd_plugin/compat/ascend/forward_context.py) | Enters the pinned Ascend forward context for connector-driven FFN compute and installs AFD metadata in `additional_kwargs`. |
-| [`compat/ascend/ops.py`](../../../afd_plugin/compat/ascend/ops.py) | Discovers plugin-owned CAMP2P operators and external CAM operators with explicit missing-runtime errors; operator build/runtime ownership is documented in [execution platforms](execution_platforms.md). |
+| [`compat/npu/runtime_config.py`](../../../afd_plugin/compat/npu/runtime_config.py) | Mirrors vLLM-Ascend's non-SP all-to-all backend rewrite for custom AFD workers and reports the active NPU ubatch count. |
+| [`compat/npu/feature_validation.py`](../../../afd_plugin/compat/npu/feature_validation.py) | Parses connector-owned typed extra information through the factory and fails before execution for unsupported NPU connector, quantization, graph, DBO, gate, or async MoE combinations. |
+| [`compat/npu/forward_context.py`](../../../afd_plugin/compat/npu/forward_context.py) | Enters the pinned Ascend forward context for connector-driven FFN compute and installs AFD metadata in `additional_kwargs`. |
+| [`compat/npu/ops.py`](../../../afd_plugin/compat/npu/ops.py) | Discovers plugin-owned CAMP2P operators and external CAM operators with explicit missing-runtime errors; operator build/runtime ownership is documented in [execution platforms](execution_platforms.md). |
 
 Two scoped mutations live with their semantic owners rather than this patch
 directory: model dummy runs temporarily wrap `create_forward_context` as

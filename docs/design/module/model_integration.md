@@ -31,7 +31,7 @@ related_issues:
   - "#88"
   - "#105"
   - "#129"
-last_reviewed: 2026-07-19
+last_reviewed: 2026-07-20
 ---
 
 # Model integration

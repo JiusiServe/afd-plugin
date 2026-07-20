@@ -9,12 +9,12 @@ primary_code_paths:
   - "afd_plugin/v1/worker/attention_model_runner.py"
   - "afd_plugin/v1/worker/attention_worker.py"
   - "afd_plugin/v1/worker/ubatch_wrapper.py"
-  - "afd_plugin/v1/worker/ascend/attention_model_runner.py"
-  - "afd_plugin/v1/worker/ascend/attention_worker.py"
+  - "afd_plugin/v1/worker/npu/attention_model_runner.py"
+  - "afd_plugin/v1/worker/npu/attention_worker.py"
 related_code_paths:
   - "afd_plugin/connectors/**"
   - "afd_plugin/model_executor/**"
-  - "afd_plugin/v1/worker/ascend/{forward_context,npu_ubatch_wrapper,ubatch_utils,ubatching}.py"
+  - "afd_plugin/v1/worker/npu/{forward_context,npu_ubatch_wrapper,ubatch_utils,ubatching}.py"
 depends_on:
   - "plugin_boundary.md"
   - "connector_contracts.md"
@@ -41,7 +41,7 @@ related_issues:
   - "#88"
   - "#105"
   - "#129"
-last_reviewed: 2026-07-19
+last_reviewed: 2026-07-20
 ---
 
 # Attention runtime
@@ -70,7 +70,7 @@ flag. Configuration is read from vLLM `additional_config["afd"]`.
 | Platform | Worker | Model runner | Current connectors |
 | --- | --- | --- | --- |
 | CUDA | `afd_plugin.v1.worker.AFDAttentionWorker` | `AFDAttentionModelRunner` | `P2pNcclAFDConnector` |
-| Ascend | `afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker` | `AFDNPUAttentionModelRunner` | `CAMP2pAFDConnector`, `CAMAsyncAFDConnector` |
+| NPU | `afd_plugin.v1.worker.npu.AFDNPUAttentionWorker` | `AFDNPUAttentionModelRunner` | `CAMP2pAFDConnector`, `CAMAsyncAFDConnector` |
 
 CUDA launch shape:
 
@@ -84,7 +84,7 @@ Ascend launch shape:
 
 ```bash
 VLLM_PLUGINS=ascend,afd vllm serve <model> \
-  --worker-cls afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker \
+  --worker-cls afd_plugin.v1.worker.npu.AFDNPUAttentionWorker \
   --additional-config '{"afd":{"role":"attention","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
@@ -116,7 +116,7 @@ connector, AFD profiler, pending request metadata, and graph/ubatch
 coordination state. It closes the connector and profiler during shutdown.
 
 CUDA calls the native `Worker.init_device()`, then replaces the native runner
-with `AFDAttentionModelRunner`. Ascend applies the AFD-scoped Ascend patches,
+with `AFDAttentionModelRunner`. NPU applies the AFD-scoped vLLM-Ascend patches,
 fixes the all-to-all backend when required, initializes the vLLM workspace
 manager, and constructs `AFDNPUAttentionModelRunner` directly. Their exact
 inheritance and device mechanisms are specified in

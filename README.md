@@ -171,8 +171,8 @@ After `AFD_OPS_OK`, the environment is ready to run the NPU examples and E2E
 tests. See the
 [synchronous NPU recipe](recipe/npu/CAMP2pAFDConnector/deepseek_v3_2/README.md).
 For implementation details, see the
-[NPU Attention runtime design](docs/npu/NPU_ATTENTION_RUNTIME_DESIGN.md) and
-[NPU FFN runtime design](docs/npu/NPU_FFN_RUNTIME_DESIGN.md).
+[Attention runtime design](docs/design/module/attention_runtime.md) and
+[FFN runtime design](docs/design/module/ffn_runtime.md).
 
 ## Using the Plugin
 

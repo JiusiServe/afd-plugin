@@ -7,29 +7,29 @@ owners:
   - "@jiangkuaixue123"
 primary_code_paths:
   - "afd_plugin/compat/profiler.py"
-  - "afd_plugin/compat/ascend/forward_context.py"
-  - "afd_plugin/compat/ascend/ops.py"
-  - "afd_plugin/compat/ascend/profiler.py"
+  - "afd_plugin/compat/npu/forward_context.py"
+  - "afd_plugin/compat/npu/ops.py"
+  - "afd_plugin/compat/npu/profiler.py"
   - "afd_plugin/v1/worker/cuda_graph.py"
   - "afd_plugin/v1/worker/dbo.py"
-  - "afd_plugin/v1/worker/ascend/forward_context.py"
-  - "afd_plugin/v1/worker/ascend/npu_ubatch_wrapper.py"
-  - "afd_plugin/v1/worker/ascend/pcp_debug.py"
-  - "afd_plugin/v1/worker/ascend/ubatch_utils.py"
-  - "afd_plugin/v1/worker/ascend/ubatching.py"
+  - "afd_plugin/v1/worker/npu/forward_context.py"
+  - "afd_plugin/v1/worker/npu/npu_ubatch_wrapper.py"
+  - "afd_plugin/v1/worker/npu/pcp_debug.py"
+  - "afd_plugin/v1/worker/npu/ubatch_utils.py"
+  - "afd_plugin/v1/worker/npu/ubatching.py"
   - "csrc/**"
   - "setup.py"
   - "MANIFEST.in"
 related_code_paths:
   - "afd_plugin/v1/worker/{attention_model_runner,ffn_model_runner}.py"
-  - "afd_plugin/v1/worker/ascend/{attention_model_runner,ffn_model_runner}.py"
+  - "afd_plugin/v1/worker/npu/{attention_model_runner,ffn_model_runner}.py"
   - "afd_plugin/connectors/{gpu,npu}/**"
 depends_on:
   - "plugin_boundary.md"
 validation_paths:
   - "tests/unit/compat/test_profiler.py"
   - "tests/unit/compat/test_ascend_ops.py"
-  - "tests/unit/compat/ascend/test_profiler.py"
+  - "tests/unit/compat/npu/test_profiler.py"
   - "tests/unit/package/test_ascend_build_files.py"
   - "tests/unit/v1/worker/test_cuda_graph.py"
   - "tests/unit/v1/worker/test_dbo.py"
@@ -50,14 +50,14 @@ verified_platform_refs:
 related_issues:
   - "#86"
   - "#129"
-last_reviewed: 2026-07-19
+last_reviewed: 2026-07-20
 ---
 
 # Execution platforms
 
 ## Purpose and boundary
 
-This document is the primary design for CUDA and Ascend mechanisms: runtime
+This document is the primary design for CUDA and NPU mechanisms: runtime
 class strategy, device graphs, native DBO/ubatching, streams, forward-context
 adaptation, profilers, native operators, packaging, and the tested runtime
 matrix. [Attention](attention_runtime.md) and [FFN](ffn_runtime.md) retain role
@@ -82,7 +82,7 @@ upstream runtime classes:
 | FFN worker | `AFDFFNWorker(Worker)` | `AFDNPUFFNWorker(NPUWorker)` |
 | FFN runner | plugin-owned minimal `GPUFFNModelRunner` | `AFDNPUFFNModelRunner(NPUModelRunner)` |
 
-The Ascend classes do not inherit CUDA AFD classes. Shared behavior is carried
+The NPU classes do not inherit CUDA AFD classes. Shared behavior is carried
 by configuration, connector payloads, forward-context metadata, graph-policy
 helpers, and small role helpers. This keeps CUDA Graph assumptions out of ACL
 Graph classes and keeps vLLM-Ascend lifecycle behavior visible through its own
@@ -95,14 +95,14 @@ the corresponding runtime stack.
 
 ## Platform mechanism map
 
-| Mechanism | CUDA owner | Ascend owner |
+| Mechanism | CUDA owner | NPU owner |
 | --- | --- | --- |
 | Worker/device lifecycle | vLLM `Worker` plus AFD role worker | vLLM-Ascend `NPUWorker` plus AFD role worker |
 | Attention execution | upstream `GPUModelRunner` extension | upstream `NPUModelRunner` extension |
 | FFN execution | plugin minimal runner | upstream `NPUModelRunner` extension |
 | Graph policy/keying | `v1/worker/cuda_graph.py` | shared policy/keying plus ACL/NPUGraph integration |
 | Native ubatching | `AFDUBatchWrapper` and vLLM ubatching APIs | `AscendUBatchWrapper`, Ascend contexts, streams, and slice utilities |
-| Profiling | `compat/profiler.py` | `compat/ascend/profiler.py` |
+| Profiling | `compat/profiler.py` | `compat/npu/profiler.py` |
 | Native operators | PyTorch/vLLM CUDA runtime used by NCCL P2P | plugin CANN A2E/E2A ops or external CAM async ops |
 | Build/packaging | no plugin CUDA extension | `setup.py`, `csrc/npu/**`, packaged `_cann_ops_custom` vendor tree |
 
@@ -163,11 +163,11 @@ They are controlled by `AFD_GPU_ATTENTION_PROFILER_*` and
 profiler on execution and stops it during shutdown. `VLLM_TORCH_PROFILER_DIR`
 is a fallback trace directory.
 
-## Ascend mechanisms
+## NPU mechanisms
 
-### Worker and runtime setup
+### NPU worker and runtime setup
 
-Ascend workers apply AFD-scoped vLLM-Ascend compatibility patches before
+NPU workers apply AFD-scoped vLLM-Ascend compatibility patches before
 upstream construction. During device initialization they:
 
 1. validate Ascend-specific feature combinations;
@@ -182,7 +182,7 @@ The all-to-all correction selects `flashinfer_all2allv` when sequence
 parallelism is disabled, matching the upstream default-worker rewrite that an
 explicit AFD worker class would otherwise miss.
 
-### Ascend forward context
+### NPU forward context
 
 Attention extends the upstream vLLM-Ascend forward flow and installs AFD data
 in `ForwardContext.additional_kwargs`. FFN uses
@@ -195,7 +195,7 @@ stage with stage attention/DP metadata, batch descriptor, and graph mode.
 Sequence-parallel intermediate tensors and DP token counts are sliced or
 reassembled to match the upstream Ascend layout.
 
-### Ascend native ubatching and DBO
+### NPU native ubatching and DBO
 
 `AscendUBatchWrapper` is plugin-owned and deliberately separate from the CUDA
 wrapper. The current path:
@@ -219,7 +219,7 @@ owned by the model/connector flow.
 
 ### ACL Graph and NPU Graph
 
-Ascend Attention follows the upstream ACL graph dispatcher while adding AFD
+NPU Attention follows the upstream ACL graph dispatcher while adding AFD
 metadata and control-plane coordination. `AscendUBatchWrapper` can capture or
 replay the two-stage model path, stores `NPUGraph` entries by total token
 count, and keeps per-stage contexts with the captured entry.
@@ -252,7 +252,7 @@ real CAM dispatch/combine operator namespace. Its loader verifies
 `async_dispatch_send`, `async_dispatch_recv`, `async_combine_send`, and
 `async_combine_recv` when the connector initializes.
 
-### Ascend profiling
+### NPU profiling
 
 Attention and FFN use independent optional `torch_npu.profiler` instances,
 controlled by `AFD_NPU_ATTENTION_PROFILER_*` and

@@ -8,8 +8,8 @@ owners:
 primary_code_paths:
   - "afd_plugin/v1/worker/ffn_model_runner.py"
   - "afd_plugin/v1/worker/ffn_worker.py"
-  - "afd_plugin/v1/worker/ascend/ffn_model_runner.py"
-  - "afd_plugin/v1/worker/ascend/ffn_worker.py"
+  - "afd_plugin/v1/worker/npu/ffn_model_runner.py"
+  - "afd_plugin/v1/worker/npu/ffn_worker.py"
 related_code_paths:
   - "afd_plugin/connectors/**"
   - "afd_plugin/model_executor/**"
@@ -41,7 +41,7 @@ related_issues:
   - "#105"
   - "#107"
   - "#129"
-last_reviewed: 2026-07-19
+last_reviewed: 2026-07-20
 ---
 
 # FFN runtime
@@ -70,7 +70,7 @@ so connector rendezvous can complete, and send API traffic only to Attention.
 | Platform | Worker | Model runner | Current connectors |
 | --- | --- | --- | --- |
 | CUDA | `afd_plugin.v1.worker.AFDFFNWorker` | `GPUFFNModelRunner` | `P2pNcclAFDConnector` |
-| Ascend | `afd_plugin.v1.worker.ascend.AFDNPUFFNWorker` | `AFDNPUFFNModelRunner` | `CAMP2pAFDConnector`, `CAMAsyncAFDConnector` |
+| NPU | `afd_plugin.v1.worker.npu.AFDNPUFFNWorker` | `AFDNPUFFNModelRunner` | `CAMP2pAFDConnector`, `CAMAsyncAFDConnector` |
 
 CUDA launch shape:
 
@@ -84,7 +84,7 @@ Ascend launch shape:
 
 ```bash
 VLLM_PLUGINS=ascend,afd vllm serve <model> \
-  --worker-cls afd_plugin.v1.worker.ascend.AFDNPUFFNWorker \
+  --worker-cls afd_plugin.v1.worker.npu.AFDNPUFFNWorker \
   --additional-config '{"afd":{"role":"ffn","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 

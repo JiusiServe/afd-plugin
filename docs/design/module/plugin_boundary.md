@@ -14,7 +14,7 @@ primary_code_paths:
   - "afd_plugin/py.typed"
   - "afd_plugin/v1/__init__.py"
   - "afd_plugin/v1/worker/__init__.py"
-  - "afd_plugin/v1/worker/ascend/__init__.py"
+  - "afd_plugin/v1/worker/npu/__init__.py"
   - "pyproject.toml"
 related_code_paths:
   - "afd_plugin/compat/**"
@@ -34,7 +34,7 @@ verified_platform_refs:
 related_issues:
   - "#89"
   - "#129"
-last_reviewed: 2026-07-19
+last_reviewed: 2026-07-20
 ---
 
 # Plugin boundary
@@ -66,7 +66,7 @@ runtime extension surfaces stable.
 | Configuration schema and parsing | [`afd_plugin/config.py`](../../../afd_plugin/config.py), [`afd_plugin/config_utils.py`](../../../afd_plugin/config_utils.py) | [`test_config.py`](../../../tests/unit/config/test_config.py) |
 | Runtime wiring validation | [`afd_plugin/validation.py`](../../../afd_plugin/validation.py) | [`test_validation.py`](../../../tests/unit/config/test_validation.py), [`test_runtime_classpaths.py`](../../../tests/unit/v1/worker/test_runtime_classpaths.py) |
 | Environment switches | [`afd_plugin/envs.py`](../../../afd_plugin/envs.py) | [`test_envs.py`](../../../tests/unit/test_envs.py) |
-| Lazy runtime exports | [`afd_plugin/v1/worker/__init__.py`](../../../afd_plugin/v1/worker/__init__.py), [`afd_plugin/v1/worker/ascend/__init__.py`](../../../afd_plugin/v1/worker/ascend/__init__.py) | [`test_runtime_classpaths.py`](../../../tests/unit/v1/worker/test_runtime_classpaths.py) |
+| Lazy runtime exports | [`afd_plugin/v1/worker/__init__.py`](../../../afd_plugin/v1/worker/__init__.py), [`afd_plugin/v1/worker/npu/__init__.py`](../../../afd_plugin/v1/worker/npu/__init__.py) | [`test_runtime_classpaths.py`](../../../tests/unit/v1/worker/test_runtime_classpaths.py) |
 
 ## Import and packaging boundary
 
@@ -147,14 +147,14 @@ endpoint, positive role counts, and role-rank range. Connector-specific schema
 and feature validation runs when the factory resolves the selected connector.
 Runtime wiring validation additionally requires an explicit worker class path;
 `worker_cls="auto"`, role mismatches, and platform mismatches fail before
-device execution. CAM async always selects the Ascend worker family.
+device execution. CAM async always selects the NPU worker family.
 
 The following paths are intentionally loadable by vLLM today:
 
 | Platform | Attention | FFN | Related runtime path |
 | --- | --- | --- | --- |
 | CUDA | `afd_plugin.v1.worker.AFDAttentionWorker` | `afd_plugin.v1.worker.AFDFFNWorker` | `AFDAttentionModelRunner`, `GPUFFNModelRunner`, `AFDUBatchWrapper` in the same module namespace |
-| Ascend | `afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker` | `afd_plugin.v1.worker.ascend.AFDNPUFFNWorker` | `AFDNPUAttentionModelRunner`, `AFDNPUFFNModelRunner` in the same module namespace |
+| NPU | `afd_plugin.v1.worker.npu.AFDNPUAttentionWorker` | `afd_plugin.v1.worker.npu.AFDNPUFFNWorker` | `AFDNPUAttentionModelRunner`, `AFDNPUFFNModelRunner` in the same module namespace |
 
 These are supported launch paths for the pinned runtime. They are not a promise
 that every class is a general third-party extension interface.

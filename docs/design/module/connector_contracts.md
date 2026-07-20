@@ -12,7 +12,7 @@ primary_code_paths:
 related_code_paths:
   - "afd_plugin/v1/worker/**"
   - "afd_plugin/model_executor/**"
-  - "afd_plugin/compat/ascend/ops.py"
+  - "afd_plugin/compat/npu/ops.py"
 depends_on:
   - "plugin_boundary.md"
   - "execution_platforms.md"
@@ -34,7 +34,7 @@ related_issues:
   - "#105"
   - "#107"
   - "#129"
-last_reviewed: 2026-07-19
+last_reviewed: 2026-07-20
 ---
 
 # Connector contracts
