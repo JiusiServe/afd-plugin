@@ -116,23 +116,24 @@ The worker owns the daemon thread, shutdown event, and captured loop error.
 The model runner owns the model, connector, profiler, and graph cache. The
 connector owns transport/process-group resources.
 
-## Daemon trigger modes
+## Daemon step selection
 
-Connectors select one of two FFN triggers through their runtime capability:
+The worker selects one of two FFN step paths from the optional
+`connector.control_plane` interface:
 
-| Trigger | Connectors | Worker behavior |
+| Selection state | Connectors | Worker behavior |
 | --- | --- | --- |
-| `dp_metadata` | `P2pNcclAFDConnector`, `CAMP2pAFDConnector` | Receive `AFDControlPayload`, then warm, capture, replay, or execute its stage map. |
-| `connector` | `CAMAsyncAFDConnector` | Block directly on a connector work item; no separate DP-metadata control plane. |
+| `control_plane is not None` | `P2pNcclAFDConnector`, `CAMP2pAFDConnector` | Call `control_plane.recv_dp_metadata_list()`, then warm, capture, replay, or execute its stage map. |
+| `control_plane is None` | `CAMAsyncAFDConnector` | Block directly on a connector work item; no separate DP-metadata control plane. |
 
 ```mermaid
 flowchart TD
-    START["FFN daemon loop"] --> TRIGGER{"connector.ffn_step_trigger"}
-    TRIGGER -->|dp_metadata| CONTROL["Receive AFDControlPayload"]
+    START["FFN daemon loop"] --> CONTROL_PLANE{"connector.control_plane"}
+    CONTROL_PLANE -->|is not None| CONTROL["Receive AFDControlPayload"]
     CONTROL --> FLAGS{"Warmup, capture, replay, or eager?"}
     FLAGS --> GRAPH["Prepare graph state or eager context"]
     GRAPH --> RECEIVE["Receive Attention payload"]
-    TRIGGER -->|connector| WORK["Block on AFDAsyncFFNWorkItem"]
+    CONTROL_PLANE -->|is None| WORK["Block on AFDAsyncFFNWorkItem"]
     WORK --> CONTEXT["Build minimal forward context"]
     RECEIVE --> COMPUTE["Role-aware FFN compute"]
     CONTEXT --> COMPUTE
@@ -140,7 +141,7 @@ flowchart TD
     SEND --> START
 ```
 
-### DP-metadata-triggered loop
+### Control-plane-driven loop
 
 ```text
 FFN initialize_from_config(...)
@@ -149,23 +150,24 @@ FFN initialize_from_config(...)
   -> start daemon thread
 
 daemon thread:
-  -> recv_dp_metadata_list()
+  -> connector.control_plane.recv_dp_metadata_list()
   -> inspect stage metadata plus warmup/capture flags
   -> capture/warm matching graph, or execute FFN forward
   -> synchronize the current accelerator
   -> repeat
 ```
 
-### Connector-triggered loop
+### Connector-driven loop
 
-The Ascend worker checks `connector.ffn_step_trigger`. For CAM async it calls
-`execute_connector_driven_step()` instead of `recv_dp_metadata_list()`. The
-runner receives an `AFDAsyncFFNWorkItem` containing hidden states, transfer
-payload, layer index, and token count, constructs a minimal forward context,
-computes that layer, sends the output through the work-item API, and repeats.
-CAM async is eager-only and does not use the FFN graph-control path.
+The Ascend worker checks `connector.control_plane`. When it is `None`, as for
+CAM async, the worker calls `execute_connector_driven_step()` instead of a
+control-plane receive. The runner receives an `AFDAsyncFFNWorkItem` containing
+hidden states, transfer payload, layer index, and token count, constructs a
+minimal forward context, computes that layer, sends the output through the
+work-item API, and repeats. CAM async is eager-only and does not use the FFN
+graph-control path.
 
-## DP-metadata-triggered forward
+## Control-plane-driven forward
 
 The current runner contract for one control payload is:
 
@@ -206,7 +208,7 @@ Detailed model construction and weight ownership remain in
 
 ## Graph dispatch contract
 
-For DP-metadata-triggered connectors, the graph cache key is derived from each
+For connectors with a control plane, the graph cache key is derived from each
 stage's token counts. Ascend also includes A/F topology when it must aggregate
 Attention counts to FFN counts. The shared dispatch states are eager, warmup,
 capture, and replay:
@@ -253,16 +255,16 @@ draft:
 - `ROLE-INV-001` (FFN part): FFN remains connector-driven and rejects
   scheduler execution.
 
-Mandatory control-plane methods and the current transfer payload shape are not
-stable contracts.
+The optional control-plane and connector work-item surfaces, and the current
+transfer payload shape, are not stable contracts.
 
 ## Upstream relationship and validation requirements
 
 Changes must be compared with the pinned vLLM worker and EngineCore behavior
 and, for Ascend, with the tested runtime evidence. Run the FFN runner,
 EngineCore patch, NPU runtime, and serving tests listed in the metadata.
-Trigger-capability or work-item changes also require connector and CAM async
-model E2E coverage.
+Control-plane selection or work-item changes also require connector and CAM
+async model E2E coverage.
 
 ## Limitations and open issues
 
@@ -273,8 +275,8 @@ items and may enable its distinct two-stage MoE pipeline. Platform-specific
 limits are centralized in
 [execution platforms](execution_platforms.md#tested-runtime-matrix).
 
-Connector metadata ownership, transfer state separation, and optional
-control-plane capability remain open in
-[#88](https://github.com/JiusiServe/afd-plugin/issues/88),
-[#105](https://github.com/JiusiServe/afd-plugin/issues/105), and
-[#107](https://github.com/JiusiServe/afd-plugin/issues/107).
+Issue [#107](https://github.com/JiusiServe/afd-plugin/issues/107) completed the
+optional control-plane split. Connector metadata ownership, transfer state
+separation, and the public shape of the connector work-item interface remain
+open in [#88](https://github.com/JiusiServe/afd-plugin/issues/88) and
+[#105](https://github.com/JiusiServe/afd-plugin/issues/105).

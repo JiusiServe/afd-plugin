@@ -99,11 +99,11 @@ name for its operator contract; both paths currently reject enabling it.
 
 ## Current connector modes
 
-| Connector | Platform | World ordering | Control plane | FFN trigger |
+| Connector | Platform | World ordering | Control plane | FFN step selection |
 | --- | --- | --- | --- | --- |
-| `P2pNcclAFDConnector` | CUDA | FFN ranks, then Attention ranks | Stage DP metadata over a separate NCCL group | `dp_metadata` |
-| `CAMP2pAFDConnector` | Ascend | FFN ranks, then Attention ranks | Stage DP metadata over Gloo plus HCCL data groups | `dp_metadata` |
-| `CAMAsyncAFDConnector` | Ascend | Attention ranks, then FFN ranks | Routing/token metadata travels with CAM dispatch payloads | `connector` |
+| `P2pNcclAFDConnector` | CUDA | FFN ranks, then Attention ranks | `P2pNcclAFDControlPlane`; stage DP metadata over a separate NCCL group | `connector.control_plane is not None` |
+| `CAMP2pAFDConnector` | Ascend | FFN ranks, then Attention ranks | `CAMP2pAFDControlPlane`; stage DP metadata over Gloo plus HCCL data groups | `connector.control_plane is not None` |
+| `CAMAsyncAFDConnector` | Ascend | Attention ranks, then FFN ranks | `None`; routing/token metadata travels with CAM dispatch payloads | `connector.control_plane is None` |
 
 The CUDA P2P mapping requires
 `num_attention_ranks >= num_ffn_ranks` and an integral A/F ratio. Each FFN rank
@@ -118,9 +118,10 @@ have independent stable ownership.
 
 ## Current base surface
 
-`AFDConnectorBase` defines the common callable shape below. It also advertises
-`uses_dp_metadata_control_plane=True` and `ffn_step_trigger="dp_metadata"`;
-CAM async overrides these with `False` and `"connector"`.
+`AFDConnectorBase` defines the lifecycle and data-plane shape below. Its
+`control_plane: AFDControlPlane | None` attribute is the explicit runtime
+selector: synchronous connectors install a control-plane object during
+construction, while CAM async leaves it as `None`.
 
 | Surface | Caller and current responsibility |
 | --- | --- |
@@ -132,13 +133,21 @@ CAM async overrides these with `False` and `"connector"`.
 | `recv_ffn_output(**kwargs)` | Attention receives the matching FFN result. |
 | `recv_attn_output(ubatch_idx=None, **kwargs)` | FFN receives an `AFDA2FTransferPayload`. |
 | `send_ffn_output(ffn_output, metadata, **kwargs)` | FFN returns a result using metadata/state from the matching receive. |
-| `update_state_from_dp_metadata(payload)` | Applies local stage shape/graph/warmup state without sending it. |
-| `send_dp_metadata_list(payload)` / `recv_dp_metadata_list()` | Moves `AFDControlPayload` from Attention to FFN for synchronous connectors. |
+
+`AFDControlPlane` is a separate abstract surface reached through
+`connector.control_plane`:
+
+| Surface | Caller and current responsibility |
+| --- | --- |
+| `update_state_from_dp_metadata(payload)` | Applies local stage shape/graph/warmup state to the owning connector without sending it. |
+| `send_dp_metadata_list(payload)` | Moves `AFDControlPayload` from Attention to FFN for control-plane-driven connectors. |
+| `recv_dp_metadata_list()` | Blocks on and returns the next control payload that drives an FFN step. |
 
 CAM async additionally exposes connector-driven work-item methods used by the
 FFN daemon and a connector-side expert-selection path. Those methods are not
-part of the current abstract base and are **draft** pending capability
-separation in [#107](https://github.com/JiusiServe/afd-plugin/issues/107).
+part of the current abstract base and remain **draft**. Issue
+[#107](https://github.com/JiusiServe/afd-plugin/issues/107) completed the
+control-plane separation but did not establish a public work-item protocol.
 
 ## Payload and metadata ownership
 
@@ -180,7 +189,9 @@ constructed -> initialized -> control/state prepared -> data exchanges -> closed
 ```mermaid
 sequenceDiagram
     participant Attention
+    participant ControlA as Attention control plane
     participant ConnectorA as Attention connector
+    participant ControlF as FFN control plane
     participant ConnectorF as FFN connector
     participant FFN
 
@@ -188,12 +199,16 @@ sequenceDiagram
     FFN->>ConnectorF: init_afd_connector()
     Note over ConnectorA,ConnectorF: Backend groups and communicators become ready
     loop Each layer and stage
-        alt DP-metadata control plane
-            Attention->>ConnectorA: send_dp_metadata_list(payload)
-            ConnectorA->>ConnectorF: AFDControlPayload
-            ConnectorF->>FFN: Update stage/graph state
+        alt control_plane is not None
+            Attention->>ControlA: update_state_from_dp_metadata(payload)
+            Attention->>ControlA: send_dp_metadata_list(payload)
+            ControlA->>ControlF: AFDControlPayload
+            FFN->>ControlF: recv_dp_metadata_list()
+            ControlF-->>FFN: AFDControlPayload
+            FFN->>ControlF: update_state_from_dp_metadata(payload)
+            ControlF->>ConnectorF: Update stage/graph state
             Attention->>ConnectorA: send_attn_output(...)
-        else Connector-driven CAM async
+        else control_plane is None (CAM async)
             Attention->>ConnectorA: CAM dispatch payload and routing metadata
         end
         ConnectorA->>ConnectorF: Hidden states and transfer metadata
@@ -234,8 +249,10 @@ against it. It currently calls private PyTorch/vLLM symbols and is therefore an
 upgrade-sensitive compatibility boundary, not a third-party process-group API.
 
 The worker owns the connector object and calls `close()`. The connector owns
-the groups/communicators it creates. Model code may invoke connector data-path
-methods through forward metadata but does not own those resources.
+the groups/communicators it creates and the control-plane object it exposes;
+the control plane does not have an independent lifetime. Model code may invoke
+connector data-path methods through forward metadata but does not own those
+resources.
 
 ## Failure behavior
 
@@ -245,9 +262,9 @@ methods through forward metadata but does not own those resources.
   backend-specific runtime error.
 - Calls that require initialization, transfer state, routing metadata, or a
   matching tensor shape fail at the concrete connector boundary.
-- Synchronous control receive is unsupported for CAM async and raises; its
-  send/update compatibility methods are no-ops because the payload travels on
-  the data path.
+- Callers must branch on `connector.control_plane is None` before using the
+  control-plane interface. GPU runners require a non-`None` control plane;
+  CAM async instead exposes connector-driven work-item methods.
 - FFN daemon loop failures are propagated by the owning runtime; connectors do
   not swallow compute or communication errors.
 - Partial initialization must remain closeable. Connector changes must test
@@ -264,10 +281,12 @@ The following RFC candidates are non-normative while this document is draft:
 - `LIFE-INV-001`: connector initialization and cleanup own all connector-created
   communication resources and do not transfer that lifetime to model code.
 - `CAP-INV-001`: runtimes choose control-driven or connector-driven FFN steps
-  from explicit connector capability data, not a concrete class-name check.
+  from the explicit optional `connector.control_plane` interface, not a
+  concrete class-name check.
 
-The current metadata/state/payload shape and mandatory control-plane methods
-are explicitly excluded from stable contracts.
+The current metadata/state/payload shape, `AFDControlPlane` surface, and
+connector-driven work-item methods are explicitly excluded from stable
+contracts.
 
 ## Upstream relationship and validation requirements
 
@@ -280,18 +299,20 @@ evidence.
 
 ## Limitations and open issues
 
-Whether `AFDConnectorBase` is public, whether sync and async connectors expose
-separate capabilities, and how metadata/state ownership is divided remain open.
-See [#88](https://github.com/JiusiServe/afd-plugin/issues/88),
-[#105](https://github.com/JiusiServe/afd-plugin/issues/105), and
-[#107](https://github.com/JiusiServe/afd-plugin/issues/107).
+Whether `AFDConnectorBase` or `AFDControlPlane` is public, how
+connector-driven work-item methods should be represented, and how
+metadata/state ownership is divided remain open. See
+[#88](https://github.com/JiusiServe/afd-plugin/issues/88) and
+[#105](https://github.com/JiusiServe/afd-plugin/issues/105).
 
-In particular, the base class currently requires control-plane methods that
-CAM async does not semantically support, the configuration allow-list is not
-derived from the factory registry, and `AFDA2FTransferPayload` combines common
-data with backend state. Connector-owned typed configuration implements the
-decision from [#89](https://github.com/JiusiServe/afd-plugin/issues/89), but it
-does not by itself make factory registration a public extension contract.
+The `AFDControlPlane` split removes control-plane methods from
+`AFDConnectorBase`, so CAM async no longer implements semantic no-ops. Its
+connector-driven work-item methods still live outside the abstract base. The
+configuration allow-list is not derived from the factory registry, and
+`AFDA2FTransferPayload` combines common data with backend state.
+Connector-owned typed configuration implements the decision from
+[#89](https://github.com/JiusiServe/afd-plugin/issues/89), but it does not by
+itself make factory registration a public extension contract.
 
 Operational material: [NCCL P2P guide](../../gpu/NCCL_P2P_CONNECTOR_USER_GUIDE.md),
 [CAM P2P guide](../../npu/CAM_P2P_CONNECTOR_USER_GUIDE.md),

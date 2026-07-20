@@ -153,10 +153,10 @@ CUDA Graph capture. For an ubatched capture, `AFDUBatchWrapper` supplies the
 exact stage slices and sends per-stage metadata before the graph body.
 
 FFN uses the Attention payload's warmup/capture flags. It creates a shared
-CUDA graph memory pool, updates connector state before `torch.cuda.graph(...)`,
-captures only model/data-plane work, and stores the graph by
-`make_ffn_graph_key()`. A matching future payload replays the graph; a missing
-key runs eagerly.
+CUDA graph memory pool, uses `connector.control_plane` to update the owning
+connector state before `torch.cuda.graph(...)`, captures only
+model/data-plane work, and stores the graph by `make_ffn_graph_key()`. A
+matching future payload replays the graph; a missing key runs eagerly.
 
 ### CUDA native ubatching
 
@@ -245,10 +245,10 @@ count, and keeps per-stage contexts with the captured entry.
 
 The FFN runner owns a separate ACL graph cache keyed by stage token counts and
 A/F topology. Warmup runs the eager FFN path. Formal capture updates connector
-state before entering `torch.npu.graph(...)`, so replay contains only model and
-data-plane operations. An unknown key falls back to eager execution. CAM async
-does not enter this path because validation requires eager execution and its
-FFN trigger has no DP metadata control plane.
+state through `connector.control_plane` before entering `torch.npu.graph(...)`,
+so replay contains only model and data-plane operations. An unknown key falls
+back to eager execution. CAM async does not enter this path because validation
+requires eager execution and `connector.control_plane` is `None`.
 
 ### Ascend native operators and packaging
 

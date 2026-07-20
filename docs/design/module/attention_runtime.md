@@ -143,15 +143,16 @@ sequenceDiagram
     participant Scheduler as vLLM scheduler
     participant Attention as Attention worker/runner
     participant Model as Role-aware model
+    participant ControlPlane as Optional AFDControlPlane
     participant Connector
     participant FFN as FFN daemon/runner
 
     Client->>Scheduler: API request
     Scheduler->>Attention: Scheduled batch
     Attention->>Attention: Build native and AFD metadata
-    opt Connector uses DP-metadata control plane
-        Attention->>Connector: AFDControlPayload
-        Connector->>FFN: Stage shapes and graph flags
+    opt connector.control_plane is not None
+        Attention->>ControlPlane: AFDControlPayload
+        ControlPlane->>FFN: Stage shapes and graph flags
     end
     Attention->>Model: Forward with afd_metadata
     loop Each split layer and stage
@@ -198,26 +199,28 @@ canonical `additional_kwargs` entry.
 
 ## Control-plane coordination
 
-For connectors whose `uses_dp_metadata_control_plane` capability is true, the
-runner sends an `AFDControlPayload` before model/data-plane transfer. It
-contains a stage-indexed DP metadata map plus `is_warmup` and
-`is_graph_capturing` flags.
+When `connector.control_plane` is not `None`, the runner sends an
+`AFDControlPayload` through that `AFDControlPlane` before model/data-plane
+transfer. The payload contains a stage-indexed DP metadata map plus
+`is_warmup` and `is_graph_capturing` flags.
 
 - A non-ubatched request sends stage `0` and uses native or fallback DP
   metadata.
 - Native ubatching sends one DP metadata item per stage.
 - A padded full-graph request sends metadata for the padded capture token
   count.
-- Connector state is updated locally before the payload is sent.
+- The control plane updates its owning connector's local state before sending
+  the payload.
 
-`P2pNcclAFDConnector` and `CAMP2pAFDConnector` use this control plane.
-`CAMAsyncAFDConnector` sets the capability to false, so the Attention runner
-does not send DP metadata; CAM dispatch payloads carry the routing and token
-metadata required to trigger FFN work.
+`P2pNcclAFDConnector` and `CAMP2pAFDConnector` install
+`P2pNcclAFDControlPlane` and `CAMP2pAFDControlPlane`, respectively.
+`CAMAsyncAFDConnector.control_plane` remains `None`, so the Attention runner
+skips DP metadata coordination; CAM dispatch payloads carry the routing and
+token metadata required to drive FFN work.
 
 ## Model handoff paths
 
-### DP-metadata-triggered path
+### Control-plane-driven path
 
 The standard model path iterates layers and stages. After Attention compute,
 the plugin-owned model creates transfer metadata, sends hidden states, and
