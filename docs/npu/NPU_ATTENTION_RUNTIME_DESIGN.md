@@ -16,6 +16,13 @@ VLLM_PLUGINS=ascend,afd vllm serve <model> \
 NPU runtime modules intentionally import real vLLM-Ascend dependencies. The
 top-level package and validation/config modules remain CPU-safe.
 
+Connector-owned settings go into the nested `connector_extra_config` mapping
+inside `additional_config["afd"]` and are parsed by the selected connector's
+`parse_extra_config()` into a typed `ConnectorExtraInfo`. For
+`CAMAsyncAFDConnector` this is `AFDAsyncExtraInfo` (`dynamic_quant`,
+`attn_ranks_per_dp`, `async_moe_ubatching`, `async_moe_num_ubatches`,
+`async_moe_split`).
+
 ## Class Boundary
 
 GPU and NPU runtimes use separate public class paths:
@@ -67,14 +74,20 @@ Current behavior:
 - installs a read-only `vllm_config.afd_config` compatibility proxy for
   vLLM-Ascend code that still reads that attribute;
 - validates unsupported NPU feature flags;
-- derives `afd_role_rank` from DP/TP ranks;
-- creates and initializes `CAMP2pAFDConnector`;
+- derives `afd_role_rank` from DP/PCP/TP ranks;
+- creates and initializes the configured connector
+  (`CAMP2pAFDConnector` or `CAMAsyncAFDConnector`);
 - constructs and loads the Attention-side DeepSeek components instead of the
   FFN MLP/expert components, while retaining shared model components required
   by the vLLM lifecycle;
 - injects AFD metadata into Ascend/vLLM forward context;
-- sends DP metadata to FFN ranks before model forward;
+- sends DP metadata to FFN ranks before model forward when the connector has a
+  control plane; connector-driven connectors (`control_plane is None`) skip
+  every control-plane send;
 - supports NPU DBO metadata splitting through plugin-owned ubatch utilities;
+- supports request-boundary async MoE ubatching for the async CAM connector,
+  building per-ubatch attention metadata and installing it on the forward
+  context under a dedicated `additional_kwargs` key;
 - handles vLLM-Ascend graph parameter updates without capturing connector
   control-plane sends into the model graph;
 - steps/stops the plugin-owned NPU profiler.
@@ -88,7 +101,8 @@ OpenAI request
   -> AFDNPUAttentionModelRunner.execute_model(...)
   -> vLLM-Ascend builds scheduler/input/attention metadata
   -> AFD runner installs AFD metadata
-  -> AFD runner sends DP metadata through CAMP2pAFDConnector
+  -> AFD runner sends DP metadata through the connector control plane
+     (skipped for connector-driven connectors)
   -> model forward under Ascend forward context
   -> plugin-owned model wrapper sends Attention output
   -> NPU FFN side computes and sends FFN output
@@ -108,42 +122,58 @@ NPU also mirrors metadata to `forward_context.afd_metadata` through
 `mirror_afd_metadata_on_forward_context`, because parts of vLLM-Ascend and the
 ported model path read that attribute directly.
 
-DP metadata follows the same semantics as GPU:
+DP metadata follows the same semantics as GPU when a control plane exists:
 
 ```text
 forward_context.dp_metadata
   -> dp_metadata_list
-  -> connector.update_state_from_dp_metadata(...)
-  -> connector.send_dp_metadata_list(...)
+  -> connector.control_plane.update_state_from_dp_metadata(...)
+  -> connector.control_plane.send_dp_metadata_list(...)
 ```
 
 When DP size is 1 and vLLM does not provide `DPMetadata`, the runner can build
 the plugin-owned fallback `AFDDPMetadata`.
 
-## Connector
+For connector-driven connectors there is no DP metadata exchange. With DP > 1
+the runner also skips the DP token-count synchronization and pads every rank to
+its own padded token count, since CAM dispatch/combine carries the routing
+metadata inside the data plane.
 
-NPU Attention uses `CAMP2pAFDConnector`, implemented by
-`afd_plugin.connectors.npu.camp2p`. The connector initializes HCCL/Gloo process
-groups and loads plugin-owned Ascend custom ops lazily when
-`init_afd_connector()` runs.
+## Connectors
 
-The custom ops are optional at package import time, but NPU AFD data path
+Both NPU connectors are implemented under `afd_plugin.connectors.npu` and are
+created through `AFDConnectorFactory`:
+
+- `CAMP2pAFDConnector` (`camp2p`): synchronous CAM point-to-point transfer.
+  Exposes `CAMP2pAFDControlPlane` as `connector.control_plane` for DP metadata
+  exchange, so FFN steps are driven by control-plane payloads. Initializes
+  HCCL/Gloo process groups and loads plugin-owned Ascend custom ops lazily when
+  `init_afd_connector()` runs.
+- `CAMAsyncAFDConnector` (`async_cam`): asynchronous CAM dispatch/combine.
+  CAM operators own both the collective data motion and its routing metadata,
+  so the connector has no control plane (`control_plane` stays `None`) and
+  drives FFN steps from its own receive loop. Attention ranks occupy the
+  first part of the HCCL world and FFN ranks the second.
+
+The custom ops are optional at package import time, but the NPU AFD data path
 requires an Ascend ops build. This build is enabled by default; set
 `AFD_BUILD_ASCEND_OPS=0` only when intentionally skipping the NPU extension.
 
-```bash
-AFD_BUILD_ASCEND_OPS=0
-```
+See `docs/npu/CAMP2P_CONNECTOR_USER_GUIDE.md` and
+`docs/npu/CAM_ASYNC_CONNECTOR_USER_GUIDE.md` for configuration contracts and
+launch examples.
 
 ## Supported And Rejected Features
 
 Supported:
 
 - vLLM `0.19.1` runtime stack with vLLM-Ascend model runner v1;
-- `--additional-config '{"afd": ...}'`;
-- `CAMP2pAFDConnector`;
+- `--additional-config '{"afd": ...}'` with connector-owned
+  `connector_extra_config`;
+- `CAMP2pAFDConnector` and `CAMAsyncAFDConnector`;
 - eager Attention path;
 - DBO with exactly two ubatches;
+- async MoE ubatching with the async CAM connector;
 - role-aware DeepSeek model construction and Attention-side weight loading.
 
 Rejected by validation:
@@ -151,4 +181,5 @@ Rejected by validation:
 - vLLM-Ascend model runner v2;
 - `compute_gate_on_attention=true`;
 - `quant_mode != 0`;
-- DBO with a ubatch count other than two.
+- DBO with a ubatch count other than two;
+- `connector_extra_config` keys unknown to the selected connector.

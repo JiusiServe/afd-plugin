@@ -46,7 +46,13 @@ if TYPE_CHECKING:
 
 
 class GPUFFNModelRunner(LoRAModelRunnerMixin):
-    """FFN model runner for connector-driven AFD GPU execution."""
+    """FFN model runner for AFD GPU execution.
+
+    FFN steps are driven by the connector control plane rather than the vLLM
+    scheduler. GPU only supports control-plane-driven connectors, so the runner
+    asserts ``connector.control_plane is not None`` at construction; connectors
+    without a control plane (``control_plane is None``) are not supported.
+    """
 
     afd_expected_role = "ffn"
 
@@ -71,6 +77,11 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             vllm_config,
             self.afd_config,
         )
+        # TODO: Async GPU connector will be supported in the future
+        assert self.connector.control_plane is not None, (
+            "GPU model runner only supports control-plane-driven connectors"
+        )
+
         self.model: Any | None = None
         self.model_memory_usage = 0
         self.num_layers = int(self.model_config.hf_config.num_hidden_layers)
@@ -155,7 +166,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         update_connector_state: bool = True,
     ) -> torch.Tensor | None:
         if update_connector_state:
-            self.connector.update_state_from_dp_metadata(
+            self.connector.control_plane.update_state_from_dp_metadata(
                 _make_dp_metadata_payload(
                     dp_metadata_list,
                     is_graph_capturing=is_graph_capturing,
@@ -222,7 +233,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             cudagraph = torch.cuda.CUDAGraph()
             # DP metadata receive/update is a control-plane side effect and must
             # complete before CUDA graph capture starts.
-            self.connector.update_state_from_dp_metadata(
+            self.connector.control_plane.update_state_from_dp_metadata(
                 _make_dp_metadata_payload(
                     dp_metadata_list,
                     is_graph_capturing=is_attn_graph_capturing,
@@ -264,7 +275,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         try:
             with graph_capture(device=self.device):
                 if is_warmup:
-                    self.connector.update_state_from_dp_metadata(
+                    self.connector.control_plane.update_state_from_dp_metadata(
                         _make_dp_metadata_payload(
                             dp_metadata_list,
                             is_graph_capturing=False,

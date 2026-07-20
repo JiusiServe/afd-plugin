@@ -34,7 +34,7 @@ def run_attention_gate_afd_forward(
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Run the Attention-side gate AFD path used by async CAM."""
 
-    afd_connector = afd_metadata.afd_connector
+    afd_connector = afd_metadata.connector
     forward_context = get_forward_context()
     stage_idx = int(
         getattr(forward_context, "ubatch_idx", afd_metadata.stage_idx),
@@ -116,7 +116,7 @@ def run_async_moe_ubatch_afd_forward(
 
     forward_context = get_forward_context()
     ubatch_slices = async_moe_ubatch_metadata["ubatch_slices"]
-    afd_connector = afd_metadata.afd_connector
+    afd_connector = afd_metadata.connector
     first_moe_layer = int(model.config.first_k_dense_replace)
     dense_end_layer = min(model.end_layer, first_moe_layer)
     for layer in islice(model.layers, model.start_layer, dense_end_layer):

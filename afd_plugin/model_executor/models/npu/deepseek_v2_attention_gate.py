@@ -34,7 +34,7 @@ def compute_attention_gate_topk(
             "AFD connector required for compute_gate_on_attention "
             "but not found in forward context",
         )
-    afd_connector = afd_metadata.afd_connector
+    afd_connector = afd_metadata.connector
     mix_placement = bool(
         getattr(layer.vllm_config, "additional_config", {}).get(
             "mix_placement",

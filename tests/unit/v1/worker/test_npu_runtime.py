@@ -27,11 +27,13 @@ from afd_plugin.connectors import (
 
 class _RecordingConnector:
     world_rank = 0
-    uses_dp_metadata_control_plane = True
 
     def __init__(self):
         self.dp_metadata_updates = []
         self.sent_dp_metadata_lists = []
+        # The runners reach the control plane through connector.control_plane;
+        # the fake serves as both.
+        self.control_plane = self
 
     def update_state_from_dp_metadata(self, payload):
         assert isinstance(payload, AFDControlPayload)
@@ -55,11 +57,9 @@ class _RecordingConnector:
 
 
 class _AsyncRecordingConnector(_RecordingConnector):
-    uses_dp_metadata_control_plane = False
-    ffn_step_trigger = "connector"
-
     def __init__(self):
         super().__init__()
+        self.control_plane = None
 
 
 class _FakeFFNConnector:
@@ -72,6 +72,9 @@ class _FakeFFNConnector:
         self.ffn_size = ffn_size
         self.world_rank = world_rank
         self.topology = SimpleNamespace(role_rank=role_rank)
+        # The runners reach the control plane through connector.control_plane;
+        # the fake serves as both.
+        self.control_plane = self
 
     def update_state_from_dp_metadata(self, payload):
         assert isinstance(payload, AFDControlPayload)
@@ -211,7 +214,7 @@ def _new_ffn_worker():
 def test_npu_attention_runner_builds_and_sets_metadata():
     runner = _new_attention_runner()
     runner.vllm_config = _vllm_config(role="attention")
-    runner.afd_connector = _RecordingConnector()
+    runner.connector = _RecordingConnector()
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
     runner._afd_pending_metadata = None
@@ -227,8 +230,8 @@ def test_npu_attention_runner_builds_and_sets_metadata():
 
     metadata = forward_context.additional_kwargs["afd_metadata"]
     assert metadata.tokens_lens == [1]
-    assert len(runner.afd_connector.dp_metadata_updates) == 1
-    assert len(runner.afd_connector.sent_dp_metadata_lists) == 1
+    assert len(runner.connector.dp_metadata_updates) == 1
+    assert len(runner.connector.sent_dp_metadata_lists) == 1
 
 
 def test_npu_attention_async_connector_skips_dp_metadata_control_plane():
@@ -239,7 +242,7 @@ def test_npu_attention_async_connector_skips_dp_metadata_control_plane():
         async_dp=True,
         data_parallel_size=2,
     )
-    runner.afd_connector = _AsyncRecordingConnector()
+    runner.connector = _AsyncRecordingConnector()
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
     runner._afd_pending_metadata = None
@@ -255,14 +258,14 @@ def test_npu_attention_async_connector_skips_dp_metadata_control_plane():
 
     metadata = forward_context.additional_kwargs["afd_metadata"]
     assert metadata.tokens_lens == [3]
-    assert runner.afd_connector.dp_metadata_updates == []
-    assert runner.afd_connector.sent_dp_metadata_lists == []
+    assert runner.connector.dp_metadata_updates == []
+    assert runner.connector.sent_dp_metadata_lists == []
 
 
 def test_npu_attention_runner_builds_dp_fallback():
     runner = _new_attention_runner()
     runner.vllm_config = _vllm_config(role="attention")
-    runner.afd_connector = object()
+    runner.connector = object()
     runner._afd_transaction_counter = 0
     runner._afd_pending_metadata = runner._build_afd_metadata(None, 7)
 
@@ -277,7 +280,7 @@ def test_npu_attention_runner_builds_dp_fallback():
 def test_npu_attention_runner_sends_graph_flags():
     runner = _new_attention_runner()
     runner.vllm_config = _vllm_config(role="attention")
-    runner.afd_connector = _RecordingConnector()
+    runner.connector = _RecordingConnector()
     runner._is_warmup = True
     runner._afd_is_graph_capturing = True
     runner._afd_transaction_counter = 0
@@ -285,8 +288,8 @@ def test_npu_attention_runner_sends_graph_flags():
 
     runner._send_dp_metadata(SimpleNamespace(num_tokens_across_dp_cpu=[3]), None)
 
-    assert runner.afd_connector.dp_metadata_updates[0][1:] == (True, True)
-    assert runner.afd_connector.sent_dp_metadata_lists[0][1:] == (True, True)
+    assert runner.connector.dp_metadata_updates[0][1:] == (True, True)
+    assert runner.connector.sent_dp_metadata_lists[0][1:] == (True, True)
 
 
 def test_npu_attention_runner_sends_per_ubatch_dp_metadata():
@@ -298,7 +301,7 @@ def test_npu_attention_runner_sends_per_ubatch_dp_metadata():
         num_ubatches=2,
         ubatch_size=4,
     )
-    runner.afd_connector = _RecordingConnector()
+    runner.connector = _RecordingConnector()
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
 
@@ -317,11 +320,11 @@ def test_npu_attention_runner_sends_per_ubatch_dp_metadata():
 
     runner._send_dp_metadata(None, ubatch_slices)
 
-    dp_metadata_list = runner.afd_connector.dp_metadata_updates[0][0]
+    dp_metadata_list = runner.connector.dp_metadata_updates[0][0]
     assert sorted(dp_metadata_list) == [0, 1]
     assert _tokens(dp_metadata_list[0]) == [4]
     assert _tokens(dp_metadata_list[1]) == [3]
-    sent_dp_metadata_list = runner.afd_connector.sent_dp_metadata_lists[0][0]
+    sent_dp_metadata_list = runner.connector.sent_dp_metadata_lists[0][0]
     assert sorted(sent_dp_metadata_list) == [0, 1]
     assert _tokens(sent_dp_metadata_list[0]) == [4]
     assert _tokens(sent_dp_metadata_list[1]) == [3]
@@ -543,7 +546,7 @@ def test_npu_create_ascend_forward_context_marks_current_ubatch(monkeypatch):
         tokens_start_loc=[0, 4],
         requests_start_loc=[0, 1],
         stage_idx=0,
-        afd_connector=object(),
+        connector=object(),
         tokens_lens=[4, 3],
         num_stages=2,
         tokens_unpadded_lens=[4, 3],
@@ -694,7 +697,7 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
     )
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
-    runner.connector = SimpleNamespace(uses_dp_metadata_control_plane=False)
+    runner.connector = SimpleNamespace(control_plane=None)
     runner.model = _RecordingFakeModel()
     runner.num_layers = 1
     runner.max_num_tokens = 16

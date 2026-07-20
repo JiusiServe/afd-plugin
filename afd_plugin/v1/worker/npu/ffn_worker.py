@@ -111,12 +111,12 @@ class AFDNPUFFNWorker(NPUWorker):
 
         torch.npu.set_device(self.device)
         while not event.is_set():
-            if self.model_runner.connector.ffn_step_trigger == "connector":
+            if self.model_runner.connector.control_plane is None:
                 self.model_runner.execute_connector_driven_step()
                 torch.npu.synchronize()
                 continue
 
-            payload = self.model_runner.connector.recv_dp_metadata_list()
+            payload = self.model_runner.connector.control_plane.recv_dp_metadata_list()
             dp_metadata_list = payload.dp_metadata_list
             is_attn_graph_capturing = payload.is_graph_capturing
             is_warmup = payload.is_warmup

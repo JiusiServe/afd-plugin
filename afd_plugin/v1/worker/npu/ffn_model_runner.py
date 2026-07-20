@@ -126,7 +126,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         return None
 
     def execute_connector_driven_step(self) -> None:
-        if bool(getattr(self.connector, "uses_dp_metadata_control_plane", True)):
+        if self.connector.control_plane is not None:
             raise RuntimeError(
                 "execute_connector_driven_step requires a connector-driven "
                 "AFD connector",
@@ -195,7 +195,11 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         update_connector_state: bool = True,
     ) -> torch.Tensor | None:
         if update_connector_state:
-            self.connector.update_state_from_dp_metadata(
+            assert self.connector.control_plane, (
+                "Only DP metadata control plane supports ",
+                "update_connector_state == True.",
+            )
+            self.connector.control_plane.update_state_from_dp_metadata(
                 _make_dp_metadata_payload(
                     dp_metadata_list,
                     is_graph_capturing=is_graph_capturing,
@@ -206,7 +210,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             tokens_start_loc=[],
             requests_start_loc=[],
             stage_idx=0,
-            afd_connector=self.connector,
+            connector=self.connector,
             tokens_lens=[],
             num_stages=num_stages,
         )
@@ -302,7 +306,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 tokens_start_loc=[0],
                 requests_start_loc=[0],
                 stage_idx=stage_idx,
-                afd_connector=self.connector,
+                connector=self.connector,
                 tokens_lens=[num_tokens],
                 num_stages=1,
                 tokens_unpadded_lens=[num_tokens],
@@ -387,6 +391,9 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
         is_attn_graph_capturing: bool = True,
     ) -> None:
+        assert self.connector.control_plane, (
+            "Only DP metadata control plane supports graph capturing."
+        )
         graph_key = self._make_graph_key(dp_metadata_list)
         if graph_key in self._acl_graphs:
             logger.debug(
@@ -398,7 +405,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         logger.debug("AFD NPU FFN capturing ACL graph for key=%s", graph_key)
         graph = torch.npu.NPUGraph()
         logger.debug("AFD NPU FFN created NPUGraph for key=%s", graph_key)
-        self.connector.update_state_from_dp_metadata(
+        self.connector.control_plane.update_state_from_dp_metadata(
             _make_dp_metadata_payload(
                 dp_metadata_list,
                 is_graph_capturing=is_attn_graph_capturing,

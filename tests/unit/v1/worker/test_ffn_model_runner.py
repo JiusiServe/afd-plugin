@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections import deque
 from types import SimpleNamespace
 
@@ -28,6 +29,9 @@ class _FakeConnector:
         self.ffn_outputs = []
         self.dp_metadata_updates = []
         self.closed = False
+        # The runners reach the control plane through connector.control_plane;
+        # the fake serves as both.
+        self.control_plane = self
 
     def update_state_from_dp_metadata(self, payload):
         assert isinstance(payload, AFDControlPayload)
@@ -53,6 +57,12 @@ class _FakeConnector:
 
     def close(self):
         self.closed = True
+
+
+class _ConnectorDrivenFakeConnector(_FakeConnector):
+    def __init__(self):
+        super().__init__()
+        self.control_plane = None
 
 
 class _FakeModel:
@@ -298,6 +308,20 @@ def test_ffn_worker_scheduler_execute_model_fails_fast():
 
     with pytest.raises(RuntimeError, match="connector-driven"):
         worker.execute_model(scheduler_output=object())
+
+
+def test_ffn_worker_loop_rejects_connector_without_control_plane():
+    worker = object.__new__(AFDFFNWorker)
+    event = threading.Event()
+
+    worker._ffn_shutdown_event = event
+    worker.device = SimpleNamespace(type="cpu")
+    worker.model_runner = SimpleNamespace(
+        connector=_ConnectorDrivenFakeConnector(),
+    )
+
+    with pytest.raises(NotImplementedError, match="control-plane-driven"):
+        worker._run_ffn_server_loop()
 
 
 def test_ffn_worker_loop_logs_unexpected_thread_errors(caplog):

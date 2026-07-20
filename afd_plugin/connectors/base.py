@@ -53,8 +53,11 @@ class AFDConnectorBase(ABC):
     common runtime contract shared by those implementations.
     """
 
-    uses_dp_metadata_control_plane = True
-    ffn_step_trigger = "dp_metadata"
+    # An optional DP metadata control plane. When set, FFN steps are driven by
+    # DP metadata received over the control plane. When ``None``, the connector
+    # has no control plane and FFN steps are driven directly by the connector
+    # receive loop.
+    control_plane: AFDControlPlane | None = None
 
     @classmethod
     @abstractmethod
@@ -236,9 +239,9 @@ class AFDConnectorBase(ABC):
         """
         raise NotImplementedError
 
-    # ==============================
-    # DP metadata control plane
-    # ==============================
+
+class AFDControlPlane(ABC):
+    """DP metadata control plane"""
 
     @abstractmethod
     def update_state_from_dp_metadata(
@@ -289,4 +292,4 @@ class AFDConnectorBase(ABC):
         raise NotImplementedError
 
 
-__all__ = ["AFDConnectorBase", "ConnectorExtraInfo"]
+__all__ = ["AFDConnectorBase", "AFDControlPlane", "ConnectorExtraInfo"]

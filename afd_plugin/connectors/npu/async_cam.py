@@ -50,7 +50,6 @@ from afd_plugin.connectors.base import (
 )
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
-    AFDControlPayload,
     AFDF2ATransferPayload,
     AFDTransferMetadata,
     AFDTransferState,
@@ -205,12 +204,12 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
 
     Attention ranks occupy the first part of the HCCL world and FFN ranks the
     second. CAM dispatch/combine operators own both the collective data motion
-    and its routing metadata, so ``uses_dp_metadata_control_plane`` is false
-    and FFN work is triggered directly by the connector receive loop.
+    and its routing metadata, so this connector has no DP metadata control
+    plane (``control_plane`` stays ``None``) and FFN work is triggered directly
+    by the connector receive loop.
     """
 
-    uses_dp_metadata_control_plane = False
-    ffn_step_trigger = "connector"
+    control_plane = None
 
     @classmethod
     def parse_extra_config(
@@ -312,26 +311,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self._placeholder = None
         self._pending_attention_payloads.clear()
         self._initialized = False
-
-    def update_state_from_dp_metadata(
-        self,
-        payload: AFDControlPayload,
-    ) -> None:
-        """No-op because CAM async carries metadata in dispatch payloads."""
-        return None
-
-    def send_dp_metadata_list(
-        self,
-        payload: AFDControlPayload,
-    ) -> None:
-        """No-op because CAM async has no separate DP-metadata control plane."""
-        return None
-
-    def recv_dp_metadata_list(self) -> AFDControlPayload:
-        """Reject control-plane receives, which CAM async never performs."""
-        raise RuntimeError(
-            "CAMAsyncAFDConnector does not use the DP metadata control plane",
-        )
 
     def select_experts(self, **kwargs: Any) -> tuple[Tensor, Tensor]:
         """Run the vLLM Ascend expert selector on the Attention side."""

@@ -342,7 +342,7 @@ class AFDForwardContextMetadata:
     tokens_start_loc: list[int]
     requests_start_loc: list[int]
     stage_idx: int
-    afd_connector: AFDConnectorBase
+    connector: AFDConnectorBase
     tokens_lens: list[int]
     num_stages: int
     transaction_id: str | None = None
