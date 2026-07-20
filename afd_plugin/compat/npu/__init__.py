@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """Ascend/vLLM-Ascend compatibility helpers for AFD runtime classes."""
 
-from afd_plugin.compat.ascend.ops import (
+from afd_plugin.compat.npu.ops import (
     AFD_ASCEND_OPS_NAMESPACE,
     AFD_ASCEND_VENDOR_NAME,
     AFD_CUST_OPAPI_ENV,
@@ -18,7 +18,7 @@ from afd_plugin.compat.ascend.ops import (
     get_afd_cust_opapi_path,
     has_afd_ascend_ops,
 )
-from afd_plugin.compat.ascend.runtime import (
+from afd_plugin.compat.npu.runtime import (
     apply_afd_ascend_patches_if_needed,
     ascend_forward_context,
     fail_if_unsupported_npu_afd_features,

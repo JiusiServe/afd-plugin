@@ -112,7 +112,7 @@ out in the patch function comments.
 1. **Patching**:
     - `afd_plugin/compat/patches/` - vLLM compatibility patches
     - `afd_plugin/compat/patches/npu/` - NPU-specific compatibility patches
-    - `afd_plugin/compat/ascend/` - Ascend runtime compatibility patches
+    - `afd_plugin/compat/npu/` - Ascend NPU runtime compatibility patches
     - Patch is not the best solution for all cases. Use it when necessary.
 
 2. **Inheritance**:

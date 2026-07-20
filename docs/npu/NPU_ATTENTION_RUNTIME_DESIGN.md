@@ -1,7 +1,7 @@
 # NPU Attention Runtime Design
 
 This document describes the current Ascend NPU Attention-side runtime in
-`afd_plugin.v1.worker.ascend`.
+`afd_plugin.v1.worker.npu`.
 
 ## Entry Point
 
@@ -9,7 +9,7 @@ NPU Attention is selected with an explicit vLLM-Ascend worker class:
 
 ```bash
 VLLM_PLUGINS=ascend,afd vllm serve <model> \
-  --worker-cls afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker \
+  --worker-cls afd_plugin.v1.worker.npu.AFDNPUAttentionWorker \
   --additional-config '{"afd":{"role":"attention","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
@@ -26,8 +26,8 @@ GPU:
   afd_plugin.v1.worker.AFDAttentionModelRunner
 
 NPU:
-  afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker
-  afd_plugin.v1.worker.ascend.AFDNPUAttentionModelRunner
+  afd_plugin.v1.worker.npu.AFDNPUAttentionWorker
+  afd_plugin.v1.worker.npu.AFDNPUAttentionModelRunner
 ```
 
 The NPU classes inherit vLLM-Ascend classes directly. They do not inherit the

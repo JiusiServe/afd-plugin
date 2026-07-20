@@ -114,7 +114,7 @@ def register_afd() -> None:
         )
 
     try:
-        from afd_plugin.compat.ascend import apply_afd_ascend_patches_if_needed
+        from afd_plugin.compat.npu import apply_afd_ascend_patches_if_needed
 
         apply_afd_ascend_patches_if_needed()
         if importlib.util.find_spec("vllm_ascend") is not None:

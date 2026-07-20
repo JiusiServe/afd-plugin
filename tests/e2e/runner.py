@@ -349,9 +349,9 @@ def build_vllm_command(
         afd_config["afd"]["connector_extra_config"] = connector_extra_config
     if is_npu:
         worker_cls = (
-            "afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker"
+            "afd_plugin.v1.worker.npu.AFDNPUAttentionWorker"
             if role == "attention"
-            else "afd_plugin.v1.worker.ascend.AFDNPUFFNWorker"
+            else "afd_plugin.v1.worker.npu.AFDNPUFFNWorker"
         )
     else:
         worker_cls = (

@@ -40,7 +40,7 @@ def test_maybe_apply_dbo_yield_does_not_probe_ascend(monkeypatch):
     real_import = builtins.__import__
 
     def fail_on_ascend_import(name, globals=None, locals=None, fromlist=(), level=0):
-        if name.startswith("afd_plugin.v1.worker.ascend"):
+        if name.startswith("afd_plugin.v1.worker.npu"):
             pytest.fail(f"unexpected Ascend import from DBO yield helper: {name}")
         return real_import(name, globals, locals, fromlist, level)
 
@@ -59,7 +59,7 @@ def test_dbo_yield_prefers_plugin_ascend_context(monkeypatch):
 
     monkeypatch.setitem(
         sys.modules,
-        "afd_plugin.v1.worker.ascend.ubatching",
+        "afd_plugin.v1.worker.npu.ubatching",
         SimpleNamespace(
             dbo_enabled=lambda: True,
             dbo_yield=lambda: calls.append("ascend"),
@@ -83,7 +83,7 @@ def test_dbo_yield_falls_back_to_vllm_context(monkeypatch):
 
     monkeypatch.setitem(
         sys.modules,
-        "afd_plugin.v1.worker.ascend.ubatching",
+        "afd_plugin.v1.worker.npu.ubatching",
         SimpleNamespace(
             dbo_enabled=lambda: False,
             dbo_yield=lambda: calls.append("ascend"),

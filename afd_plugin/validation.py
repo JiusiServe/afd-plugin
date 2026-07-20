@@ -17,16 +17,12 @@ FFN_WORKER_FQCN: Final[str] = "afd_plugin.v1.worker.AFDFFNWorker"
 ATTENTION_MODEL_RUNNER_FQCN: Final[str] = "afd_plugin.v1.worker.AFDAttentionModelRunner"
 FFN_MODEL_RUNNER_FQCN: Final[str] = "afd_plugin.v1.worker.GPUFFNModelRunner"
 UBATCH_WRAPPER_FQCN: Final[str] = "afd_plugin.v1.worker.AFDUBatchWrapper"
-NPU_ATTENTION_WORKER_FQCN: Final[str] = (
-    "afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker"
-)
-NPU_FFN_WORKER_FQCN: Final[str] = "afd_plugin.v1.worker.ascend.AFDNPUFFNWorker"
+NPU_ATTENTION_WORKER_FQCN: Final[str] = "afd_plugin.v1.worker.npu.AFDNPUAttentionWorker"
+NPU_FFN_WORKER_FQCN: Final[str] = "afd_plugin.v1.worker.npu.AFDNPUFFNWorker"
 NPU_ATTENTION_MODEL_RUNNER_FQCN: Final[str] = (
-    "afd_plugin.v1.worker.ascend.AFDNPUAttentionModelRunner"
+    "afd_plugin.v1.worker.npu.AFDNPUAttentionModelRunner"
 )
-NPU_FFN_MODEL_RUNNER_FQCN: Final[str] = (
-    "afd_plugin.v1.worker.ascend.AFDNPUFFNModelRunner"
-)
+NPU_FFN_MODEL_RUNNER_FQCN: Final[str] = "afd_plugin.v1.worker.npu.AFDNPUFFNModelRunner"
 
 
 def normalize_qualname(value: str) -> str:

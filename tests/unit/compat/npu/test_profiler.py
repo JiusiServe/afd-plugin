@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from afd_plugin.compat.ascend.profiler import (
+from afd_plugin.compat.npu.profiler import (
     afd_npu_profiler_config,
     create_afd_npu_profiler,
     step_afd_npu_profiler,

@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from afd_plugin.compat.ascend import ops
-from afd_plugin.compat.ascend.ops import (
+from afd_plugin.compat.npu import ops
+from afd_plugin.compat.npu.ops import (
     ensure_afd_ascend_ops_loaded,
     ensure_cam_async_ops_available,
     ensure_cam_p2p_ops_available,

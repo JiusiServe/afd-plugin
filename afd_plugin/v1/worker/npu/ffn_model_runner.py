@@ -14,11 +14,11 @@ from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm_ascend.worker.model_runner_v1 import NPUModelRunner, graph_capture
 
-from afd_plugin.compat.ascend import (
+from afd_plugin.compat.npu import (
     ascend_forward_context,
     fail_if_unsupported_npu_afd_features,
 )
-from afd_plugin.compat.ascend.profiler import (
+from afd_plugin.compat.npu.profiler import (
     create_afd_npu_profiler,
     step_afd_npu_profiler,
     stop_afd_npu_profiler,

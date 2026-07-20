@@ -5,12 +5,10 @@
 from importlib import import_module
 
 _RUNTIME_EXPORTS = {
-    "AFDNPUAttentionModelRunner": (
-        "afd_plugin.v1.worker.ascend.attention_model_runner"
-    ),
-    "AFDNPUAttentionWorker": "afd_plugin.v1.worker.ascend.attention_worker",
-    "AFDNPUFFNModelRunner": "afd_plugin.v1.worker.ascend.ffn_model_runner",
-    "AFDNPUFFNWorker": "afd_plugin.v1.worker.ascend.ffn_worker",
+    "AFDNPUAttentionModelRunner": "afd_plugin.v1.worker.npu.attention_model_runner",
+    "AFDNPUAttentionWorker": "afd_plugin.v1.worker.npu.attention_worker",
+    "AFDNPUFFNModelRunner": "afd_plugin.v1.worker.npu.ffn_model_runner",
+    "AFDNPUFFNWorker": "afd_plugin.v1.worker.npu.ffn_worker",
 }
 
 

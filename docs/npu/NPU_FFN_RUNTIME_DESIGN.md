@@ -1,7 +1,7 @@
 # NPU FFN Runtime Design
 
 This document describes the current Ascend NPU FFN-side runtime in
-`afd_plugin.v1.worker.ascend`.
+`afd_plugin.v1.worker.npu`.
 
 ## Entry Point
 
@@ -10,7 +10,7 @@ vLLM-Ascend worker class:
 
 ```bash
 VLLM_PLUGINS=ascend,afd vllm serve <model> \
-  --worker-cls afd_plugin.v1.worker.ascend.AFDNPUFFNWorker \
+  --worker-cls afd_plugin.v1.worker.npu.AFDNPUFFNWorker \
   --additional-config '{"afd":{"role":"ffn","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
@@ -27,8 +27,8 @@ GPU:
   afd_plugin.v1.worker.GPUFFNModelRunner
 
 NPU:
-  afd_plugin.v1.worker.ascend.AFDNPUFFNWorker
-  afd_plugin.v1.worker.ascend.AFDNPUFFNModelRunner
+  afd_plugin.v1.worker.npu.AFDNPUFFNWorker
+  afd_plugin.v1.worker.npu.AFDNPUFFNModelRunner
 ```
 
 `AFDNPUFFNModelRunner` inherits vLLM-Ascend `NPUModelRunner` directly instead

@@ -6,8 +6,8 @@ import sys
 from contextlib import contextmanager
 from types import ModuleType, SimpleNamespace
 
-from afd_plugin.compat.ascend import runtime as ascend_runtime
-from afd_plugin.compat.ascend.runtime import fix_all2all_backend_for_afd
+from afd_plugin.compat.npu import runtime as ascend_runtime
+from afd_plugin.compat.npu.runtime import fix_all2all_backend_for_afd
 
 
 def _vllm_config(*, enable_sp=False, all2all_backend="allgather_reducescatter"):
