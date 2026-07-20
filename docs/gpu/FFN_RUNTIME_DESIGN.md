@@ -30,7 +30,7 @@ Current behavior:
 - replaces the native model runner with `GPUFFNModelRunner`;
 - returns an empty KV cache spec;
 - skips normal warmup by returning `0.0` from `compile_or_warm_up_model`;
-- starts and stops a connector-driven background FFN loop;
+- starts and stops a background FFN daemon loop;
 - fails fast if vLLM scheduler calls `execute_model()`;
 - propagates loop exceptions through `raise_ffn_loop_error_if_any()`.
 
@@ -47,7 +47,7 @@ execution.
 Current behavior:
 
 - parses and validates `AFDConfig` with expected role `ffn`;
-- derives `afd_role_rank` from DP/TP ranks when needed;
+- derives `afd_role_rank` from DP/PCP/TP ranks when needed;
 - validates CUDA graph mode;
 - creates the configured connector through `AFDConnectorFactory`;
 - loads the model through vLLM's model loader; the plugin-owned DeepSeek
@@ -59,7 +59,7 @@ Current behavior:
 - establishes a minimal vLLM forward context;
 - calls `model.compute_ffn_output(hidden_states, layer_idx)` when available;
 - sends FFN output back through the connector;
-- owns FFN CUDA graph cache keyed by DP metadata shape;
+- owns the FFN CUDA graph cache keyed by DP metadata shape;
 - closes connector/profiler resources on shutdown.
 
 ## Daemon Loop
@@ -71,32 +71,59 @@ AFDFFNWorker.initialize_from_config(...)
   -> start_ffn_server_loop()
 
 background loop:
-  -> recv_dp_metadata_list()
+  -> if connector.ffn_step_trigger is Trigger.CONNECTOR:
+       -> model_runner.execute_connector_driven_step()
+       -> torch.cuda.synchronize(); continue
+  -> control_plane.recv_dp_metadata_list()
   -> if graph warmup/capture: model_runner.capture_model(...)
   -> else: model_runner.execute_model(dp_metadata_list=...)
   -> torch.cuda.synchronize()
 ```
 
-The loop is connector-driven. `AFDFFNWorker.execute_model()` intentionally
-raises if the native scheduler attempts to execute a normal vLLM request on the
-FFN process.
+The loop dispatches on `connector.ffn_step_trigger`:
 
-## FFN Forward
+- `Trigger.DP_METADATA` (current `P2pNcclAFDConnector` behavior): each step is
+  driven by the arrival of a control-plane payload from
+  `connector.control_plane.recv_dp_metadata_list()`, which also carries the
+  warmup/graph-capture flags.
+- `Trigger.CONNECTOR`: the connector has no control plane
+  (`control_plane is None`) and drives FFN work itself; the loop calls
+  `model_runner.execute_connector_driven_step()`, which blocks inside the
+  connector's own receive path.
+
+`AFDFFNWorker.execute_model()` intentionally raises if the native scheduler
+attempts to execute a normal vLLM request on the FFN process.
+
+## FFN Forward (DP-Metadata Trigger)
 
 For each layer and stage, `GPUFFNModelRunner`:
 
-1. updates connector state from DP metadata;
-2. receives Attention output with `connector.recv_attn_output()`;
+1. updates connector state from DP metadata through
+   `control_plane.update_state_from_dp_metadata()`;
+2. receives Attention output with `connector.recv_attn_output(ubatch_idx=...)`;
 3. reads hidden states and `AFDTransferMetadata` from the
    `AFDA2FTransferPayload` returned by the connector;
-4. installs `afd_metadata` in the current forward context;
-5. waits for async receive handles if present;
-6. calls `compute_ffn_output()` when the model wrapper provides it;
-7. sends the FFN output with `connector.send_ffn_output()`.
+4. installs per-stage DP metadata and `afd_metadata` in the current forward
+   context;
+5. calls `compute_ffn_output()` when the model wrapper provides it;
+6. sends the FFN output with `connector.send_ffn_output()`.
 
 If the model does not expose `compute_ffn_output`, the runner passes hidden
 states through. Production AFD model paths are expected to use plugin-owned
 model wrappers that implement the FFN computation contract.
+
+## FFN Forward (Connector Trigger)
+
+`execute_connector_driven_step()` rejects connectors that have a control plane,
+then runs `_ffn_forward_connector_driven()`: one eager FFN pass driven purely
+by the base-contract data path. There is no DP metadata to apply; for each
+layer the runner receives a payload with `connector.recv_attn_output()`, takes
+the layer index from the payload's `AFDTransferMetadata`, installs the metadata
+on the forward context with `dp_metadata = None`, computes, and sends the
+result back with `connector.send_ffn_output()`.
+
+This path is eager-only and does not use the CUDA graph cache; graph keys are
+derived from DP metadata, which does not exist without a control plane.
 
 ## CUDA Graph
 
@@ -112,8 +139,9 @@ Warmup and capture are driven by flags received from the Attention side through
 - Only vLLM `0.19.1` and model runner v1 are supported.
 - FFN workers are connector-driven only; scheduler-driven request execution is
   rejected.
-- The GPU connector is `P2pNcclAFDConnector`, implemented by
-  `afd_plugin.connectors.gpu.p2p`.
+- The only CUDA connector is `P2pNcclAFDConnector`, implemented by
+  `afd_plugin.connectors.gpu.p2p`; no `Trigger.CONNECTOR` GPU connector exists
+  yet, although the daemon loop and runner support one.
 - DBO requires exactly two ubatches.
 - Role-aware model construction and weight loading currently depend on the
   plugin-owned DeepSeek model wrappers.
