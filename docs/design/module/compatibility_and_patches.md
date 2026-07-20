@@ -192,8 +192,8 @@ path.
 
 ## Limitations and open issues
 
-The Phase 3 inventory is complete for current production patch files, but the
-document remains **draft** because:
+The inventory covers current production patch files, but the document remains
+**draft** because:
 
 - `engine_core` and force-load-balance lack patch-local version/idempotence
   guards;

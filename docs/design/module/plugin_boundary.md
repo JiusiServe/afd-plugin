@@ -55,8 +55,8 @@ validation imports.
 
 ## Implementation evidence
 
-The Phase 3 specification records current behavior and links to the source and
-tests that enforce it. RFC #89 settled the current activation and connector
+This specification records current behavior and links to the source and tests
+that enforce it. RFC #89 settled the current activation and connector
 configuration shape; this document does not make the remaining factory or
 runtime extension surfaces stable.
 

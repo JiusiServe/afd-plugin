@@ -31,19 +31,9 @@ last_reviewed: 2026-07-20
 
 This directory is the routing and ownership layer for AFD module design. The
 documents are `draft` until their owners verify boundaries, invariants, and
-validation evidence. The role and platform content from the former GPU/NPU
-runtime documents was migrated here in Phase 2 and the former files were
-removed. Phase 3 now records the current plugin, connector, model, and patch
-contracts with direct source/test evidence; open interfaces remain explicitly
-draft.
-
-## Migration progress
-
-| Phase | Documentation result | Status |
-| --- | --- | --- |
-| 1 | Eight module documents, metadata, ownership, and unique production-path routing. | Complete |
-| 2 | Unified role runtime and platform design; former GPU/NPU runtime files removed after migration. | Complete |
-| 3 | Plugin boundary, connector lifecycle/payloads, model integration, and full compatibility/Patch inventory linked to implementation and tests. | Complete; owner review still required before any document becomes `normative` |
+validation evidence. They record current plugin, role runtime, connector,
+model, platform, and compatibility contracts with direct source and test
+evidence; open interfaces remain explicitly draft.
 
 ## Reading order
 
@@ -115,41 +105,3 @@ Operational guides remain separate from normative module design:
 - [Ascend NPU installation](../../../README.md#ascend-npu-installation)
 - [Connector overview](../../../afd_plugin/connectors/README.md)
 - [Deployment recipes](../../../recipe/README.md)
-
-## Phase 1 completion criteria
-
-- all eight draft documents exist;
-- every production path has one primary document;
-- owners, validation paths, upstream references, and related issues are
-  recorded;
-- disputed interfaces remain draft and link to their open issues.
-
-## Phase 2 completion criteria
-
-- GPU and NPU Attention behavior is consolidated in `attention_runtime.md`;
-- GPU and NPU FFN behavior is consolidated in `ffn_runtime.md`;
-- cross-cutting CUDA and NPU mechanisms live in
-  `execution_platforms.md`;
-- the four former role-by-platform runtime documents are removed after their
-  content and ownership move to the module documents.
-
-## Phase 3 completion criteria
-
-- plugin registration, configuration, validation, and public launch class paths
-  are specified from current source behavior;
-- connector factory, capabilities, lifecycle, payload/control-plane ownership,
-  topology, cleanup, and failure behavior are recorded;
-- model registration, role-aware construction/loading, forward-context handoff,
-  and DeepSeek-specific execution paths are recorded;
-- every production monkey patch has an upstream symbol, AFD delta, application
-  guard, non-AFD expectation, focused validation, and removal/upstream plan;
-- behavior descriptions link to source and tests instead of copying
-  implementation bodies;
-- the configuration decisions implemented from
-  [#89](https://github.com/JiusiServe/afd-plugin/issues/89) are reflected in
-  the plugin and connector documents;
-- interfaces still disputed in
-  [#88](https://github.com/JiusiServe/afd-plugin/issues/88),
-  [#105](https://github.com/JiusiServe/afd-plugin/issues/105), and
-  [#107](https://github.com/JiusiServe/afd-plugin/issues/107) remain `draft` and
-  link to the corresponding issue.
