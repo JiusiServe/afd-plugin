@@ -159,7 +159,7 @@ import torch
 import torch_npu
 import vllm_ascend
 
-from afd_plugin.compat.ascend import ensure_afd_ascend_ops_loaded
+from afd_plugin.compat.npu import ensure_afd_ascend_ops_loaded
 
 assert torch.npu.is_available(), "torch-npu cannot see an Ascend device"
 ensure_afd_ascend_ops_loaded()
