@@ -136,7 +136,7 @@ def _enable_profiler(
     """Enable the worker profiler via env vars; return (attn_dir, ffn_dir).
 
     These env vars leak through runner.py's build_env (os.environ.copy()) into
-    the vllm worker, where afd_plugin/compat/ascend/profiler.py reads them.
+    the vllm worker, where afd_plugin/compat/npu/profiler.py reads them.
     """
     profiler_dir = tmp_path / "profiler_logs"
     attn_dir = profiler_dir / "attn"

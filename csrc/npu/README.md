@@ -76,7 +76,7 @@ AFD custom ops must coexist with vLLM-Ascend in the same process:
 Load the extension at runtime with:
 
 ```python
-from afd_plugin.compat.ascend import ensure_afd_ascend_ops_loaded
+from afd_plugin.compat.npu import ensure_afd_ascend_ops_loaded
 
 ensure_afd_ascend_ops_loaded()
 ```

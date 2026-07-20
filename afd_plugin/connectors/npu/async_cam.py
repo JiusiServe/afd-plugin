@@ -36,7 +36,7 @@ import torch
 from torch import Tensor
 from vllm.logger import init_logger
 
-from afd_plugin.compat.ascend.ops import ensure_cam_async_ops_available
+from afd_plugin.compat.npu.ops import ensure_cam_async_ops_available
 from afd_plugin.config import AFDConfig
 from afd_plugin.config_utils import (
     coerce_extra_bool,

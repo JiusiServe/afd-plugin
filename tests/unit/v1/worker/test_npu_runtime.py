@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("torch")
 
-from afd_plugin.compat.ascend import (
+from afd_plugin.compat.npu import (
     fail_if_unsupported_npu_afd_features,
     npu_afd_num_ubatches,
 )
@@ -187,7 +187,7 @@ def _require_npu_runtime():
 
 def _new_attention_runner():
     _require_npu_runtime()
-    from afd_plugin.v1.worker.ascend.attention_model_runner import (
+    from afd_plugin.v1.worker.npu.attention_model_runner import (
         AFDNPUAttentionModelRunner,
     )
 
@@ -196,14 +196,14 @@ def _new_attention_runner():
 
 def _new_ffn_runner():
     _require_npu_runtime()
-    from afd_plugin.v1.worker.ascend.ffn_model_runner import AFDNPUFFNModelRunner
+    from afd_plugin.v1.worker.npu.ffn_model_runner import AFDNPUFFNModelRunner
 
     return object.__new__(AFDNPUFFNModelRunner)
 
 
 def _new_ffn_worker():
     _require_npu_runtime()
-    from afd_plugin.v1.worker.ascend.ffn_worker import AFDNPUFFNWorker
+    from afd_plugin.v1.worker.npu.ffn_worker import AFDNPUFFNWorker
 
     return object.__new__(AFDNPUFFNWorker)
 
@@ -415,7 +415,7 @@ def test_npu_attention_capture_microbatch_also_captures_single_stage():
 
 def test_npu_attention_metadata_positional_args_and_padded_slices():
     _require_npu_runtime()
-    from afd_plugin.v1.worker.ascend.ubatch_utils import (
+    from afd_plugin.v1.worker.npu.ubatch_utils import (
         UBatchSlice,
         pad_out_ubatch_slices,
     )
@@ -487,7 +487,7 @@ def test_npu_request_boundary_ubatch_slices_balance_tokens(monkeypatch):
         fake_attention_utils,
     )
 
-    module_name = "afd_plugin.v1.worker.ascend.ubatch_utils"
+    module_name = "afd_plugin.v1.worker.npu.ubatch_utils"
     original_module = sys.modules.pop(module_name, None)
     try:
         ubatch_utils = importlib.import_module(module_name)
@@ -522,7 +522,7 @@ def test_npu_request_boundary_ubatch_slices_balance_tokens(monkeypatch):
 
 def test_npu_create_ascend_forward_context_marks_current_ubatch(monkeypatch):
     _require_npu_runtime()
-    from afd_plugin.v1.worker.ascend import forward_context as forward_context_module
+    from afd_plugin.v1.worker.npu import forward_context as forward_context_module
 
     monkeypatch.setattr(
         forward_context_module,
@@ -677,7 +677,7 @@ def test_npu_ffn_runner_passes_async_shared_payload_to_model():
 def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch):
     _require_npu_runtime()
     from afd_plugin.connectors.npu.async_cam import AFDAsyncFFNWorkItem
-    from afd_plugin.v1.worker.ascend import ffn_model_runner
+    from afd_plugin.v1.worker.npu import ffn_model_runner
 
     context_calls = []
     sent_outputs = []
@@ -792,7 +792,7 @@ def test_npu_ffn_runner_sends_structured_shared_output():
 
 def test_npu_ffn_runner_filters_dense_layers_when_gate_runs_on_attention():
     _require_npu_runtime()
-    from afd_plugin.v1.worker.ascend.ffn_model_runner import _ffn_layer_indices
+    from afd_plugin.v1.worker.npu.ffn_model_runner import _ffn_layer_indices
 
     runner = _new_ffn_runner()
     runner.num_layers = 5
@@ -869,7 +869,7 @@ def test_npu_ffn_runner_falls_back_to_eager_on_acl_graph_miss():
 
 def test_npu_ffn_runner_warmup_uses_eager_forward_without_graph(monkeypatch):
     _require_npu_runtime()
-    from afd_plugin.v1.worker.ascend import ffn_model_runner
+    from afd_plugin.v1.worker.npu import ffn_model_runner
 
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
@@ -914,7 +914,7 @@ def test_npu_ffn_runner_capture_stores_acl_graph_and_skips_duplicate_state_updat
     monkeypatch,
 ):
     _require_npu_runtime()
-    from afd_plugin.v1.worker.ascend import ffn_model_runner
+    from afd_plugin.v1.worker.npu import ffn_model_runner
 
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
@@ -1004,7 +1004,7 @@ def test_npu_ffn_worker_loop_error_is_propagated(caplog):
 
     with caplog.at_level(
         logging.ERROR,
-        logger="afd_plugin.v1.worker.ascend.ffn_worker",
+        logger="afd_plugin.v1.worker.npu.ffn_worker",
     ):
         worker.start_ffn_server_loop()
         assert worker._ffn_thread is not None
@@ -1258,7 +1258,7 @@ def test_npu_ubatch_allows_mc2_comm_when_thresholds_are_met(monkeypatch):
         fake_attention_utils,
     )
 
-    module_name = "afd_plugin.v1.worker.ascend.ubatch_utils"
+    module_name = "afd_plugin.v1.worker.npu.ubatch_utils"
     original_module = sys.modules.pop(module_name, None)
     try:
         ubatch_utils = importlib.import_module(module_name)

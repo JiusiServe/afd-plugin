@@ -144,7 +144,7 @@ ASCEND_RT_VISIBLE_DEVICES=4,5 VLLM_USE_V1=1 \
 vllm serve /path/to/model \
   --host 127.0.0.1 \
   --port 8001 \
-  --worker-cls afd_plugin.v1.worker.ascend.AFDNPUFFNWorker \
+  --worker-cls afd_plugin.v1.worker.npu.AFDNPUFFNWorker \
   --data-parallel-size 2 \
   --tensor-parallel-size 1 \
   --enable-expert-parallel \
@@ -182,7 +182,7 @@ ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 VLLM_USE_V1=1 \
 vllm serve /path/to/model \
   --host 127.0.0.1 \
   --port 8000 \
-  --worker-cls afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker \
+  --worker-cls afd_plugin.v1.worker.npu.AFDNPUAttentionWorker \
   --data-parallel-size 4 \
   --tensor-parallel-size 1 \
   --enable-expert-parallel \

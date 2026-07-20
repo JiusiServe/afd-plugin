@@ -12,13 +12,13 @@ import torch
 from vllm.v1.worker.workspace import init_workspace_manager
 from vllm_ascend.worker.worker import NPUWorker
 
-from afd_plugin.compat.ascend import (
+from afd_plugin.compat.npu import (
     apply_afd_ascend_patches_if_needed,
     fail_if_unsupported_npu_afd_features,
     fix_all2all_backend_for_afd,
     npu_afd_num_ubatches,
 )
-from afd_plugin.v1.worker.ascend.ffn_model_runner import AFDNPUFFNModelRunner
+from afd_plugin.v1.worker.npu.ffn_model_runner import AFDNPUFFNModelRunner
 from afd_plugin.validation import NPU_FFN_WORKER_FQCN, assert_compatible_afd_stack
 
 if TYPE_CHECKING:

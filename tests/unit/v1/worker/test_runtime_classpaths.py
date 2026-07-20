@@ -62,4 +62,4 @@ def test_npu_runtime_class_paths_resolve_when_vllm_ascend_is_available(qualname)
     cls = resolve_class_from_qualname(qualname)
 
     assert isinstance(cls, type)
-    assert cls.__module__.startswith("afd_plugin.v1.worker.ascend")
+    assert cls.__module__.startswith("afd_plugin.v1.worker.npu")

@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import sys
 
-from afd_plugin.compat.ascend import ensure_afd_ascend_ops_loaded
+from afd_plugin.compat.npu import ensure_afd_ascend_ops_loaded
 
 try:
     import torch

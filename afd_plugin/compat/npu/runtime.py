@@ -4,13 +4,13 @@
 
 from __future__ import annotations
 
-from afd_plugin.compat.ascend.feature_validation import (
+from afd_plugin.compat.npu.feature_validation import (
     fail_if_unsupported_npu_afd_features,
 )
-from afd_plugin.compat.ascend.forward_context import (
+from afd_plugin.compat.npu.forward_context import (
     ascend_forward_context,
 )
-from afd_plugin.compat.ascend.runtime_config import (
+from afd_plugin.compat.npu.runtime_config import (
     fix_all2all_backend_for_afd,
     npu_afd_num_ubatches,
 )

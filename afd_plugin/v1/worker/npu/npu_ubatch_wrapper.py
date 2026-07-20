@@ -28,10 +28,10 @@ from vllm.v1.worker.gpu_ubatch_wrapper import UbatchMetadata, UBatchWrapper
 from vllm_ascend.compilation.acl_graph import ACLGraphWrapper
 from vllm_ascend.utils import enable_sp
 
-from afd_plugin.v1.worker.ascend.forward_context import (
+from afd_plugin.v1.worker.npu.forward_context import (
     create_ascend_forward_context,
 )
-from afd_plugin.v1.worker.ascend.ubatching import (
+from afd_plugin.v1.worker.npu.ubatching import (
     AscendUBatchContext,
     make_ubatch_contexts,
 )

@@ -117,12 +117,12 @@ vllm serve /path/to/DeepSeek-V2-Lite \
   --additional-config '{"afd":{"role":"ffn","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
-NPU uses the same config channel with Ascend class paths and
+NPU uses the same config channel with NPU worker class paths and
 `CAMP2pAFDConnector`:
 
 ```bash
 vllm serve /path/to/DeepSeek-V2-Lite \
-  --worker-cls afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker \
+  --worker-cls afd_plugin.v1.worker.npu.AFDNPUAttentionWorker \
   --served-model-name deepseek-v2-lite-afd-attention \
   --data-parallel-size 1 \
   --tensor-parallel-size 1 \

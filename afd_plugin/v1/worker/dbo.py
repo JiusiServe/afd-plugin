@@ -51,10 +51,10 @@ def register_dbo_yield_custom_op() -> None:
 
 def _yield_if_dbo_enabled() -> None:
     try:
-        from afd_plugin.v1.worker.ascend.ubatching import (
+        from afd_plugin.v1.worker.npu.ubatching import (
             dbo_enabled as ascend_dbo_enabled,
         )
-        from afd_plugin.v1.worker.ascend.ubatching import (
+        from afd_plugin.v1.worker.npu.ubatching import (
             dbo_yield as ascend_dbo_yield,
         )
     except ImportError:

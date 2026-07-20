@@ -27,7 +27,7 @@ from vllm.forward_context import DPMetadata, get_forward_context
 from vllm.logger import init_logger
 from vllm.utils.torch_utils import direct_register_custom_op
 
-from afd_plugin.compat.ascend import ensure_cam_p2p_ops_available
+from afd_plugin.compat.npu import ensure_cam_p2p_ops_available
 from afd_plugin.config import AFDConfig
 from afd_plugin.config_utils import (
     coerce_extra_bool,

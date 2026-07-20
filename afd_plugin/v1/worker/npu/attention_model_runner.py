@@ -50,10 +50,10 @@ from vllm_ascend.utils import (
 )
 from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
 
-from afd_plugin.compat.ascend import (
+from afd_plugin.compat.npu import (
     fail_if_unsupported_npu_afd_features,
 )
-from afd_plugin.compat.ascend.profiler import (
+from afd_plugin.compat.npu.profiler import (
     create_afd_npu_profiler,
     step_afd_npu_profiler,
     stop_afd_npu_profiler,
@@ -71,8 +71,14 @@ from afd_plugin.connectors import (
 )
 from afd_plugin.connectors.npu.async_cam import AFDAsyncExtraInfo
 from afd_plugin.model_executor.models import ASYNC_MOE_UBATCH_METADATA_KEY
-from afd_plugin.v1.worker.ascend.npu_ubatch_wrapper import AscendUBatchWrapper
-from afd_plugin.v1.worker.ascend.pcp_debug import (
+from afd_plugin.v1.worker.attention_model_runner import (
+    _forward_context_num_tokens,
+    _full_cudagraph_padded_tokens,
+    _resolve_world_ranks,
+    _with_dp_derived_afd_rank,
+)
+from afd_plugin.v1.worker.npu.npu_ubatch_wrapper import AscendUBatchWrapper
+from afd_plugin.v1.worker.npu.pcp_debug import (
     clone_pcp_metadata,
     debug_pcp_common_metadata_summary,
     debug_pcp_manager_summary,
@@ -83,18 +89,12 @@ from afd_plugin.v1.worker.ascend.pcp_debug import (
     restore_pcp_manager_state,
     snapshot_pcp_manager_state,
 )
-from afd_plugin.v1.worker.ascend.ubatch_utils import (
+from afd_plugin.v1.worker.npu.ubatch_utils import (
     check_enable_ubatch,
     create_request_boundary_ubatch_slices,
     maybe_create_ubatch_slices,
     pad_out_ubatch_slices,
     split_attn_metadata,
-)
-from afd_plugin.v1.worker.attention_model_runner import (
-    _forward_context_num_tokens,
-    _full_cudagraph_padded_tokens,
-    _resolve_world_ranks,
-    _with_dp_derived_afd_rank,
 )
 from afd_plugin.v1.worker.ubatch_wrapper import build_ubatch_dp_metadata_list
 

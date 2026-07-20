@@ -125,10 +125,10 @@ def test_runner_builds_npu_async_cam_role_specific_topology():
     assert _arg_value(ffn_command, "--data-parallel-size") == "2"
     assert _arg_value(ffn_command, "--tensor-parallel-size") == "1"
     assert _arg_value(attention_command, "--worker-cls") == (
-        "afd_plugin.v1.worker.ascend.AFDNPUAttentionWorker"
+        "afd_plugin.v1.worker.npu.AFDNPUAttentionWorker"
     )
     assert _arg_value(ffn_command, "--worker-cls") == (
-        "afd_plugin.v1.worker.ascend.AFDNPUFFNWorker"
+        "afd_plugin.v1.worker.npu.AFDNPUFFNWorker"
     )
 
     additional_config = json.loads(_arg_value(attention_command, "--additional-config"))
