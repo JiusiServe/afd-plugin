@@ -90,7 +90,7 @@ VLLM_PLUGINS=ascend,afd vllm serve <model> \
 
 Operational connector options and complete launch recipes remain in the
 [NCCL P2P](../../gpu/NCCL_P2P_CONNECTOR_USER_GUIDE.md),
-[CAMP2P](../../npu/CAMP2P_CONNECTOR_USER_GUIDE.md), and
+[CAM P2P](../../npu/CAM_P2P_CONNECTOR_USER_GUIDE.md), and
 [CAM async](../../npu/CAM_ASYNC_CONNECTOR_USER_GUIDE.md) guides. Requests are
 sent only to the Attention API process.
 

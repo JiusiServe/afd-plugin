@@ -1,4 +1,4 @@
-# CAMP2p Connector User Guide
+# CAM P2P Connector User Guide
 
 ## Overview
 
@@ -137,7 +137,7 @@ This example uses six NPUs on one host. It is a configuration template: replace
 The checked-in DeepSeek-V3.2 recipe linked below provides a concrete,
 model-specific deployment.
 
-The FFN service uses devices `4,5`. Start it first:
+The FFN service uses devices `4,5`:
 
 ```bash
 ASCEND_RT_VISIBLE_DEVICES=4,5 VLLM_USE_V1=1 \
@@ -175,7 +175,7 @@ vllm serve /path/to/model \
   }'
 ```
 
-Then start the Attention service on devices `0,1,2,3`:
+The Attention service uses devices `0,1,2,3`:
 
 ```bash
 ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 VLLM_USE_V1=1 \

@@ -118,7 +118,7 @@ Only identified invariant blocks in a `normative` document may use `MUST`,
 Operational guides remain separate from normative module design:
 
 - [NCCL P2P connector guide](../../gpu/NCCL_P2P_CONNECTOR_USER_GUIDE.md)
-- [CAMP2P connector guide](../../npu/CAMP2P_CONNECTOR_USER_GUIDE.md)
+- [CAM P2P connector guide](../../npu/CAM_P2P_CONNECTOR_USER_GUIDE.md)
 - [CAM async connector guide](../../npu/CAM_ASYNC_CONNECTOR_USER_GUIDE.md)
 - [Ascend NPU installation](../../../README.md#ascend-npu-installation)
 - [Connector overview](../../../afd_plugin/connectors/README.md)

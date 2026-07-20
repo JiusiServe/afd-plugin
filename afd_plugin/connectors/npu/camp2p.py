@@ -9,7 +9,7 @@ for its mapped Attention ranks.
 
 The data path supports eager execution and ``FULL_DECODE_ONLY`` ACL graphs.
 
-See ``docs/npu/CAMP2P_CONNECTOR_USER_GUIDE.md`` for configuration and launch
+See ``docs/npu/CAM_P2P_CONNECTOR_USER_GUIDE.md`` for configuration and launch
 examples.
 """
 

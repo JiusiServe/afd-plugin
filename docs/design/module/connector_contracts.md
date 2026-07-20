@@ -294,6 +294,6 @@ decision from [#89](https://github.com/JiusiServe/afd-plugin/issues/89), but it
 does not by itself make factory registration a public extension contract.
 
 Operational material: [NCCL P2P guide](../../gpu/NCCL_P2P_CONNECTOR_USER_GUIDE.md),
-[CAMP2P guide](../../npu/CAMP2P_CONNECTOR_USER_GUIDE.md),
+[CAM P2P guide](../../npu/CAM_P2P_CONNECTOR_USER_GUIDE.md),
 [CAM async guide](../../npu/CAM_ASYNC_CONNECTOR_USER_GUIDE.md), and
 [connector overview](../../../afd_plugin/connectors/README.md).
