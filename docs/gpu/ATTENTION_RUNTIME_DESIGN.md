@@ -75,12 +75,12 @@ with two planes:
   `send_dp_metadata_list()`) before model forward so the FFN side can derive
   wire tensor shapes and warmup/capture flags.
 
-`connector.ffn_step_trigger` declares how FFN steps are triggered:
-`Trigger.DP_METADATA` (control-plane payload arrival) or `Trigger.CONNECTOR`
-(the connector's own receive loop; no control plane exists). The current GPU
-connector, `P2pNcclAFDConnector`, uses `Trigger.DP_METADATA` and exposes
+Whether `connector.control_plane` is set declares how FFN steps are triggered:
+a present control plane means steps are driven by control-plane payload arrival,
+while `control_plane is None` means the connector's own receive loop drives
+them. The current GPU connector, `P2pNcclAFDConnector`, exposes
 `P2pNcclAFDControlPlane` as its control plane; the Attention runner supports
-both triggers.
+both modes.
 
 ## Forward Path
 
@@ -155,5 +155,5 @@ divisible by it.
 - Role-aware model construction and weight loading currently depend on the
   plugin-owned DeepSeek model wrappers.
 - The only CUDA connector is `P2pNcclAFDConnector`; no connector-driven
-  (`Trigger.CONNECTOR`) GPU connector exists yet, although the runtime
+  (`control_plane is None`) GPU connector exists yet, although the runtime
   supports one.

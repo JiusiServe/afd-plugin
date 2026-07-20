@@ -27,9 +27,9 @@ Control and data planes:
     connector interface: ``P2pNcclAFDControlPlane`` (an ``AFDControlPlane``
     implementation exposed as ``connector.control_plane``) sends, receives,
     and applies the per-stage token-count payloads that determine wire
-    tensor shapes, moving them over a separate NCCL process group. The
-    connector declares ``ffn_step_trigger = Trigger.DP_METADATA``, so each
-    FFN-side step is driven by the arrival of a control-plane payload. The
+    tensor shapes, moving them over a separate NCCL process group. Because the
+    connector exposes a ``control_plane``, each FFN-side step is driven by the
+    arrival of a control-plane payload. The
     data path stays on the connector and uses
     ``PyNcclCommunicator.send()`` / ``recv()`` on the current CUDA stream,
     wrapped in the ``torch.ops.vllm.afd_p2p_send`` / ``afd_p2p_recv`` custom
@@ -77,7 +77,6 @@ from afd_plugin.connectors.base import (
     AFDConnectorBase,
     AFDControlPlane,
     ConnectorExtraInfo,
-    Trigger,
 )
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
@@ -210,7 +209,6 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         self.a2e_comm_id: int | None = None
         self.e2a_comm_id: int | None = None
         self.control_plane = P2pNcclAFDControlPlane(self)
-        self.ffn_step_trigger = Trigger.DP_METADATA
 
     def close(self) -> None:
         """Release NCCL communicators and their custom-op registrations.

@@ -16,7 +16,6 @@ from afd_plugin.connectors import (  # noqa: E402
     AFDF2ATransferPayload,
     AFDTransferMetadata,
     AFDTransferState,
-    Trigger,
 )
 from afd_plugin.connectors.npu import async_cam as async_cam_module  # noqa: E402
 from afd_plugin.connectors.npu.async_cam import (  # noqa: E402
@@ -193,7 +192,6 @@ def test_async_connector_factory_creates_import_safe_connector():
     assert isinstance(connector, CAMAsyncAFDConnector)
     assert not connector.is_initialized
     assert connector.control_plane is None
-    assert connector.ffn_step_trigger is Trigger.CONNECTOR
     assert connector.tp_size == 1
 
 
@@ -301,7 +299,6 @@ def test_async_connector_disables_dp_metadata_control_plane():
     connector = CAMAsyncAFDConnector(0, 0, _vllm_config(), _afd_config(role="ffn"))
 
     assert connector.control_plane is None
-    assert connector.ffn_step_trigger is Trigger.CONNECTOR
 
 
 def test_async_connector_calls_cam_shaped_ops(monkeypatch):

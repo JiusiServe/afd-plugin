@@ -39,7 +39,6 @@ from afd_plugin.connectors.base import (
     AFDConnectorBase,
     AFDControlPlane,
     ConnectorExtraInfo,
-    Trigger,
 )
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
@@ -299,7 +298,6 @@ class CAMP2pAFDConnector(AFDConnectorBase):
             default=0,
         )
         self.control_plane = CAMP2pAFDControlPlane(self)
-        self.ffn_step_trigger = Trigger.DP_METADATA
 
     @property
     def is_initialized(self) -> bool:

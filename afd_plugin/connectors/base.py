@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import enum
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -35,20 +34,6 @@ class ConnectorExtraInfo:
         return {}
 
 
-class Trigger(enum.Enum):
-    """
-    Enum class for 'AFDConnectorBase' transfer triggering
-    Args:
-        DP_METADATA: Transfer is triggered through control plane
-            DP metadata. A control plane is required.
-        CONNECTOR: Transfer is triggerd through async connector
-            itself. No control plane is required.
-    """
-
-    DP_METADATA = "dp_metadata"
-    CONNECTOR = "connector"
-
-
 class AFDConnectorBase(ABC):
     """Base class for plugin-owned AFD Attention/FFN connectors.
 
@@ -68,8 +53,11 @@ class AFDConnectorBase(ABC):
     common runtime contract shared by those implementations.
     """
 
+    # An optional DP metadata control plane. When set, FFN steps are driven by
+    # DP metadata received over the control plane. When ``None``, the connector
+    # has no control plane and FFN steps are driven directly by the connector
+    # receive loop.
     control_plane: AFDControlPlane | None = None
-    ffn_step_trigger: Trigger = Trigger.DP_METADATA
 
     @classmethod
     @abstractmethod
@@ -304,4 +292,4 @@ class AFDControlPlane(ABC):
         raise NotImplementedError
 
 
-__all__ = ["AFDConnectorBase", "Trigger", "AFDControlPlane", "ConnectorExtraInfo"]
+__all__ = ["AFDConnectorBase", "AFDControlPlane", "ConnectorExtraInfo"]

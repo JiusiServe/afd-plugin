@@ -14,7 +14,6 @@ from afd_plugin.connectors import (
     AFDA2FTransferPayload,
     AFDControlPayload,
     AFDTransferMetadata,
-    Trigger,
 )
 from afd_plugin.v1.worker.cuda_graph import make_ffn_graph_key
 from afd_plugin.v1.worker.ffn_model_runner import (
@@ -61,8 +60,6 @@ class _FakeConnector:
 
 
 class _ConnectorDrivenFakeConnector(_FakeConnector):
-    ffn_step_trigger = Trigger.CONNECTOR
-
     def __init__(self):
         super().__init__()
         self.control_plane = None

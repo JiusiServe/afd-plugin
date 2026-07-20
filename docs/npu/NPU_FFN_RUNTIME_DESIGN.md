@@ -94,7 +94,7 @@ AFDNPUFFNWorker.initialize_from_config(...)
 
 background loop:
   -> torch.npu.set_device(...)
-  -> if connector.ffn_step_trigger is Trigger.CONNECTOR:
+  -> if connector.control_plane is None:
        -> model_runner.execute_connector_driven_step()
        -> torch.npu.synchronize(); continue
   -> control_plane.recv_dp_metadata_list()
@@ -102,16 +102,16 @@ background loop:
   -> torch.npu.synchronize()
 ```
 
-The loop dispatches on `connector.ffn_step_trigger`:
+The loop dispatches on whether `connector.control_plane` is set:
 
-- `Trigger.DP_METADATA` (`CAMP2pAFDConnector`): each step starts when a
+- control plane present (`CAMP2pAFDConnector`): each step starts when a
   control-plane payload arrives through
   `connector.control_plane.recv_dp_metadata_list()`. `execute_ffn_step()`
   routes warmup/capture metadata to `capture_model()` when ACL graph is
   active; otherwise it calls `execute_model()` with the received
   `dp_metadata_list`.
-- `Trigger.CONNECTOR` (`CAMAsyncAFDConnector`): the connector has no control
-  plane (`control_plane is None`) and drives FFN work itself.
+- `control_plane is None` (`CAMAsyncAFDConnector`): the connector has no control
+  plane and drives FFN work itself.
   `execute_connector_driven_step()` rejects connectors that do have a control
   plane and blocks inside the connector's own receive path.
 

@@ -145,14 +145,14 @@ Both NPU connectors are implemented under `afd_plugin.connectors.npu` and are
 created through `AFDConnectorFactory`:
 
 - `CAMP2pAFDConnector` (`camp2p`): synchronous CAM point-to-point transfer.
-  Declares `ffn_step_trigger = Trigger.DP_METADATA` and exposes
-  `CAMP2pAFDControlPlane` as `connector.control_plane` for DP metadata
-  exchange. Initializes HCCL/Gloo process groups and loads plugin-owned Ascend
-  custom ops lazily when `init_afd_connector()` runs.
+  Exposes `CAMP2pAFDControlPlane` as `connector.control_plane` for DP metadata
+  exchange, so FFN steps are driven by control-plane payloads. Initializes
+  HCCL/Gloo process groups and loads plugin-owned Ascend custom ops lazily when
+  `init_afd_connector()` runs.
 - `CAMAsyncAFDConnector` (`async_cam`): asynchronous CAM dispatch/combine.
   CAM operators own both the collective data motion and its routing metadata,
   so the connector has no control plane (`control_plane` stays `None`) and
-  declares `ffn_step_trigger = Trigger.CONNECTOR`. Attention ranks occupy the
+  drives FFN steps from its own receive loop. Attention ranks occupy the
   first part of the HCCL world and FFN ranks the second.
 
 The custom ops are optional at package import time, but the NPU AFD data path

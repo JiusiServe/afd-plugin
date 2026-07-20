@@ -71,7 +71,7 @@ AFDFFNWorker.initialize_from_config(...)
   -> start_ffn_server_loop()
 
 background loop:
-  -> if connector.ffn_step_trigger is Trigger.CONNECTOR:
+  -> if connector.control_plane is None:
        -> model_runner.execute_connector_driven_step()
        -> torch.cuda.synchronize(); continue
   -> control_plane.recv_dp_metadata_list()
@@ -80,14 +80,14 @@ background loop:
   -> torch.cuda.synchronize()
 ```
 
-The loop dispatches on `connector.ffn_step_trigger`:
+The loop dispatches on whether `connector.control_plane` is set:
 
-- `Trigger.DP_METADATA` (current `P2pNcclAFDConnector` behavior): each step is
+- control plane present (current `P2pNcclAFDConnector` behavior): each step is
   driven by the arrival of a control-plane payload from
   `connector.control_plane.recv_dp_metadata_list()`, which also carries the
   warmup/graph-capture flags.
-- `Trigger.CONNECTOR`: the connector has no control plane
-  (`control_plane is None`) and drives FFN work itself; the loop calls
+- `control_plane is None`: the connector has no control plane and drives FFN
+  work itself; the loop calls
   `model_runner.execute_connector_driven_step()`, which blocks inside the
   connector's own receive path.
 
@@ -140,8 +140,9 @@ Warmup and capture are driven by flags received from the Attention side through
 - FFN workers are connector-driven only; scheduler-driven request execution is
   rejected.
 - The only CUDA connector is `P2pNcclAFDConnector`, implemented by
-  `afd_plugin.connectors.gpu.p2p`; no `Trigger.CONNECTOR` GPU connector exists
-  yet, although the daemon loop and runner support one.
+  `afd_plugin.connectors.gpu.p2p`; no control-plane-less (`control_plane is
+  None`) GPU connector exists yet, although the daemon loop and runner support
+  one.
 - DBO requires exactly two ubatches.
 - Role-aware model construction and weight loading currently depend on the
   plugin-owned DeepSeek model wrappers.

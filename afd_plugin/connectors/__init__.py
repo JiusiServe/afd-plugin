@@ -6,7 +6,6 @@ from afd_plugin.connectors.base import (
     AFDConnectorBase,
     AFDControlPlane,
     ConnectorExtraInfo,
-    Trigger,
 )
 from afd_plugin.connectors.factory import AFDConnectorFactory
 from afd_plugin.connectors.metadata import (
@@ -23,7 +22,6 @@ from afd_plugin.connectors.metadata import (
 __all__ = [
     "AFDConnectorBase",
     "AFDControlPlane",
-    "Trigger",
     "ConnectorExtraInfo",
     "AFDTransferState",
     "AFDConnectorFactory",

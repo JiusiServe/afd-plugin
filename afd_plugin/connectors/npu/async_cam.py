@@ -47,7 +47,6 @@ from afd_plugin.config_utils import (
 from afd_plugin.connectors.base import (
     AFDConnectorBase,
     ConnectorExtraInfo,
-    Trigger,
 )
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
@@ -205,15 +204,11 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
 
     Attention ranks occupy the first part of the HCCL world and FFN ranks the
     second. CAM dispatch/combine operators own both the collective data motion
-    and its routing metadata, so ``uses_dp_metadata_control_plane`` is false
-    and FFN work is triggered directly by the connector receive loop.
-
-    This connector has no DP metadata control plane (``control_plane`` stays
-    ``None``); FFN steps are driven by the connector itself
-    (``Trigger.CONNECTOR``).
+    and its routing metadata, so this connector has no DP metadata control
+    plane (``control_plane`` stays ``None``) and FFN work is triggered directly
+    by the connector receive loop.
     """
 
-    ffn_step_trigger = Trigger.CONNECTOR
     control_plane = None
 
     @classmethod

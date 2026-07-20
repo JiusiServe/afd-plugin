@@ -22,7 +22,6 @@ from afd_plugin.connectors import (
     AFDF2ATransferPayload,
     AFDForwardContextMetadata,
     AFDTransferMetadata,
-    Trigger,
 )
 
 
@@ -58,8 +57,6 @@ class _RecordingConnector:
 
 
 class _AsyncRecordingConnector(_RecordingConnector):
-    ffn_step_trigger = Trigger.CONNECTOR
-
     def __init__(self):
         super().__init__()
         self.control_plane = None

@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 import torch
 from vllm.v1.worker.gpu_worker import Worker
 
-from afd_plugin.connectors import Trigger
 from afd_plugin.v1.worker.attention_model_runner import fail_if_unsupported_ubatching
 from afd_plugin.v1.worker.ffn_model_runner import GPUFFNModelRunner
 from afd_plugin.validation import assert_compatible_afd_stack
