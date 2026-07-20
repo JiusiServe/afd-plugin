@@ -70,14 +70,109 @@ uv sync --group dev
 ```
 
 `vllm` is an optional runtime extra so CPU-only or macOS development
-environments can still run import/config tests without a CUDA wheel:
+environments can still run import/config tests without a CUDA wheel.
+
+### GPU installation
+
+For Linux / CUDA-capable environments only; Ascend users should skip this
+command:
 
 ```bash
-# Linux / CUDA-capable environments
 uv sync --group dev --extra vllm
 ```
 
 The optional extra pins `vllm==0.19.1`.
+
+### Ascend NPU installation
+
+AFD's Ascend path is validated on openEuler 22.03 (aarch64) with Ascend 910C /
+Atlas A3. Install a compatible driver and firmware, and confirm the devices
+with `npu-smi info`. Use this compatible release baseline:
+
+| Component | Version |
+| --- | --- |
+| Python | `3.10` or `3.11` |
+| vLLM | `0.19.1` |
+| vLLM-Ascend | `0.19.1rc1` |
+| CANN / NNAL | `8.5.1` |
+| torch | `2.9.0` |
+| torch-npu | `2.9.0` |
+
+#### Environment
+
+The preferred environment is the official A3/openEuler image:
+
+```bash
+docker pull quay.io/ascend/vllm-ascend:v0.19.1rc1-a3-openeuler
+```
+
+Use the fixed
+[vLLM-Ascend installation guide](https://github.com/vllm-project/vllm-ascend/blob/v0.19.1rc1/docs/source/installation.md)
+to start the image with the device and driver configuration for your host. From
+the AFD repository root, add `--volume "$PWD":/workspace/afd-plugin` and
+`--workdir /workspace/afd-plugin` to its `docker run` command so that the
+checkout is available inside the container.
+
+The editable build writes architecture-specific artifacts into the mounted
+checkout; use a dedicated checkout for the container build.
+
+For an existing or source-built environment, initialize CANN and NNAL:
+
+```bash
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+source /usr/local/Ascend/nnal/atb/set_env.sh
+```
+
+If needed, use the source-installation path in the same guide to install the
+vLLM and vLLM-Ascend versions listed above.
+
+For this source alternative, ensure AFD's build requirements are present before
+installing with `--no-build-isolation`:
+
+```bash
+python -m pip install \
+  "setuptools>=61" wheel "setuptools-scm[toml]>=8" \
+  "pybind11>=2.12" "cmake>=3.16"
+```
+
+#### Install AFD
+
+From the AFD repository root:
+
+```bash
+AFD_BUILD_ASCEND_OPS=1 \
+SOC_VERSION=ascend910_9391 \
+python -m pip install -v --no-build-isolation --no-deps -e .
+```
+
+`--no-deps` preserves the matched NPU runtime, and `--no-build-isolation` uses
+its CANN/torch-npu toolchain. The command above forces the Ascend op build for
+reproducibility. Otherwise, leave `AFD_BUILD_ASCEND_OPS` unset to use the
+auto-detection described in [Development](#development), set it to `1` if
+detection misses an Ascend environment, or set it to `0` to skip the ops.
+
+#### Verify
+
+```bash
+python - <<'PY'
+import torch
+import torch_npu
+import vllm_ascend
+
+from afd_plugin.compat.ascend import ensure_afd_ascend_ops_loaded
+
+assert torch.npu.is_available(), "torch-npu cannot see an Ascend device"
+ensure_afd_ascend_ops_loaded()
+print("AFD_OPS_OK")
+PY
+```
+
+After `AFD_OPS_OK`, the environment is ready to run the NPU examples and E2E
+tests. See the
+[synchronous NPU recipe](recipe/npu/CAMP2pAFDConnector/deepseek_v3_2/README.md).
+For implementation details, see the
+[NPU Attention runtime design](docs/npu/NPU_ATTENTION_RUNTIME_DESIGN.md) and
+[NPU FFN runtime design](docs/npu/NPU_FFN_RUNTIME_DESIGN.md).
 
 ## Using the Plugin
 
