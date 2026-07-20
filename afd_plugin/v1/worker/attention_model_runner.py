@@ -105,7 +105,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
             tokens_start_loc=tokens_start_loc,
             requests_start_loc=requests_start_loc,
             stage_idx=0,
-            afd_connector=self.connector,
+            connector=self.connector,
             tokens_lens=tokens_lens,
             num_stages=num_stages,
             transaction_id=self._next_afd_transaction_id(),

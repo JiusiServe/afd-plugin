@@ -210,7 +210,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             tokens_start_loc=[],
             requests_start_loc=[],
             stage_idx=0,
-            afd_connector=self.connector,
+            connector=self.connector,
             tokens_lens=[],
             num_stages=num_stages,
         )
@@ -306,7 +306,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 tokens_start_loc=[0],
                 requests_start_loc=[0],
                 stage_idx=stage_idx,
-                afd_connector=self.connector,
+                connector=self.connector,
                 tokens_lens=[num_tokens],
                 num_stages=1,
                 tokens_unpadded_lens=[num_tokens],

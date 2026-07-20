@@ -131,7 +131,7 @@ def _parallel_config(**overrides):
 
 def test_attention_runner_builds_single_stage_metadata():
     runner = object.__new__(AFDAttentionModelRunner)
-    runner.afd_connector = object()
+    runner.connector = object()
     runner._afd_transaction_counter = 0
 
     metadata = runner._build_afd_metadata(None, 7)
@@ -141,13 +141,13 @@ def test_attention_runner_builds_single_stage_metadata():
     assert metadata.tokens_lens == [7]
     assert metadata.tokens_unpadded_lens == [7]
     assert metadata.num_stages == 1
-    assert metadata.afd_connector is runner.afd_connector
+    assert metadata.connector is runner.connector
 
 
 def test_attention_runner_installs_afd_metadata_on_forward_context():
     runner = object.__new__(AFDAttentionModelRunner)
     runner.afd_config = AFDConfig(role="attention")
-    runner.afd_connector = _RecordingConnector()
+    runner.connector = _RecordingConnector()
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
     runner._afd_transaction_counter = 0
@@ -162,39 +162,17 @@ def test_attention_runner_installs_afd_metadata_on_forward_context():
 
     assert forward_context.additional_kwargs["platform_key"] == "platform_value"
     assert forward_context.additional_kwargs["afd_metadata"].tokens_lens == [5]
-    assert set(runner.afd_connector.dp_metadata_updates[0]) == {0}
-    assert _tokens(runner.afd_connector.dp_metadata_updates[0][0]) == [5]
-    assert set(runner.afd_connector.sent_dp_metadata_lists[0]) == {0}
-    assert _tokens(runner.afd_connector.sent_dp_metadata_lists[0][0]) == [5]
-    assert runner.afd_connector.sent_dp_metadata_flags == [(False, False)]
-
-
-def test_attention_runner_skips_dp_metadata_send_without_control_plane():
-    runner = object.__new__(AFDAttentionModelRunner)
-    runner.afd_config = AFDConfig(role="attention")
-    runner.afd_connector = _RecordingConnector()
-    runner.afd_connector.control_plane = None
-    runner._is_warmup = False
-    runner._afd_is_graph_capturing = False
-    runner._afd_transaction_counter = 0
-    runner._afd_pending_metadata = runner._build_afd_metadata(None, 5)
-    forward_context = SimpleNamespace(
-        additional_kwargs={},
-        dp_metadata=_dp_metadata([5]),
-        ubatch_slices=None,
-    )
-
-    runner._install_afd_metadata_on_forward_context(forward_context)
-
-    assert forward_context.additional_kwargs["afd_metadata"].tokens_lens == [5]
-    assert runner.afd_connector.dp_metadata_updates == []
-    assert runner.afd_connector.sent_dp_metadata_lists == []
+    assert set(runner.connector.dp_metadata_updates[0]) == {0}
+    assert _tokens(runner.connector.dp_metadata_updates[0][0]) == [5]
+    assert set(runner.connector.sent_dp_metadata_lists[0]) == {0}
+    assert _tokens(runner.connector.sent_dp_metadata_lists[0][0]) == [5]
+    assert runner.connector.sent_dp_metadata_flags == [(False, False)]
 
 
 def test_attention_runner_initializes_missing_forward_context_kwargs():
     runner = object.__new__(AFDAttentionModelRunner)
     runner.afd_config = AFDConfig(role="attention")
-    runner.afd_connector = _RecordingConnector()
+    runner.connector = _RecordingConnector()
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
     runner._afd_transaction_counter = 0
@@ -217,7 +195,7 @@ def test_attention_runner_uses_padded_full_graph_tokens_for_afd_metadata():
     runner.vllm_config = SimpleNamespace(
         parallel_config=_parallel_config(),
     )
-    runner.afd_connector = _RecordingConnector()
+    runner.connector = _RecordingConnector()
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
     runner._afd_transaction_counter = 0
@@ -234,7 +212,7 @@ def test_attention_runner_uses_padded_full_graph_tokens_for_afd_metadata():
 
     metadata = forward_context.additional_kwargs["afd_metadata"]
     assert metadata.tokens_lens == [1]
-    sent_metadata = runner.afd_connector.sent_dp_metadata_lists[0][0]
+    sent_metadata = runner.connector.sent_dp_metadata_lists[0][0]
     tokens = sent_metadata.num_tokens_across_dp_cpu
     if hasattr(tokens, "tolist"):
         tokens = tokens.tolist()
@@ -247,7 +225,7 @@ def test_attention_runner_sends_per_ubatch_dp_metadata():
     runner.vllm_config = SimpleNamespace(
         parallel_config=_parallel_config(),
     )
-    runner.afd_connector = _RecordingConnector()
+    runner.connector = _RecordingConnector()
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
     runner._afd_transaction_counter = 0
@@ -256,8 +234,8 @@ def test_attention_runner_sends_per_ubatch_dp_metadata():
 
     runner._send_dp_metadata(None, ubatch_slices)
 
-    assert set(runner.afd_connector.dp_metadata_updates[0]) == {0, 1}
-    assert set(runner.afd_connector.sent_dp_metadata_lists[0]) == {0, 1}
+    assert set(runner.connector.dp_metadata_updates[0]) == {0, 1}
+    assert set(runner.connector.sent_dp_metadata_lists[0]) == {0, 1}
 
 
 def test_attention_runner_skips_dp_metadata_send_for_ubatch_child_context():
@@ -266,7 +244,7 @@ def test_attention_runner_skips_dp_metadata_send_for_ubatch_child_context():
     runner.vllm_config = SimpleNamespace(
         parallel_config=_parallel_config(),
     )
-    runner.afd_connector = _RecordingConnector()
+    runner.connector = _RecordingConnector()
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
     runner._afd_transaction_counter = 0
@@ -292,8 +270,8 @@ def test_attention_runner_skips_dp_metadata_send_for_ubatch_child_context():
     runner._install_afd_metadata_on_forward_context(forward_context)
 
     assert forward_context.additional_kwargs["afd_metadata"] is child
-    assert runner.afd_connector.dp_metadata_updates == []
-    assert runner.afd_connector.sent_dp_metadata_lists == []
+    assert runner.connector.dp_metadata_updates == []
+    assert runner.connector.sent_dp_metadata_lists == []
 
 
 def test_attention_runner_does_not_skip_single_stage_context():
@@ -302,7 +280,7 @@ def test_attention_runner_does_not_skip_single_stage_context():
     runner.vllm_config = SimpleNamespace(
         parallel_config=_parallel_config(),
     )
-    runner.afd_connector = _RecordingConnector()
+    runner.connector = _RecordingConnector()
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
     runner._afd_transaction_counter = 0
@@ -320,13 +298,13 @@ def test_attention_runner_does_not_skip_single_stage_context():
 
     runner._install_afd_metadata_on_forward_context(forward_context)
 
-    assert set(runner.afd_connector.sent_dp_metadata_lists[0]) == {0}
-    assert _tokens(runner.afd_connector.sent_dp_metadata_lists[0][0]) == [5]
+    assert set(runner.connector.sent_dp_metadata_lists[0]) == {0}
+    assert _tokens(runner.connector.sent_dp_metadata_lists[0][0]) == [5]
 
 
 def test_ubatch_metadata_clones_parent_and_preserves_additional_kwargs():
     runner = object.__new__(AFDAttentionModelRunner)
-    runner.afd_connector = object()
+    runner.connector = object()
     runner._afd_transaction_counter = 0
     parent = runner._build_afd_metadata(
         [_UbatchSlice(0, 3, 0, 1), _UbatchSlice(3, 8, 1, 2)],
@@ -611,11 +589,11 @@ def test_attention_runner_steps_gpu_profiler(monkeypatch):
 def test_attention_runner_stops_gpu_profiler_on_shutdown():
     runner = object.__new__(AFDAttentionModelRunner)
     runner.prof = _StepProfiler()
-    runner.afd_connector = _RecordingConnector()
+    runner.connector = _RecordingConnector()
     runner.shutdown()
 
     assert runner.prof.stopped is True
-    assert runner.afd_connector.closed is True
+    assert runner.connector.closed is True
 
 
 def test_forward_context_provider_installs_metadata_before_model_forward(monkeypatch):
@@ -624,7 +602,7 @@ def test_forward_context_provider_installs_metadata_before_model_forward(monkeyp
     runner.vllm_config = SimpleNamespace(
         parallel_config=_parallel_config(),
     )
-    runner.afd_connector = _RecordingConnector()
+    runner.connector = _RecordingConnector()
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
     runner._afd_pending_metadata = None
@@ -644,7 +622,7 @@ def test_forward_context_provider_installs_metadata_before_model_forward(monkeyp
     assert metadata is not None
     assert metadata.tokens_lens == [1]
     assert forward_context.additional_kwargs["afd_metadata"] is metadata
-    assert runner.afd_connector.sent_dp_metadata_lists
+    assert runner.connector.sent_dp_metadata_lists
     assert fake_forward_context.create_forward_context is original_create
 
 
@@ -654,7 +632,7 @@ def test_forward_context_provider_can_install_without_sending_metadata(monkeypat
     runner.vllm_config = SimpleNamespace(
         parallel_config=_parallel_config(),
     )
-    runner.afd_connector = _RecordingConnector()
+    runner.connector = _RecordingConnector()
     runner._is_warmup = False
     runner._afd_is_graph_capturing = True
     runner._afd_suppress_metadata_send = True
@@ -673,7 +651,7 @@ def test_forward_context_provider_can_install_without_sending_metadata(monkeypat
         metadata = get_afd_metadata_from_forward_context(forward_context)
 
     assert metadata is runner._afd_pending_metadata
-    assert runner.afd_connector.sent_dp_metadata_lists == []
+    assert runner.connector.sent_dp_metadata_lists == []
     assert fake_forward_context.create_forward_context is original_create
 
 
@@ -704,7 +682,7 @@ def test_attention_runner_forwards_capture_and_warmup_flags():
     runner.vllm_config = SimpleNamespace(
         parallel_config=_parallel_config(),
     )
-    runner.afd_connector = _RecordingConnector()
+    runner.connector = _RecordingConnector()
     runner._is_warmup = True
     runner._afd_is_graph_capturing = True
     runner._afd_transaction_counter = 0
@@ -712,8 +690,8 @@ def test_attention_runner_forwards_capture_and_warmup_flags():
 
     runner._send_dp_metadata(_dp_metadata([1]), None)
 
-    assert runner.afd_connector.dp_metadata_update_flags == [(True, True)]
-    assert runner.afd_connector.sent_dp_metadata_flags == [(True, True)]
+    assert runner.connector.dp_metadata_update_flags == [(True, True)]
+    assert runner.connector.sent_dp_metadata_flags == [(True, True)]
 
 
 def test_attention_runner_builds_capture_dp_metadata_for_native_dp():

@@ -501,7 +501,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
                 llama_4_scaling,
             )
 
-        afd_connector = afd_metadata.afd_connector
+        afd_connector = afd_metadata.connector
         forward_context = get_forward_context()
         stage_idx = int(
             getattr(forward_context, "ubatch_idx", afd_metadata.stage_idx),

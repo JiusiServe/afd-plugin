@@ -288,42 +288,6 @@ def test_ffn_forward_can_skip_connector_state_update_for_capture():
     ]
 
 
-def test_ffn_runner_connector_driven_step_uses_payload_layer_metadata():
-    runner = _runner_with_connector_and_model(_FakeModel(), num_layers=2)
-    runner.connector = _ConnectorDrivenFakeConnector()
-    metadata_layer_0 = AFDTransferMetadata.create_attention_metadata(
-        layer_idx=0,
-        stage_idx=0,
-        seq_len=1,
-    )
-    metadata_layer_1 = AFDTransferMetadata.create_attention_metadata(
-        layer_idx=1,
-        stage_idx=0,
-        seq_len=1,
-    )
-    runner.connector.attn_outputs.extend(
-        [
-            _payload("hidden-l0", metadata_layer_0),
-            _payload("hidden-l1", metadata_layer_1),
-        ],
-    )
-
-    runner.execute_connector_driven_step()
-
-    assert runner.connector.dp_metadata_updates == []
-    assert runner.connector.ffn_outputs == [
-        ("ffn(hidden-l0, layer=0)", metadata_layer_0),
-        ("ffn(hidden-l1, layer=1)", metadata_layer_1),
-    ]
-
-
-def test_ffn_runner_connector_driven_step_rejects_control_plane_connector():
-    runner = _runner_with_connector_and_model(_FakeModel())
-
-    with pytest.raises(RuntimeError, match="connector-driven"):
-        runner.execute_connector_driven_step()
-
-
 def test_set_moe_layer_index_resets_for_current_layer():
     forward_context = SimpleNamespace(
         all_moe_layers=[
@@ -346,25 +310,18 @@ def test_ffn_worker_scheduler_execute_model_fails_fast():
         worker.execute_model(scheduler_output=object())
 
 
-def test_ffn_worker_uses_connector_driven_loop_for_async_connector():
+def test_ffn_worker_loop_rejects_connector_without_control_plane():
     worker = object.__new__(AFDFFNWorker)
     event = threading.Event()
-    calls = []
-
-    def execute_connector_driven_step():
-        calls.append("step")
-        event.set()
 
     worker._ffn_shutdown_event = event
     worker.device = SimpleNamespace(type="cpu")
     worker.model_runner = SimpleNamespace(
         connector=_ConnectorDrivenFakeConnector(),
-        execute_connector_driven_step=execute_connector_driven_step,
     )
 
-    worker._run_ffn_server_loop()
-
-    assert calls == ["step"]
+    with pytest.raises(NotImplementedError, match="control-plane-driven"):
+        worker._run_ffn_server_loop()
 
 
 def test_ffn_worker_loop_logs_unexpected_thread_errors(caplog):
