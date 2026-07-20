@@ -106,6 +106,25 @@ the corresponding runtime stack.
 | Native operators | PyTorch/vLLM CUDA runtime used by NCCL P2P | plugin CANN A2E/E2A ops or external CAM async ops |
 | Build/packaging | no plugin CUDA extension | `setup.py`, `csrc/npu/**`, packaged `_cann_ops_custom` vendor tree |
 
+```mermaid
+flowchart TB
+    COMMON["Shared plugin boundary and contracts"]
+    COMMON --> CUDA["CUDA role workers"]
+    COMMON --> NPU["Ascend role workers"]
+    CUDA --> GPU_RUNNERS["GPUModelRunner extension / minimal FFN runner"]
+    CUDA --> CUDA_GRAPH["CUDA Graph and AFDUBatchWrapper"]
+    CUDA --> NCCL["NCCL P2P transport"]
+    NPU --> NPU_RUNNERS["NPUModelRunner extensions"]
+    NPU --> ACL["ACL/NPUGraph and AscendUBatchWrapper"]
+    NPU --> CANN["CANN A2E/E2A or external CAM operators"]
+    CUDA_GRAPH --> DEVICE["Device execution"]
+    GPU_RUNNERS --> DEVICE
+    NCCL --> DEVICE
+    ACL --> DEVICE
+    NPU_RUNNERS --> DEVICE
+    CANN --> DEVICE
+```
+
 ## CUDA mechanisms
 
 ### Worker and device setup

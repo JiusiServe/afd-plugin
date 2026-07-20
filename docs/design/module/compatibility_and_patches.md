@@ -90,6 +90,19 @@ The vLLM plugin entry point applies compatibility in this order:
 5. import the force-load-balance patch only when vLLM-Ascend is discoverable;
 6. register model mappings, which is required for registration to complete.
 
+```mermaid
+flowchart LR
+    ENTRY["Plugin entry point"] --> CHECK["Non-strict vLLM version check"]
+    CHECK --> CORE["Core patch import block"]
+    CORE -->|Continue after success or logged failure| DBO["DBO yield operator"]
+    DBO --> NPU{"vLLM-Ascend discoverable?"}
+    NPU -- Yes --> ASCEND["Ascend config and load-balance patches"]
+    NPU -- No --> MODELS["Required model mappings"]
+    ASCEND --> MODELS
+    MODELS -->|Success| READY["Registration may complete"]
+    MODELS -->|Failure| FAIL["Registration fails"]
+```
+
 Python module import provides process-level one-time execution in the ordinary
 path. Some patches also preserve originals or set explicit sentinels, but this
 is not consistent across the inventory. There is no transaction or rollback:

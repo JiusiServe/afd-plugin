@@ -177,6 +177,35 @@ constructed -> initialized -> control/state prepared -> data exchanges -> closed
                                repeated steps
 ```
 
+```mermaid
+sequenceDiagram
+    participant Attention
+    participant ConnectorA as Attention connector
+    participant ConnectorF as FFN connector
+    participant FFN
+
+    Attention->>ConnectorA: init_afd_connector()
+    FFN->>ConnectorF: init_afd_connector()
+    Note over ConnectorA,ConnectorF: Backend groups and communicators become ready
+    loop Each layer and stage
+        alt DP-metadata control plane
+            Attention->>ConnectorA: send_dp_metadata_list(payload)
+            ConnectorA->>ConnectorF: AFDControlPayload
+            ConnectorF->>FFN: Update stage/graph state
+            Attention->>ConnectorA: send_attn_output(...)
+        else Connector-driven CAM async
+            Attention->>ConnectorA: CAM dispatch payload and routing metadata
+        end
+        ConnectorA->>ConnectorF: Hidden states and transfer metadata
+        ConnectorF->>FFN: AFDA2FTransferPayload or work item
+        FFN->>ConnectorF: send_ffn_output(...)
+        ConnectorF-->>ConnectorA: FFN result
+        ConnectorA-->>Attention: recv_ffn_output(...)
+    end
+    Attention->>ConnectorA: close()
+    FFN->>ConnectorF: close()
+```
+
 Construction is device-light; initialization owns backend discovery and
 communication setup. Synchronous connectors receive/apply control metadata
 before tensor transfer so they can derive shapes and graph buffers. CAM async

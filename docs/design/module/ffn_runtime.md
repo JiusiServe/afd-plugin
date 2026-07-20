@@ -64,8 +64,8 @@ on the FFN worker or runner implementation.
 ## Runtime selection
 
 FFN is launched as a `vllm serve` process with an explicit role-specific
-worker, but it does not serve requests. Start the FFN process before Attention
-so connector rendezvous can complete, and send API traffic only to Attention.
+worker, but it does not serve requests. Attention and FFN may be started in
+either order. Send API traffic only to Attention.
 
 | Platform | Worker | Model runner | Current connectors |
 | --- | --- | --- | --- |
@@ -124,6 +124,21 @@ Connectors select one of two FFN triggers through their runtime capability:
 | --- | --- | --- |
 | `dp_metadata` | `P2pNcclAFDConnector`, `CAMP2pAFDConnector` | Receive `AFDControlPayload`, then warm, capture, replay, or execute its stage map. |
 | `connector` | `CAMAsyncAFDConnector` | Block directly on a connector work item; no separate DP-metadata control plane. |
+
+```mermaid
+flowchart TD
+    START["FFN daemon loop"] --> TRIGGER{"connector.ffn_step_trigger"}
+    TRIGGER -->|dp_metadata| CONTROL["Receive AFDControlPayload"]
+    CONTROL --> FLAGS{"Warmup, capture, replay, or eager?"}
+    FLAGS --> GRAPH["Prepare graph state or eager context"]
+    GRAPH --> RECEIVE["Receive Attention payload"]
+    TRIGGER -->|connector| WORK["Block on AFDAsyncFFNWorkItem"]
+    WORK --> CONTEXT["Build minimal forward context"]
+    RECEIVE --> COMPUTE["Role-aware FFN compute"]
+    CONTEXT --> COMPUTE
+    COMPUTE --> SEND["Send result to Attention"]
+    SEND --> START
+```
 
 ### DP-metadata-triggered loop
 

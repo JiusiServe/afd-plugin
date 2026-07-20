@@ -228,9 +228,9 @@ vllm serve /path/to/DeepSeek-V2-Lite \
   --additional-config '{"afd":{"role":"attention","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
-Start the FFN side first, then start the Attention side and send requests to
-the Attention API server. FFN workers are connector-driven; scheduler-driven
-FFN `execute_model()` calls fail fast.
+Attention and FFN may be started in either order. Send requests only to the
+Attention API server. FFN workers are connector-driven; scheduler-driven FFN
+`execute_model()` calls fail fast.
 
 For repeatable local smoke testing, prefer the bundled runner:
 

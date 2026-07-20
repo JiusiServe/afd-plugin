@@ -134,6 +134,30 @@ MLP. Attention-side-gate mode requires connector-produced group/routing and
 quantization metadata, executes the Ascend expert path, and can return
 separate routed/shared outputs in `AFDF2ATransferPayload`.
 
+```mermaid
+sequenceDiagram
+    participant AttentionLayer as Attention-side decoder layer
+    participant Gate as Optional Attention-side MoE gate
+    participant Connector
+    participant FFNLayer as FFN-side decoder layer
+
+    AttentionLayer->>AttentionLayer: Attention and post-Attention normalization
+    opt compute_gate_on_attention
+        AttentionLayer->>Gate: Compute routing
+        Gate-->>AttentionLayer: top-k weights/ids and optional router logits
+    end
+    AttentionLayer->>Connector: Hidden states, AFDTransferMetadata, routing payload
+    Connector->>FFNLayer: compute_ffn_output(layer_idx)
+    alt MoE layer
+        FFNLayer->>FFNLayer: Expert/shared-expert computation
+    else Dense layer in normal split mode
+        FFNLayer->>FFNLayer: Dense MLP computation
+    end
+    FFNLayer-->>Connector: AFDF2ATransferPayload or hidden states
+    Connector-->>AttentionLayer: Matching FFN result
+    AttentionLayer->>AttentionLayer: Continue residual/layer pipeline
+```
+
 CAM async has two model-side variants:
 
 - the standard gate path keeps dense layers on Attention, sends only MoE

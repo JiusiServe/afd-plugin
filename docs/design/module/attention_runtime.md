@@ -137,6 +137,35 @@ OpenAI request
   -> native vLLM sampling and output path
 ```
 
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Scheduler as vLLM scheduler
+    participant Attention as Attention worker/runner
+    participant Model as Role-aware model
+    participant Connector
+    participant FFN as FFN daemon/runner
+
+    Client->>Scheduler: API request
+    Scheduler->>Attention: Scheduled batch
+    Attention->>Attention: Build native and AFD metadata
+    opt Connector uses DP-metadata control plane
+        Attention->>Connector: AFDControlPayload
+        Connector->>FFN: Stage shapes and graph flags
+    end
+    Attention->>Model: Forward with afd_metadata
+    loop Each split layer and stage
+        Model->>Connector: Attention output and transfer metadata
+        Connector->>FFN: FFN work
+        FFN->>FFN: Role-aware FFN compute
+        FFN->>Connector: FFN result
+        Connector-->>Model: Matching hidden states
+    end
+    Model-->>Attention: Final hidden states
+    Attention-->>Scheduler: Sampling/output data
+    Scheduler-->>Client: Response
+```
+
 Attention remains request-driven even when the selected connector makes FFN
 connector-driven. Idle DP ranks use the upstream dummy-batch path; the CUDA
 runner installs AFD metadata lazily for that path because native dummy

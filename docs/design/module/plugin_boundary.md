@@ -1,7 +1,7 @@
 ---
 title: Plugin boundary
 kind: module
-status: draft
+status: normative
 owners:
   - "@hsliuustc0106"
   - "@jiangkuaixue123"
@@ -98,6 +98,21 @@ order and failure behavior are:
 | 7 | Register the AFD model architecture mappings with vLLM `ModelRegistry`. | Required when vLLM is installed. An error propagates and `_registered` remains false. |
 | 8 | Mark registration complete. | Later calls are no-ops. |
 
+```mermaid
+flowchart TD
+    CALL["register_afd()"] --> DONE{"Already registered?"}
+    DONE -- Yes --> RETURN["Return"]
+    DONE -- No --> FOUND{"vLLM discoverable?"}
+    FOUND -- No --> CPU["Mark complete; keep CPU-only use available"]
+    FOUND -- Yes --> VERSION["Non-strict version check"]
+    VERSION --> CORE["Best-effort core compatibility patches"]
+    CORE --> DBO["Best-effort DBO yield op"]
+    DBO --> ASCEND["Best-effort Ascend patches when discoverable"]
+    ASCEND --> MODEL["Required ModelRegistry mappings"]
+    MODEL -->|Success| COMPLETE["Mark registration complete"]
+    MODEL -->|Failure| ERROR["Propagate error; leave _registered false"]
+```
+
 Patch details and the risks of best-effort application are owned by
 [compatibility and patches](compatibility_and_patches.md). Model mappings are
 owned by [model integration](model_integration.md).
@@ -107,8 +122,7 @@ owned by [model integration](model_integration.md).
 The canonical input is `VllmConfig.additional_config["afd"]`. Namespace
 presence is the activation signal: `parse_optional_afd_config()` returns
 `None` when it is absent, while role runtimes call `parse_afd_config()` and
-raise if the required namespace is missing. There is no separate `enabled`
-field. Unknown top-level AFD keys are rejected and connector-specific values
+raise if the required namespace is missing. Unknown top-level AFD keys are rejected and connector-specific values
 must be placed under `connector_extra_config`.
 
 | Canonical key | Default | Current meaning |
@@ -180,9 +194,9 @@ the activation or topology channel.
   bootstrap is currently best effort and therefore must be verified by the
   affected runtime tests.
 
-## Candidate invariants
+## Invariants
 
-The following RFC candidates are non-normative while this document is draft:
+The following invariants are normative:
 
 - `ENTRY-INV-001`: top-level package, configuration, and validation imports are
   safe without vLLM or a device backend installed.
@@ -209,5 +223,6 @@ configuration. The hard-coded connector allow-list, factory extension surface,
 and optional registration failures are still not declared public extension
 contracts; see [#129](https://github.com/JiusiServe/afd-plugin/issues/129).
 
-Until owner review is complete, the factory name allow-list and best-effort
-patch policy remain **draft** even though their current behavior is test-backed.
+The factory name allow-list and best-effort patch policy remain explicitly
+**draft** even though their current behavior is test-backed. Making this
+document normative does not make them public extension contracts.

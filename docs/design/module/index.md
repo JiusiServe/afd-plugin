@@ -64,6 +64,24 @@ attention_runtime ----+
 ffn_runtime ----------+----> compatibility_and_patches ----> plugin_boundary
 ```
 
+```mermaid
+flowchart LR
+    ATT["Attention runtime"] --> CONN["Connector contracts"]
+    FFN["FFN runtime"] --> CONN
+    MODEL["Model integration"] --> CONN
+    ATT --> MODEL
+    FFN --> MODEL
+    ATT --> PLAT["Execution platforms"]
+    FFN --> PLAT
+    MODEL --> PLAT
+    CONN --> PLAT
+    ATT --> COMPAT["Compatibility and patches"]
+    FFN --> COMPAT
+    CONN --> BOUNDARY["Plugin boundary"]
+    PLAT --> BOUNDARY
+    COMPAT --> BOUNDARY
+```
+
 ## Production path routing
 
 Every shipped Python path, native build path, and packaging file has one
