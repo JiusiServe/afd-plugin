@@ -100,7 +100,7 @@ with `npu-smi info`. Use this compatible release baseline:
 
 #### Environment
 
-The preferred environment is the official A3/openEuler image:
+The following A3/openEuler environment has been validated:
 
 ```bash
 docker pull quay.io/ascend/vllm-ascend:v0.19.1rc1-a3-openeuler
@@ -108,32 +108,9 @@ docker pull quay.io/ascend/vllm-ascend:v0.19.1rc1-a3-openeuler
 
 Use the fixed
 [vLLM-Ascend installation guide](https://github.com/vllm-project/vllm-ascend/blob/v0.19.1rc1/docs/source/installation.md)
-to start the image with the device and driver configuration for your host. From
-the AFD repository root, add `--volume "$PWD":/workspace/afd-plugin` and
-`--workdir /workspace/afd-plugin` to its `docker run` command so that the
-checkout is available inside the container.
-
-The editable build writes architecture-specific artifacts into the mounted
-checkout; use a dedicated checkout for the container build.
-
-For an existing or source-built environment, initialize CANN and NNAL:
-
-```bash
-source /usr/local/Ascend/ascend-toolkit/set_env.sh
-source /usr/local/Ascend/nnal/atb/set_env.sh
-```
-
-If needed, use the source-installation path in the same guide to install the
-vLLM and vLLM-Ascend versions listed above.
-
-For this source alternative, ensure AFD's build requirements are present before
-installing with `--no-build-isolation`:
-
-```bash
-python -m pip install \
-  "setuptools>=61" wheel "setuptools-scm[toml]>=8" \
-  "pybind11>=2.12" "cmake>=3.16"
-```
+to start the image with the device and driver configuration for your host. The
+image includes the matched CANN and NNAL environment. Run the remaining commands
+inside the container from the AFD repository root.
 
 #### Install AFD
 
