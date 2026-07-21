@@ -47,6 +47,10 @@ The AFD runtime is enabled through the `afd` object passed to
 `--additional-config`. The same topology-level values must be used by the
 attention and FFN commands so all workers join the same CAM async group.
 
+In an async deployment, `--max-num-batched-tokens` must also be set to the
+same value on the Attention (A) and FFN (F) sides. This recipe uses `140000`
+for both sides.
+
 | Field | Meaning |
 |-------|---------|
 | `connector` | Selects the AFD connector implementation. Use `CAMAsyncAFDConnector` for CAM async. |
@@ -83,6 +87,10 @@ MoE-only request-boundary staging and is not vLLM native DBO.
   first 10 layers only: 3 dense layers and 7 MoE layers.
 
 ### Benchmark
+
+**NOTE:** CAM async supports only the prefill stage. The benchmark deployment
+below does not use prefill/decode disaggregation because the dataset uses an
+output length of `1` to simulate a prefill workload.
 
 Dataset:
 

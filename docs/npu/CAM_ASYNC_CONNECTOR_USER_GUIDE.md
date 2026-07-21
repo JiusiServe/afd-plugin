@@ -91,7 +91,8 @@ FFN ranks follow expert parallel placement. The runtime derives experts per rank
 from the model routed-expert count and `num_ffn_ranks`; use a model/topology in
 which routed experts divide evenly across FFN ranks. All roles must use the same
 model, routed-expert layout, quantization, HCCL address, rank counts, CAM
-settings, and ubatching settings.
+settings, and ubatching settings. In an async deployment, every Attention (A)
+and FFN (F) process must also set `--max-num-batched-tokens` to the same value.
 
 ## AFD configuration
 
