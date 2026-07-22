@@ -154,6 +154,24 @@ def test_camp2p_extra_info_coerces_integer_bool_values():
     )
 
 
+def test_camp2p_extra_info_parses_independent_multistream_switches():
+    defaults = CAMP2PExtraInfo.from_mapping({})
+    attn = CAMP2PExtraInfo.from_mapping({"is_attn_multistream": True})
+    ffn = CAMP2PExtraInfo.from_mapping({"is_ffn_multistream": True})
+
+    assert defaults.is_attn_multistream is False
+    assert defaults.is_ffn_multistream is False
+    assert attn.is_attn_multistream is True
+    assert attn.is_ffn_multistream is False
+    assert ffn.is_attn_multistream is False
+    assert ffn.is_ffn_multistream is True
+
+
+def test_camp2p_extra_info_rejects_invalid_multistream_switch():
+    with pytest.raises(TypeError, match="is_attn_multistream must be a boolean"):
+        CAMP2PExtraInfo.from_mapping({"is_attn_multistream": "sometimes"})
+
+
 def test_camp2p_connector_uses_role_specific_core_num():
     connector = CAMP2pAFDConnector(
         0,

@@ -50,6 +50,9 @@ from afd_plugin.connectors.metadata import (
     send_control_payload,
 )
 from afd_plugin.distributed import init_afd_process_group, topology_from_config
+from afd_plugin.v1.worker.npu.multistream import (
+    npu_stream_switch_within_graph,
+)
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -62,6 +65,8 @@ _CAMP2P_EXTRA_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
         "core_num",
         "attn_core_num",
         "ffn_core_num",
+        "is_attn_multistream",
+        "is_ffn_multistream",
         "compute_gate_on_attention",
         "quant_mode",
     },
@@ -76,6 +81,10 @@ class CAMP2PExtraInfo(ConnectorExtraInfo):
         core_num: Default number of AIV cores used by each AFD role.
         attn_core_num: Optional Attention-role override for ``core_num``.
         ffn_core_num: Optional FFN-role override for ``core_num``.
+        is_attn_multistream: Run Attention-side A2F communication on a
+            dedicated NPU stream.
+        is_ffn_multistream: Run FFN-side F2A communication on a dedicated NPU
+            stream.
         compute_gate_on_attention: Whether Attention computes MoE gate outputs.
         quant_mode: CAM quantization mode; the current runtime supports only 0.
     """
@@ -83,6 +92,8 @@ class CAMP2PExtraInfo(ConnectorExtraInfo):
     core_num: int = 8
     attn_core_num: int | None = None
     ffn_core_num: int | None = None
+    is_attn_multistream: bool = False
+    is_ffn_multistream: bool = False
     compute_gate_on_attention: bool = False
     quant_mode: int = 0
 
@@ -116,6 +127,14 @@ class CAMP2PExtraInfo(ConnectorExtraInfo):
                 raw.get("ffn_core_num"),
                 field_name="ffn_core_num",
             ),
+            is_attn_multistream=coerce_extra_bool(
+                raw.get("is_attn_multistream", False),
+                field_name="is_attn_multistream",
+            ),
+            is_ffn_multistream=coerce_extra_bool(
+                raw.get("is_ffn_multistream", False),
+                field_name="is_ffn_multistream",
+            ),
             compute_gate_on_attention=coerce_extra_bool(
                 raw.get("compute_gate_on_attention", False),
                 field_name="compute_gate_on_attention",
@@ -144,6 +163,8 @@ class CAMP2PExtraInfo(ConnectorExtraInfo):
     def to_mapping(self) -> dict[str, Any]:
         result: dict[str, Any] = {
             "core_num": self.core_num,
+            "is_attn_multistream": self.is_attn_multistream,
+            "is_ffn_multistream": self.is_ffn_multistream,
             "compute_gate_on_attention": self.compute_gate_on_attention,
             "quant_mode": self.quant_mode,
         }
@@ -605,24 +626,35 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         if transfer_state.atten_batch_size is None:
             raise RuntimeError("CAMP2P FFN side is missing A2E atten_batch_size")
         ubatch_idx = int(kwargs.get("ubatch_idx", metadata.stage_idx) or 0)
+        multistream_enable = bool(kwargs.get("multistream_enable", False))
+        comm_stream = kwargs.get("comm_stream")
+        comm_event = kwargs.get("comm_event")
         group_ep = _get_group_ep(
             ubatch_idx,
             self.hccl_comm_name,
             self.hccl_comm_name2,
             self.hccl_comm_name3,
         )
-        torch.ops.afd_ascend.e2a(
-            ffn_output,
-            transfer_state.atten_batch_size,
-            transfer_state.batch_size,
-            transfer_state.h,
-            transfer_state.k,
-            self.ffn_size,
-            self.attn_size,
-            self.world_rank,
-            group_ep,
-            transfer_state.aiv_num,
-        )
+        current_stream = torch.npu.current_stream()
+        with npu_stream_switch_within_graph(
+            current_stream,
+            comm_stream,
+            multistream_enable,
+        ):
+            torch.ops.afd_ascend.e2a(
+                ffn_output,
+                transfer_state.atten_batch_size,
+                transfer_state.batch_size,
+                transfer_state.h,
+                transfer_state.k,
+                self.ffn_size,
+                self.attn_size,
+                self.world_rank,
+                group_ep,
+                transfer_state.aiv_num,
+            )
+            if multistream_enable and comm_event is not None:
+                comm_event.record(comm_stream)
         return None
 
     def _metadata_data_or_default(
@@ -960,20 +992,34 @@ def _register_camp2p_custom_ops() -> None:
         )
         transfer_state.group_ep = group_ep
 
-        outputs = torch.ops.afd_ascend.a2e(
-            hidden_states,
-            None,
-            None,
-            transfer_state.batch_size,
-            transfer_state.h,
-            transfer_state.k,
-            int(ffn_size),
-            int(attn_size),
-            int(world_rank),
-            group_ep,
-            transfer_state.aiv_num,
-            int(compute_gate),
+        forward_context = get_forward_context()
+        multistream_enable = bool(
+            getattr(forward_context, "afd_multistream_enabled", False)
         )
+        comm_stream = getattr(forward_context, "afd_comm_stream", None)
+        comm_event = getattr(forward_context, "afd_comm_event", None)
+        current_stream = torch.npu.current_stream()
+        with npu_stream_switch_within_graph(
+            current_stream,
+            comm_stream,
+            multistream_enable,
+        ):
+            outputs = torch.ops.afd_ascend.a2e(
+                hidden_states,
+                None,
+                None,
+                transfer_state.batch_size,
+                transfer_state.h,
+                transfer_state.k,
+                int(ffn_size),
+                int(attn_size),
+                int(world_rank),
+                group_ep,
+                transfer_state.aiv_num,
+                int(compute_gate),
+            )
+            if multistream_enable and comm_event is not None:
+                comm_event.record(comm_stream)
         transfer_state.handle = list(outputs[:5])
         transfer_state.atten_batch_size = outputs[3]
         transfer_state.x_active_mask = outputs[4]
@@ -1024,6 +1070,12 @@ def _register_camp2p_custom_ops() -> None:
             hccl_comm_name3,
         )
         transfer_state.group_ep = group_ep
+        forward_context = get_forward_context()
+        if bool(getattr(forward_context, "afd_multistream_enabled", False)):
+            comm_event = getattr(forward_context, "afd_comm_event", None)
+            if comm_event is None:
+                raise RuntimeError("CAMP2P Attention multistream requires an event")
+            comm_event.wait(torch.npu.current_stream())
         output = torch.ops.afd_ascend.e2a(
             ref_tensor,
             transfer_state.atten_batch_size,
