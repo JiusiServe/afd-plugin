@@ -148,8 +148,8 @@ After `AFD_OPS_OK`, the environment is ready to run the NPU examples and E2E
 tests. See the
 [synchronous NPU recipe](recipe/npu/CAMP2pAFDConnector/deepseek_v3_2/README.md).
 For implementation details, see the
-[NPU Attention runtime design](docs/npu/NPU_ATTENTION_RUNTIME_DESIGN.md) and
-[NPU FFN runtime design](docs/npu/NPU_FFN_RUNTIME_DESIGN.md).
+[Attention runtime design](docs/design/module/attention_runtime.md) and
+[FFN runtime design](docs/design/module/ffn_runtime.md).
 
 ## Using the Plugin
 
@@ -205,9 +205,9 @@ vllm serve /path/to/DeepSeek-V2-Lite \
   --additional-config '{"afd":{"role":"attention","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
-Start the FFN side first, then start the Attention side and send requests to
-the Attention API server. FFN workers are connector-driven; scheduler-driven
-FFN `execute_model()` calls fail fast.
+Attention and FFN may be started in either order. Send requests only to the
+Attention API server. FFN workers are connector-driven; scheduler-driven FFN
+`execute_model()` calls fail fast.
 
 For repeatable local smoke testing, prefer the bundled runner:
 
