@@ -128,7 +128,7 @@ def register_afd() -> None:
     from vllm.model_executor.models import ModelRegistry
 
     for model_arch, model_cls in _DEEPSEEK_MODEL_REGISTRATIONS.items():
-        ModelRegistry.register_model(model_arch, model_cls)
+        ModelRegistry.register_model(f"AFD{model_arch}", model_cls)
 
     _registered = True
 

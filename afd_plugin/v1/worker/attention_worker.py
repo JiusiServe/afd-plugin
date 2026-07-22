@@ -9,6 +9,7 @@ from typing import Any
 import torch
 from vllm.v1.worker.gpu_worker import Worker
 
+from afd_plugin.model_executor.models.model_utils import get_afd_model_config
 from afd_plugin.v1.worker.attention_model_runner import (
     AFDAttentionModelRunner,
     fail_if_unsupported_ubatching,
@@ -41,6 +42,9 @@ class AFDAttentionWorker(Worker):
         fail_if_unsupported_ubatching(self.vllm_config)
 
         super().init_device()
+        self.vllm_config.model_config = get_afd_model_config(
+            self.vllm_config.model_config,
+        )
         self.model_runner = AFDAttentionModelRunner(self.vllm_config, self.device)
 
         torch.accelerator.empty_cache()
