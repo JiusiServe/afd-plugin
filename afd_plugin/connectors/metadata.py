@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import torch
+from vllm.forward_context import DPMetadata
 
 if TYPE_CHECKING:
     from torch.distributed.distributed_c10d import ProcessGroup
@@ -28,23 +29,29 @@ class AFDDPMetadata:
     local_sizes: list[int] | None = None
 
     def __post_init__(self) -> None:
-        self.num_tokens_across_dp_cpu = _cpu_int_tensor_or_list(
+        self.num_tokens_across_dp_cpu = torch.as_tensor(
             self.num_tokens_across_dp_cpu,
+            dtype=torch.int32,
+            device="cpu",
         )
         if self.max_tokens_across_dp_cpu is None:
-            self.max_tokens_across_dp_cpu = _max_token_count(
-                self.num_tokens_across_dp_cpu,
-            )
+            self.max_tokens_across_dp_cpu = self.num_tokens_across_dp_cpu.max()
         else:
-            self.max_tokens_across_dp_cpu = _cpu_scalar_tensor_or_int(
+            self.max_tokens_across_dp_cpu = torch.as_tensor(
                 self.max_tokens_across_dp_cpu,
+                dtype=torch.int32,
+                device="cpu",
             )
 
     @contextmanager
     def sp_local_sizes(self, sequence_parallel_size: int) -> Generator[list[int]]:
-        self.local_sizes = _compute_sp_num_tokens(
-            self.num_tokens_across_dp_cpu,
-            sequence_parallel_size,
+        self.local_sizes = (
+            (
+                (self.num_tokens_across_dp_cpu + sequence_parallel_size - 1)
+                // sequence_parallel_size
+            )
+            .repeat_interleave(sequence_parallel_size)
+            .tolist()
         )
         try:
             yield self.local_sizes
@@ -55,7 +62,7 @@ class AFDDPMetadata:
         return self.local_sizes
 
     def cu_tokens_across_sp(self, sp_size: int) -> torch.Tensor:
-        num_tokens = _cpu_int_tensor_or_list(self.num_tokens_across_dp_cpu)
+        num_tokens = self.num_tokens_across_dp_cpu
         num_tokens_across_sp_cpu = (num_tokens - 1 + sp_size) // sp_size
         num_tokens_across_sp_cpu = num_tokens_across_sp_cpu.repeat_interleave(
             sp_size,
@@ -69,9 +76,13 @@ class AFDDPMetadata:
         max_chunk_size_per_rank: int,
         chunk_idx: int,
     ) -> Generator[list[int]]:
-        sp_tokens = _compute_sp_num_tokens(
-            self.num_tokens_across_dp_cpu,
-            sequence_parallel_size,
+        sp_tokens = (
+            (
+                (self.num_tokens_across_dp_cpu + sequence_parallel_size - 1)
+                // sequence_parallel_size
+            )
+            .repeat_interleave(sequence_parallel_size)
+            .tolist()
         )
         self.local_sizes = [
             max(
@@ -120,86 +131,14 @@ class AFDControlPayload:
 
     def __post_init__(self) -> None:
         self.dp_metadata_list = {
-            int(stage_idx): _ensure_afd_dp_metadata(dp_metadata)
+            # stage_idx: _ensure_afd_dp_metadata(dp_metadata)
+            stage_idx: AFDDPMetadata(
+                num_tokens_across_dp_cpu=dp_metadata.num_tokens_across_dp_cpu,
+            )
+            if isinstance(dp_metadata, DPMetadata)
+            else dp_metadata
             for stage_idx, dp_metadata in self.dp_metadata_list.items()
         }
-        self.is_graph_capturing = bool(self.is_graph_capturing)
-        self.is_warmup = bool(self.is_warmup)
-
-
-def _ensure_afd_dp_metadata(value: object) -> AFDDPMetadata:
-    if isinstance(value, AFDDPMetadata):
-        return value
-    token_counts = getattr(value, "num_tokens_across_dp_cpu", None)
-    if token_counts is None:
-        raise TypeError(
-            "AFD DP metadata must expose num_tokens_across_dp_cpu",
-        )
-    max_token_count = getattr(value, "max_tokens_across_dp_cpu", None)
-    return AFDDPMetadata(
-        num_tokens_across_dp_cpu=_cpu_int_tensor_or_list(token_counts),
-        max_tokens_across_dp_cpu=(
-            None
-            if max_token_count is None
-            else _cpu_scalar_tensor_or_int(max_token_count)
-        ),
-    )
-
-
-def _cpu_int_tensor_or_list(value: object) -> torch.Tensor:
-    values = _to_int_list(value)
-    return torch.tensor(values, dtype=torch.int32, device="cpu")
-
-
-def _cpu_scalar_tensor_or_int(value: object) -> torch.Tensor:
-    if isinstance(value, (int, float)):
-        value = int(value)
-    elif isinstance(value, (list, tuple)):
-        value = max(int(item) for item in value)
-    else:
-        value = int(value.item())
-    return torch.tensor(value, dtype=torch.int32, device="cpu")
-
-
-def _max_token_count(value: object) -> torch.Tensor:
-    if isinstance(value, list):
-        return torch.tensor(max(_to_int_list(value)), dtype=torch.int32, device="cpu")
-    if not isinstance(value, torch.Tensor):
-        value = _cpu_int_tensor_or_list(value)
-    return value.max()
-
-
-def _to_int_list(value: object) -> list[int]:
-    if isinstance(value, (int, float)):
-        value = [value]
-    elif isinstance(value, (list, tuple)):
-        pass
-    else:
-        value = value.tolist()
-    return [int(item) for item in value]
-
-
-def _compute_sp_num_tokens(
-    num_tokens_across_dp_cpu: object,
-    sequence_parallel_size: int,
-) -> list[int]:
-    if not isinstance(num_tokens_across_dp_cpu, (int, float, list, tuple)):
-        sp_tokens = (
-            num_tokens_across_dp_cpu + sequence_parallel_size - 1
-        ) // sequence_parallel_size
-        return sp_tokens.repeat_interleave(sequence_parallel_size).tolist()
-
-    if isinstance(num_tokens_across_dp_cpu, (int, float)):
-        values = [int(num_tokens_across_dp_cpu)]
-    else:
-        values = [int(value) for value in num_tokens_across_dp_cpu]
-    local_sizes: list[int] = []
-    for value in values:
-        local_sizes.extend(
-            [max(1, (value + sequence_parallel_size - 1) // sequence_parallel_size)]
-            * sequence_parallel_size,
-        )
-    return local_sizes
 
 
 @dataclass(slots=True)
@@ -217,10 +156,13 @@ class AFDCustomTransferState:
 class AFDTransferState:
     """Backend-neutral transfer state for one AFD Attention/FFN exchange.
 
-    ``AFDTransferState`` carries the routing and quantization payloads that
-    connectors produce on the receive path and consume on the send path. The
-    hidden-state tensor is kept separately on ``AFDA2FTransferPayload``. Any
-    backend-private state is stored under ``custom_states``.
+    ``AFDTransferState`` carries only the routing and quantization payloads that
+    the FFN model runner consumes on the send path, kept backend-neutral so a
+    single runner can drive every connector. The hidden-state tensor is kept
+    separately on ``AFDA2FTransferPayload``. Any state that is private to a
+    connector (handles, HCCL endpoint names, per-transfer sizes, receive-side
+    token counts a connector reads back itself) lives under ``custom_states``
+    instead of here.
 
     Attributes:
         group_list: Optional expert/group token-count payload. CAMP2P and
@@ -240,12 +182,6 @@ class AFDTransferState:
             shared-expert tokens.
         cam_p2p_ep_name: Optional CAM/HCCL endpoint name associated with the
             receive path.
-        atten_batch_size: Optional backend-reported Attention batch-size or
-            token-count tensor.
-        expand_idx: Optional expanded-token index payload for MoE routing.
-        ep_recv_counts: Optional expert-parallel receive counts.
-        ep_recv_counts_shared: Optional shared-expert expert-parallel receive
-            counts.
         custom_states: Optional backend-specific transfer state. For example,
             CAMP2P stores ``CAMP2PTransferState`` here so receive-time results
             can be reused by the matching send path.
@@ -261,10 +197,6 @@ class AFDTransferState:
     expand_x_shared: torch.Tensor | None = None
     dynamic_scales_shared: torch.Tensor | None = None
     cam_p2p_ep_name: str | None = None
-    atten_batch_size: torch.Tensor | None = None
-    expand_idx: torch.Tensor | None = None
-    ep_recv_counts: torch.Tensor | None = None
-    ep_recv_counts_shared: torch.Tensor | None = None
     custom_states: AFDCustomTransferState | None = None
 
 
@@ -337,17 +269,29 @@ class AFDTransferContext:
 
     ``AFDTransferContext`` is the object connectors pass through their data
     path. It binds the backend-neutral ``AFDTransferMetadata`` describing the
-    layer/stage/token layout to the ``AFDTransferState`` carrying routing and
-    backend-specific payloads.
+    layer/stage/token layout to an optional ``AFDTransferState`` carrying
+    routing and backend-specific payloads.
+
+    ``state`` is a pluggable slot: backends that route no per-transfer payload
+    through the context (the GPU P2P connector) leave it ``None``, while
+    backends that do (CAMP2P, async CAM) attach an ``AFDTransferState`` from
+    the connector method that produces the payload. Consumers that read
+    ``state`` therefore only do so on the paths of the backend that populated
+    it. Keeping the default ``None`` — rather than a
+    ``field(default_factory=AFDTransferState)`` — also keeps the generated
+    ``__init__`` traceable by ``torch.compile``/Dynamo, which fails on the
+    factory call and is exercised where attention forwards build the context
+    under compilation.
 
     Attributes:
         metadata: Metadata describing the layer/stage and token layout.
-        state: Transfer state carrying routing/quantization payloads and any
-            backend-specific ``custom_states``.
+        state: Optional transfer state carrying routing/quantization payloads
+            and any backend-specific ``custom_states``. ``None`` for backends
+            that route no payload through the context.
     """
 
     metadata: AFDTransferMetadata
-    state: AFDTransferState = field(default_factory=AFDTransferState)
+    states: AFDTransferState | None = None
 
 
 @dataclass(slots=True)
@@ -415,19 +359,9 @@ def encode_control_payload(payload: AFDControlPayload) -> bytes:
     """
     metadata_payload: dict[str, dict[str, int | list[int]]] = {}
     for stage_idx, dp_metadata in payload.dp_metadata_list.items():
-        token_counts = getattr(dp_metadata, "num_tokens_across_dp_cpu", None)
-        if token_counts is None:
-            raise TypeError(
-                "AFD DP metadata must expose num_tokens_across_dp_cpu "
-                "for JSON serialization",
-            )
-        token_counts_list = _to_int_list(token_counts)
-        max_token_count = getattr(dp_metadata, "max_tokens_across_dp_cpu", None)
-        if max_token_count is None:
-            max_token_count = max(token_counts_list)
         metadata_payload[str(int(stage_idx))] = {
-            "num_tokens_across_dp_cpu": token_counts_list,
-            "max_tokens_across_dp_cpu": _to_int(max_token_count),
+            "num_tokens_across_dp_cpu": dp_metadata.num_tokens_across_dp_cpu.tolist(),
+            "max_tokens_across_dp_cpu": _to_int(dp_metadata.max_tokens_across_dp_cpu),
         }
 
     wire_payload = {

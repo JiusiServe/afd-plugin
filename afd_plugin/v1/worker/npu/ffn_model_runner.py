@@ -250,27 +250,28 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     )
                     context = payload.context
                     metadata = context.metadata
-                    state = context.state
+                    states = context.states
                     hidden_states = payload.hidden_states
                     metadata.layer_idx = layer_idx
                     metadata.stage_idx = stage_idx
                     forward_context.dp_metadata = dp_metadata_list.get(stage_idx)
                     forward_context.additional_kwargs["afd_metadata"] = metadata
+                    assert states, "Context.states must not be None"
                     _set_moe_layer_index(forward_context, layer_idx)
 
                     rank_ffn_output = self.model.compute_ffn_output(
                         hidden_states=hidden_states,
                         layer_idx=layer_idx,
-                        group_list=state.group_list,
-                        dynamic_scales=state.dynamic_scales,
-                        expand_x_shared=state.expand_x_shared,
-                        dynamic_scales_shared=state.dynamic_scales_shared,
-                        topk_weights=state.topk_weights,
-                        topk_ids=state.topk_ids,
-                        router_logits=state.router_logits,
-                        row_idx=state.row_idx,
-                        x_active_mask=state.x_active_mask,
-                        cam_p2p_ep_name=state.cam_p2p_ep_name or "",
+                        group_list=states.group_list,
+                        dynamic_scales=states.dynamic_scales,
+                        expand_x_shared=states.expand_x_shared,
+                        dynamic_scales_shared=states.dynamic_scales_shared,
+                        topk_weights=states.topk_weights,
+                        topk_ids=states.topk_ids,
+                        router_logits=states.router_logits,
+                        row_idx=states.row_idx,
+                        x_active_mask=states.x_active_mask,
+                        cam_p2p_ep_name=states.cam_p2p_ep_name or "",
                     )
                     _send_ffn_output(
                         self.connector,
@@ -301,7 +302,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             )
             hidden_states = work_item.hidden_states
             metadata = work_item.context.metadata
-            state = work_item.context.state
+            states = work_item.context.states
             layer_idx = work_item.layer_idx
             num_tokens = work_item.num_tokens
             afd_metadata = AFDForwardContextMetadata(
@@ -327,16 +328,16 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 rank_ffn_output = self.model.compute_ffn_output(
                     hidden_states=hidden_states,
                     layer_idx=layer_idx,
-                    group_list=state.group_list,
-                    dynamic_scales=state.dynamic_scales,
-                    expand_x_shared=state.expand_x_shared,
-                    dynamic_scales_shared=state.dynamic_scales_shared,
-                    topk_weights=state.topk_weights,
-                    topk_ids=state.topk_ids,
-                    router_logits=state.router_logits,
-                    row_idx=state.row_idx,
-                    x_active_mask=state.x_active_mask,
-                    cam_p2p_ep_name=state.cam_p2p_ep_name or "",
+                    group_list=states.group_list,
+                    dynamic_scales=states.dynamic_scales,
+                    expand_x_shared=states.expand_x_shared,
+                    dynamic_scales_shared=states.dynamic_scales_shared,
+                    topk_weights=states.topk_weights,
+                    topk_ids=states.topk_ids,
+                    router_logits=states.router_logits,
+                    row_idx=states.row_idx,
+                    x_active_mask=states.x_active_mask,
+                    cam_p2p_ep_name=states.cam_p2p_ep_name or "",
                 )
                 rank_ffn_output = send_work_item_output(work_item, rank_ffn_output)
         return rank_ffn_output

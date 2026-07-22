@@ -58,6 +58,8 @@ class AFDConnectorBase(ABC):
     # has no control plane and FFN steps are driven directly by the connector
     # receive loop.
     control_plane: AFDControlPlane | None = None
+    attn_size: int = 0
+    ffn_size: int = 0
 
     @classmethod
     @abstractmethod
@@ -166,13 +168,24 @@ class AFDConnectorBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def recv_ffn_output(self, **kwargs: Any) -> torch.Tensor:
+    def recv_ffn_output(
+        self,
+        ref_tensor: torch.Tensor,
+        ubatch_idx: int = 0,
+        **kwargs: Any,
+    ) -> torch.Tensor:
         """Receive FFN output on the Attention side.
 
         This method returns the tensor that should continue through the
         Attention-side model execution after FFN computation completes.
 
         Args:
+            ref_tensor: Preallocated tensor for the receive operation. Every
+                backend needs it: CAMP2P and CAM async cannot allocate their
+                own output tensor, and P2P uses it both as a stable buffer for
+                CUDA graph capture and as the result when a single-rank
+                subgroup performs no wire transfer.
+            ubatch_idx: Stage/microbatch index. Defaults to ``0``.
             **kwargs: Optional backend-specific receive arguments.
 
         Returns:
@@ -190,7 +203,7 @@ class AFDConnectorBase(ABC):
     @abstractmethod
     def recv_attn_output(
         self,
-        ubatch_idx: int | None = None,
+        ubatch_idx: int = 0,
         **kwargs: Any,
     ) -> AFDA2FTransferPayload:
         """Receive Attention hidden states on the FFN side.
@@ -200,9 +213,7 @@ class AFDConnectorBase(ABC):
         metadata needed by later FFN-side calls.
 
         Args:
-            ubatch_idx: Optional microbatch/stage index to receive. ``None``
-                means the backend should use its default stage, usually stage
-                ``0``.
+            ubatch_idx: Microbatch/stage index to receive. Defaults to ``0``.
             **kwargs: Optional backend-specific receive arguments.
 
         Returns:
