@@ -6,6 +6,8 @@ Copied from vLLM-Ascend commit cdd212830271249a1cafcb850c210133f21771c5;
 kept plugin-owned so AFD retains DBO support independent of upstream changes.
 """
 
+import copy
+
 import numpy as np
 import torch
 from vllm.config import VllmConfig
@@ -16,6 +18,21 @@ from vllm.v1.worker.ubatch_utils import (
 )
 from vllm_ascend.ascend_forward_context import MoECommType
 from vllm_ascend.attention.utils import AscendCommonAttentionMetadata
+
+COMMON_METADATA_REQUEST_FIELDS = frozenset(
+    {
+        "block_table_tensor",
+        "encoder_seq_lens",
+        "encoder_seq_lens_cpu",
+        "num_computed_tokens_cpu",
+        "seq_lens",
+        "seq_lens_cpu",
+    }
+)
+COMMON_METADATA_TOKEN_FIELDS = frozenset({"positions", "slot_mapping"})
+COMMON_METADATA_CUMULATIVE_FIELDS = frozenset(
+    {"query_start_loc", "query_start_loc_cpu"}
+)
 
 
 def is_last_ubatch_empty(
@@ -29,8 +46,8 @@ def is_last_ubatch_empty(
 def _cp_enabled(vllm_config: VllmConfig) -> bool:
     parallel_config = vllm_config.parallel_config
     return (
-        getattr(parallel_config, "prefill_context_parallel_size", 1) > 1
-        or getattr(parallel_config, "decode_context_parallel_size", 1) > 1
+        parallel_config.prefill_context_parallel_size > 1
+        or parallel_config.decode_context_parallel_size > 1
     )
 
 
@@ -42,7 +59,7 @@ def check_enable_ubatch(
     moe_comm_type: MoECommType | None,
 ) -> bool:
     parallel_config = vllm_config.parallel_config
-    num_ubatches = getattr(parallel_config, "num_ubatches", 2)
+    num_ubatches = parallel_config.num_ubatches
     if num_ubatches != 2:
         return False
     if num_tokens_padded < num_ubatches:
@@ -56,7 +73,7 @@ def check_enable_ubatch(
         num_tokens_unpadded,
         uniform_decode=uniform_decode,
     )
-    if not getattr(parallel_config, "enable_dbo", False):
+    if not parallel_config.enable_dbo:
         return False
     if not should_attempt_ubatching:
         return False
@@ -151,7 +168,7 @@ def maybe_create_ubatch_slices(
     if not should_ubatch:
         return None, None
 
-    num_ubatches = getattr(vllm_config.parallel_config, "num_ubatches", 2)
+    num_ubatches = vllm_config.parallel_config.num_ubatches
     assert num_ubatches == 2, "Ascend ubatching currently supports exactly 2 ubatches."
 
     split_point = int(num_tokens_padded) // num_ubatches
@@ -262,29 +279,25 @@ def _make_metadata_with_slice(
     else:
         actual_seq_lengths_q = []
 
-    metadata = AscendCommonAttentionMetadata(
-        query_start_loc=query_start_loc,
-        query_start_loc_cpu=query_start_loc_cpu,
-        seq_lens=seq_lens,
-        seq_lens_cpu=seq_lens_cpu,
-        _seq_lens_cpu=seq_lens_cpu_for_max,
-        _num_computed_tokens_cpu=num_computed_tokens_cpu,
-        num_computed_tokens_cpu=num_computed_tokens_cpu,
-        num_reqs=num_requests,
-        num_actual_tokens=num_actual_tokens,
-        max_query_len=max_query_len,
-        max_seq_len=max_seq_len,
-        block_table_tensor=attn_metadata.block_table_tensor[request_slice],
-        slot_mapping=attn_metadata.slot_mapping[token_slice],
-        causal=attn_metadata.causal,
-        num_input_tokens=num_actual_tokens,
-        actual_seq_lengths_q=actual_seq_lengths_q,
-        positions=attn_metadata.positions[token_slice],
-        attn_state=attn_metadata.attn_state,
-        graph_pad_size=attn_metadata.graph_pad_size,
-        decode_token_per_req=attn_metadata.decode_token_per_req,
-        kvcomp_metadata=attn_metadata.kvcomp_metadata,
-    )
+    # Start from the upstream object so newly added invariant fields survive an
+    # upgrade. Only fields with a request/token/cumulative axis are replaced.
+    metadata = copy.copy(attn_metadata)
+    metadata.query_start_loc = query_start_loc
+    metadata.query_start_loc_cpu = query_start_loc_cpu
+    metadata.seq_lens = seq_lens
+    metadata.seq_lens_cpu = seq_lens_cpu
+    metadata._seq_lens_cpu = seq_lens_cpu_for_max
+    metadata._num_computed_tokens_cpu = num_computed_tokens_cpu
+    metadata.num_computed_tokens_cpu = num_computed_tokens_cpu
+    metadata.num_reqs = num_requests
+    metadata.num_actual_tokens = num_actual_tokens
+    metadata.max_query_len = max_query_len
+    metadata.max_seq_len = max_seq_len
+    metadata.block_table_tensor = attn_metadata.block_table_tensor[request_slice]
+    metadata.slot_mapping = attn_metadata.slot_mapping[token_slice]
+    metadata.num_input_tokens = num_actual_tokens
+    metadata.actual_seq_lengths_q = actual_seq_lengths_q
+    metadata.positions = attn_metadata.positions[token_slice]
     metadata.encoder_seq_lens = (
         attn_metadata.encoder_seq_lens[request_slice]
         if attn_metadata.encoder_seq_lens is not None
@@ -312,6 +325,9 @@ def split_attn_metadata(
 
 
 __all__ = [
+    "COMMON_METADATA_CUMULATIVE_FIELDS",
+    "COMMON_METADATA_REQUEST_FIELDS",
+    "COMMON_METADATA_TOKEN_FIELDS",
     "UBatchSlice",
     "UBatchSlices",
     "check_enable_ubatch",

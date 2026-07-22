@@ -25,9 +25,16 @@ from afd_plugin.compat.npu.runtime import (
     fix_all2all_backend_for_afd,
     npu_afd_num_ubatches,
 )
+from afd_plugin.compat.npu.version import (
+    TARGET_VLLM_ASCEND_VERSION,
+    assert_vllm_ascend_version_supported,
+    get_installed_vllm_ascend_version,
+    is_vllm_ascend_version_supported,
+)
 
 __all__ = [
     "apply_afd_ascend_patches_if_needed",
+    "assert_vllm_ascend_version_supported",
     "ascend_forward_context",
     "AFD_ASCEND_OPS_NAMESPACE",
     "AFD_ASCEND_VENDOR_NAME",
@@ -44,6 +51,9 @@ __all__ = [
     "fix_all2all_backend_for_afd",
     "get_afd_cann_vendor_path",
     "get_afd_cust_opapi_path",
+    "get_installed_vllm_ascend_version",
     "has_afd_ascend_ops",
+    "is_vllm_ascend_version_supported",
     "npu_afd_num_ubatches",
+    "TARGET_VLLM_ASCEND_VERSION",
 ]

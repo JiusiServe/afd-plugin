@@ -16,6 +16,7 @@ from vllm_ascend.worker.model_runner_v1 import NPUModelRunner, graph_capture
 
 from afd_plugin.compat.npu import (
     ascend_forward_context,
+    assert_vllm_ascend_version_supported,
     fail_if_unsupported_npu_afd_features,
 )
 from afd_plugin.compat.npu.profiler import (
@@ -59,6 +60,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
     afd_expected_role = "ffn"
 
     def __init__(self, vllm_config: VllmConfig, device: object) -> None:
+        assert_vllm_ascend_version_supported()
         afd_config = self.parse_config(vllm_config)
         super().__init__(vllm_config, device)
 

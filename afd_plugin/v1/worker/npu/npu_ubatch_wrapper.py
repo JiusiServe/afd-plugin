@@ -31,6 +31,10 @@ from vllm_ascend.utils import enable_sp
 from afd_plugin.v1.worker.npu.forward_context import (
     create_ascend_forward_context,
 )
+from afd_plugin.v1.worker.npu.ubatch_plan import (
+    UbatchMode,
+    get_forward_context_ubatch_plan,
+)
 from afd_plugin.v1.worker.npu.ubatching import (
     AscendUBatchContext,
     make_ubatch_contexts,
@@ -60,16 +64,23 @@ class AscendUBatchWrapper(UBatchWrapper):
         runtime_mode: CUDAGraphMode,
         device: torch.device,
     ):
-        self.runnable = runnable
+        existing_aclgraph_wrapper = (
+            runnable if isinstance(runnable, ACLGraphWrapper) else None
+        )
+        self.runnable = (
+            existing_aclgraph_wrapper.unwrap()
+            if existing_aclgraph_wrapper is not None
+            else runnable
+        )
         self.vllm_config = vllm_config
         self.compilation_config = vllm_config.compilation_config
         self.comm_stream = torch.npu.Stream(device=device)
         self.ready_barrier = threading.Barrier(3)
         self.cudagraphs: dict[int, AscendNPUGraphMetaData] = {}
-        self.cudagraph_wrapper = None
-        if runtime_mode is not CUDAGraphMode.NONE:
+        self.cudagraph_wrapper = existing_aclgraph_wrapper
+        if self.cudagraph_wrapper is None and runtime_mode is not CUDAGraphMode.NONE:
             self.cudagraph_wrapper = ACLGraphWrapper(
-                runnable,
+                self.runnable,
                 vllm_config,
                 runtime_mode=runtime_mode,
             )
@@ -99,7 +110,12 @@ class AscendUBatchWrapper(UBatchWrapper):
     def __call__(self, *args, **kwargs):
         forward_context = get_forward_context()
         batch_descriptor = forward_context.batch_descriptor
-        ubatch_slices = forward_context.ubatch_slices
+        plan = get_forward_context_ubatch_plan(forward_context)
+        ubatch_slices = (
+            plan.execution_slices
+            if plan.mode is UbatchMode.NATIVE_DBO
+            else forward_context.ubatch_slices
+        )
         cudagraph_runtime_mode = forward_context.cudagraph_runtime_mode
 
         if ubatch_slices is None:

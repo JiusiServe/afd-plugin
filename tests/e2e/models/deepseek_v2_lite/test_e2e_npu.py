@@ -8,7 +8,8 @@ usage. The matrix exercises:
 
   base / +TP / +DBO / +profile / +TP+DBO+profile   ×   {eager, graph}
 
-= 10 tests. DBO variants self-skip on NPU (DBO is not supported there yet).
+= 10 tests. The eager DBO case is the Phase 0 hardware baseline; graph and
+profiler DBO combinations remain gated until they are validated separately.
 Profiler is enabled purely through AFD_NPU_{ATTENTION,FFN}_PROFILER_* env vars,
 which leak through runner.py's os.environ.copy() into the vllm worker — no
 runner/source change required.
@@ -44,9 +45,9 @@ def _model_path() -> str:
     return model
 
 
-def _skip_dbo_on_npu() -> None:
-    """DBO is not supported on NPU yet — skip cleanly instead of failing."""
-    pytest.skip("DBO is not supported on NPU yet")
+def _skip_unvalidated_dbo_combo() -> None:
+    """Gate DBO combinations outside the Phase 0 eager baseline."""
+    pytest.skip("this NPU DBO combination has not completed hardware validation")
 
 
 def _graph_capture_size() -> int:
@@ -217,13 +218,12 @@ def test_deepseek_v2_2a2f_tp_graph():
 
 
 # ---------------------------------------------------------------------------
-# 2A2F + DBO: eager + graph (NPU self-skips — DBO unsupported)
+# 2A2F + DBO: eager Phase 0 baseline; graph remains gated
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.npu
 def test_deepseek_v2_2a2f_dbo_eager():
-    _skip_dbo_on_npu()
     _run_e2e(
         npus=_npu_list(),
         api_port_base=int(
@@ -237,7 +237,7 @@ def test_deepseek_v2_2a2f_dbo_eager():
 @pytest.mark.npu
 @pytest.mark.slow
 def test_deepseek_v2_2a2f_dbo_graph():
-    _skip_dbo_on_npu()
+    _skip_unvalidated_dbo_combo()
     _run_e2e(
         npus=_npu_list(),
         api_port_base=int(
@@ -289,7 +289,7 @@ def test_deepseek_v2_2a2f_profile_graph(
 
 
 # ---------------------------------------------------------------------------
-# 2A2F + TP=2 + DBO + profiler: eager + graph (NPU self-skips — DBO unsupported)
+# 2A2F + TP=2 + DBO + profiler: gated pending hardware validation
 # ---------------------------------------------------------------------------
 
 
@@ -298,7 +298,7 @@ def test_deepseek_v2_2a2f_tp_dbo_profile_eager(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _skip_dbo_on_npu()
+    _skip_unvalidated_dbo_combo()
     attn_dir, ffn_dir = _enable_profiler(tmp_path, monkeypatch)
     _run_e2e(
         npus=_npu_list(),
@@ -320,7 +320,7 @@ def test_deepseek_v2_2a2f_tp_dbo_profile_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _skip_dbo_on_npu()
+    _skip_unvalidated_dbo_combo()
     attn_dir, ffn_dir = _enable_profiler(tmp_path, monkeypatch)
     _run_e2e(
         npus=_npu_list(),

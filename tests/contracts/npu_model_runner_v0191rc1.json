@@ -1,0 +1,1337 @@
+{
+  "attention_builders": {
+    "AscendAttentionMetadataBuilder": {
+      "build": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "common_prefix_len",
+            "required": true
+          },
+          {
+            "annotation": "AscendCommonAttentionMetadata",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "common_attn_metadata",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "fast_build",
+            "required": false
+          }
+        ],
+        "return_annotation": "AscendMetadata",
+        "signature": "def build(self, common_prefix_len: int, common_attn_metadata: AscendCommonAttentionMetadata, fast_build: bool = False) -> AscendMetadata"
+      },
+      "build_for_graph_capture": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "AscendCommonAttentionMetadata",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "common_attn_metadata",
+            "required": true
+          },
+          {
+            "annotation": "AscendAttentionState",
+            "default": "AscendAttentionState.DecodeOnly",
+            "kind": "positional_or_keyword",
+            "name": "attn_state",
+            "required": false
+          }
+        ],
+        "return_annotation": null,
+        "signature": "def build_for_graph_capture(self, common_attn_metadata: AscendCommonAttentionMetadata, attn_state: AscendAttentionState = AscendAttentionState.DecodeOnly)"
+      }
+    },
+    "AscendMLAMetadataBuilder": {
+      "build": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "common_prefix_len",
+            "required": true
+          },
+          {
+            "annotation": "AscendCommonAttentionMetadata",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "common_attn_metadata",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "fast_build",
+            "required": false
+          }
+        ],
+        "return_annotation": "AscendMLAMetadata",
+        "signature": "def build(self, common_prefix_len: int, common_attn_metadata: AscendCommonAttentionMetadata, fast_build: bool = False) -> AscendMLAMetadata"
+      },
+      "build_for_graph_capture": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "AscendCommonAttentionMetadata",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "common_attn_metadata",
+            "required": true
+          },
+          {
+            "annotation": "AscendAttentionState",
+            "default": "AscendAttentionState.DecodeOnly",
+            "kind": "positional_or_keyword",
+            "name": "attn_state",
+            "required": false
+          }
+        ],
+        "return_annotation": null,
+        "signature": "def build_for_graph_capture(self, common_attn_metadata: AscendCommonAttentionMetadata, attn_state: AscendAttentionState = AscendAttentionState.DecodeOnly)"
+      }
+    }
+  },
+  "baseline": {
+    "vllm": {
+      "ref": "v0.19.1",
+      "revision": "b1388b1fbf5aaef47937fabe98931211684666a6"
+    },
+    "vllm_ascend": {
+      "ref": "v0.19.1rc1",
+      "revision": "da421afad7192dac64e39ae1d32305d57344f3cf"
+    }
+  },
+  "external_imports": [
+    "torch",
+    "torch.nn",
+    "vllm.compilation.cuda_graph",
+    "vllm.config",
+    "vllm.forward_context",
+    "vllm.sequence",
+    "vllm.v1.attention.backends.utils",
+    "vllm.v1.core.sched.output",
+    "vllm.v1.kv_cache_interface",
+    "vllm.v1.outputs",
+    "vllm.v1.worker.ubatch_utils",
+    "vllm_ascend.compilation.acl_graph",
+    "vllm_ascend.worker.model_runner_v1"
+  ],
+  "runner_methods": {
+    "_build_attention_metadata": {
+      "matches": true,
+      "plugin": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_tokens",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_reqs",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "max_query_len",
+            "required": true
+          },
+          {
+            "annotation": "int | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "num_tokens_padded",
+            "required": false
+          },
+          {
+            "annotation": "int | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "num_reqs_padded",
+            "required": false
+          },
+          {
+            "annotation": "UBatchSlices | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "ubatch_slices",
+            "required": false
+          },
+          {
+            "annotation": "torch.Tensor | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "logits_indices",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "use_spec_decode",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "for_cudagraph_capture",
+            "required": false
+          },
+          {
+            "annotation": "dict[str, int] | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "num_scheduled_tokens",
+            "required": false
+          },
+          {
+            "annotation": "np.ndarray | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "num_scheduled_tokens_np",
+            "required": false
+          },
+          {
+            "annotation": "list[list[int]] | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "cascade_attn_prefix_lens",
+            "required": false
+          }
+        ],
+        "return_annotation": "tuple[PerLayerAttnMetadata, CommonAttentionMetadata | None]",
+        "signature": "def _build_attention_metadata(self, num_tokens: int, num_reqs: int, max_query_len: int, num_tokens_padded: int | None = None, num_reqs_padded: int | None = None, ubatch_slices: UBatchSlices | None = None, logits_indices: torch.Tensor | None = None, use_spec_decode: bool = False, for_cudagraph_capture: bool = False, num_scheduled_tokens: dict[str, int] | None = None, num_scheduled_tokens_np: np.ndarray | None = None, cascade_attn_prefix_lens: list[list[int]] | None = None) -> tuple[PerLayerAttnMetadata, CommonAttentionMetadata | None]"
+      },
+      "upstream": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_tokens",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_reqs",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "max_query_len",
+            "required": true
+          },
+          {
+            "annotation": "int | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "num_tokens_padded",
+            "required": false
+          },
+          {
+            "annotation": "int | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "num_reqs_padded",
+            "required": false
+          },
+          {
+            "annotation": "UBatchSlices | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "ubatch_slices",
+            "required": false
+          },
+          {
+            "annotation": "torch.Tensor | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "logits_indices",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "use_spec_decode",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "for_cudagraph_capture",
+            "required": false
+          },
+          {
+            "annotation": "dict[str, int] | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "num_scheduled_tokens",
+            "required": false
+          },
+          {
+            "annotation": "np.ndarray | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "num_scheduled_tokens_np",
+            "required": false
+          },
+          {
+            "annotation": "list[list[int]] | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "cascade_attn_prefix_lens",
+            "required": false
+          }
+        ],
+        "return_annotation": "tuple[PerLayerAttnMetadata, CommonAttentionMetadata | None]",
+        "signature": "def _build_attention_metadata(self, num_tokens: int, num_reqs: int, max_query_len: int, num_tokens_padded: int | None = None, num_reqs_padded: int | None = None, ubatch_slices: UBatchSlices | None = None, logits_indices: torch.Tensor | None = None, use_spec_decode: bool = False, for_cudagraph_capture: bool = False, num_scheduled_tokens: dict[str, int] | None = None, num_scheduled_tokens_np: np.ndarray | None = None, cascade_attn_prefix_lens: list[list[int]] | None = None) -> tuple[PerLayerAttnMetadata, CommonAttentionMetadata | None]"
+      }
+    },
+    "_determine_batch_execution_and_padding": {
+      "matches": false,
+      "plugin": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_tokens",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_reqs",
+            "required": true
+          },
+          {
+            "annotation": "np.ndarray",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_scheduled_tokens_np",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "max_num_scheduled_tokens",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "use_cascade_attn",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "True",
+            "kind": "positional_or_keyword",
+            "name": "allow_microbatching",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "force_eager",
+            "required": false
+          },
+          {
+            "annotation": "bool | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "force_uniform_decode",
+            "required": false
+          },
+          {
+            "annotation": "bool | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "force_has_lora",
+            "required": false
+          },
+          {
+            "annotation": "int | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "force_num_active_loras",
+            "required": false
+          },
+          {
+            "annotation": "int",
+            "default": "0",
+            "kind": "positional_or_keyword",
+            "name": "num_encoder_reqs",
+            "required": false
+          }
+        ],
+        "return_annotation": "tuple[CUDAGraphMode, BatchDescriptor, bool, torch.Tensor | None, CUDAGraphStat | None]",
+        "signature": "def _determine_batch_execution_and_padding(self, num_tokens: int, num_reqs: int, num_scheduled_tokens_np: np.ndarray, max_num_scheduled_tokens: int, use_cascade_attn: bool, allow_microbatching: bool = True, force_eager: bool = False, force_uniform_decode: bool | None = None, force_has_lora: bool | None = None, force_num_active_loras: int | None = None, num_encoder_reqs: int = 0) -> tuple[CUDAGraphMode, BatchDescriptor, bool, torch.Tensor | None, CUDAGraphStat | None]"
+      },
+      "upstream": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_tokens",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_reqs",
+            "required": true
+          },
+          {
+            "annotation": "np.ndarray",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_scheduled_tokens_np",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "max_num_scheduled_tokens",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "use_cascade_attn",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "allow_microbatching",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "force_eager",
+            "required": false
+          },
+          {
+            "annotation": "bool | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "force_uniform_decode",
+            "required": false
+          },
+          {
+            "annotation": "bool | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "force_has_lora",
+            "required": false
+          },
+          {
+            "annotation": "int | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "force_num_active_loras",
+            "required": false
+          },
+          {
+            "annotation": "int",
+            "default": "0",
+            "kind": "positional_or_keyword",
+            "name": "num_encoder_reqs",
+            "required": false
+          }
+        ],
+        "return_annotation": "tuple[CUDAGraphMode, BatchDescriptor, bool, torch.Tensor | None, CUDAGraphStat | None]",
+        "signature": "def _determine_batch_execution_and_padding(self, num_tokens: int, num_reqs: int, num_scheduled_tokens_np: np.ndarray, max_num_scheduled_tokens: int, use_cascade_attn: bool, allow_microbatching: bool = False, force_eager: bool = False, force_uniform_decode: bool | None = None, force_has_lora: bool | None = None, force_num_active_loras: int | None = None, num_encoder_reqs: int = 0) -> tuple[CUDAGraphMode, BatchDescriptor, bool, torch.Tensor | None, CUDAGraphStat | None]"
+      }
+    },
+    "_dummy_run": {
+      "matches": true,
+      "plugin": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_tokens",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "with_prefill",
+            "required": false
+          },
+          {
+            "annotation": "CUDAGraphMode | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "cudagraph_runtime_mode",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "force_attention",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "uniform_decode",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "is_profile",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "create_mixed_batch",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "True",
+            "kind": "positional_or_keyword",
+            "name": "allow_microbatching",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "skip_eplb",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "True",
+            "kind": "positional_or_keyword",
+            "name": "remove_lora",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "is_graph_capturing",
+            "required": false
+          },
+          {
+            "annotation": "int",
+            "default": "0",
+            "kind": "positional_or_keyword",
+            "name": "num_active_loras",
+            "required": false
+          },
+          {
+            "annotation": "int | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "profile_seq_lens",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "profile_cpp",
+            "required": false
+          }
+        ],
+        "return_annotation": "tuple[torch.Tensor, torch.Tensor]",
+        "signature": "def _dummy_run(self, num_tokens: int, with_prefill: bool = False, cudagraph_runtime_mode: CUDAGraphMode | None = None, force_attention: bool = False, uniform_decode: bool = False, is_profile: bool = False, create_mixed_batch: bool = False, allow_microbatching: bool = True, skip_eplb: bool = False, remove_lora: bool = True, is_graph_capturing: bool = False, num_active_loras: int = 0, profile_seq_lens: int | None = None, profile_cpp: bool = False) -> tuple[torch.Tensor, torch.Tensor]"
+      },
+      "upstream": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_tokens",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "with_prefill",
+            "required": false
+          },
+          {
+            "annotation": "CUDAGraphMode | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "cudagraph_runtime_mode",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "force_attention",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "uniform_decode",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "is_profile",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "create_mixed_batch",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "True",
+            "kind": "positional_or_keyword",
+            "name": "allow_microbatching",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "skip_eplb",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "True",
+            "kind": "positional_or_keyword",
+            "name": "remove_lora",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "is_graph_capturing",
+            "required": false
+          },
+          {
+            "annotation": "int",
+            "default": "0",
+            "kind": "positional_or_keyword",
+            "name": "num_active_loras",
+            "required": false
+          },
+          {
+            "annotation": "int | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "profile_seq_lens",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "profile_cpp",
+            "required": false
+          }
+        ],
+        "return_annotation": "tuple[torch.Tensor, torch.Tensor]",
+        "signature": "def _dummy_run(self, num_tokens: int, with_prefill: bool = False, cudagraph_runtime_mode: CUDAGraphMode | None = None, force_attention: bool = False, uniform_decode: bool = False, is_profile: bool = False, create_mixed_batch: bool = False, allow_microbatching: bool = True, skip_eplb: bool = False, remove_lora: bool = True, is_graph_capturing: bool = False, num_active_loras: int = 0, profile_seq_lens: int | None = None, profile_cpp: bool = False) -> tuple[torch.Tensor, torch.Tensor]"
+      }
+    },
+    "_model_forward": {
+      "matches": true,
+      "plugin": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_tokens_padded",
+            "required": true
+          },
+          {
+            "annotation": "torch.Tensor | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "input_ids",
+            "required": false
+          },
+          {
+            "annotation": "torch.Tensor | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "positions",
+            "required": false
+          },
+          {
+            "annotation": "IntermediateTensors | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "intermediate_tensors",
+            "required": false
+          },
+          {
+            "annotation": "torch.Tensor | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "inputs_embeds",
+            "required": false
+          },
+          {
+            "annotation": "dict[str, Any]",
+            "default": null,
+            "kind": "var_keyword",
+            "name": "model_kwargs",
+            "required": false
+          }
+        ],
+        "return_annotation": null,
+        "signature": "def _model_forward(self, num_tokens_padded: int, input_ids: torch.Tensor | None = None, positions: torch.Tensor | None = None, intermediate_tensors: IntermediateTensors | None = None, inputs_embeds: torch.Tensor | None = None, **model_kwargs: dict[str, Any])"
+      },
+      "upstream": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_tokens_padded",
+            "required": true
+          },
+          {
+            "annotation": "torch.Tensor | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "input_ids",
+            "required": false
+          },
+          {
+            "annotation": "torch.Tensor | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "positions",
+            "required": false
+          },
+          {
+            "annotation": "IntermediateTensors | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "intermediate_tensors",
+            "required": false
+          },
+          {
+            "annotation": "torch.Tensor | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "inputs_embeds",
+            "required": false
+          },
+          {
+            "annotation": "dict[str, Any]",
+            "default": null,
+            "kind": "var_keyword",
+            "name": "model_kwargs",
+            "required": false
+          }
+        ],
+        "return_annotation": null,
+        "signature": "def _model_forward(self, num_tokens_padded: int, input_ids: torch.Tensor | None = None, positions: torch.Tensor | None = None, intermediate_tensors: IntermediateTensors | None = None, inputs_embeds: torch.Tensor | None = None, **model_kwargs: dict[str, Any])"
+      }
+    },
+    "_prepare_inputs": {
+      "matches": false,
+      "plugin": null,
+      "upstream": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "'SchedulerOutput'",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "scheduler_output",
+            "required": true
+          },
+          {
+            "annotation": "np.ndarray",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_scheduled_tokens",
+            "required": true
+          }
+        ],
+        "return_annotation": "tuple[torch.Tensor, SpecDecodeMetadata | None, int]",
+        "signature": "def _prepare_inputs(self, scheduler_output: 'SchedulerOutput', num_scheduled_tokens: np.ndarray) -> tuple[torch.Tensor, SpecDecodeMetadata | None, int]"
+      }
+    },
+    "_sync_metadata_across_dp": {
+      "matches": true,
+      "plugin": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_tokens",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "is_draft_model",
+            "required": false
+          },
+          {
+            "annotation": "CUDAGraphMode",
+            "default": "CUDAGraphMode.NONE",
+            "kind": "positional_or_keyword",
+            "name": "cudagraph_mode",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "allow_dp_padding",
+            "required": false
+          }
+        ],
+        "return_annotation": "tuple[int, torch.Tensor | None, CUDAGraphMode]",
+        "signature": "def _sync_metadata_across_dp(self, num_tokens: int, is_draft_model: bool = False, cudagraph_mode: CUDAGraphMode = CUDAGraphMode.NONE, allow_dp_padding: bool = False) -> tuple[int, torch.Tensor | None, CUDAGraphMode]"
+      },
+      "upstream": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_tokens",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "is_draft_model",
+            "required": false
+          },
+          {
+            "annotation": "CUDAGraphMode",
+            "default": "CUDAGraphMode.NONE",
+            "kind": "positional_or_keyword",
+            "name": "cudagraph_mode",
+            "required": false
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "allow_dp_padding",
+            "required": false
+          }
+        ],
+        "return_annotation": "tuple[int, torch.Tensor | None, CUDAGraphMode]",
+        "signature": "def _sync_metadata_across_dp(self, num_tokens: int, is_draft_model: bool = False, cudagraph_mode: CUDAGraphMode = CUDAGraphMode.NONE, allow_dp_padding: bool = False) -> tuple[int, torch.Tensor | None, CUDAGraphMode]"
+      }
+    },
+    "execute_model": {
+      "matches": true,
+      "plugin": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "'SchedulerOutput'",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "scheduler_output",
+            "required": true
+          },
+          {
+            "annotation": "IntermediateTensors | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "intermediate_tensors",
+            "required": false
+          }
+        ],
+        "return_annotation": "ModelRunnerOutput | IntermediateTensors | None",
+        "signature": "def execute_model(self, scheduler_output: 'SchedulerOutput', intermediate_tensors: IntermediateTensors | None = None) -> ModelRunnerOutput | IntermediateTensors | None"
+      },
+      "upstream": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "'SchedulerOutput'",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "scheduler_output",
+            "required": true
+          },
+          {
+            "annotation": "IntermediateTensors | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "intermediate_tensors",
+            "required": false
+          }
+        ],
+        "return_annotation": "ModelRunnerOutput | IntermediateTensors | None",
+        "signature": "def execute_model(self, scheduler_output: 'SchedulerOutput', intermediate_tensors: IntermediateTensors | None = None) -> ModelRunnerOutput | IntermediateTensors | None"
+      }
+    },
+    "load_model": {
+      "matches": true,
+      "plugin": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          }
+        ],
+        "return_annotation": "None",
+        "signature": "def load_model(self) -> None"
+      },
+      "upstream": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          }
+        ],
+        "return_annotation": "None",
+        "signature": "def load_model(self) -> None"
+      }
+    },
+    "sync_and_slice_intermediate_tensors": {
+      "matches": true,
+      "plugin": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_tokens",
+            "required": true
+          },
+          {
+            "annotation": "IntermediateTensors | None",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "intermediate_tensors",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "sync_self",
+            "required": true
+          }
+        ],
+        "return_annotation": "IntermediateTensors",
+        "signature": "def sync_and_slice_intermediate_tensors(self, num_tokens: int, intermediate_tensors: IntermediateTensors | None, sync_self: bool) -> IntermediateTensors"
+      },
+      "upstream": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "num_tokens",
+            "required": true
+          },
+          {
+            "annotation": "IntermediateTensors | None",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "intermediate_tensors",
+            "required": true
+          },
+          {
+            "annotation": "bool",
+            "default": null,
+            "kind": "positional_or_keyword",
+            "name": "sync_self",
+            "required": true
+          }
+        ],
+        "return_annotation": "IntermediateTensors",
+        "signature": "def sync_and_slice_intermediate_tensors(self, num_tokens: int, intermediate_tensors: IntermediateTensors | None, sync_self: bool) -> IntermediateTensors"
+      }
+    }
+  },
+  "schema_version": 1,
+  "schemas": {
+    "AscendCommonAttentionMetadata": [
+      {
+        "annotation": "torch.Tensor",
+        "default": "None",
+        "name": "seq_lens_cpu"
+      },
+      {
+        "annotation": "torch.Tensor",
+        "default": "None",
+        "name": "num_computed_tokens_cpu"
+      },
+      {
+        "annotation": "int",
+        "default": "1",
+        "name": "decode_token_per_req"
+      },
+      {
+        "annotation": "list[int]",
+        "default": "field(default_factory=list)",
+        "name": "actual_seq_lengths_q"
+      },
+      {
+        "annotation": "torch.Tensor",
+        "default": "None",
+        "name": "positions"
+      },
+      {
+        "annotation": "Any",
+        "default": "None",
+        "name": "attn_state"
+      },
+      {
+        "annotation": "int",
+        "default": "-1",
+        "name": "graph_pad_size"
+      },
+      {
+        "annotation": "int",
+        "default": "0",
+        "name": "num_input_tokens"
+      },
+      {
+        "annotation": "AscendPrefillContextParallelMetadata | None",
+        "default": "None",
+        "name": "prefill_context_parallel_metadata"
+      },
+      {
+        "annotation": "KVCompMetaData | None",
+        "default": "None",
+        "name": "kvcomp_metadata"
+      }
+    ],
+    "BatchDescriptor": [
+      {
+        "annotation": "int",
+        "default": null,
+        "name": "num_tokens"
+      },
+      {
+        "annotation": "int | None",
+        "default": "None",
+        "name": "num_reqs"
+      },
+      {
+        "annotation": "bool",
+        "default": "False",
+        "name": "uniform"
+      },
+      {
+        "annotation": "bool",
+        "default": "False",
+        "name": "has_lora"
+      },
+      {
+        "annotation": "int",
+        "default": "0",
+        "name": "num_active_loras"
+      }
+    ],
+    "DPMetadata": [
+      {
+        "annotation": "torch.Tensor",
+        "default": null,
+        "name": "max_tokens_across_dp_cpu"
+      },
+      {
+        "annotation": "torch.Tensor",
+        "default": null,
+        "name": "num_tokens_across_dp_cpu"
+      },
+      {
+        "annotation": "list[int] | None",
+        "default": "None",
+        "name": "local_sizes"
+      }
+    ],
+    "ForwardContext": [
+      {
+        "annotation": "dict[str, Any]",
+        "default": null,
+        "name": "no_compile_layers"
+      },
+      {
+        "annotation": "dict[str, AttentionMetadata] | list[dict[str, AttentionMetadata]]",
+        "default": null,
+        "name": "attn_metadata"
+      },
+      {
+        "annotation": "dict[str, torch.Tensor] | list[dict[str, torch.Tensor]]",
+        "default": null,
+        "name": "slot_mapping"
+      },
+      {
+        "annotation": "DPMetadata | None",
+        "default": "None",
+        "name": "dp_metadata"
+      },
+      {
+        "annotation": "CUDAGraphMode",
+        "default": "CUDAGraphMode.NONE",
+        "name": "cudagraph_runtime_mode"
+      },
+      {
+        "annotation": "BatchDescriptor | None",
+        "default": "None",
+        "name": "batch_descriptor"
+      },
+      {
+        "annotation": "UBatchSlices | None",
+        "default": "None",
+        "name": "ubatch_slices"
+      },
+      {
+        "annotation": "bool",
+        "default": "False",
+        "name": "skip_compiled"
+      },
+      {
+        "annotation": "list[str] | None",
+        "default": "None",
+        "name": "all_moe_layers"
+      },
+      {
+        "annotation": "int",
+        "default": "0",
+        "name": "moe_layer_index"
+      },
+      {
+        "annotation": "dict[str, Any]",
+        "default": "field(default_factory=dict)",
+        "name": "additional_kwargs"
+      }
+    ],
+    "UBatchSlice": [
+      {
+        "annotation": "slice",
+        "default": null,
+        "name": "request_slice"
+      },
+      {
+        "annotation": "slice",
+        "default": null,
+        "name": "token_slice"
+      }
+    ]
+  }
+}

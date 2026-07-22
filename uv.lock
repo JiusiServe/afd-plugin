@@ -4364,6 +4364,7 @@ vllm = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "numpy" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "ruff" },
@@ -4376,6 +4377,7 @@ provides-extras = ["vllm"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "numpy", specifier = ">=1.26" },
     { name = "pre-commit", specifier = ">=4" },
     { name = "pytest", specifier = ">=7.0" },
     { name = "ruff", specifier = ">=0.15.7,<0.16" },

@@ -3,7 +3,7 @@
 """Opt-in NPU E2E smoke test for DeepSeekV2-Lite async CAM.
 
 Skipped unless AFD_NPU_E2E_MODEL is set to a local DeepSeekV2-Lite model path.
-The smoke topology uses 4 NPUs:
+The async MoE uBatch baseline topology uses 4 NPUs:
 
   Attention: DP=1, TP=2
   FFN:       DP=2, EP=2
@@ -23,7 +23,7 @@ from tests.e2e.runner import ASYNC_AFD_CONNECTOR
 REPO_ROOT = Path(__file__).resolve().parents[4]
 RUNNER = REPO_ROOT / "tests" / "e2e" / "runner.py"
 ASYNC_CAM_EXTRA_CONFIG = (
-    '{"dynamicQuant":0,"async_moe_ubatching":false,'
+    '{"dynamicQuant":0,"async_moe_ubatching":true,'
     '"async_moe_num_ubatches":2,"async_moe_split":"request",'
     '"attn_ranks_per_dp":2}'
 )
@@ -107,7 +107,7 @@ def _async_cam_env() -> dict[str, str]:
 @pytest.mark.npu
 @pytest.mark.e2e
 @pytest.mark.slow
-def test_deepseek_v2_lite_async_cam_attn_dp1tp2_ffn_dp2ep2_smoke():
+def test_deepseek_v2_lite_async_cam_attn_dp1tp2_ffn_dp2ep2_ubatch_smoke():
     npus = _npu_list()
     if len(npus) < 4:
         pytest.skip(f"async CAM smoke requires 4 NPUs; got {len(npus)}")
@@ -152,9 +152,9 @@ def test_deepseek_v2_lite_async_cam_attn_dp1tp2_ffn_dp2ep2_smoke():
         "--temperature",
         "0",
         "--num-requests",
-        "1",
+        "2",
         "--request-concurrency",
-        "1",
+        "2",
         "--common-vllm-arg=--trust-remote-code",
         "--common-vllm-arg=--max-num-seqs",
         "--common-vllm-arg=8",

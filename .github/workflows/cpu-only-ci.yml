@@ -75,5 +75,20 @@ jobs:
       - name: Sync environment
         run: uv sync --locked --group dev
 
+      - name: Frozen NPU ModelRunner contracts
+        if: matrix.python-version == '3.10'
+        run: |
+          uv run pytest -q \
+            tests/unit/compat/test_ascend_version.py \
+            tests/unit/tools/test_snapshot_npu_model_runner_contract.py \
+            tests/unit/v1/worker/test_npu_model_runner_contract.py \
+            tests/unit/v1/worker/test_npu_model_runner_phase1_structure.py \
+            tests/unit/v1/worker/test_npu_model_runner_phase2.py \
+            tests/unit/v1/worker/test_npu_ubatch_plan_phase3.py \
+            tests/unit/v1/worker/test_npu_attention_metadata_phase4.py \
+            tests/unit/v1/worker/test_npu_graph_capture_phase6.py \
+            tests/unit/v1/worker/test_npu_model_runner_phase7.py \
+            -m "not vllm_runtime"
+
       - name: CPU-only unit tests
         run: uv run pytest -q tests/unit -m "not gpu and not vllm_runtime"

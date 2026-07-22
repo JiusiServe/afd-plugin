@@ -2,6 +2,9 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """Forward-context helpers for plugin-owned Ascend ubatching."""
 
+from __future__ import annotations
+
+import copy
 import math
 
 import torch
@@ -39,18 +42,21 @@ def create_ascend_forward_context(
             build_ubatch_afd_metadata(afd_metadata, ubatch_slices, ubatch_num),
         )
 
-    new_forward_context = ForwardContext(
-        no_compile_layers=vllm_config.compilation_config.static_forward_context,
-        all_moe_layers=cur_forward_context.all_moe_layers,
-        attn_metadata=attn_metadata,
-        slot_mapping={},
-        dp_metadata=dp_metadata,
-        cudagraph_runtime_mode=cudagraph_runtime_mode,
-        batch_descriptor=batch_descriptor,
-        ubatch_slices=ubatch_slices,
-        skip_compiled=skip_compiled,
-        additional_kwargs=parent_kwargs,
+    new_forward_context = copy.copy(cur_forward_context)
+    new_forward_context.no_compile_layers = copy.copy(
+        vllm_config.compilation_config.static_forward_context,
     )
+    new_forward_context.all_moe_layers = copy.copy(
+        cur_forward_context.all_moe_layers,
+    )
+    new_forward_context.attn_metadata = attn_metadata
+    new_forward_context.slot_mapping = {}
+    new_forward_context.dp_metadata = dp_metadata
+    new_forward_context.cudagraph_runtime_mode = cudagraph_runtime_mode
+    new_forward_context.batch_descriptor = batch_descriptor
+    new_forward_context.ubatch_slices = ubatch_slices
+    new_forward_context.skip_compiled = skip_compiled
+    new_forward_context.additional_kwargs = parent_kwargs
 
     ubatch_slice = ubatch_slices[ubatch_num]
     num_tokens = ubatch_slice.num_tokens
@@ -85,7 +91,9 @@ def create_ascend_forward_context(
     new_forward_context.is_draft_model_prefill = (
         cur_forward_context.is_draft_model_prefill
     )
-    new_forward_context.draft_attn_metadatas = cur_forward_context.draft_attn_metadatas
+    new_forward_context.draft_attn_metadatas = copy.copy(
+        cur_forward_context.draft_attn_metadatas,
+    )
     new_forward_context.max_tokens_across_pcp = (
         cur_forward_context.max_tokens_across_pcp
     )
@@ -118,7 +126,7 @@ def create_ascend_forward_context(
     new_forward_context.padded_num_tokens = (
         math.ceil(max_tokens_across_dp / tp_world_size) * tp_world_size
     )
-    cur_mc2_mask = getattr(cur_forward_context, "mc2_mask", None)
+    cur_mc2_mask = cur_forward_context.mc2_mask
     if cur_mc2_mask is not None:
         mc2_mask = torch.zeros(
             (new_forward_context.padded_num_tokens,),

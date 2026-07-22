@@ -27,6 +27,9 @@ def fail_if_unsupported_npu_afd_features(
     """Fail fast for NPU AFD settings that are not currently supported."""
 
     afd_config = afd_config or parse_afd_config(vllm_config)
+    if int(vllm_config.parallel_config.prefill_context_parallel_size) > 1:
+        raise RuntimeError("AFD NPU runtime does not support PCP")
+
     from afd_plugin.connectors.factory import AFDConnectorFactory
 
     extra_info = AFDConnectorFactory.parse_connector_extra_info(
