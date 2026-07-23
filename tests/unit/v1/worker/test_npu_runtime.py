@@ -37,6 +37,28 @@ def _ffn_payload(hidden_states, metadata, states=None):
     )
 
 
+@contextmanager
+def _fake_ffn_ascend_forward_context(**_kwargs):
+    """Stand in for the vLLM-Ascend forward context in FFN runner unit tests.
+
+    The real ``ascend_forward_context`` delegates to vLLM-Ascend internals that
+    read many ``vllm_config`` fields; these unit tests only exercise the FFN
+    runner's recv/compute/send orchestration, so a minimal fake context is used.
+    """
+    yield SimpleNamespace(additional_kwargs={}, dp_metadata=None, all_moe_layers={})
+
+
+def _patch_ffn_forward_context(monkeypatch):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import ffn_model_runner
+
+    monkeypatch.setattr(
+        ffn_model_runner,
+        "ascend_forward_context",
+        _fake_ffn_ascend_forward_context,
+    )
+
+
 class _RecordingConnector:
     world_rank = 0
 
@@ -621,7 +643,8 @@ def test_npu_create_ascend_forward_context_marks_current_ubatch(monkeypatch):
     assert child_metadata.stage_idx == 1
 
 
-def test_npu_ffn_runner_executes_eager_ffn_step():
+def test_npu_ffn_runner_executes_eager_ffn_step(monkeypatch):
+    _patch_ffn_forward_context(monkeypatch)
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
     runner.connector = _FakeFFNConnector()
@@ -648,9 +671,10 @@ def test_npu_ffn_runner_executes_eager_ffn_step():
     ]
 
 
-def test_npu_ffn_runner_dp_path_invokes_model_with_hidden_states_and_layer():
+def test_npu_ffn_runner_dp_path_invokes_model_with_hidden_states_and_layer(monkeypatch):
     from afd_plugin.connectors.npu.async_cam import AFDAsyncTransferState
 
+    _patch_ffn_forward_context(monkeypatch)
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
     runner.connector = _FakeFFNConnector()
@@ -699,7 +723,11 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
     @contextmanager
     def fake_ascend_forward_context(**kwargs):
         context_calls.append(kwargs)
-        yield SimpleNamespace(additional_kwargs={}, dp_metadata="dp")
+        yield SimpleNamespace(
+            additional_kwargs={},
+            dp_metadata="dp",
+            all_moe_layers={},
+        )
 
     monkeypatch.setattr(
         ffn_model_runner,
@@ -774,7 +802,8 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
     assert context_calls[0]["afd_metadata"].tokens_lens == [5]
 
 
-def test_npu_ffn_runner_sends_structured_shared_output():
+def test_npu_ffn_runner_sends_structured_shared_output(monkeypatch):
+    _patch_ffn_forward_context(monkeypatch)
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
     runner.connector = _FakeFFNConnector()
@@ -858,7 +887,8 @@ def test_npu_ffn_runner_graph_key_uses_ffn_aggregated_token_counts():
     )
 
 
-def test_npu_ffn_runner_falls_back_to_eager_on_acl_graph_miss():
+def test_npu_ffn_runner_falls_back_to_eager_on_acl_graph_miss(monkeypatch):
+    _patch_ffn_forward_context(monkeypatch)
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
     runner.connector = _FakeFFNConnector()
@@ -901,6 +931,11 @@ def test_npu_ffn_runner_warmup_uses_eager_forward_without_graph(monkeypatch):
     monkeypatch.setattr(ffn_model_runner, "graph_capture", fail_graph_capture_context)
     monkeypatch.setattr(
         ffn_model_runner,
+        "ascend_forward_context",
+        _fake_ffn_ascend_forward_context,
+    )
+    monkeypatch.setattr(
+        ffn_model_runner,
         "set_cudagraph_capturing_enabled",
         capture_flags.append,
     )
@@ -939,6 +974,11 @@ def test_npu_ffn_runner_capture_stores_acl_graph_and_skips_duplicate_state_updat
     runner.use_aclgraph = True
     runner._acl_graphs = {}
     runner.graph_pool = None
+    monkeypatch.setattr(
+        ffn_model_runner,
+        "ascend_forward_context",
+        _fake_ffn_ascend_forward_context,
+    )
     monkeypatch.setattr(ffn_model_runner, "graph_capture", lambda device: nullcontext())
     monkeypatch.setattr(
         ffn_model_runner.torch.npu,
@@ -973,7 +1013,8 @@ def test_npu_ffn_runner_capture_stores_acl_graph_and_skips_duplicate_state_updat
     assert update_flags == {"is_graph_capturing": True, "is_warmup": False}
 
 
-def test_npu_ffn_runner_requires_compute_hook():
+def test_npu_ffn_runner_requires_compute_hook(monkeypatch):
+    _patch_ffn_forward_context(monkeypatch)
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
     runner.connector = _FakeFFNConnector()

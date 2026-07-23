@@ -27,7 +27,11 @@ from afd_plugin.connectors.npu.camp2p import (
 
 class _FakeDPMetadata:
     def __init__(self, values):
-        self.num_tokens_across_dp_cpu = values
+        import torch
+
+        # The connector reads token counts with .flatten().tolist(), so this
+        # must be a tensor like the real DP metadata, not a plain list.
+        self.num_tokens_across_dp_cpu = torch.tensor(values, dtype=torch.int32)
 
 
 def _vllm_config(
