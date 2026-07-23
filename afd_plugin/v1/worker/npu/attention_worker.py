@@ -15,6 +15,7 @@ from afd_plugin.compat.npu import (
     fix_all2all_backend_for_afd,
     npu_afd_num_ubatches,
 )
+from afd_plugin.model_executor.models.model_utils import get_afd_model_config
 from afd_plugin.v1.worker.npu.attention_model_runner import (
     AFDNPUAttentionModelRunner,
 )
@@ -51,6 +52,9 @@ class AFDNPUAttentionWorker(NPUWorker):
         init_workspace_manager(
             self.device,
             npu_afd_num_ubatches(self.vllm_config),
+        )
+        self.vllm_config.model_config = get_afd_model_config(
+            self.vllm_config.model_config,
         )
         self.model_runner = AFDNPUAttentionModelRunner(
             self.vllm_config,

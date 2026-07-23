@@ -60,17 +60,20 @@ make a backend-specific worker class the shared model API.
 
 ## Model registration
 
-`register_afd()` replaces the following vLLM architecture lookups with lazy
-AFD wrapper paths. Registration occurs only after compatibility bootstrap and
-is required for plugin registration to complete.
+`register_afd()` leaves vLLM's native architecture lookups unchanged and
+registers lazy AFD wrapper paths under `AFD`-prefixed aliases.
 
-| Checkpoint architecture | Registered AFD class |
-| --- | --- |
-| `DeepseekForCausalLM` | `AFDDeepseekForCausalLM` |
-| `DeepseekV2ForCausalLM` | `AFDDeepseekV2ForCausalLM` |
-| `DeepseekV3ForCausalLM` | `AFDDeepseekV3ForCausalLM` |
-| `DeepseekV32ForCausalLM` | `AFDDeepseekV3ForCausalLM` |
-| `GlmMoeDsaForCausalLM` | `AFDGlmMoeDsaForCausalLM` |
+| Checkpoint architecture | AFD registry alias | Registered AFD class |
+| --- | --- | --- |
+| `DeepseekForCausalLM` | `AFDDeepseekForCausalLM` | `AFDDeepseekForCausalLM` |
+| `DeepseekV2ForCausalLM` | `AFDDeepseekV2ForCausalLM` | `AFDDeepseekV2ForCausalLM` |
+| `DeepseekV3ForCausalLM` | `AFDDeepseekV3ForCausalLM` | `AFDDeepseekV3ForCausalLM` |
+| `DeepseekV32ForCausalLM` | `AFDDeepseekV32ForCausalLM` | `AFDDeepseekV3ForCausalLM` |
+| `GlmMoeDsaForCausalLM` | `AFDGlmMoeDsaForCausalLM` | `AFDGlmMoeDsaForCausalLM` |
+
+Only AFD workers switch their worker-local model configuration to the matching
+alias before constructing the AFD model runner. Non-AFD workers keep the
+checkpoint architecture and resolve to vLLM's native model class.
 
 All registered classes currently share the DeepSeek V2-derived implementation.
 The aliases express known compatible architecture families; they do not make
@@ -78,9 +81,10 @@ the wrapper a generic MoE model API.
 
 ## Role-aware module construction
 
-When AFD is disabled, `AFDDeepseekV2DecoderLayer` delegates to the pinned vLLM
-layer. When enabled, it constructs only the components needed for the selected
-role while retaining layer normalization needed by the split execution.
+Non-AFD workers use the pinned vLLM model implementation directly. When an AFD
+worker selects an AFD alias, `AFDDeepseekV2DecoderLayer` constructs only the
+components needed for the selected role while retaining layer normalization
+needed by the split execution.
 
 | Layer/component | Attention role | FFN role |
 | --- | --- | --- |

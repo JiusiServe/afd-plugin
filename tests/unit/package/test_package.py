@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import importlib.metadata
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 import afd_plugin
 from afd_plugin.compat import is_vllm_version_supported
@@ -29,6 +32,34 @@ def test_deepseek_afd_model_registration_paths_are_lazy_strings():
     assert registrations["DeepseekV32ForCausalLM"] == (
         "afd_plugin.model_executor.models.deepseek_v2:AFDDeepseekV3ForCausalLM"
     )
+
+
+def test_register_afd_does_not_replace_native_deepseek_model():
+    pytest.importorskip("vllm")
+    from vllm.model_executor.models import ModelRegistry
+
+    afd_plugin.register_afd()
+
+    native_registration = ModelRegistry.models["DeepseekV2ForCausalLM"]
+    assert native_registration.module_name == "vllm.model_executor.models.deepseek_v2"
+    assert native_registration.class_name == "DeepseekV2ForCausalLM"
+    assert "AFDDeepseekV2ForCausalLM" in ModelRegistry.models
+
+
+def test_afd_model_config_uses_private_architecture_copy():
+    pytest.importorskip("vllm")
+    from afd_plugin.model_executor.models.model_utils import get_afd_model_config
+
+    model_config = SimpleNamespace(
+        hf_config=SimpleNamespace(architectures=["DeepseekV2ForCausalLM"]),
+    )
+
+    afd_model_config = get_afd_model_config(model_config)
+
+    assert afd_model_config is not model_config
+    assert afd_model_config.hf_config is not model_config.hf_config
+    assert afd_model_config.hf_config.architectures == ["AFDDeepseekV2ForCausalLM"]
+    assert model_config.hf_config.architectures == ["DeepseekV2ForCausalLM"]
 
 
 def test_entry_point_is_registered():
