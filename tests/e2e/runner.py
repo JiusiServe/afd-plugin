@@ -347,24 +347,10 @@ def build_vllm_command(
     )
     if connector_extra_config:
         afd_config["afd"]["connector_extra_config"] = connector_extra_config
-    if is_npu:
-        worker_cls = (
-            "afd_plugin.v1.worker.npu.AFDNPUAttentionWorker"
-            if role == "attention"
-            else "afd_plugin.v1.worker.npu.AFDNPUFFNWorker"
-        )
-    else:
-        worker_cls = (
-            "afd_plugin.v1.worker.AFDAttentionWorker"
-            if role == "attention"
-            else "afd_plugin.v1.worker.AFDFFNWorker"
-        )
     cmd = [
         args.vllm_bin,
         "serve",
         args.model,
-        "--worker-cls",
-        worker_cls,
         "--served-model-name",
         served_model_name(args, role),
         "--data-parallel-size",

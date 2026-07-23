@@ -63,16 +63,17 @@ on the FFN worker or runner implementation.
 
 ## Runtime selection
 
-FFN is launched as a `vllm serve` process with an explicit role-specific
-worker, but it does not serve requests. Start the FFN process before the
-Attention process. Send API traffic only to Attention.
+FFN is launched as a `vllm serve` process, and AFD config normalization selects
+its role-specific worker when `worker_cls="auto"`. It does not serve requests.
+Attention and FFN may be started in either order. Send API traffic only to
+Attention.
 
 | Platform | Worker | Model runner | Current connectors |
 | --- | --- | --- | --- |
 | CUDA | `afd_plugin.v1.worker.AFDFFNWorker` | `GPUFFNModelRunner` | `P2pNcclAFDConnector` |
 | NPU | `afd_plugin.v1.worker.npu.AFDNPUFFNWorker` | `AFDNPUFFNModelRunner` | `CAMP2pAFDConnector`, `CAMAsyncAFDConnector` |
 
-GPU and NPU runtimes use separate public class paths. `AFDNPUFFNModelRunner`
+GPU and NPU runtimes use separate internal class paths. `AFDNPUFFNModelRunner`
 inherits vLLM-Ascend `NPUModelRunner` directly instead of inheriting the GPU
 `GPUFFNModelRunner`. Shared AFD semantics are kept in config, connector,
 metadata, validation, and small helper functions rather than through a
@@ -82,7 +83,6 @@ CUDA launch shape:
 
 ```bash
 vllm serve <model> \
-  --worker-cls afd_plugin.v1.worker.AFDFFNWorker \
   --additional-config '{"afd":{"role":"ffn","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
@@ -90,7 +90,6 @@ Ascend launch shape:
 
 ```bash
 VLLM_PLUGINS=ascend,afd vllm serve <model> \
-  --worker-cls afd_plugin.v1.worker.npu.AFDNPUFFNWorker \
   --additional-config '{"afd":{"role":"ffn","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
@@ -100,7 +99,7 @@ The common FFN initialization sequence is:
 
 ```text
 vLLM worker construction
-  -> validate AFD config, role, connector, and explicit worker class
+  -> validate AFD config, role, connector, and selected worker class
   -> reject model runner v2 and unsupported feature combinations
   -> initialize the matching upstream device worker
   -> construct the AFD FFN model runner

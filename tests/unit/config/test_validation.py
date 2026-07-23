@@ -66,8 +66,9 @@ def test_stack_validation_rejects_wrong_worker():
         worker_cls=ATTENTION_WORKER_FQCN,
     )
 
-    with pytest.raises(ValueError, match="invalid worker class"):
+    with pytest.raises(ValueError, match="invalid worker class") as exc_info:
         assert_compatible_afd_stack(vllm_config, caller="test")
+    assert "remove --worker-cls" in str(exc_info.value)
 
 
 def test_stack_validation_rejects_auto_worker():
@@ -76,8 +77,9 @@ def test_stack_validation_rejects_auto_worker():
         worker_cls="auto",
     )
 
-    with pytest.raises(ValueError, match="worker_cls is still 'auto'"):
+    with pytest.raises(ValueError, match="remained 'auto'") as exc_info:
         assert_compatible_afd_stack(vllm_config, caller="test")
+    assert "ensure the AFD general plugin is loaded" in str(exc_info.value)
 
 
 def test_stack_validation_accepts_npu_worker_override():

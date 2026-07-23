@@ -72,7 +72,7 @@ introduce a CUDA-to-Ascend or Ascend-to-CUDA inheritance dependency.
 
 ## Runtime class strategy
 
-CUDA and Ascend use separate public class paths and inherit the matching
+CUDA and Ascend use separate internal class paths and inherit the matching
 upstream runtime classes:
 
 | Role | CUDA | Ascend |
@@ -190,16 +190,17 @@ NPU workers apply AFD-scoped vLLM-Ascend compatibility patches before
 upstream construction. During device initialization they:
 
 1. validate Ascend-specific feature combinations;
-2. apply the non-sequence-parallel all-to-all backend correction for explicit
-   AFD worker classes;
+2. apply the non-sequence-parallel all-to-all backend correction when needed,
+   including legacy explicit-worker launches;
 3. reject vLLM-Ascend model runner v2;
 4. call `NPUWorker._init_device()`;
 5. initialize the vLLM workspace manager for one or two ubatches;
 6. construct the matching `NPUModelRunner` extension.
 
 The all-to-all correction selects `flashinfer_all2allv` when sequence
-parallelism is disabled, matching the upstream default-worker rewrite that an
-explicit AFD worker class would otherwise miss.
+parallelism is disabled. Automatic worker selection receives the matching
+upstream default-worker rewrite during config normalization; the worker-side
+correction remains as a fallback for legacy explicit-worker launches.
 
 ### NPU forward context
 

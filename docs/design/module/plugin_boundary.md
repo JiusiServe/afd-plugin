@@ -153,25 +153,28 @@ both role counts. This is an implementation detail used by
 graph-affecting configuration paths, not a complete serialization or public
 configuration identity.
 
-## Validation and public class paths
+## Validation and worker selection
 
 Common configuration validation is CPU-safe and checks role, optional expected
 role, supported connector name, async/connector pairing, P2P topology,
 endpoint, positive role counts, and role-rank range. Connector-specific schema
 and feature validation runs when the factory resolves the selected connector.
-Runtime wiring validation additionally requires an explicit worker class path;
-`worker_cls="auto"`, role mismatches, and platform mismatches fail before
-device execution. CAM async always selects the NPU worker family.
+When `worker_cls="auto"`, config normalization selects the AFD worker from the
+active platform and configured role after upstream platform normalization.
+Role mismatches, unsupported platforms, non-standard Ascend workers, and
+incorrect explicit worker paths fail before device execution. CAM async always
+uses the NPU worker family.
 
-The following paths are intentionally loadable by vLLM today:
+The following internal paths remain loadable for compatibility with existing
+commands:
 
 | Platform | Attention | FFN | Related runtime path |
 | --- | --- | --- | --- |
 | CUDA | `afd_plugin.v1.worker.AFDAttentionWorker` | `afd_plugin.v1.worker.AFDFFNWorker` | `AFDAttentionModelRunner`, `GPUFFNModelRunner`, `AFDUBatchWrapper` in the same module namespace |
 | NPU | `afd_plugin.v1.worker.npu.AFDNPUAttentionWorker` | `afd_plugin.v1.worker.npu.AFDNPUFFNWorker` | `AFDNPUAttentionModelRunner`, `AFDNPUFFNModelRunner` in the same module namespace |
 
-These are supported launch paths for the pinned runtime. They are not a promise
-that every class is a general third-party extension interface.
+New commands should omit `--worker-cls`. These paths may change with the pinned
+runtime integration and are not stable third-party extension interfaces.
 
 ## Environment boundary
 
@@ -188,8 +191,8 @@ the activation or topology channel.
 - Optional backend discovery must not make CPU-safe imports fail.
 - The plugin entry point owns registration state, but does not own connector,
   worker, process-group, or graph lifetime.
-- Worker class resolution imports device modules only when a caller explicitly
-  resolves that class path.
+- Worker class resolution imports device modules only when the executor
+  resolves the normalized class path.
 - Model registration is the required end of vLLM registration; compatibility
   bootstrap is currently best effort and therefore must be verified by the
   affected runtime tests.

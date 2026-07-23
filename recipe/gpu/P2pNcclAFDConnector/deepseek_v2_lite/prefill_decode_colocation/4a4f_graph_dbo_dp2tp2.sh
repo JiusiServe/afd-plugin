@@ -1,7 +1,6 @@
 MODEL_PATH=${MODEL_PATH:-/path/model_weights/DeepSeek-V2-Lite}
 
 CUDA_VISIBLE_DEVICES=0,1,2,3 uv run vllm serve "$MODEL_PATH" \
-    --worker-cls afd_plugin.v1.worker.AFDAttentionWorker \
     --data-parallel-size 2 \
     --tensor-parallel-size 2 \
     --enable-expert-parallel \
@@ -29,7 +28,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 uv run vllm serve "$MODEL_PATH" \
     --trust-remote-code > attn.log 2>&1 &
 
 CUDA_VISIBLE_DEVICES=4,5,6,7 uv run vllm serve "$MODEL_PATH" \
-    --worker-cls afd_plugin.v1.worker.AFDFFNWorker \
     --data-parallel-size 2 \
     --tensor-parallel-size 2 \
     --enable-expert-parallel \

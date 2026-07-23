@@ -243,7 +243,6 @@ ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 \
 vllm serve /path/to/DeepSeek-V3.2 \
   --host 0.0.0.0 \
   --port 8000 \
-  --worker-cls afd_plugin.v1.worker.npu.AFDNPUAttentionWorker \
   --max-num-seqs 32 \
   --enforce-eager \
   --served-model-name deepseek_v3_2 \
@@ -309,7 +308,6 @@ ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 vllm serve /path/to/DeepSeek-V3.2 \
   --host 0.0.0.0 \
   --port 8000 \
-  --worker-cls afd_plugin.v1.worker.npu.AFDNPUAttentionWorker \
   --max-num-seqs 32 \
   --served-model-name deepseek_v3_2 \
   --enforce-eager \
@@ -375,7 +373,6 @@ export AFD_FORCE_BALANCED_TOPK_IDS=1
 ASCEND_RT_VISIBLE_DEVICES=8,9,10,11,12,13,14,15 \
 vllm serve /path/to/DeepSeek-V3.2 \
   --port 8001 \
-  --worker-cls afd_plugin.v1.worker.npu.AFDNPUFFNWorker \
   --max-num-seqs 2 \
   --enforce-eager \
   --quantization ascend \

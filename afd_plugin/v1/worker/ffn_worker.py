@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 class AFDFFNWorker(Worker):
     """FFN worker that owns the AFD daemon loop.
 
-    The FFN side enters through native ``vllm serve --worker-cls``. The native
-    scheduler may still be present, but FFN work is driven by connector
-    metadata.
+    The FFN side enters through native ``vllm serve`` after AFD configuration
+    selects this worker. The native scheduler may still be present, but FFN
+    work is driven by connector metadata.
     """
 
     afd_expected_role = "ffn"
