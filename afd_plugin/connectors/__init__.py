@@ -15,6 +15,7 @@ from afd_plugin.connectors.metadata import (
     AFDF2ATransferPayload,
     AFDForwardContextMetadata,
     AFDSingleDPMetadata,
+    AFDTransferContext,
     AFDTransferMetadata,
     AFDTransferState,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "AFDControlPlane",
     "ConnectorExtraInfo",
     "AFDTransferState",
+    "AFDTransferContext",
     "AFDConnectorFactory",
     "AFDTransferMetadata",
     "AFDDPMetadata",

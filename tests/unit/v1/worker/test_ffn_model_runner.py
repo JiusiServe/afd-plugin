@@ -13,6 +13,7 @@ pytest.importorskip("vllm")
 from afd_plugin.connectors import (
     AFDA2FTransferPayload,
     AFDControlPayload,
+    AFDTransferContext,
     AFDTransferMetadata,
 )
 from afd_plugin.v1.worker.cuda_graph import make_ffn_graph_key
@@ -47,13 +48,13 @@ class _FakeConnector:
         if ubatch_idx is None:
             return self.attn_outputs.popleft()
         for item in tuple(self.attn_outputs):
-            if item.metadata.stage_idx == ubatch_idx:
+            if item.context.metadata.stage_idx == ubatch_idx:
                 self.attn_outputs.remove(item)
                 return item
         raise IndexError(ubatch_idx)
 
-    def send_ffn_output(self, ffn_output, metadata):
-        self.ffn_outputs.append((ffn_output, metadata))
+    def send_ffn_output(self, ffn_output, context):
+        self.ffn_outputs.append((ffn_output, context.metadata))
 
     def close(self):
         self.closed = True
@@ -99,7 +100,10 @@ def _metadata_for_stage(stage_idx):
 
 
 def _payload(hidden_states, metadata):
-    return AFDA2FTransferPayload(hidden_states=hidden_states, metadata=metadata)
+    return AFDA2FTransferPayload(
+        hidden_states=hidden_states,
+        context=AFDTransferContext(metadata=metadata),
+    )
 
 
 def _runner_with_connector_and_model(model, *, num_layers=1):

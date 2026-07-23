@@ -181,7 +181,8 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                 for stage_idx in stage_ids:
                     payload = self.connector.recv_attn_output(ubatch_idx=stage_idx)
                     hidden_states = payload.hidden_states
-                    metadata = payload.metadata
+                    context = payload.context
+                    metadata = context.metadata
                     metadata.layer_idx = layer_idx
                     metadata.stage_idx = stage_idx
                     if forward_context is not None:
@@ -191,7 +192,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                         forward_context.additional_kwargs["afd_metadata"] = metadata
                         _set_moe_layer_index(forward_context, layer_idx)
                     rank_ffn_output = self._execute_eager_mode(hidden_states, layer_idx)
-                    self.connector.send_ffn_output(rank_ffn_output, metadata)
+                    self.connector.send_ffn_output(rank_ffn_output, context)
         return rank_ffn_output
 
     def _execute_eager_mode(

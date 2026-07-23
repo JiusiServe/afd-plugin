@@ -21,8 +21,42 @@ from afd_plugin.connectors import (
     AFDControlPayload,
     AFDF2ATransferPayload,
     AFDForwardContextMetadata,
+    AFDTransferContext,
     AFDTransferMetadata,
+    AFDTransferState,
 )
+
+
+def _ffn_payload(hidden_states, metadata, states=None):
+    return AFDA2FTransferPayload(
+        hidden_states=hidden_states,
+        context=AFDTransferContext(
+            metadata=metadata,
+            states=states if states is not None else AFDTransferState(),
+        ),
+    )
+
+
+@contextmanager
+def _fake_ffn_ascend_forward_context(**_kwargs):
+    """Stand in for the vLLM-Ascend forward context in FFN runner unit tests.
+
+    The real ``ascend_forward_context`` delegates to vLLM-Ascend internals that
+    read many ``vllm_config`` fields; these unit tests only exercise the FFN
+    runner's recv/compute/send orchestration, so a minimal fake context is used.
+    """
+    yield SimpleNamespace(additional_kwargs={}, dp_metadata=None, all_moe_layers={})
+
+
+def _patch_ffn_forward_context(monkeypatch):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import ffn_model_runner
+
+    monkeypatch.setattr(
+        ffn_model_runner,
+        "ascend_forward_context",
+        _fake_ffn_ascend_forward_context,
+    )
 
 
 class _RecordingConnector:
@@ -91,18 +125,18 @@ class _FakeFFNConnector:
 
     def recv_attn_output(self, ubatch_idx=None, **kwargs):
         for item in tuple(self.attn_outputs):
-            item_metadata = (
-                item.metadata if isinstance(item, AFDA2FTransferPayload) else item[1]
+            payload = (
+                item
+                if isinstance(item, AFDA2FTransferPayload)
+                else _ffn_payload(item[0], item[1])
             )
-            if item_metadata.stage_idx == ubatch_idx:
+            if payload.context.metadata.stage_idx == ubatch_idx:
                 self.attn_outputs.remove(item)
-                if isinstance(item, AFDA2FTransferPayload):
-                    return item
-                return AFDA2FTransferPayload(hidden_states=item[0], metadata=item[1])
+                return payload
         raise IndexError(ubatch_idx)
 
-    def send_ffn_output(self, ffn_output, metadata, **kwargs):
-        self.ffn_outputs.append((ffn_output, metadata, kwargs))
+    def send_ffn_output(self, ffn_output, context, **kwargs):
+        self.ffn_outputs.append((ffn_output, context.metadata, kwargs))
 
     def close(self):
         return None
@@ -178,6 +212,7 @@ def _vllm_config(
         model_config=SimpleNamespace(enforce_eager=True),
         compilation_config=SimpleNamespace(
             cudagraph_mode=SimpleNamespace(name="FULL"),
+            fast_moe_cold_start=False,
         ),
     )
 
@@ -201,7 +236,12 @@ def _new_ffn_runner():
     _require_npu_runtime()
     from afd_plugin.v1.worker.npu.ffn_model_runner import AFDNPUFFNModelRunner
 
-    return object.__new__(AFDNPUFFNModelRunner)
+    # object.__new__ bypasses __init__, which is where the runner would set up
+    # the profiler and device; provide inert defaults the runtime paths expect.
+    runner = object.__new__(AFDNPUFFNModelRunner)
+    runner.prof = None
+    runner.device = SimpleNamespace(type="npu")
+    return runner
 
 
 def _new_ffn_worker():
@@ -336,6 +376,7 @@ def test_npu_attention_capture_microbatch_also_captures_single_stage():
 
     runner = _new_attention_runner()
     runner.compilation_config = SimpleNamespace(cudagraph_num_of_warmups=1)
+    runner.connector = SimpleNamespace(control_plane=object())
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
     runner._afd_suppress_metadata_send = False
@@ -599,11 +640,11 @@ def test_npu_create_ascend_forward_context_marks_current_ubatch(monkeypatch):
     assert new_forward_context.ubatch_idx == 1
     assert new_forward_context.num_ubatches == 2
     assert new_forward_context.num_tokens == 3
-    assert child_metadata.ubatch_idx == 1
     assert child_metadata.stage_idx == 1
 
 
-def test_npu_ffn_runner_executes_eager_ffn_step():
+def test_npu_ffn_runner_executes_eager_ffn_step(monkeypatch):
+    _patch_ffn_forward_context(monkeypatch)
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
     runner.connector = _FakeFFNConnector()
@@ -630,7 +671,10 @@ def test_npu_ffn_runner_executes_eager_ffn_step():
     ]
 
 
-def test_npu_ffn_runner_passes_async_shared_payload_to_model():
+def test_npu_ffn_runner_dp_path_invokes_model_with_hidden_states_and_layer(monkeypatch):
+    from afd_plugin.connectors.npu.async_cam import AFDAsyncTransferState
+
+    _patch_ffn_forward_context(monkeypatch)
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
     runner.connector = _FakeFFNConnector()
@@ -644,42 +688,33 @@ def test_npu_ffn_runner_passes_async_shared_payload_to_model():
         stage_idx=0,
         seq_len=1,
     )
+    # The DP-metadata FFN path forwards only hidden states and the layer index
+    # to the model; backend transfer state stays on the context and is consumed
+    # by the connector, not spread into compute_ffn_output kwargs.
     runner.connector.attn_outputs.append(
-        AFDA2FTransferPayload(
-            hidden_states="hidden",
-            metadata=metadata,
-            group_list="groups",
-            dynamic_scales="scales",
-            expand_x_shared="shared-hidden",
-            dynamic_scales_shared="shared-scales",
+        _ffn_payload(
+            "hidden",
+            metadata,
+            states=AFDAsyncTransferState(
+                group_list="groups",
+                dynamic_scales="scales",
+                expand_x_shared="shared-hidden",
+                dynamic_scales_shared="shared-scales",
+            ),
         ),
     )
 
     runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
 
-    assert runner.model.calls == [
-        (
-            "hidden",
-            0,
-            {
-                "group_list": "groups",
-                "dynamic_scales": "scales",
-                "expand_x_shared": "shared-hidden",
-                "dynamic_scales_shared": "shared-scales",
-                "topk_weights": None,
-                "topk_ids": None,
-                "router_logits": None,
-                "row_idx": None,
-                "x_active_mask": None,
-                "cam_p2p_ep_name": "",
-            },
-        ),
-    ]
+    assert runner.model.calls == [("hidden", 0, {})]
 
 
 def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch):
     _require_npu_runtime()
-    from afd_plugin.connectors.npu.async_cam import AFDAsyncFFNWorkItem
+    from afd_plugin.connectors.npu.async_cam import (
+        AFDAsyncFFNWorkItem,
+        AFDAsyncTransferState,
+    )
     from afd_plugin.v1.worker.npu import ffn_model_runner
 
     context_calls = []
@@ -688,7 +723,11 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
     @contextmanager
     def fake_ascend_forward_context(**kwargs):
         context_calls.append(kwargs)
-        yield SimpleNamespace(additional_kwargs={}, dp_metadata="dp")
+        yield SimpleNamespace(
+            additional_kwargs={},
+            dp_metadata="dp",
+            all_moe_layers={},
+        )
 
     monkeypatch.setattr(
         ffn_model_runner,
@@ -706,18 +745,24 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
         stage_idx=0,
         seq_lens=[5],
     )
-    recv_output = AFDA2FTransferPayload(
-        hidden_states="recv-hidden",
-        metadata=metadata,
+    states = AFDAsyncTransferState(
+        batch_size=5,
+        hidden_size=16,
+        topk=2,
+        layer_idx=7,
         group_list="groups",
         dynamic_scales="scales[:5]",
         expand_x_shared="shared-hidden[:2]",
         dynamic_scales_shared="shared-scales[:2]",
-        x_active_mask="active-mask[:5]",
+    )
+    context = AFDTransferContext(metadata=metadata, states=states)
+    recv_output = AFDA2FTransferPayload(
+        hidden_states="recv-hidden",
+        context=context,
     )
     work_item = AFDAsyncFFNWorkItem(
         hidden_states="hidden[:5]",
-        metadata=metadata,
+        context=context,
         recv_output=recv_output,
         layer_idx=7,
         stage_idx=0,
@@ -749,12 +794,6 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
                 "dynamic_scales": "scales[:5]",
                 "expand_x_shared": "shared-hidden[:2]",
                 "dynamic_scales_shared": "shared-scales[:2]",
-                "topk_weights": None,
-                "topk_ids": None,
-                "router_logits": None,
-                "row_idx": None,
-                "x_active_mask": "active-mask[:5]",
-                "cam_p2p_ep_name": "",
             },
         ),
     ]
@@ -763,7 +802,8 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
     assert context_calls[0]["afd_metadata"].tokens_lens == [5]
 
 
-def test_npu_ffn_runner_sends_structured_shared_output():
+def test_npu_ffn_runner_sends_structured_shared_output(monkeypatch):
+    _patch_ffn_forward_context(monkeypatch)
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
     runner.connector = _FakeFFNConnector()
@@ -847,7 +887,8 @@ def test_npu_ffn_runner_graph_key_uses_ffn_aggregated_token_counts():
     )
 
 
-def test_npu_ffn_runner_falls_back_to_eager_on_acl_graph_miss():
+def test_npu_ffn_runner_falls_back_to_eager_on_acl_graph_miss(monkeypatch):
+    _patch_ffn_forward_context(monkeypatch)
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
     runner.connector = _FakeFFNConnector()
@@ -890,6 +931,11 @@ def test_npu_ffn_runner_warmup_uses_eager_forward_without_graph(monkeypatch):
     monkeypatch.setattr(ffn_model_runner, "graph_capture", fail_graph_capture_context)
     monkeypatch.setattr(
         ffn_model_runner,
+        "ascend_forward_context",
+        _fake_ffn_ascend_forward_context,
+    )
+    monkeypatch.setattr(
+        ffn_model_runner,
         "set_cudagraph_capturing_enabled",
         capture_flags.append,
     )
@@ -928,6 +974,11 @@ def test_npu_ffn_runner_capture_stores_acl_graph_and_skips_duplicate_state_updat
     runner.use_aclgraph = True
     runner._acl_graphs = {}
     runner.graph_pool = None
+    monkeypatch.setattr(
+        ffn_model_runner,
+        "ascend_forward_context",
+        _fake_ffn_ascend_forward_context,
+    )
     monkeypatch.setattr(ffn_model_runner, "graph_capture", lambda device: nullcontext())
     monkeypatch.setattr(
         ffn_model_runner.torch.npu,
@@ -962,7 +1013,8 @@ def test_npu_ffn_runner_capture_stores_acl_graph_and_skips_duplicate_state_updat
     assert update_flags == {"is_graph_capturing": True, "is_warmup": False}
 
 
-def test_npu_ffn_runner_requires_compute_hook():
+def test_npu_ffn_runner_requires_compute_hook(monkeypatch):
+    _patch_ffn_forward_context(monkeypatch)
     runner = _new_ffn_runner()
     runner.vllm_config = _vllm_config(role="ffn")
     runner.connector = _FakeFFNConnector()

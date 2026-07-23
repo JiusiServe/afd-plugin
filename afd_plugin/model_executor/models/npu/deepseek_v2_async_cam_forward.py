@@ -13,7 +13,11 @@ import torch
 from vllm.forward_context import get_forward_context
 from vllm.v1.worker.ubatch_utils import UBatchSlices
 
-from afd_plugin.connectors import AFDForwardContextMetadata, AFDTransferMetadata
+from afd_plugin.connectors import (
+    AFDForwardContextMetadata,
+    AFDTransferContext,
+    AFDTransferMetadata,
+)
 from afd_plugin.model_executor.models import AsyncMoeUbatchMetadata
 from afd_plugin.v1.worker.dbo import maybe_apply_dbo_yield
 
@@ -82,9 +86,10 @@ def run_attention_gate_afd_forward(
             stage_idx=stage_idx,
             seq_len=int(hidden_states.shape[0]),
         )
+        context = AFDTransferContext(metadata=metadata)
         afd_connector.send_attn_output(
             hidden_states,
-            metadata,
+            context,
             topk_weights=topk_weights,
             topk_ids=topk_ids,
             router_logits=router_logits,
@@ -201,9 +206,10 @@ def run_async_moe_ubatch_afd_forward(
             stage_idx=stage_idx,
             seq_len=expected_tokens,
         )
+        stage_context = AFDTransferContext(metadata=stage_metadata)
         afd_connector.send_attn_output(
             stage_hidden_states[stage_idx],
-            stage_metadata,
+            stage_context,
             topk_weights=topk_weights,
             topk_ids=topk_ids,
             router_logits=router_logits,

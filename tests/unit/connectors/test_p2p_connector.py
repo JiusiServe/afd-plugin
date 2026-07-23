@@ -270,10 +270,7 @@ def test_p2p_module_exports_connector_class():
 
 def test_p2p_dp_metadata_serialization_uses_json_payload():
     module = importlib.import_module("afd_plugin.connectors.metadata")
-    metadata = SimpleNamespace(
-        num_tokens_across_dp_cpu=[3, 5],
-        max_tokens_across_dp_cpu=5,
-    )
+    metadata = AFDDPMetadata(num_tokens_across_dp_cpu=[3, 5])
 
     payload = module.encode_control_payload(
         AFDControlPayload(
@@ -302,6 +299,9 @@ def test_p2p_custom_ops_register_send_recv_with_fake_impls(monkeypatch):
 
     torch_module = types.ModuleType("torch")
     torch_module.Tensor = object
+    # Empty ops namespace: the registration helper skips ops that already
+    # exist on torch.ops.vllm, so the fake must report none registered.
+    torch_module.ops = SimpleNamespace(vllm=SimpleNamespace())
 
     vllm_module = types.ModuleType("vllm")
     utils_module = types.ModuleType("vllm.utils")
@@ -346,8 +346,6 @@ def test_p2p_hidden_state_send_uses_registered_custom_op(monkeypatch):
             num_ffn_ranks=1,
         ),
     )
-    communicator = object()
-    connector.a2e_pynccl = communicator
     connector.a2e_comm_id = 17
 
     calls = []
@@ -371,7 +369,7 @@ def test_p2p_hidden_state_send_uses_registered_custom_op(monkeypatch):
         hidden_states,
         1,
         SimpleNamespace(world_size=2, rank=0),
-        communicator,
+        connector.a2e_comm_id,
     )
 
     assert calls == [(hidden_states, 1, 17)]
@@ -391,8 +389,6 @@ def test_p2p_recv_preserves_dynamic_ref_tensor_first_dim(monkeypatch):
             num_ffn_ranks=1,
         ),
     )
-    communicator = object()
-    connector.e2a_pynccl = communicator
     connector.e2a_comm_id = 23
 
     calls = []
@@ -424,7 +420,7 @@ def test_p2p_recv_preserves_dynamic_ref_tensor_first_dim(monkeypatch):
     output = connector._recv_hidden_states(
         0,
         SimpleNamespace(world_size=2, rank=1),
-        communicator,
+        connector.e2a_comm_id,
         tensor_metadata,
         ref_tensor=ref_tensor,
     )
@@ -445,7 +441,6 @@ def test_p2p_recv_single_rank_requires_ref_tensor():
             num_ffn_ranks=1,
         ),
     )
-    connector.e2a_pynccl = object()
     connector.e2a_comm_id = 23
     tensor_metadata = SimpleNamespace(
         device="cuda:0",
@@ -457,6 +452,6 @@ def test_p2p_recv_single_rank_requires_ref_tensor():
         connector._recv_hidden_states(
             0,
             SimpleNamespace(world_size=1, rank=0),
-            connector.e2a_pynccl,
+            connector.e2a_comm_id,
             tensor_metadata,
         )

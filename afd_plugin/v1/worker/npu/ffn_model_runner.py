@@ -30,7 +30,7 @@ from afd_plugin.connectors import (
     AFDDPMetadata,
     AFDF2ATransferPayload,
     AFDForwardContextMetadata,
-    AFDTransferMetadata,
+    AFDTransferContext,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
     _resolve_world_ranks,
@@ -248,32 +248,25 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                         layer_idx=layer_idx,
                         max_num_tokens=self.max_num_tokens,
                     )
-                    metadata = payload.metadata
+                    context = payload.context
+                    metadata = context.metadata
+                    states = context.states
                     hidden_states = payload.hidden_states
                     metadata.layer_idx = layer_idx
                     metadata.stage_idx = stage_idx
                     forward_context.dp_metadata = dp_metadata_list.get(stage_idx)
                     forward_context.additional_kwargs["afd_metadata"] = metadata
+                    assert states, "Context.states must not be None"
                     _set_moe_layer_index(forward_context, layer_idx)
 
                     rank_ffn_output = self.model.compute_ffn_output(
                         hidden_states=hidden_states,
                         layer_idx=layer_idx,
-                        group_list=payload.group_list,
-                        dynamic_scales=payload.dynamic_scales,
-                        expand_x_shared=payload.expand_x_shared,
-                        dynamic_scales_shared=payload.dynamic_scales_shared,
-                        topk_weights=payload.topk_weights,
-                        topk_ids=payload.topk_ids,
-                        router_logits=payload.router_logits,
-                        row_idx=payload.row_idx,
-                        x_active_mask=payload.x_active_mask,
-                        cam_p2p_ep_name=payload.cam_p2p_ep_name or "",
                     )
                     _send_ffn_output(
                         self.connector,
                         rank_ffn_output,
-                        metadata,
+                        context,
                         stage_idx=stage_idx,
                     )
         return rank_ffn_output
@@ -298,8 +291,8 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 max_num_tokens=self.max_num_tokens,
             )
             hidden_states = work_item.hidden_states
-            metadata = work_item.metadata
-            payload = work_item.recv_output
+            metadata = work_item.context.metadata
+            states = work_item.context.states
             layer_idx = work_item.layer_idx
             num_tokens = work_item.num_tokens
             afd_metadata = AFDForwardContextMetadata(
@@ -325,16 +318,10 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 rank_ffn_output = self.model.compute_ffn_output(
                     hidden_states=hidden_states,
                     layer_idx=layer_idx,
-                    group_list=payload.group_list,
-                    dynamic_scales=payload.dynamic_scales,
-                    expand_x_shared=payload.expand_x_shared,
-                    dynamic_scales_shared=payload.dynamic_scales_shared,
-                    topk_weights=payload.topk_weights,
-                    topk_ids=payload.topk_ids,
-                    router_logits=payload.router_logits,
-                    row_idx=payload.row_idx,
-                    x_active_mask=payload.x_active_mask,
-                    cam_p2p_ep_name=payload.cam_p2p_ep_name or "",
+                    group_list=states.group_list,
+                    dynamic_scales=states.dynamic_scales,
+                    expand_x_shared=states.expand_x_shared,
+                    dynamic_scales_shared=states.dynamic_scales_shared,
                 )
                 rank_ffn_output = send_work_item_output(work_item, rank_ffn_output)
         return rank_ffn_output
@@ -445,14 +432,14 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 def _send_ffn_output(
     connector: AFDConnectorBase,
     ffn_output: torch.Tensor | AFDF2ATransferPayload,
-    metadata: AFDTransferMetadata,
+    context: AFDTransferContext,
     *,
     stage_idx: int,
 ) -> None:
     if not isinstance(ffn_output, AFDF2ATransferPayload):
         connector.send_ffn_output(
             ffn_output,
-            metadata,
+            context,
             ubatch_idx=stage_idx,
         )
         return
@@ -462,7 +449,7 @@ def _send_ffn_output(
         kwargs["expand_x_shared"] = ffn_output.shared_output
     connector.send_ffn_output(
         ffn_output.routed_output,
-        metadata,
+        context,
         **kwargs,
     )
 
