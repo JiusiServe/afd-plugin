@@ -387,8 +387,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             states.dynamic_scales_shared = states.dynamic_scales_shared[
                 :shared_slice_tokens
             ]
-        if states.x_active_mask is not None:
-            states.x_active_mask = states.x_active_mask[:num_tokens]
 
         return AFDAsyncFFNWorkItem(
             hidden_states=hidden_states,

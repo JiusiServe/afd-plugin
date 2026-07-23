@@ -266,12 +266,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                         dynamic_scales=states.dynamic_scales,
                         expand_x_shared=states.expand_x_shared,
                         dynamic_scales_shared=states.dynamic_scales_shared,
-                        topk_weights=states.topk_weights,
-                        topk_ids=states.topk_ids,
-                        router_logits=states.router_logits,
-                        row_idx=states.row_idx,
-                        x_active_mask=states.x_active_mask,
-                        cam_p2p_ep_name=states.cam_p2p_ep_name or "",
                     )
                     _send_ffn_output(
                         self.connector,
@@ -332,12 +326,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     dynamic_scales=states.dynamic_scales,
                     expand_x_shared=states.expand_x_shared,
                     dynamic_scales_shared=states.dynamic_scales_shared,
-                    topk_weights=states.topk_weights,
-                    topk_ids=states.topk_ids,
-                    router_logits=states.router_logits,
-                    row_idx=states.row_idx,
-                    x_active_mask=states.x_active_mask,
-                    cam_p2p_ep_name=states.cam_p2p_ep_name or "",
                 )
                 rank_ffn_output = send_work_item_output(work_item, rank_ffn_output)
         return rank_ffn_output

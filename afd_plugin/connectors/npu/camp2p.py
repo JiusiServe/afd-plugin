@@ -160,12 +160,12 @@ class CAMP2PExtraInfo(ConnectorExtraInfo):
 class CAMP2PTransferState(AFDCustomTransferState):
     """CAMP2P payload metadata carried between recv and send phases.
 
-    This class stores only what CAMP2p reads back itself while data travels from
+    This class stores what CAMP2p reads back itself while data travels from
     Attention to FFN and then back to Attention. ``aiv_num``, ``batch_size``,
     ``h`` and ``k`` size the CAMP2p operators, and ``atten_batch_size`` saves the
     A2E-returned Attention token count that the FFN-to-Attention send requires.
-    Runner-facing payloads (the active-token mask, HCCL endpoint name, ...) live
-    on ``AFDTransferState`` instead.
+    ``x_active_mask`` and ``cam_p2p_ep_name`` are the A2E-returned active-token
+    mask and HCCL endpoint name captured on the receive path.
     """
 
     aiv_num: int = 8
@@ -173,6 +173,8 @@ class CAMP2PTransferState(AFDCustomTransferState):
     h: int = 0
     k: int = 1
     atten_batch_size: torch.Tensor | None = None
+    x_active_mask: torch.Tensor | None = None
+    cam_p2p_ep_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -530,7 +532,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
             stage_idx=ubatch_idx,
             seq_lens=[batch_size],
         )
-        transfer_state = CAMP2PTransferState(
+        custom_states = CAMP2PTransferState(
             aiv_num=self.aiv_num,
             batch_size=batch_size,
             h=self.hidden_size,
@@ -538,7 +540,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         )
         context = AFDTransferContext(
             metadata=metadata,
-            states=AFDTransferState(custom_states=transfer_state),
+            states=AFDTransferState(custom_states=custom_states),
         )
 
         group_ep = _get_group_ep(
@@ -551,19 +553,19 @@ class CAMP2pAFDConnector(AFDConnectorBase):
             torch.tensor([], dtype=torch.bfloat16, device="npu"),
             torch.tensor([], dtype=torch.int32, device="npu"),
             torch.tensor([], dtype=torch.float32, device="npu"),
-            transfer_state.batch_size,
-            transfer_state.h,
-            transfer_state.k,
+            custom_states.batch_size,
+            custom_states.h,
+            custom_states.k,
             self.ffn_size,
             self.attn_size,
             self.world_rank,
             group_ep,
-            transfer_state.aiv_num,
+            custom_states.aiv_num,
             0,
         )
-        transfer_state.atten_batch_size = outputs[3]
-        context.states.x_active_mask = outputs[4]
-        context.states.cam_p2p_ep_name = self.hccl_comm_name1
+        custom_states.atten_batch_size = outputs[3]
+        custom_states.x_active_mask = outputs[4]
+        custom_states.cam_p2p_ep_name = self.hccl_comm_name1
         return AFDA2FTransferPayload(
             hidden_states=outputs[0],
             context=context,

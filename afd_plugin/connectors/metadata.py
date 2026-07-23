@@ -156,47 +156,32 @@ class AFDCustomTransferState:
 class AFDTransferState:
     """Backend-neutral transfer state for one AFD Attention/FFN exchange.
 
-    ``AFDTransferState`` carries only the routing and quantization payloads that
-    the FFN model runner consumes on the send path, kept backend-neutral so a
-    single runner can drive every connector. The hidden-state tensor is kept
+    ``AFDTransferState`` carries only the routed/shared MoE compute payloads that
+    the FFN model runner feeds into ``compute_ffn_output``, kept backend-neutral
+    so a single runner can drive every connector. The hidden-state tensor is kept
     separately on ``AFDA2FTransferPayload``. Any state that is private to a
-    connector (handles, HCCL endpoint names, per-transfer sizes, receive-side
-    token counts a connector reads back itself) lives under ``custom_states``
-    instead of here.
+    connector (handles, HCCL endpoint names, active-token masks, per-transfer
+    sizes, receive-side token counts a connector reads back itself) lives under
+    ``custom_states`` instead of here.
 
     Attributes:
-        group_list: Optional expert/group token-count payload. CAMP2P and
-            async CAM style connectors use this for MoE routing metadata.
-        topk_weights: Optional top-k routing weights produced or forwarded by
-            the backend receive path.
-        topk_ids: Optional top-k expert ids produced or forwarded by the
-            backend receive path.
-        router_logits: Optional router logits for backends that forward router
-            outputs through the connector payload.
-        row_idx: Optional row-index payload for backend-specific token routing.
-        x_active_mask: Optional active-token mask returned by CAMP2P/CAM ops.
+        group_list: Optional expert/group token-count payload used for MoE
+            routing metadata by the connectors that gate on the Attention side.
         dynamic_scales: Optional dynamic quantization scales for routed expert
             tokens.
         expand_x_shared: Optional shared-expert activation payload.
         dynamic_scales_shared: Optional dynamic quantization scales for
             shared-expert tokens.
-        cam_p2p_ep_name: Optional CAM/HCCL endpoint name associated with the
-            receive path.
         custom_states: Optional backend-specific transfer state. For example,
             CAMP2P stores ``CAMP2PTransferState`` here so receive-time results
-            can be reused by the matching send path.
+            (active-token mask, HCCL endpoint name, sizes) can be reused by the
+            matching send path.
     """
 
     group_list: object = None
-    topk_weights: torch.Tensor | None = None
-    topk_ids: torch.Tensor | None = None
-    router_logits: torch.Tensor | None = None
-    row_idx: torch.Tensor | None = None
-    x_active_mask: torch.Tensor | None = None
     dynamic_scales: torch.Tensor | None = None
     expand_x_shared: torch.Tensor | None = None
     dynamic_scales_shared: torch.Tensor | None = None
-    cam_p2p_ep_name: str | None = None
     custom_states: AFDCustomTransferState | None = None
 
 
