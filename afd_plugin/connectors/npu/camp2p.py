@@ -405,14 +405,14 @@ class CAMP2pAFDConnector(AFDConnectorBase):
 
         Args:
             hidden_states: Model data with shape ``(tokens, hidden_size)``.
-            metadata: Layer number, ubatch number, token count, and CAMP2p
-                settings for this transfer.
+            context: Transfer context whose ``metadata`` supplies the layer
+                number, ubatch number, and token count for this transfer.
             **kwargs: Extra arguments accepted for interface compatibility.
 
         Raises:
             RuntimeError: If the communication groups are not ready.
             ValueError: If the number of tokens in ``hidden_states`` does not
-                match ``metadata`` outside a ``torch.compile`` trace.
+                match ``context.metadata`` outside a ``torch.compile`` trace.
         """
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
@@ -580,9 +580,10 @@ class CAMP2pAFDConnector(AFDConnectorBase):
 
         Args:
             ffn_output: Model data produced by the FFN layers.
-            metadata: Information saved when FFN received the Attention output.
+            context: Transfer context saved when FFN received the Attention
+                output; its ``states`` carries the CAMP2p receive-time results.
             **kwargs: An optional ``ubatch_idx``. If omitted, the method uses
-                the ubatch number stored in ``metadata``.
+                the ubatch number stored in ``context.metadata``.
 
         Raises:
             RuntimeError: If communication is not ready, required receive

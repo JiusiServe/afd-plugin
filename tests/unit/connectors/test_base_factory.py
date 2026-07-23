@@ -10,8 +10,7 @@ from afd_plugin.connectors import (
     AFDA2FTransferPayload,
     AFDConnectorBase,
     AFDConnectorFactory,
-    AFDControlPayload,
-    AFDDPMetadata,
+    AFDTransferContext,
     AFDTransferMetadata,
 )
 
@@ -61,27 +60,30 @@ def test_connector_metadata_validates_sequence_lengths():
         )
 
 
-def test_attn_output_carries_connector_payload_fields():
+def test_attn_output_carries_transfer_context():
     metadata = AFDTransferMetadata.create_ffn_metadata(
         layer_idx=1,
         stage_idx=2,
         seq_lens=[3],
     )
+    context = AFDTransferContext(metadata=metadata)
     output = AFDA2FTransferPayload(
         hidden_states="hidden",
-        metadata=metadata,
-        topk_ids="ids",
-        cam_p2p_ep_name="ep",
+        context=context,
     )
 
     assert output.hidden_states == "hidden"
-    assert output.metadata is metadata
-    assert output.topk_ids == "ids"
-    assert output.cam_p2p_ep_name == "ep"
+    assert output.context is context
+    assert output.context.metadata is metadata
+    assert output.context.states is None
     assert repr(output).startswith("AFDA2FTransferPayload(")
 
 
 class _MinimalConnector(AFDConnectorBase):
+    @classmethod
+    def parse_extra_config(cls, raw):
+        return None
+
     @property
     def is_initialized(self):
         return True
@@ -92,44 +94,34 @@ class _MinimalConnector(AFDConnectorBase):
     def init_afd_connector(self):
         return None
 
-    def send_attn_output(self, hidden_states, metadata):
+    def send_attn_output(self, hidden_states, context, **kwargs):
         return None
 
-    def recv_ffn_output(self, **kwargs):
-        return None
+    def recv_ffn_output(self, ref_tensor, ubatch_idx=0, **kwargs):
+        return ref_tensor
 
-    def recv_attn_output(self, ubatch_idx=None):
+    def recv_attn_output(self, ubatch_idx=0, **kwargs):
         return AFDA2FTransferPayload(
             hidden_states=None,
-            metadata=AFDTransferMetadata.create_ffn_metadata(
-                layer_idx=0,
-                stage_idx=0,
-                seq_lens=[1],
+            context=AFDTransferContext(
+                metadata=AFDTransferMetadata.create_ffn_metadata(
+                    layer_idx=0,
+                    stage_idx=0,
+                    seq_lens=[1],
+                ),
             ),
         )
 
-    def send_ffn_output(self, ffn_output, metadata):
+    def send_ffn_output(self, ffn_output, context, **kwargs):
         return None
 
-    def update_state_from_dp_metadata(self, payload):
-        return None
 
-    def send_dp_metadata_list(self, payload):
-        return None
+def test_connector_base_contract_can_be_implemented():
+    # Instantiation (without running __init__) verifies _MinimalConnector
+    # overrides every abstract method of the connector contract, so this test
+    # fails when the AFDConnectorBase interface changes.
+    connector = object.__new__(_MinimalConnector)
 
-    def recv_dp_metadata_list(self):
-        return AFDControlPayload(
-            dp_metadata_list={
-                0: AFDDPMetadata(
-                    _cpu_token_tensor([1]),
-                ),
-            },
-            is_graph_capturing=False,
-            is_warmup=False,
-        )
-
-
-def _cpu_token_tensor(values: list[int]):
-    import torch
-
-    return torch.tensor(values, dtype=torch.int32, device="cpu")
+    assert connector.is_initialized is True
+    payload = connector.recv_attn_output()
+    assert payload.context.metadata.seq_lens == [1]
