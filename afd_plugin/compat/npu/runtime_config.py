@@ -25,8 +25,9 @@ def fix_all2all_backend_for_afd(vllm_config: VllmConfig) -> None:
     vLLM-Ascend normally rewrites ``all2all_backend`` to
     ``"flashinfer_all2allv"`` when sequence parallelism is disabled, but that
     compatibility rewrite is gated on the default ``worker_cls == "auto"``.
-    AFD Attention/FFN workers use custom worker classes, so they miss the
-    rewrite and keep the default ``"allgather_reducescatter"`` backend.
+    Automatic AFD worker selection preserves that upstream rewrite. Legacy
+    commands that explicitly select an AFD worker miss it and can keep the
+    default ``"allgather_reducescatter"`` backend.
 
     Leaving that backend in place can make the Ascend MoE path think sequence
     parallel MoE is enabled and split tokens through ``sequence_parallel_chunk``,

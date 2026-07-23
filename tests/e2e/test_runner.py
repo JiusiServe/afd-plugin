@@ -59,9 +59,7 @@ def test_runner_uses_native_dp_for_attention_topology():
     assert _arg_value(command, "--data-parallel-size") == "2"
     assert _arg_value(command, "--tensor-parallel-size") == "1"
     assert "--enable-expert-parallel" in command
-    assert _arg_value(command, "--worker-cls") == (
-        "afd_plugin.v1.worker.AFDAttentionWorker"
-    )
+    assert "--worker-cls" not in command
     assert _arg_value(command, "--port") == "18100"
     assert _arg_value(command, "--served-model-name") == (
         "deepseek-v2-lite-afd-attention"
@@ -81,7 +79,7 @@ def test_runner_uses_native_dp_for_ffn_topology():
     assert _arg_value(command, "--data-parallel-size") == "2"
     assert _arg_value(command, "--tensor-parallel-size") == "1"
     assert "--enable-expert-parallel" in command
-    assert _arg_value(command, "--worker-cls") == "afd_plugin.v1.worker.AFDFFNWorker"
+    assert "--worker-cls" not in command
     assert _arg_value(command, "--port") == "18101"
     assert _arg_value(command, "--served-model-name") == "deepseek-v2-lite-afd-ffn"
 
@@ -124,12 +122,8 @@ def test_runner_builds_npu_async_cam_role_specific_topology():
     assert _arg_value(attention_command, "--tensor-parallel-size") == "2"
     assert _arg_value(ffn_command, "--data-parallel-size") == "2"
     assert _arg_value(ffn_command, "--tensor-parallel-size") == "1"
-    assert _arg_value(attention_command, "--worker-cls") == (
-        "afd_plugin.v1.worker.npu.AFDNPUAttentionWorker"
-    )
-    assert _arg_value(ffn_command, "--worker-cls") == (
-        "afd_plugin.v1.worker.npu.AFDNPUFFNWorker"
-    )
+    assert "--worker-cls" not in attention_command
+    assert "--worker-cls" not in ffn_command
 
     additional_config = json.loads(_arg_value(attention_command, "--additional-config"))
     afd_config = additional_config["afd"]

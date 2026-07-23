@@ -95,7 +95,6 @@ KV_TRANSFER_CONFIG='{
 exec env VLLM_USE_V1=1 vllm serve "$MODEL_PATH" \
   --host 0.0.0.0 \
   --port "$SERVER_PORT" \
-  --worker-cls afd_plugin.v1.worker.npu.AFDNPUFFNWorker \
   --data-parallel-size "$FFN_RANKS" \
   --tensor-parallel-size 1 \
   --enable-expert-parallel \

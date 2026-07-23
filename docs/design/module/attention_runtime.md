@@ -64,8 +64,9 @@ model modules must not depend on the Attention worker implementation.
 
 ## Runtime selection
 
-AFD uses explicit worker class paths; it does not add an AFD-specific CLI
-flag. Configuration is read from vLLM `additional_config["afd"]`.
+AFD does not add an AFD-specific CLI flag. Configuration is read from vLLM
+`additional_config["afd"]`, and config normalization selects the role-specific
+worker for the active platform when `worker_cls="auto"`.
 
 | Platform | Worker | Model runner | Current connectors |
 | --- | --- | --- | --- |
@@ -76,7 +77,6 @@ CUDA launch shape:
 
 ```bash
 vllm serve <model> \
-  --worker-cls afd_plugin.v1.worker.AFDAttentionWorker \
   --additional-config '{"afd":{"role":"attention","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
@@ -84,7 +84,6 @@ Ascend launch shape:
 
 ```bash
 VLLM_PLUGINS=ascend,afd vllm serve <model> \
-  --worker-cls afd_plugin.v1.worker.npu.AFDNPUAttentionWorker \
   --additional-config '{"afd":{"role":"attention","connector":"CAMP2pAFDConnector","host":"127.0.0.1","port":1239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
@@ -100,7 +99,7 @@ The common Attention initialization sequence is:
 
 ```text
 vLLM worker construction
-  -> validate AFD config, role, connector, and explicit worker class
+  -> validate AFD config, role, connector, and selected worker class
   -> reject model runner v2 and unsupported feature combinations
   -> initialize the matching upstream device worker
   -> construct the AFD Attention model runner

@@ -40,7 +40,7 @@ body:
       description: Provide the smallest command, script, config, or class path setup that reproduces the issue.
       placeholder: |
         ```sh
-        VLLM_PLUGINS=afd vllm serve ... --worker-cls afd_plugin.runtime....
+        VLLM_PLUGINS=afd vllm serve ... --additional-config '{"afd":{...}}'
         ```
     validations:
       required: true

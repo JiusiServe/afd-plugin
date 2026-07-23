@@ -32,23 +32,23 @@ End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
 
 5 processes, 4 GPU workers + 1 proxy server:
 
-| GPUs   | Role              | Worker class           | Port  |
-|--------|-------------------|------------------------|-------|
-| 0   | Prefill (Colocated)    | `AFDAttentionWorker`   | 18301 |
-| 1   | Prefill (Colocated)   | `AFDAttentionWorker`   | 18302 |
-| 2   | Decode (Attention)    | `AFDAttentionWorker`   | 18303 |
-| 3   | Decode (FFN)          | `AFDFFNWorker`         | 18304 |
-| /   | Proxy Server          | /         | 18305 |
+| GPUs | Role                | Port  |
+|------|---------------------|-------|
+| 0    | Prefill (Colocated) | 18301 |
+| 1    | Prefill (Colocated) | 18302 |
+| 2    | Decode (Attention)  | 18303 |
+| 3    | Decode (FFN)        | 18304 |
+| /    | Proxy Server        | 18305 |
 
 
 ### 2. Prefill/Decode Colocation — `2a2f`
 
 2 processes, two GPUs each:
 
-| GPUs   | Role              | Worker class           | Port  |
-|--------|-------------------|------------------------|-------|
-| 0, 1   | Attention    | `AFDAttentionWorker`   | 18305 |
-| 2, 3   | FFN          | `AFDFFNWorker`         | 18305 |
+| GPUs | Role      | Port  |
+|------|-----------|-------|
+| 0, 1 | Attention | 18305 |
+| 2, 3 | FFN       | 18305 |
 
 The four variants cover the TP/DP cross product:
 

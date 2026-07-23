@@ -50,7 +50,6 @@ CUDA_VISIBLE_DEVICES=1 uv run vllm serve "$MODEL_PATH" \
 # it pulls the prompt KV from whichever prefiller produced it.
 VLLM_NIXL_SIDE_CHANNEL_PORT=5603 \
 CUDA_VISIBLE_DEVICES=2 uv run vllm serve "$MODEL_PATH" \
-    --worker-cls afd_plugin.v1.worker.AFDAttentionWorker \
     --data-parallel-size 1 \
     --tensor-parallel-size 1 \
     --enable-expert-parallel \
@@ -84,7 +83,6 @@ CUDA_VISIBLE_DEVICES=2 uv run vllm serve "$MODEL_PATH" \
 # through the AFD attention<->FFN p2p connector (port 6269), never over HTTP, so
 # it never sees a do_remote_prefill request and has nothing to pull.
 CUDA_VISIBLE_DEVICES=3 uv run vllm serve "$MODEL_PATH" \
-    --worker-cls afd_plugin.v1.worker.AFDFFNWorker \
     --data-parallel-size 1 \
     --tensor-parallel-size 1 \
     --enable-expert-parallel \

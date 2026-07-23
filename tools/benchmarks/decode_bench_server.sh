@@ -46,7 +46,6 @@ JSON
 
 # --- attention instance (decode-bench connector attached here) ----------------
 CUDA_VISIBLE_DEVICES=0,1 uv run vllm serve "$MODEL_PATH" \
-    --worker-cls afd_plugin.v1.worker.AFDAttentionWorker \
     --data-parallel-size 2 \
     --tensor-parallel-size 1 \
     --enable-expert-parallel \
@@ -76,7 +75,6 @@ CUDA_VISIBLE_DEVICES=0,1 uv run vllm serve "$MODEL_PATH" \
 
 # --- ffn instance (no decode-bench connector) ---------------------------------
 CUDA_VISIBLE_DEVICES=2,3 uv run vllm serve "$MODEL_PATH" \
-    --worker-cls afd_plugin.v1.worker.AFDFFNWorker \
     --data-parallel-size 2 \
     --tensor-parallel-size 1 \
     --enable-expert-parallel \

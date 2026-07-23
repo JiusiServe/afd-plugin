@@ -23,6 +23,10 @@ NPU_ATTENTION_MODEL_RUNNER_FQCN: Final[str] = (
     "afd_plugin.v1.worker.npu.AFDNPUAttentionModelRunner"
 )
 NPU_FFN_MODEL_RUNNER_FQCN: Final[str] = "afd_plugin.v1.worker.npu.AFDNPUFFNModelRunner"
+VLLM_GPU_WORKER_FQCN: Final[str] = "vllm.v1.worker.gpu_worker.Worker"
+VLLM_ASCEND_NPU_WORKER_FQCN: Final[str] = "vllm_ascend.worker.worker.NPUWorker"
+VLLM_ASCEND_310P_WORKER_FQCN: Final[str] = "vllm_ascend._310p.worker_310p.NPUWorker310"
+VLLM_ASCEND_XLITE_WORKER_FQCN: Final[str] = "vllm_ascend.xlite.xlite_worker.XliteWorker"
 
 
 def normalize_qualname(value: str) -> str:
@@ -63,6 +67,38 @@ def expected_npu_worker_qualname(role: str) -> str:
     raise ValueError(f"unknown AFD role {role!r}")
 
 
+def afd_worker_qualname_for_platform_default(
+    role: str,
+    platform_worker_qualname: str,
+    *,
+    is_cuda: bool,
+    device_type: str,
+) -> str:
+    """Select an AFD worker from the platform's normalized default worker."""
+
+    normalized_platform_worker = normalize_qualname(platform_worker_qualname)
+    if is_cuda and normalized_platform_worker == VLLM_GPU_WORKER_FQCN:
+        return expected_worker_qualname(role)
+    if (
+        device_type == "npu"
+        and normalized_platform_worker == VLLM_ASCEND_NPU_WORKER_FQCN
+    ):
+        return expected_npu_worker_qualname(role)
+    if device_type == "npu" and normalized_platform_worker in {
+        VLLM_ASCEND_310P_WORKER_FQCN,
+        VLLM_ASCEND_XLITE_WORKER_FQCN,
+    }:
+        raise ValueError(
+            "AFD automatic worker selection supports only the standard Ascend "
+            "A2/A3 NPUWorker; the current Ascend platform selected "
+            f"{platform_worker_qualname!r}",
+        )
+    raise ValueError(
+        "AFD automatic worker selection does not support the current platform: "
+        f"device_type={device_type!r}, worker={platform_worker_qualname!r}",
+    )
+
+
 def assert_compatible_afd_stack(
     vllm_config: VllmConfig,
     *,
@@ -95,14 +131,10 @@ def assert_compatible_afd_stack(
             f"(got type {type(worker_cls_raw).__name__}){_ctx()}",
         )
     if worker_cls_raw.strip() == "auto":
-        expected_worker = (
-            async_expected_worker
-            or expected_worker_qualname_override
-            or expected_worker_qualname(config.role)
-        )
         raise ValueError(
-            "parallel_config.worker_cls is still 'auto'; pass --worker-cls "
-            f"{expected_worker}{_ctx()}",
+            "parallel_config.worker_cls remained 'auto' after AFD config "
+            "normalization; ensure the AFD general plugin is loaded before "
+            f"VllmConfig is created{_ctx()}",
         )
 
     expected_qualname = (
@@ -120,7 +152,8 @@ def assert_compatible_afd_stack(
         )
         raise ValueError(
             prefix + f"got={worker_fqcn!r} expected={expected_qualname!r}; "
-            f"pass --worker-cls {expected_qualname}{_ctx()}",
+            "remove --worker-cls to let AFD select it automatically, or pass "
+            f"--worker-cls {expected_qualname}{_ctx()}",
         )
 
     return config

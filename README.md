@@ -14,7 +14,7 @@ tests for GPU and Ascend NPU deployments.
 
 The target runtime is **vLLM `v0.19.1`**. The plugin does not modify the vLLM
 source tree. AFD behavior is installed through the `vllm.general_plugins` entry
-point, explicit `--worker-cls` class paths, `--additional-config`, plugin-owned
+point, `--additional-config`, automatically selected role workers, plugin-owned
 model wrappers, and narrow version-scoped compatibility shims.
 
 ## Architecture
@@ -153,17 +153,20 @@ For implementation details, see the
 
 ## Using the Plugin
 
-Install or sync the distribution as `vllm-afd-plugin`. Python imports and CLI
-class paths use the `afd_plugin` package name.
+Install or sync the distribution as `vllm-afd-plugin`. Python imports use the
+`afd_plugin` package name.
 
 AFD is configured through vLLM `--additional-config`. There is no separate
-`--afd-config` flag.
+`--afd-config` flag. When AFD is configured and `--worker-cls` is omitted, the
+plugin automatically selects the Attention or FFN worker for the active CUDA
+or standard Ascend NPU platform. Explicit AFD worker paths remain accepted for
+compatibility with existing commands, but are not required or stable launch
+interfaces.
 
 GPU Attention-side shape:
 
 ```bash
 vllm serve /path/to/DeepSeek-V2-Lite \
-  --worker-cls afd_plugin.v1.worker.AFDAttentionWorker \
   --served-model-name deepseek-v2-lite-afd-attention \
   --data-parallel-size 1 \
   --tensor-parallel-size 1 \
@@ -178,7 +181,6 @@ GPU FFN-side shape:
 
 ```bash
 vllm serve /path/to/DeepSeek-V2-Lite \
-  --worker-cls afd_plugin.v1.worker.AFDFFNWorker \
   --served-model-name deepseek-v2-lite-afd-ffn \
   --data-parallel-size 1 \
   --tensor-parallel-size 1 \
@@ -189,12 +191,11 @@ vllm serve /path/to/DeepSeek-V2-Lite \
   --additional-config '{"afd":{"role":"ffn","connector":"P2pNcclAFDConnector","host":"127.0.0.1","port":6239,"num_attention_ranks":1,"num_ffn_ranks":1}}'
 ```
 
-NPU uses the same config channel with NPU worker class paths and
-`CAMP2pAFDConnector`:
+NPU uses the same config channel with `CAMP2pAFDConnector`; the plugin selects
+the NPU worker automatically:
 
 ```bash
 vllm serve /path/to/DeepSeek-V2-Lite \
-  --worker-cls afd_plugin.v1.worker.npu.AFDNPUAttentionWorker \
   --served-model-name deepseek-v2-lite-afd-attention \
   --data-parallel-size 1 \
   --tensor-parallel-size 1 \

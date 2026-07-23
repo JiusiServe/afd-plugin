@@ -59,7 +59,7 @@ All three groups are derived from just `host`, `port`, the role, and the rank co
 
 ## Configuration
 
-AFD configuration is supplied through vLLM's `--additional-config` under the `afd` key. The presence of the `afd` object enables AFD; omit it to disable AFD. Attention and FFN processes must use the same rendezvous address and topology counts; only `role` (and the worker class/device assignment) differs.
+AFD configuration is supplied through vLLM's `--additional-config` under the `afd` key. The presence of the `afd` object enables AFD; omit it to disable AFD. Attention and FFN processes must use the same rendezvous address and topology counts; only `role` and the device assignment differ. The plugin selects the role-specific worker automatically.
 
 ```jsonc
 {
@@ -121,7 +121,6 @@ Attention side:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 vllm serve /path/to/model \
-  --worker-cls afd_plugin.v1.worker.AFDAttentionWorker \
   --data-parallel-size 1 \
   --tensor-parallel-size 1 \
   --enable-expert-parallel \
@@ -138,7 +137,6 @@ FFN side:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 vllm serve /path/to/model \
-  --worker-cls afd_plugin.v1.worker.AFDFFNWorker \
   --data-parallel-size 1 \
   --tensor-parallel-size 1 \
   --enable-expert-parallel \

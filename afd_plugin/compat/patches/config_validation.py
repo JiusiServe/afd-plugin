@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""Config validation shim for AFD-owned ubatching.
+"""Config normalization shim for AFD-owned runtime behavior.
 
 vLLM 0.19.1 validates native microbatching by requiring a DeepEP all2all
 backend. AFD ubatching uses plugin connectors instead, so this patch only
 relaxes that assertion for configs with active ``additional_config["afd"]``.
+It also replaces the platform's default worker with the role-specific AFD
+worker when ``worker_cls`` was left as ``"auto"``.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import vllm.engine.arg_utils as arg_utils_module
 
 from afd_plugin.compat.vllm import TARGET_VLLM_VERSION
 from afd_plugin.config import parse_optional_afd_config
+from afd_plugin.validation import afd_worker_qualname_for_platform_default
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -73,33 +76,69 @@ def create_engine_config(
 
 
 # Patch reason: VllmConfig validation can rerun the native ubatching all2all
-# backend assertion after EngineArgs construction.
-# Patch functionality: temporarily relaxes that assertion for AFD configs while
-# restoring the real backend after upstream validation.
+# backend assertion after EngineArgs construction, and upstream auto-selects a
+# platform worker that does not contain AFD role behavior.
+# Patch functionality: temporarily relaxes the backend assertion for AFD
+# configs, restores the real backend, then replaces an auto-selected platform
+# worker with the platform- and role-specific AFD worker.
 # Expansion exception: upstream VllmConfig.__post_init__ is a large validation
 # pipeline; keep a narrow original-function delegation so this patch only owns
-# the AFD validation bypass.
+# AFD validation and worker normalization.
 # Signature: matches upstream; no added parameters.
 def __post_init__(self: VllmConfig):
     """Verify configs are valid & consistent with each other."""
 
     assert _original_vllm_config_post_init is not None
+    # ### PATCH START: AFD automatic worker selection
+    worker_cls_was_auto = _uses_auto_worker(self)
+    # ### PATCH END: AFD automatic worker selection
     if not _should_relax_vllm_config_backend(self):
-        return _original_vllm_config_post_init(self)
-
-    # ### PATCH START: AFD ubatching all2all backend validation
-    # Repeated VllmConfig validation can run after EngineArgs construction.
-    # Keep AFD's real all2all backend on the config, but use a temporary DeepEP
-    # value while upstream performs its native ubatching assertion.
-    parallel_config = self.parallel_config
-    original_backend = parallel_config.all2all_backend
-    parallel_config.all2all_backend = _AFD_TEMP_BACKEND
-    try:
         result = _original_vllm_config_post_init(self)
-    finally:
-        parallel_config.all2all_backend = original_backend
-    # ### PATCH END: AFD ubatching all2all backend validation
+    else:
+        # ### PATCH START: AFD ubatching all2all backend validation
+        # Repeated VllmConfig validation can run after EngineArgs construction.
+        # Keep AFD's real all2all backend on the config, but use a temporary DeepEP
+        # value while upstream performs its native ubatching assertion.
+        parallel_config = self.parallel_config
+        original_backend = parallel_config.all2all_backend
+        parallel_config.all2all_backend = _AFD_TEMP_BACKEND
+        try:
+            result = _original_vllm_config_post_init(self)
+        finally:
+            parallel_config.all2all_backend = original_backend
+        # ### PATCH END: AFD ubatching all2all backend validation
+
+    # ### PATCH START: AFD automatic worker selection
+    if worker_cls_was_auto:
+        _select_afd_worker_for_auto(self)
+    # ### PATCH END: AFD automatic worker selection
     return result
+
+
+def _uses_auto_worker(vllm_config: VllmConfig) -> bool:
+    worker_cls = vllm_config.parallel_config.worker_cls
+    return isinstance(worker_cls, str) and worker_cls.strip() == "auto"
+
+
+def _select_afd_worker_for_auto(vllm_config: VllmConfig) -> None:
+    afd_config = parse_optional_afd_config(vllm_config)
+    if afd_config is None:
+        return
+
+    from vllm.platforms import current_platform
+
+    platform_worker_qualname = vllm_config.parallel_config.worker_cls
+    if not isinstance(platform_worker_qualname, str):
+        raise ValueError(
+            "platform worker_cls must be a qualname string before AFD automatic "
+            f"selection, got {type(platform_worker_qualname).__name__}",
+        )
+    vllm_config.parallel_config.worker_cls = afd_worker_qualname_for_platform_default(
+        afd_config.role,
+        platform_worker_qualname,
+        is_cuda=current_platform.is_cuda(),
+        device_type=current_platform.device_type,
+    )
 
 
 def _should_relax_engine_args_backend(engine_args: EngineArgs) -> bool:
