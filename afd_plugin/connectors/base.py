@@ -48,9 +48,9 @@ class AFDConnectorBase(ABC):
 
     Implementations may use very different transport mechanisms. For example,
     the GPU P2P connector uses explicit point-to-point tensor transfers, while
-    the NPU CAMP2P connector carries additional backend state through
-    ``AFDTransferContext.state.custom_states``. This base class documents the
-    common runtime contract shared by those implementations.
+    the NPU CAMP2P connector carries additional backend state through its
+    ``AFDTransferState`` subclass on ``AFDTransferContext.states``. This base
+    class documents the common runtime contract shared by those implementations.
     """
 
     # An optional DP metadata control plane. When set, FFN steps are driven by
@@ -156,8 +156,7 @@ class AFDConnectorBase(ABC):
                 the backend explicitly supports a different compiled/captured
                 calling convention.
             context: Per-transfer context describing layer, stage, and token
-                layout. Backends may also consume
-                ``context.state.custom_states``.
+                layout. Backends may also consume ``context.states``.
             **kwargs: Optional backend-specific arguments.
 
         Raises:
@@ -239,8 +238,8 @@ class AFDConnectorBase(ABC):
                 calling convention.
             context: Transfer context associated with the matching
                 ``recv_attn_output`` call. Backends may depend on
-                ``context.state.custom_states`` that was prepared before
-                receive or updated after receive.
+                ``context.states`` that was prepared before receive or updated
+                after receive.
             **kwargs: Optional backend-specific send arguments such as
                 ``ubatch_idx`` or op-specific metadata.
 

@@ -142,47 +142,18 @@ class AFDControlPayload:
 
 
 @dataclass(slots=True)
-class AFDCustomTransferState:
+class AFDTransferState:
     """Base class for backend-specific connector transfer state.
 
-    Backends subclass this to carry connector-private state (handles, HCCL
-    endpoint names, per-expert token counts, ...) between the receive and send
-    phases of a single transfer. It is held by
-    ``AFDTransferState.custom_states`` rather than by the transfer metadata.
+    Backends subclass ``AFDTransferState`` to carry whatever per-transfer state
+    they read back themselves between the receive and send phases of a single
+    AFD Attention/FFN exchange: routed/shared MoE compute payloads, handles,
+    HCCL endpoint names, active-token masks, sizes, receive-side token counts,
+    and so on. The concrete subclass instance is held directly by
+    ``AFDTransferContext.states``. The hidden-state tensor is kept separately on
+    ``AFDA2FTransferPayload``. Backends that route no per-transfer payload (the
+    GPU P2P connector) leave ``AFDTransferContext.states`` as ``None``.
     """
-
-
-@dataclass(slots=True)
-class AFDTransferState:
-    """Backend-neutral transfer state for one AFD Attention/FFN exchange.
-
-    ``AFDTransferState`` carries only the routed/shared MoE compute payloads that
-    the FFN model runner feeds into ``compute_ffn_output``, kept backend-neutral
-    so a single runner can drive every connector. The hidden-state tensor is kept
-    separately on ``AFDA2FTransferPayload``. Any state that is private to a
-    connector (handles, HCCL endpoint names, active-token masks, per-transfer
-    sizes, receive-side token counts a connector reads back itself) lives under
-    ``custom_states`` instead of here.
-
-    Attributes:
-        group_list: Optional expert/group token-count payload used for MoE
-            routing metadata by the connectors that gate on the Attention side.
-        dynamic_scales: Optional dynamic quantization scales for routed expert
-            tokens.
-        expand_x_shared: Optional shared-expert activation payload.
-        dynamic_scales_shared: Optional dynamic quantization scales for
-            shared-expert tokens.
-        custom_states: Optional backend-specific transfer state. For example,
-            CAMP2P stores ``CAMP2PTransferState`` here so receive-time results
-            (active-token mask, HCCL endpoint name, sizes) can be reused by the
-            matching send path.
-    """
-
-    group_list: object = None
-    dynamic_scales: torch.Tensor | None = None
-    expand_x_shared: torch.Tensor | None = None
-    dynamic_scales_shared: torch.Tensor | None = None
-    custom_states: AFDCustomTransferState | None = None
 
 
 @dataclass(slots=True)
@@ -254,15 +225,16 @@ class AFDTransferContext:
 
     ``AFDTransferContext`` is the object connectors pass through their data
     path. It binds the backend-neutral ``AFDTransferMetadata`` describing the
-    layer/stage/token layout to an optional ``AFDTransferState`` carrying
-    routing and backend-specific payloads.
+    layer/stage/token layout to an optional ``AFDTransferState`` subclass
+    carrying the backend's per-transfer payloads.
 
-    ``state`` is a pluggable slot: backends that route no per-transfer payload
+    ``states`` is a pluggable slot: backends that route no per-transfer payload
     through the context (the GPU P2P connector) leave it ``None``, while
-    backends that do (CAMP2P, async CAM) attach an ``AFDTransferState`` from
-    the connector method that produces the payload. Consumers that read
-    ``state`` therefore only do so on the paths of the backend that populated
-    it. Keeping the default ``None`` — rather than a
+    backends that do (CAMP2P, async CAM) attach their own ``AFDTransferState``
+    subclass (``CAMP2PTransferState`` / ``AFDAsyncTransferState``) from the
+    connector method that produces the payload. Consumers that read ``states``
+    therefore only do so on the paths of the backend that populated it. Keeping
+    the default ``None`` — rather than a
     ``field(default_factory=AFDTransferState)`` — also keeps the generated
     ``__init__`` traceable by ``torch.compile``/Dynamo, which fails on the
     factory call and is exercised where attention forwards build the context
@@ -270,9 +242,8 @@ class AFDTransferContext:
 
     Attributes:
         metadata: Metadata describing the layer/stage and token layout.
-        state: Optional transfer state carrying routing/quantization payloads
-            and any backend-specific ``custom_states``. ``None`` for backends
-            that route no payload through the context.
+        states: Optional backend-specific ``AFDTransferState`` subclass. ``None``
+            for backends that route no payload through the context.
     """
 
     metadata: AFDTransferMetadata
@@ -432,7 +403,6 @@ def recv_control_payload(
 
 
 __all__ = [
-    "AFDCustomTransferState",
     "AFDTransferState",
     "AFDTransferContext",
     "AFDTransferMetadata",

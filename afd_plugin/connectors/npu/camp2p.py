@@ -43,7 +43,6 @@ from afd_plugin.connectors.base import (
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
     AFDControlPayload,
-    AFDCustomTransferState,
     AFDDPMetadata,
     AFDTransferContext,
     AFDTransferMetadata,
@@ -157,7 +156,7 @@ class CAMP2PExtraInfo(ConnectorExtraInfo):
 
 
 @dataclass(slots=True)
-class CAMP2PTransferState(AFDCustomTransferState):
+class CAMP2PTransferState(AFDTransferState):
     """CAMP2P payload metadata carried between recv and send phases.
 
     This class stores what CAMP2p reads back itself while data travels from
@@ -540,7 +539,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         )
         context = AFDTransferContext(
             metadata=metadata,
-            states=AFDTransferState(custom_states=custom_states),
+            states=custom_states,
         )
 
         group_ep = _get_group_ep(
@@ -591,7 +590,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         """
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
-        states = context.states.custom_states
+        states = context.states
         if states.atten_batch_size is None:
             raise RuntimeError("CAMP2P FFN side is missing A2E atten_batch_size")
         ubatch_idx = int(kwargs.get("ubatch_idx", context.metadata.stage_idx))

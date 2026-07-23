@@ -50,7 +50,6 @@ from afd_plugin.connectors.base import (
 )
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
-    AFDCustomTransferState,
     AFDF2ATransferPayload,
     AFDTransferContext,
     AFDTransferMetadata,
@@ -150,14 +149,15 @@ class AFDAsyncExtraInfo(ConnectorExtraInfo):
 
 
 @dataclass(slots=True)
-class AFDAsyncTransferState(AFDCustomTransferState):
-    """CAM-side metadata carried from dispatch recv to combine send.
+class AFDAsyncTransferState(AFDTransferState):
+    """CAM-side transfer state carried from dispatch recv to combine send.
 
-    Only the fields the connector reads back itself live here: ``batch_size``,
-    ``hidden_size``, ``topk`` and ``layer_idx`` size the CAM operators, while
-    ``token_nums_rankid_layeridx`` and ``expert_token_nums_shared`` are the
-    dispatch-recv outputs the matching send and FFN token accounting need. The
-    runner-facing routing/quantization payloads live on ``AFDTransferState``.
+    ``batch_size``, ``hidden_size``, ``topk`` and ``layer_idx`` size the CAM
+    operators, while ``token_nums_rankid_layeridx`` and
+    ``expert_token_nums_shared`` are the dispatch-recv outputs the matching send
+    and FFN token accounting need. ``group_list``, ``dynamic_scales``,
+    ``expand_x_shared`` and ``dynamic_scales_shared`` are the routed/shared MoE
+    compute payloads the FFN model runner feeds into ``compute_ffn_output``.
     """
 
     batch_size: int = 1
@@ -166,6 +166,10 @@ class AFDAsyncTransferState(AFDCustomTransferState):
     layer_idx: int = 0
     token_nums_rankid_layeridx: Tensor | None = None
     expert_token_nums_shared: Tensor | None = None
+    group_list: object = None
+    dynamic_scales: Tensor | None = None
+    expand_x_shared: Tensor | None = None
+    dynamic_scales_shared: Tensor | None = None
 
 
 @dataclass(slots=True)
@@ -341,11 +345,10 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         context = recv_output.context
         metadata = context.metadata
         states = context.states
-        custom_states = states.custom_states
 
         token_nums_rankid_layeridx = (
-            getattr(custom_states, "token_nums_rankid_layeridx", None)
-            if custom_states is not None
+            getattr(states, "token_nums_rankid_layeridx", None)
+            if states is not None
             else None
         )
         if token_nums_rankid_layeridx is None:
@@ -357,8 +360,8 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         layer_idx = int(token_nums_rankid_layeridx[2].item())
 
         expert_token_nums_shared = (
-            getattr(custom_states, "expert_token_nums_shared", None)
-            if custom_states is not None
+            getattr(states, "expert_token_nums_shared", None)
+            if states is not None
             else None
         )
         if expert_token_nums_shared is None:
@@ -491,7 +494,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             topk=self.topk,
             layer_idx=metadata.layer_idx,
         )
-        context.states = AFDTransferState(custom_states=states)
+        context.states = states
         topk_ids = kwargs.get("topk_ids")
         topk_weights = kwargs.get("topk_weights")
         if topk_ids is None or topk_weights is None:
@@ -605,7 +608,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             if topk_weights is None:
                 topk_weights = pending_topk_weights
 
-        states = context.states.custom_states
+        states = context.states
         _validate_topk_payload(
             topk_ids,
             topk_weights,
@@ -678,7 +681,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         )
         context = AFDTransferContext(
             metadata=metadata,
-            states=AFDTransferState(custom_states=states),
+            states=states,
         )
         placeholder = kwargs.get("placeholder", self._placeholder)
         _log_cam_op_values(
@@ -737,8 +740,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         )
         states.token_nums_rankid_layeridx = token_nums_rankid_layeridx
         states.expert_token_nums_shared = expert_token_nums_shared
-        states = context.states
-        assert states, "context.states must not be None."
         states.group_list = expert_token_nums
         states.dynamic_scales = dynamic_scales
         states.expand_x_shared = expand_x_shared
@@ -760,7 +761,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         mandatory because CAM uses it to return results to Attention ranks.
         """
         self._require_initialized()
-        states = context.states.custom_states
+        states = context.states
         expand_x_shared = kwargs.get("expand_x_shared")
         if expand_x_shared is None:
             expand_x_shared = ffn_output
