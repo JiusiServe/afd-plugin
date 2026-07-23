@@ -14,6 +14,7 @@ from afd_plugin.connectors import (  # noqa: E402
     AFDA2FTransferPayload,
     AFDConnectorFactory,
     AFDF2ATransferPayload,
+    AFDTransferContext,
     AFDTransferMetadata,
     AFDTransferState,
 )
@@ -105,6 +106,9 @@ class _FakeTorch:
         self.int64 = "int64"
         self.ops = SimpleNamespace(umdk_cam_op_lib=_FakeCamOps())
 
+    def device(self, name):
+        return name
+
     def empty(self, shape, *, dtype, device):
         return _FakeTensor(shape, dtype=dtype, device=device)
 
@@ -192,7 +196,9 @@ def test_async_connector_factory_creates_import_safe_connector():
     assert isinstance(connector, CAMAsyncAFDConnector)
     assert not connector.is_initialized
     assert connector.control_plane is None
-    assert connector.tp_size == 1
+    # tp_size is derived from the connector_extra_config attn_ranks_per_dp,
+    # which the factory reads through the same path as direct construction.
+    assert connector.tp_size == 2
 
 
 def test_async_connector_uses_attn_ranks_per_dp_for_cam_tp_size():
@@ -257,17 +263,18 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
 
     def fake_init_afd_process_group(**kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(group_name=kwargs["group_name"])
+        backend = SimpleNamespace(
+            get_hccl_comm_name=lambda rank: f"hccl:{kwargs['group_name']}:{rank}",
+        )
+        return SimpleNamespace(
+            group_name=kwargs["group_name"],
+            _get_backend=lambda device: backend,
+        )
 
     monkeypatch.setattr(
         async_cam_module,
         "init_afd_process_group",
         fake_init_afd_process_group,
-    )
-    monkeypatch.setattr(
-        async_cam_module,
-        "_hccl_comm_name",
-        lambda group, rank: f"hccl:{group.group_name}:{rank}",
     )
     connector = CAMAsyncAFDConnector(
         0,
@@ -322,10 +329,11 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
         stage_idx=0,
         seq_len=3,
     )
+    context = AFDTransferContext(metadata=metadata)
 
     output = connector.send_attn_output(
         hidden_states,
-        metadata,
+        context,
         **_topk_payload(3),
     )
     combined = connector.recv_ffn_output(
@@ -342,8 +350,8 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][5:11] == (3, 16, 2, 2, 4, 4)
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][5:11] == (3, 16, 2, 2, 4, 4)
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][14] == 3
-    assert isinstance(metadata.transfer_state, AFDAsyncTransferState)
-    assert isinstance(metadata.transfer_state, AFDTransferState)
+    assert isinstance(context.states, AFDAsyncTransferState)
+    assert isinstance(context.states, AFDTransferState)
 
 
 def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
@@ -363,20 +371,23 @@ def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
     connector._placeholder = _FakeTensor((8, 16))
 
     recv_output = connector.recv_attn_output(batch_size=4, layer_idx=1)
-    connector.send_ffn_output(recv_output.hidden_states, recv_output.metadata)
+    connector.send_ffn_output(recv_output.hidden_states, recv_output.context)
 
+    states = recv_output.context.states
     assert recv_output.hidden_states.shape == (4, 16)
-    assert recv_output.topk_ids is None
-    assert recv_output.dynamic_scales.shape == (4,)
-    assert recv_output.expand_x_shared.shape == (2, 16)
-    assert recv_output.dynamic_scales_shared.shape == (2,)
-    assert recv_output.group_list is recv_output.ep_recv_counts
-    assert recv_output.ep_recv_counts_shared.shape == (1,)
+    assert states.dynamic_scales.shape == (4,)
+    assert states.expand_x_shared.shape == (2, 16)
+    assert states.dynamic_scales_shared.shape == (2,)
+    assert states.group_list.shape == (4,)
+    assert states.expert_token_nums_shared.shape == (1,)
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][0] == "dispatch_recv"
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][0] == "combine_send"
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][11] == 2
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][13] == 2
-    assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][3] is recv_output.atten_batch_size
+    assert (
+        fake_torch.ops.umdk_cam_op_lib.calls[1][1][3]
+        is states.token_nums_rankid_layeridx
+    )
 
 
 def test_async_combine_send_requires_dispatch_recv_token_metadata(monkeypatch):
@@ -394,16 +405,18 @@ def test_async_combine_send_requires_dispatch_recv_token_metadata(monkeypatch):
         stage_idx=0,
         seq_lens=[4],
     )
-    metadata.transfer_state = AFDAsyncTransferState(
+    # token_nums_rankid_layeridx is left unset (None) so combine send must fail.
+    states = AFDAsyncTransferState(
         batch_size=4,
         hidden_size=16,
         topk=2,
         layer_idx=1,
-        expert_token_nums=_FakeTensor((4,), dtype="int64"),
+        group_list=_FakeTensor((4,), dtype="int64"),
     )
+    context = AFDTransferContext(metadata=metadata, states=states)
 
     with pytest.raises(RuntimeError, match="TokenNums_Rankid_Layeridx"):
-        connector.send_ffn_output(_FakeTensor((4, 16)), metadata)
+        connector.send_ffn_output(_FakeTensor((4, 16)), context)
 
 
 def test_async_ffn_work_item_uses_cam_layer_and_token_metadata(monkeypatch):
@@ -417,44 +430,48 @@ def test_async_ffn_work_item_uses_cam_layer_and_token_metadata(monkeypatch):
 
     def fake_recv_attn_output(*, stage_idx, layer_idx, batch_size, ubatch_idx):
         assert ubatch_idx == 0
-        metadata = connector._create_transfer_metadata(
-            batch_size=batch_size,
+        metadata = AFDTransferMetadata.create_ffn_metadata(
             layer_idx=layer_idx,
             stage_idx=stage_idx,
+            seq_lens=[max(1, batch_size)],
         )
-        return AFDA2FTransferPayload(
-            hidden_states=_FakeTensorLike("hidden"),
-            metadata=metadata,
-            atten_batch_size=[
+        states = AFDAsyncTransferState(
+            batch_size=max(1, batch_size),
+            hidden_size=connector.hidden_size,
+            topk=connector.topk,
+            layer_idx=layer_idx,
+            token_nums_rankid_layeridx=[
                 _FakeScalar(7),
                 _FakeScalar(0),
                 _FakeScalar(11),
             ],
+            expert_token_nums_shared=[_FakeScalar(2)],
             group_list="groups",
             dynamic_scales=_FakeTensorLike("scales"),
             expand_x_shared=_FakeTensorLike("shared-hidden"),
             dynamic_scales_shared=_FakeTensorLike("shared-scales"),
-            ep_recv_counts_shared=[_FakeScalar(2)],
-            x_active_mask=_FakeTensorLike("active-mask"),
+        )
+        return AFDA2FTransferPayload(
+            hidden_states=_FakeTensorLike("hidden"),
+            context=AFDTransferContext(metadata=metadata, states=states),
         )
 
     monkeypatch.setattr(connector, "recv_attn_output", fake_recv_attn_output)
 
     work_item = connector.recv_ffn_work_item(stage_idx=0, max_num_tokens=16)
 
+    states = work_item.context.states
     assert work_item.layer_idx == 11
     assert work_item.stage_idx == 0
     assert work_item.total_num_tokens == 7
     assert work_item.shared_num_tokens == 2
     assert work_item.num_tokens == 5
     assert work_item.hidden_states == "hidden[:5]"
-    assert work_item.metadata.layer_idx == 11
-    assert work_item.metadata.seq_lens == [5]
-    assert work_item.recv_output.dynamic_scales == "scales[:5]"
-    assert work_item.recv_output.expand_x_shared == "shared-hidden[:2]"
-    assert work_item.recv_output.dynamic_scales_shared == "shared-scales[:2]"
-    assert work_item.recv_output.x_active_mask == "active-mask[:5]"
-    assert work_item.metadata.transfer_state.layer_idx == 11
+    assert work_item.context.metadata.layer_idx == 11
+    assert work_item.context.metadata.seq_lens == [5]
+    assert states.dynamic_scales == "scales[:5]"
+    assert states.expand_x_shared == "shared-hidden[:2]"
+    assert states.dynamic_scales_shared == "shared-scales[:2]"
 
 
 def test_async_ffn_work_item_uses_expert_counts_for_routed_tokens(monkeypatch):
@@ -465,102 +482,56 @@ def test_async_ffn_work_item_uses_expert_counts_for_routed_tokens(monkeypatch):
         _afd_config(role="ffn"),
     )
 
+    import torch
+
+    # The routed token count comes from summing the per-expert group_list, which
+    # the connector only does when it is a real tensor (a list falls back to
+    # total - shared). The counts below sum to 6.
+    group_list = torch.tensor(
+        [1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0],
+        dtype=torch.int64,
+    )
+
     def fake_recv_attn_output(*, stage_idx, layer_idx, batch_size, ubatch_idx):
         assert ubatch_idx == 0
-        metadata = connector._create_transfer_metadata(
-            batch_size=batch_size,
+        metadata = AFDTransferMetadata.create_ffn_metadata(
             layer_idx=layer_idx,
             stage_idx=stage_idx,
+            seq_lens=[max(1, batch_size)],
         )
-        return AFDA2FTransferPayload(
-            hidden_states=_FakeTensorLike("hidden"),
-            metadata=metadata,
-            atten_batch_size=[
+        states = AFDAsyncTransferState(
+            batch_size=max(1, batch_size),
+            hidden_size=connector.hidden_size,
+            topk=connector.topk,
+            layer_idx=layer_idx,
+            token_nums_rankid_layeridx=[
                 _FakeScalar(6),
                 _FakeScalar(0),
                 _FakeScalar(23),
             ],
-            group_list=[
-                _FakeScalar(1),
-                _FakeScalar(0),
-                _FakeScalar(0),
-                _FakeScalar(1),
-                _FakeScalar(1),
-                _FakeScalar(0),
-                _FakeScalar(0),
-                _FakeScalar(1),
-                _FakeScalar(0),
-                _FakeScalar(1),
-                _FakeScalar(1),
-                _FakeScalar(0),
-                _FakeScalar(0),
-                _FakeScalar(0),
-                _FakeScalar(0),
-                _FakeScalar(0),
-            ],
+            expert_token_nums_shared=[_FakeScalar(1)],
+            group_list=group_list,
             expand_x_shared=_FakeTensorLike("shared-hidden"),
             dynamic_scales_shared=_FakeTensorLike("shared-scales"),
-            ep_recv_counts_shared=[_FakeScalar(1)],
+        )
+        return AFDA2FTransferPayload(
+            hidden_states=_FakeTensorLike("hidden"),
+            context=AFDTransferContext(metadata=metadata, states=states),
         )
 
     monkeypatch.setattr(connector, "recv_attn_output", fake_recv_attn_output)
 
     work_item = connector.recv_ffn_work_item(stage_idx=0, max_num_tokens=16)
 
+    states = work_item.context.states
     assert work_item.layer_idx == 23
     assert work_item.total_num_tokens == 6
     assert work_item.shared_num_tokens == 1
     assert work_item.num_tokens == 6
     assert work_item.hidden_states == "hidden[:6]"
-    assert work_item.metadata.seq_lens == [6]
-    assert work_item.recv_output.expand_x_shared == "shared-hidden[:1]"
-    assert work_item.recv_output.dynamic_scales_shared == "shared-scales[:1]"
-
-
-def test_async_cam_shared_token_count_uses_expert_tokens_shared_directly():
-    metadata = AFDTransferMetadata.create_ffn_metadata(
-        layer_idx=0,
-        stage_idx=0,
-        seq_lens=[10],
-    )
-    payload = AFDA2FTransferPayload(
-        hidden_states=_FakeTensorLike("hidden"),
-        metadata=metadata,
-        atten_batch_size=[
-            _FakeScalar(10),
-            _FakeScalar(0),
-            _FakeScalar(7),
-        ],
-        ep_recv_counts=[_FakeScalar(12), _FakeScalar(15)],
-        ep_recv_counts_shared=[_FakeScalar(9)],
-    )
-
-    assert async_cam_module._cam_shared_token_count(payload, fallback=10) == 9
-
-
-def test_async_slice_cam_payload_shared_tensors_fallback_to_100_tokens():
-    payload = AFDA2FTransferPayload(
-        hidden_states=_FakeTensorLike("hidden"),
-        metadata=AFDTransferMetadata.create_ffn_metadata(
-            layer_idx=0,
-            stage_idx=0,
-            seq_lens=[10],
-        ),
-        dynamic_scales=_FakeTensorLike("scales"),
-        expand_x_shared=_FakeTensorLike("shared-hidden"),
-        dynamic_scales_shared=_FakeTensorLike("shared-scales"),
-    )
-
-    async_cam_module._slice_cam_payload_to_actual_tokens(
-        payload.hidden_states,
-        payload,
-        num_tokens=5,
-        shared_num_tokens=0,
-    )
-
-    assert payload.dynamic_scales == "scales[:5]"
-    assert payload.expand_x_shared == "shared-hidden[:100]"
-    assert payload.dynamic_scales_shared == "shared-scales[:100]"
+    assert work_item.context.metadata.seq_lens == [6]
+    assert states.expand_x_shared == "shared-hidden[:1]"
+    assert states.dynamic_scales_shared == "shared-scales[:1]"
 
 
 def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
@@ -582,22 +553,28 @@ def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
     monkeypatch.setattr(connector, "send_ffn_output", fake_send_ffn_output)
 
     def fake_recv_attn_output(*, stage_idx, layer_idx, batch_size, ubatch_idx):
-        metadata = connector._create_transfer_metadata(
-            batch_size=batch_size,
+        metadata = AFDTransferMetadata.create_ffn_metadata(
             layer_idx=layer_idx,
             stage_idx=stage_idx,
+            seq_lens=[max(1, batch_size)],
         )
-        return AFDA2FTransferPayload(
-            hidden_states=_FakeTensorLike("hidden", shape=(5, 16)),
-            metadata=metadata,
-            atten_batch_size=[
+        states = AFDAsyncTransferState(
+            batch_size=max(1, batch_size),
+            hidden_size=connector.hidden_size,
+            topk=connector.topk,
+            layer_idx=layer_idx,
+            token_nums_rankid_layeridx=[
                 _FakeScalar(5),
                 _FakeScalar(0),
                 _FakeScalar(7),
             ],
+            expert_token_nums_shared=[_FakeScalar(5)],
             expand_x_shared=_FakeTensorLike("shared-hidden"),
             dynamic_scales_shared=_FakeTensorLike("shared-scales"),
-            ep_recv_counts_shared=[_FakeScalar(5)],
+        )
+        return AFDA2FTransferPayload(
+            hidden_states=_FakeTensorLike("hidden", shape=(5, 16)),
+            context=AFDTransferContext(metadata=metadata, states=states),
         )
 
     monkeypatch.setattr(connector, "recv_attn_output", fake_recv_attn_output)
@@ -617,7 +594,7 @@ def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
     # passing the computed shared output through untouched.
     assert work_item.num_tokens == 0
     assert work_item.hidden_states == "hidden[:0]"
-    assert work_item.metadata.seq_lens == [1]
+    assert work_item.context.metadata.seq_lens == [1]
     assert isinstance(sent_output, AFDF2ATransferPayload)
     assert sent_output.shared_output == "computed-shared"
     assert sent_output.routed_output.shape == (1, 16)
@@ -625,7 +602,7 @@ def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
     assert sent_outputs == [
         (
             sent_output.routed_output,
-            work_item.metadata,
+            work_item.context,
             {"ubatch_idx": 0, "expand_x_shared": "computed-shared"},
         ),
     ]

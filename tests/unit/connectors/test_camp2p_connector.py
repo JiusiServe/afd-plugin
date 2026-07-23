@@ -12,6 +12,7 @@ pytest.importorskip("torch_npu")
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
     AFDConnectorFactory,
+    AFDTransferContext,
     AFDTransferMetadata,
     AFDTransferState,
 )
@@ -75,7 +76,7 @@ def test_camp2p_factory_creates_connector():
     assert isinstance(connector, CAMP2pAFDConnector)
     assert not connector.is_initialized
     assert connector.max_num_reqs == 8
-    assert connector.camp2p_extra_info.core_num == 12
+    assert connector.extra_info.core_num == 12
 
 
 def test_camp2p_topology_matches_original_rank_layout():
@@ -98,33 +99,45 @@ def test_camp2p_topology_matches_original_rank_layout():
     assert (ffn1.world_rank, ffn1.p2p_rank) == (1, 1)
 
 
-def test_camp2p_create_transfer_metadata_uses_original_contiguous_af_grouping():
-    rank0 = CAMP2pAFDConnector(
-        0,
-        0,
-        _vllm_config(),
-        _afd_config(role="ffn", rank=0),
+def _init_ffn_connector(rank, vllm_config):
+    connector = CAMP2pAFDConnector(
+        rank,
+        rank,
+        vllm_config,
+        _afd_config(role="ffn", rank=rank),
     )
-    rank1 = CAMP2pAFDConnector(
-        1,
-        1,
-        _vllm_config(),
-        _afd_config(role="ffn", rank=1),
+    connector._initialized = True
+    connector.hccl_comm_name = "hccl0"
+    connector.hccl_comm_name2 = "hccl1"
+    connector.hccl_comm_name3 = ""
+    connector.hccl_comm_name1 = "moe"
+    return connector
+
+
+def test_camp2p_recv_attn_output_uses_original_contiguous_af_grouping(monkeypatch):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(
+        torch.ops.afd_ascend,
+        "a2e",
+        lambda *args: ("hidden", None, None, "atten-batch", "active-mask"),
+        raising=False,
     )
     dp_metadata_list = {0: _FakeDPMetadata([2, 3, 5, 7])}
+    rank0 = _init_ffn_connector(0, _vllm_config())
+    rank1 = _init_ffn_connector(1, _vllm_config())
     rank0.dp_metadata_list = dp_metadata_list
     rank1.dp_metadata_list = dp_metadata_list
 
-    metadata0 = rank0._create_transfer_metadata(ubatch_idx=0, layer_idx=3)
-    metadata1 = rank1._create_transfer_metadata(ubatch_idx=0, layer_idx=3)
+    context0 = rank0.recv_attn_output(ubatch_idx=0, layer_idx=3).context
+    context1 = rank1.recv_attn_output(ubatch_idx=0, layer_idx=3).context
 
-    assert metadata0.seq_lens == [5]
-    assert metadata1.seq_lens == [12]
-    assert isinstance(metadata0.transfer_state, CAMP2PTransferState)
-    assert isinstance(metadata0.transfer_state, AFDTransferState)
-    assert metadata0.transfer_state.batch_size == 5
-    assert metadata0.transfer_state.h == 16
-    assert metadata0.transfer_state.k == 2
+    assert context0.metadata.seq_lens == [5]
+    assert context1.metadata.seq_lens == [12]
+    assert isinstance(context0.states, CAMP2PTransferState)
+    assert isinstance(context0.states, AFDTransferState)
+    assert context0.states.batch_size == 5
+    assert context0.states.h == 16
+    assert context0.states.k == 2
 
 
 def test_camp2p_extra_info_rejects_unknown_mix_placement():
@@ -154,9 +167,15 @@ def test_camp2p_extra_info_coerces_integer_bool_values():
     )
 
 
-def test_camp2p_connector_uses_role_specific_core_num():
-    connector = CAMP2pAFDConnector(
-        0,
+def test_camp2p_connector_uses_role_specific_core_num(monkeypatch):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(
+        torch.ops.afd_ascend,
+        "a2e",
+        lambda *args: ("hidden", None, None, "atten-batch", "active-mask"),
+        raising=False,
+    )
+    connector = _init_ffn_connector(
         0,
         _vllm_config(
             n_shared_experts=3,
@@ -165,16 +184,15 @@ def test_camp2p_connector_uses_role_specific_core_num():
                 "ffn_core_num": 13,
             },
         ),
-        _afd_config(role="ffn", rank=0),
     )
-
     connector.dp_metadata_list = {0: _FakeDPMetadata([2, 3, 5, 7])}
-    metadata = connector._create_transfer_metadata(ubatch_idx=0, layer_idx=3)
 
-    assert metadata.transfer_state.k == 2
-    assert metadata.transfer_state.moe_expert_num == 4
-    assert metadata.transfer_state.shared_expert_num == 0
-    assert metadata.transfer_state.aiv_num == 13
+    states = connector.recv_attn_output(ubatch_idx=0, layer_idx=3).context.states
+
+    assert states.k == 2
+    assert states.batch_size == 5
+    # The ffn_core_num override applies because this is an FFN-role connector.
+    assert states.aiv_num == 13
 
 
 def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
@@ -251,20 +269,17 @@ def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
         stage_idx=1,
         seq_len=3,
     )
+    context = AFDTransferContext(metadata=metadata)
 
-    def fake_set_forward_context_transfer_state(data, *, ubatch_idx=None):
-        captured["transfer_state"] = data
-        captured["ubatch_idx"] = ubatch_idx
+    # The connector stows the CAMP2P transfer state and ubatch index on the
+    # forward context; capture that instead of a dedicated helper.
+    forward_context = SimpleNamespace()
+    monkeypatch.setattr(camp2p_module, "get_forward_context", lambda: forward_context)
 
     def fake_send_attn_output(*args):
         captured["args"] = args
         return args[0]
 
-    monkeypatch.setattr(
-        camp2p_module,
-        "_set_forward_context_transfer_state",
-        fake_set_forward_context_transfer_state,
-    )
     monkeypatch.setattr(
         torch.ops.vllm,
         "afd_camp2p_send_attn_output",
@@ -272,13 +287,13 @@ def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
         raising=False,
     )
 
-    output = connector.send_attn_output(hidden_states, metadata)
+    output = connector.send_attn_output(hidden_states, context)
 
     assert output is None
-    assert captured["ubatch_idx"] == 1
+    assert forward_context.ubatch_idx == 1
     assert captured["args"][1:4] == ("hccl0", "hccl1", "")
     assert captured["args"][4] == 3
-    assert captured["transfer_state"].batch_size == 3
+    assert forward_context.cam_afdtransfer_state.batch_size == 3
 
 
 def test_camp2p_init_fails_cleanly_without_ascend_runtime(monkeypatch):
