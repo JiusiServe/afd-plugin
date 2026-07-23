@@ -41,7 +41,7 @@ related_issues:
   - "#105"
   - "#107"
   - "#129"
-last_reviewed: 2026-07-20
+last_reviewed: 2026-07-23
 ---
 
 # FFN runtime
@@ -64,13 +64,19 @@ on the FFN worker or runner implementation.
 ## Runtime selection
 
 FFN is launched as a `vllm serve` process with an explicit role-specific
-worker, but it does not serve requests. Attention and FFN may be started in
-either order. Send API traffic only to Attention.
+worker, but it does not serve requests. Start the FFN process before the
+Attention process. Send API traffic only to Attention.
 
 | Platform | Worker | Model runner | Current connectors |
 | --- | --- | --- | --- |
 | CUDA | `afd_plugin.v1.worker.AFDFFNWorker` | `GPUFFNModelRunner` | `P2pNcclAFDConnector` |
 | NPU | `afd_plugin.v1.worker.npu.AFDNPUFFNWorker` | `AFDNPUFFNModelRunner` | `CAMP2pAFDConnector`, `CAMAsyncAFDConnector` |
+
+GPU and NPU runtimes use separate public class paths. `AFDNPUFFNModelRunner`
+inherits vLLM-Ascend `NPUModelRunner` directly instead of inheriting the GPU
+`GPUFFNModelRunner`. Shared AFD semantics are kept in config, connector,
+metadata, validation, and small helper functions rather than through a
+cross-device inheritance chain.
 
 CUDA launch shape:
 
@@ -124,7 +130,13 @@ The worker selects one of two FFN step paths from the optional
 | Selection state | Connectors | Worker behavior |
 | --- | --- | --- |
 | `control_plane is not None` | `P2pNcclAFDConnector`, `CAMP2pAFDConnector` | Call `control_plane.recv_dp_metadata_list()`, then warm, capture, replay, or execute its stage map. |
-| `control_plane is None` | `CAMAsyncAFDConnector` | Block directly on a connector work item; no separate DP-metadata control plane. |
+| `control_plane is None` | `CAMAsyncAFDConnector` (NPU only) | Block directly on a connector work item; no separate DP-metadata control plane. |
+
+The connector-driven path exists only on Ascend. GPU FFN supports
+control-plane-driven connectors exclusively: `GPUFFNModelRunner` asserts
+`connector.control_plane is not None` at construction, and the GPU daemon loop
+raises `NotImplementedError` if a connector without a control plane is ever
+installed.
 
 ```mermaid
 flowchart TD
@@ -161,11 +173,25 @@ daemon thread:
 
 The Ascend worker checks `connector.control_plane`. When it is `None`, as for
 CAM async, the worker calls `execute_connector_driven_step()` instead of a
-control-plane receive. The runner receives an `AFDAsyncFFNWorkItem` containing
-hidden states, transfer payload, layer index, and token count, constructs a
-minimal forward context, computes that layer, sends the output through the
-work-item API, and repeats. CAM async is eager-only and does not use the FFN
-graph-control path.
+control-plane receive. For each layer, the runner:
+
+1. receives a normalized `AFDAsyncFFNWorkItem` from
+   `connector.recv_ffn_work_item(...)`; CAM metadata supplies the actual layer
+   index plus routed/shared token counts, and the connector slices tensors
+   from operator capacity down to those counts;
+2. builds a single-stage forward context sized to the work item's token count,
+   with `dp_metadata = None`;
+3. installs the work item's `AFDTransferContext.metadata` as `afd_metadata`;
+4. calls the role-aware FFN compute, forwarding the routed/shared MoE compute
+   payloads (`group_list`, `dynamic_scales`, `expand_x_shared`,
+   `dynamic_scales_shared`) from the work item's `AFDAsyncTransferState` on
+   `AFDTransferContext.states`;
+5. returns the routed/shared outputs through
+   `connector.send_ffn_work_item_output(...)`, which also handles the
+   zero-routed-token placeholder required by CAM combine-send.
+
+CAM async is eager-only and does not use the FFN graph-control path; the graph
+cache is keyed by DP metadata, which does not exist without a control plane.
 
 ## Control-plane-driven forward
 
@@ -174,21 +200,27 @@ The current runner contract for one control payload is:
 1. Update connector state from the stage-indexed DP metadata.
 2. Build the minimal vLLM forward context required by model-side MoE compute.
 3. Iterate model layers and sorted stage ids.
-4. Receive an `AFDA2FTransferPayload` for the current layer/stage.
+4. Receive an `AFDA2FTransferPayload` for the current layer/stage, which
+   carries the hidden states plus an `AFDTransferContext` (transfer metadata
+   and the backend `AFDTransferState`).
 5. Install stage DP metadata and transfer metadata at
    `ForwardContext.additional_kwargs["afd_metadata"]`.
 6. Set vLLM's current MoE layer index when the upstream context exposes the
    layer list.
 7. Compute FFN output and send it to Attention with the same layer/stage
-   identity.
+   identity, passing the same `AFDTransferContext` back into
+   `send_ffn_output()` so the connector can reuse its receive-time state.
 
 On CUDA, `GPUFFNModelRunner` is a plugin-owned minimal runner. It invokes
 `model.compute_ffn_output(hidden_states, layer_idx)` when provided and
 otherwise passes hidden states through; production AFD model paths are
-expected to provide the compute method. On Ascend,
-`AFDNPUFFNModelRunner` directly calls the role-aware model and passes the
-available CAMP2P/CAM routing fields, including group lists, scales, top-k
-values, router logits, row indices, active masks, and CAM endpoint data.
+expected to provide the compute method. On Ascend, `AFDNPUFFNModelRunner`
+directly calls the role-aware model. The control-plane-driven path (CAMP2P)
+does not thread per-transfer payload fields through `compute_ffn_output`:
+CAMP2P's `CAMP2PTransferState` (operator sizes, the A2E-returned
+`atten_batch_size`, `x_active_mask`, and HCCL endpoint name) rides on
+`AFDTransferContext.states` and the forward context between the receive and
+send phases.
 
 Ascend translates AFD-level token counts to the DP-level token-count vector
 expected by the upstream forward context. When TP expands Attention rank
@@ -256,7 +288,8 @@ draft:
   scheduler execution.
 
 The optional control-plane and connector work-item surfaces, and the current
-transfer payload shape, are not stable contracts.
+`AFDTransferContext`/`AFDTransferState` transfer payload shape, are not stable
+contracts.
 
 ## Upstream relationship and validation requirements
 
