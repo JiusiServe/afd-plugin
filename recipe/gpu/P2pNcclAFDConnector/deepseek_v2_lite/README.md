@@ -3,6 +3,11 @@
 End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
 (Attention-FFN Disaggregation) plugin on vLLM `v0.19.1`.
 
+> [!NOTE]
+> `P2pNcclAFDConnector` is an example connector implementation. Contributions
+> of high-performance communication connectors and new approaches to AFD are
+> welcome.
+
 ## Prerequisites
 
 - Install [NIXL](https://github.com/ai-dynamo/nixl).
@@ -118,6 +123,8 @@ shape; `role` differs between attention and FFN:
 
 DBO (Dual Batch Overlap) is turned on for all examples with
 `--dbo-decode-token-threshold 2 --dbo-prefill-token-threshold 12`.
+These threshold values are example defaults; tune them for the actual workload
+and deployment configuration.
 
 ### Switching eager → graph
 
@@ -128,3 +135,7 @@ Graph mode replaces `--enforce-eager` with:
 --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY",
                        "cudagraph_capture_sizes":[64]}'
 ```
+
+The capture size of `64` is an example value; adjust
+`--max-cudagraph-capture-size` and `cudagraph_capture_sizes` together based on
+the actual batch sizes and available GPU memory.
