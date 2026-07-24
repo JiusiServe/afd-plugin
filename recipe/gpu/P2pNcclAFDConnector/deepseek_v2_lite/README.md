@@ -3,6 +3,11 @@
 End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
 (Attention-FFN Disaggregation) plugin on vLLM `v0.19.1`.
 
+> [!NOTE]
+> `P2pNcclAFDConnector` is an example connector implementation. Contributions
+> of high-performance communication connectors and new approaches to AFD are
+> welcome.
+
 ## Prerequisites
 
 - Install [NIXL](https://github.com/ai-dynamo/nixl).
