@@ -184,9 +184,9 @@ renaming, shared-expert placement, and redundant experts. AFD adds role
 filtering:
 
 - Attention loads Attention/common parameters and skips FFN expert parameters.
-  When gate-on-Attention is enabled, MoE gate weights are remapped from the
-  checkpoint MLP gate into the Attention-owned gate, and dense MLP parameters
-  remain loadable for locally executed dense layers.
+  When gate-on-Attention is enabled, MoE gate weights retain the native
+  `.mlp.gate` path and are also loadable on Attention, while dense MLP
+  parameters remain loadable for locally executed dense layers.
 - FFN loads the MLP/expert and required common parameters and skips unrelated
   Attention parameters. In gate-on-Attention mode it also skips dense MLP
   parameters because those layers execute on Attention.
@@ -199,8 +199,8 @@ the other role can be omitted from model/accuracy E2E coverage.
 
 ## Failure and resource ownership
 
-- Missing `afd_metadata` selects the ordinary upstream-style local forward
-  path; it is not an implicit connector lookup.
+- Missing `afd_metadata` on an AFD path fails explicitly; an AFD model alias is
+  not an implicit local-forward fallback.
 - AFD paths that require a connector, top-k payload, group list, or async stage
   metadata fail when that input is missing.
 - Unsupported aux-hidden-state capture, non-NPU gate placement, unsupported

@@ -8,52 +8,35 @@ available where required by the model lifecycle. The forward path transfers
 hidden states between the Attention and FFN roles through the AFD connector.
 """
 
-import typing
-from collections.abc import Callable, Iterable
-from itertools import islice
-from typing import Any
+from collections.abc import Iterable, Iterator
+from typing import Any, TypeAlias
 
 import torch
 import torch.nn as nn
-from vllm.config import VllmConfig, get_current_vllm_config
+from transformers import DeepseekV2Config, DeepseekV3Config, GlmMoeDsaConfig
+from vllm.config import VllmConfig
 from vllm.forward_context import get_forward_context
 from vllm.logger import init_logger
-from vllm.model_executor.layers.fused_moe.shared_fused_moe import (
-    SharedFusedMoE,
-)
 from vllm.model_executor.layers.linear import ReplicatedLinear
-from vllm.model_executor.model_loader.weight_utils import (
-    default_weight_loader,
-    maybe_remap_kv_scale_name,
-)
 from vllm.model_executor.models import deepseek_v2 as native
-from vllm.model_executor.models.deepseek_v2 import (
-    get_spec_layer_idx_from_weight_name,
-)
-from vllm.model_executor.models.utils import is_pp_missing_parameter
 
-try:
-    from vllm_ascend.ascend_config import get_ascend_config
-except ImportError:
-    get_ascend_config = None
-
-from afd_plugin.config import parse_optional_afd_config
+from afd_plugin.config import AFD_ASYNC_CONNECTOR, parse_optional_afd_config
 from afd_plugin.connectors import (
     AFDF2ATransferPayload,
-    AFDForwardContextMetadata,
     AFDTransferContext,
     AFDTransferMetadata,
 )
-from afd_plugin.model_executor.models import (
-    get_afd_metadata_from_forward_context,
-    get_async_moe_ubatch_metadata_from_forward_context,
-)
+from afd_plugin.model_executor.models import get_afd_metadata_from_forward_context
 from afd_plugin.v1.worker.dbo import maybe_apply_dbo_yield
 
 logger = init_logger(__name__)
 
+_DeepseekAdapterConfig: TypeAlias = (
+    DeepseekV2Config | DeepseekV3Config | GlmMoeDsaConfig
+)
 
-def _is_moe_layer(config: object, layer_idx: int) -> bool:
+
+def _is_moe_layer(config: _DeepseekAdapterConfig, layer_idx: int) -> bool:
     moe_layer_freq = getattr(config, "moe_layer_freq", 1)
     return (
         config.n_routed_experts is not None
@@ -62,22 +45,201 @@ def _is_moe_layer(config: object, layer_idx: int) -> bool:
     )
 
 
+_ATTENTION_ROLE = frozenset(("attention",))
+_FFN_ROLE = frozenset(("ffn",))
+_BOTH_ROLES = frozenset(("attention", "ffn"))
+
+
+def _weight_layer_path(name: str) -> tuple[int, str, tuple[str, ...]] | None:
+    """Return ``(layer index, stage, remainder)`` for a decoder weight."""
+    parts = name.split(".")
+    for marker_idx, part in enumerate(parts[:-2]):
+        if part != "layers":
+            continue
+        try:
+            layer_idx = int(parts[marker_idx + 1])
+        except ValueError:
+            continue
+        return layer_idx, parts[marker_idx + 2], tuple(parts[marker_idx + 3 :])
+    return None
+
+
+def _checkpoint_weight_roles(
+    name: str,
+    config: _DeepseekAdapterConfig,
+    *,
+    compute_gate_on_attention: bool,
+) -> frozenset[str]:
+    """Classify one native checkpoint path by its AFD execution owner."""
+    layer_path = _weight_layer_path(name)
+    if layer_path is None:
+        return _BOTH_ROLES
+
+    layer_idx, stage, remainder = layer_path
+    if stage == "self_attn":
+        return _ATTENTION_ROLE
+    if stage != "mlp":
+        return _BOTH_ROLES
+
+    if not _is_moe_layer(config, layer_idx):
+        return _ATTENTION_ROLE if compute_gate_on_attention else _FFN_ROLE
+
+    is_moe_gate = bool(remainder) and remainder[0] == "gate"
+    if is_moe_gate and compute_gate_on_attention:
+        return _BOTH_ROLES
+    return _FFN_ROLE
+
+
+def _iter_role_weights(
+    weights: Iterable[tuple[str, torch.Tensor]],
+    *,
+    role: str | None,
+    config: _DeepseekAdapterConfig,
+    compute_gate_on_attention: bool,
+) -> Iterator[tuple[str, torch.Tensor]]:
+    """Consume a checkpoint iterator once and retain this role's paths."""
+    for name, loaded_weight in weights:
+        if role is None or role in _checkpoint_weight_roles(
+            name,
+            config,
+            compute_gate_on_attention=compute_gate_on_attention,
+        ):
+            yield name, loaded_weight
+
+
+class RemoteFFNProxy(nn.Module):
+    """Parameter-free FFN stage executed through the AFD connector."""
+
+    def __init__(self, *, layer_idx: int) -> None:
+        super().__init__()
+        self.layer_idx = layer_idx
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        return self._send_and_receive(hidden_states)
+
+    def _send_and_receive(
+        self,
+        hidden_states: torch.Tensor,
+        **send_kwargs: torch.Tensor,
+    ) -> torch.Tensor:
+        afd_metadata = get_afd_metadata_from_forward_context()
+        if afd_metadata is None:
+            raise RuntimeError("RemoteFFNProxy requires AFD forward metadata")
+        forward_context = get_forward_context()
+        stage_idx = int(
+            getattr(forward_context, "ubatch_idx", afd_metadata.stage_idx),
+        )
+        afd_metadata.stage_idx = stage_idx
+        metadata = AFDTransferMetadata.create_attention_metadata(
+            layer_idx=self.layer_idx,
+            stage_idx=stage_idx,
+            seq_len=int(hidden_states.shape[0]),
+        )
+        context = AFDTransferContext(metadata=metadata)
+        afd_metadata.connector.send_attn_output(
+            hidden_states,
+            context,
+            **send_kwargs,
+        )
+        hidden_states = maybe_apply_dbo_yield(
+            hidden_states,
+            role="attention",
+        )
+        return afd_metadata.connector.recv_ffn_output(
+            ref_tensor=hidden_states,
+            ubatch_idx=stage_idx,
+        )
+
+
+class GateOnlyRemoteMoE(RemoteFFNProxy):
+    """Attention-side MoE gate with experts delegated to the FFN role."""
+
+    def __init__(
+        self,
+        *,
+        config: _DeepseekAdapterConfig,
+        layer_idx: int,
+        prefix: str,
+        vllm_config: VllmConfig,
+    ) -> None:
+        super().__init__(layer_idx=layer_idx)
+        self.vllm_config = vllm_config
+        self.config = config
+        self.top_k = int(config.num_experts_per_tok)
+        self.gate = ReplicatedLinear(
+            config.hidden_size,
+            config.n_routed_experts,
+            bias=False,
+            quant_config=None,
+            prefix=f"{prefix}.gate",
+        )
+        if getattr(config, "topk_method", None) == "noaux_tc":
+            self.gate.e_score_correction_bias = nn.Parameter(
+                torch.empty(config.n_routed_experts, dtype=torch.float32),
+            )
+        else:
+            self.gate.e_score_correction_bias = None
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        from afd_plugin.model_executor.models.npu import (
+            deepseek_v2_attention_gate,
+        )
+
+        topk_weights, topk_ids, router_logits = (
+            deepseek_v2_attention_gate.compute_gate_topk(
+                gate=self.gate,
+                vllm_config=self.vllm_config,
+                config=self.config,
+                top_k=self.top_k,
+                hidden_states=hidden_states,
+            )
+        )
+        return self._send_and_receive(
+            hidden_states,
+            topk_weights=topk_weights,
+            topk_ids=topk_ids,
+            router_logits=router_logits,
+        )
+
+
+class MissingAttentionStage(nn.Module):
+    """Parameter-free FFN-role placeholder for the unconstructed Attention."""
+
+    def forward(self, *args: Any, **kwargs: Any) -> torch.Tensor:
+        raise RuntimeError("Attention is not constructed on the AFD FFN role")
+
+
+class MissingFFNStage(nn.Module):
+    """Placeholder for Dense FFN work owned by Attention-side-gate mode."""
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        raise RuntimeError("Dense FFN is not constructed on this AFD FFN role")
+
+
 class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
     """DeepSeek decoder layer with separable Attention and FFN execution."""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        vllm_config = args[0] if args else kwargs.get("vllm_config")
+    # Upstream: vLLM v0.19.1, vllm/model_executor/models/deepseek_v2.py
+    # Commit: b1388b1fbf5aaef47937fabe98931211684666a6
+    def __init__(
+        self,
+        vllm_config: VllmConfig,
+        prefix: str,
+        config: DeepseekV2Config | None = None,
+        topk_indices_buffer: torch.Tensor | None = None,
+    ) -> None:
+        # ### PATCH START: require an explicit AFD role before allocation.
         afd_config = parse_optional_afd_config(vllm_config, validate=False)
         afd_role = afd_config.role if afd_config is not None else None
 
         if afd_role is None:
-            super().__init__(*args, **kwargs)
-            self.afd_role = None
-            return
+            raise RuntimeError(
+                "AFD DeepSeek DecoderLayer requires explicit AFD activation",
+            )
 
         torch.nn.Module.__init__(self)
+        # ### PATCH END
 
-        config = args[2] if len(args) > 2 else kwargs.get("config")
         if config is None:
             config = vllm_config.model_config.hf_config
         model_config = vllm_config.model_config
@@ -85,16 +247,37 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         quant_config = vllm_config.quant_config
         parallel_config = vllm_config.parallel_config
 
+        self.hidden_size = config.hidden_size
+        max_position_embeddings = getattr(config, "max_position_embeddings", 8192)
+        moe_layer_freq = getattr(config, "moe_layer_freq", 1)
+        # DecoderLayers are created with `make_layers` which passes the prefix
+        # with the layer's index.
+        layer_idx = int(prefix.split(sep=".")[-1])
+        self.layer_idx = layer_idx
+
+        qk_nope_head_dim = getattr(config, "qk_nope_head_dim", 0)
+        qk_rope_head_dim = getattr(config, "qk_rope_head_dim", 0)
+        v_head_dim = getattr(config, "v_head_dim", 0)
+        kv_lora_rank = getattr(config, "kv_lora_rank", 0)
+        use_mha = config.model_type == "deepseek" or all(
+            dim == 0 for dim in (qk_nope_head_dim, qk_rope_head_dim)
+        )
+
+        self.use_mha = use_mha
+
+        # ### PATCH START: construct only the stage owned by this AFD role.
         self.vllm_config = vllm_config
         self.config = config
         self.afd_config = afd_config
-        self.hidden_size = config.hidden_size
-        max_position_embeddings = getattr(config, "max_position_embeddings", 8192)
-        prefix = args[1] if len(args) > 1 else kwargs.get("prefix", "")
-        layer_idx = int(prefix.split(sep=".")[-1])
-        self.layer_idx = layer_idx
-        self.is_moe_layer = _is_moe_layer(config, layer_idx)
-        self.compute_gate_on_attention = bool(afd_config.compute_gate_on_attention)
+        self.afd_role = afd_role
+        self.is_moe_layer = (
+            config.n_routed_experts is not None
+            and layer_idx >= config.first_k_dense_replace
+            and layer_idx % moe_layer_freq == 0
+        )
+        self.compute_gate_on_attention = bool(
+            afd_config.compute_gate_on_attention,
+        )
         if (
             self.compute_gate_on_attention
             and native.current_platform.device_type != "npu"
@@ -104,18 +287,6 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
             )
         self.top_k = int(config.num_experts_per_tok)
 
-        qk_nope_head_dim = getattr(config, "qk_nope_head_dim", 0)
-        qk_rope_head_dim = getattr(config, "qk_rope_head_dim", 0)
-        v_head_dim = getattr(config, "v_head_dim", 0)
-        kv_lora_rank = getattr(config, "kv_lora_rank", 0)
-        use_mha = config.model_type == "deepseek" or all(
-            dim == 0 for dim in (qk_nope_head_dim, qk_rope_head_dim)
-        )
-        self.use_mha = use_mha
-        self.routed_scaling_factor = getattr(config, "routed_scaling_factor", 1.0)
-        self.afd_role = afd_role
-
-        # Create only the modules needed for this role.
         if afd_role == "attention":
             attn_cls = (
                 native.DeepseekAttention
@@ -140,26 +311,17 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                 cache_config=cache_config,
                 quant_config=quant_config,
                 prefix=f"{prefix}.self_attn",
-                topk_indices_buffer=kwargs.get("topk_indices_buffer"),
+                topk_indices_buffer=topk_indices_buffer,
             )
 
-            # NPU-only: non-NPU platforms are rejected before this branch.
             if self.compute_gate_on_attention and self.is_moe_layer:
-                self.gate = ReplicatedLinear(
-                    config.hidden_size,
-                    config.n_routed_experts,
-                    bias=False,
-                    quant_config=None,
-                    prefix=f"{prefix}.gate",
+                self.mlp = GateOnlyRemoteMoE(
+                    config=config,
+                    layer_idx=layer_idx,
+                    prefix=f"{prefix}.mlp",
+                    vllm_config=vllm_config,
                 )
-                if getattr(config, "topk_method", None) == "noaux_tc":
-                    self.gate.e_score_correction_bias = nn.Parameter(
-                        torch.empty(config.n_routed_experts, dtype=torch.float32)
-                    )
-                else:
-                    self.gate.e_score_correction_bias = None
-
-            if self.compute_gate_on_attention and not self.is_moe_layer:
+            elif self.compute_gate_on_attention:
                 self.mlp = native.DeepseekV2MLP(
                     hidden_size=config.hidden_size,
                     intermediate_size=config.intermediate_size,
@@ -167,10 +329,13 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                     quant_config=quant_config,
                     prefix=f"{prefix}.mlp",
                 )
+            else:
+                self.mlp = RemoteFFNProxy(layer_idx=layer_idx)
 
         elif afd_role == "ffn":
+            self.self_attn = MissingAttentionStage()
             if self.compute_gate_on_attention and not self.is_moe_layer:
-                pass
+                self.mlp = MissingFFNStage()
             elif self.is_moe_layer:
                 self.mlp = native.DeepseekV2MoE(
                     config=config,
@@ -186,6 +351,7 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
                     quant_config=quant_config,
                     prefix=f"{prefix}.mlp",
                 )
+        # ### PATCH END
 
         self.input_layernorm = native.RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
@@ -193,52 +359,7 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
         self.post_attention_layernorm = native.RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
-
-    def forward(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        residual: torch.Tensor | None,
-        llama_4_scaling: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if residual is None:
-            residual = hidden_states.clone()
-            hidden_states = self.input_layernorm(hidden_states)
-        else:
-            hidden_states, residual = self.input_layernorm(hidden_states, residual)
-
-        attn_kwargs: dict[str, torch.Tensor | None] = {
-            "positions": positions,
-            "hidden_states": hidden_states,
-        }
-        if not self.use_mha:
-            attn_kwargs["llama_4_scaling"] = llama_4_scaling
-        hidden_states = self.self_attn(**attn_kwargs)
-
-        if (
-            not isinstance(self.self_attn, native.DeepseekAttention)
-            and hidden_states.dtype == torch.float16
-        ):
-            hidden_states *= 1.0 / self.routed_scaling_factor
-            if self.layer_idx == 0:
-                residual *= 1.0 / self.routed_scaling_factor
-
-        hidden_states, residual = self.post_attention_layernorm(
-            hidden_states,
-            residual,
-        )
-        if self.afd_role == "attention" and not (
-            self.compute_gate_on_attention and not self.is_moe_layer
-        ):
-            return hidden_states, residual
-
-        hidden_states = self.mlp(hidden_states)
-        if (
-            isinstance(self.mlp, native.DeepseekV2MLP)
-            and hidden_states.dtype == torch.float16
-        ):
-            hidden_states *= 1.0 / self.routed_scaling_factor
-        return hidden_states, residual
+        self.routed_scaling_factor = getattr(config, "routed_scaling_factor", 1.0)
 
     def compute_attn_output(
         self,
@@ -344,26 +465,45 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
 
 
 @native.support_torch_compile
-class AFDDeepseekV2Model(torch.nn.Module):
+class AFDDeepseekV2Model(native.DeepseekV2Model):
     """DeepSeek model wrapper that routes Attention outputs through AFD."""
 
     fall_back_to_pt_during_load = False
 
-    def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
-        super().__init__()
-
+    # Upstream: vLLM v0.19.1, vllm/model_executor/models/deepseek_v2.py
+    # Commit: b1388b1fbf5aaef47937fabe98931211684666a6
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+        # ### PATCH START: require AFD activation and avoid native allocation.
+        afd_config = parse_optional_afd_config(vllm_config, validate=False)
+        if afd_config is None:
+            raise RuntimeError(
+                "AFD DeepSeek model requires explicit AFD activation",
+            )
+        if bool(
+            getattr(
+                vllm_config.parallel_config,
+                "use_sequence_parallel_moe",
+                False,
+            ),
+        ):
+            raise RuntimeError(
+                "AFD DeepSeek does not support sequence-parallel MoE",
+            )
+        torch.nn.Module.__init__(self)
         self.vllm_config = vllm_config
         self.compilation_config = vllm_config.compilation_config
+        self.afd_config = afd_config
+        # ### PATCH END
 
         config = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
-        self.afd_config = parse_optional_afd_config(vllm_config, validate=False)
         self.config = config
         self.device = native.current_platform.device_type
 
         self.vocab_size = config.vocab_size
         self.is_v32 = hasattr(config, "index_topk")
-        if self.is_v32:
+        # ### PATCH START: allocate the Indexer buffer only on Attention.
+        if self.is_v32 and afd_config.role == "attention":
             topk_tokens = config.index_topk
             topk_indices_buffer = torch.empty(
                 vllm_config.scheduler_config.max_num_batched_tokens,
@@ -373,6 +513,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
             )
         else:
             topk_indices_buffer = None
+        # ### PATCH END
 
         if native.get_pp_group().is_first_rank:
             self.embed_tokens = native.VocabParallelEmbedding(
@@ -384,6 +525,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
         else:
             self.embed_tokens = native.PPMissingLayer()
 
+        # ### PATCH START: use the pinned role-aware DecoderLayer constructor.
         self.start_layer, self.end_layer, self.layers = native.make_layers(
             config.num_hidden_layers,
             lambda prefix: AFDDeepseekV2DecoderLayer(
@@ -393,6 +535,7 @@ class AFDDeepseekV2Model(torch.nn.Module):
             ),
             prefix=f"{prefix}.layers",
         )
+        # ### PATCH END
 
         if native.get_pp_group().is_last_rank:
             self.norm = native.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -416,188 +559,23 @@ class AFDDeepseekV2Model(torch.nn.Module):
         intermediate_tensors: native.IntermediateTensors | None,
         inputs_embeds: torch.Tensor | None = None,
     ) -> torch.Tensor | native.IntermediateTensors:
-        if native.get_pp_group().is_first_rank:
-            if inputs_embeds is not None:
-                hidden_states = inputs_embeds
-            else:
-                if input_ids is None:
-                    raise ValueError(
-                        "Either input_ids or inputs_embeds must be provided "
-                        "to AFDDeepseekV2Model.forward",
-                    )
-                hidden_states = self.embed_input_ids(input_ids)
-            residual = None
-        else:
-            assert intermediate_tensors is not None
-            hidden_states = intermediate_tensors["hidden_states"]
-            residual = intermediate_tensors["residual"]
+        if self.afd_config.connector == AFD_ASYNC_CONNECTOR:
+            from afd_plugin.model_executor.models.npu import (
+                deepseek_v2_async_cam_forward,
+            )
 
-        llama_4_scaling = self._get_llama_4_scaling(positions)
-        afd_metadata = get_afd_metadata_from_forward_context()
-
-        aux_hidden_states = []
-        if afd_metadata is not None:
-            if self.aux_hidden_state_layers:
-                raise RuntimeError(
-                    "AFD DeepSeekV2 E2E wrapper does not support aux hidden "
-                    "state capture yet",
-                )
-            hidden_states, residual = self.forward_with_afd(
-                hidden_states,
-                residual,
+            return deepseek_v2_async_cam_forward.run_model_forward(
+                self,
+                input_ids,
                 positions,
-                afd_metadata,
-                llama_4_scaling,
+                intermediate_tensors,
+                inputs_embeds,
             )
-        else:
-            for idx, layer in enumerate(
-                islice(self.layers, self.start_layer, self.end_layer),
-                start=self.start_layer,
-            ):
-                if idx in self.aux_hidden_state_layers:
-                    aux_hidden_states.append(hidden_states + residual)
-                hidden_states, residual = layer(
-                    positions,
-                    hidden_states,
-                    residual,
-                    llama_4_scaling,
-                )
-
-        if not native.get_pp_group().is_last_rank:
-            return native.IntermediateTensors(
-                {"hidden_states": hidden_states, "residual": residual},
-            )
-
-        hidden_states, _ = self.norm(hidden_states, residual)
-        if aux_hidden_states:
-            return hidden_states, aux_hidden_states
-        return hidden_states
-
-    def forward_with_afd(
-        self,
-        hidden_states: torch.Tensor,
-        residual: torch.Tensor | None,
-        positions: torch.Tensor,
-        afd_metadata: AFDForwardContextMetadata,
-        llama_4_scaling: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        if self.afd_config is not None and self.afd_config.compute_gate_on_attention:
-            forward_context = get_forward_context()
-            if (
-                get_async_moe_ubatch_metadata_from_forward_context(forward_context)
-                is not None
-            ):
-                return self.forward_with_afd_v3(
-                    hidden_states,
-                    residual,
-                    positions,
-                    afd_metadata,
-                    llama_4_scaling,
-                )
-            return self.forward_with_afd_v2(
-                hidden_states,
-                residual,
-                positions,
-                afd_metadata,
-                llama_4_scaling,
-            )
-
-        afd_connector = afd_metadata.connector
-        forward_context = get_forward_context()
-        stage_idx = int(
-            getattr(forward_context, "ubatch_idx", afd_metadata.stage_idx),
-        )
-
-        for layer_offset, layer in enumerate(
-            islice(self.layers, self.start_layer, self.end_layer),
-        ):
-            stage_idx = int(
-                getattr(forward_context, "ubatch_idx", afd_metadata.stage_idx),
-            )
-            afd_metadata.stage_idx = stage_idx
-            if layer_offset > 0:
-                hidden_states = afd_connector.recv_ffn_output(
-                    ref_tensor=hidden_states,
-                    ubatch_idx=stage_idx,
-                )
-
-            hidden_states, residual = layer(
-                positions,
-                hidden_states,
-                residual,
-                llama_4_scaling,
-            )
-            metadata = AFDTransferMetadata.create_attention_metadata(
-                layer_idx=layer.layer_idx,
-                stage_idx=stage_idx,
-                seq_len=int(hidden_states.shape[0]),
-            )
-            context = AFDTransferContext(metadata=metadata)
-            afd_connector.send_attn_output(hidden_states, context)
-            hidden_states = maybe_apply_dbo_yield(
-                hidden_states,
-                role="attention",
-            )
-
-        hidden_states = afd_connector.recv_ffn_output(
-            ref_tensor=hidden_states,
-            ubatch_idx=stage_idx,
-        )
-        return hidden_states, residual
-
-    def forward_with_afd_v2(
-        self,
-        hidden_states: torch.Tensor,
-        residual: torch.Tensor | None,
-        positions: torch.Tensor,
-        afd_metadata: AFDForwardContextMetadata,
-        llama_4_scaling: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        from afd_plugin.model_executor.models.npu import (
-            deepseek_v2_async_cam_forward,
-        )
-
-        return deepseek_v2_async_cam_forward.run_attention_gate_afd_forward(
-            self,
-            hidden_states,
-            residual,
+        return super().forward(
+            input_ids,
             positions,
-            afd_metadata,
-            llama_4_scaling,
-        )
-
-    def forward_with_afd_v3(
-        self,
-        hidden_states: torch.Tensor,
-        residual: torch.Tensor | None,
-        positions: torch.Tensor,
-        afd_metadata: AFDForwardContextMetadata,
-        llama_4_scaling: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        forward_context = get_forward_context()
-        async_moe_ubatch_metadata = get_async_moe_ubatch_metadata_from_forward_context(
-            forward_context
-        )
-        if async_moe_ubatch_metadata is None:
-            return self.forward_with_afd_v2(
-                hidden_states,
-                residual,
-                positions,
-                afd_metadata,
-                llama_4_scaling,
-            )
-        from afd_plugin.model_executor.models.npu import (
-            deepseek_v2_async_cam_forward,
-        )
-
-        return deepseek_v2_async_cam_forward.run_async_moe_ubatch_afd_forward(
-            self,
-            hidden_states,
-            residual,
-            positions,
-            afd_metadata,
-            async_moe_ubatch_metadata,
-            llama_4_scaling,
+            intermediate_tensors,
+            inputs_embeds,
         )
 
     def compute_ffn_output(
@@ -637,28 +615,6 @@ class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
         self.afd_role = self.afd_config.role if self.afd_config is not None else None
         super().__init__(vllm_config=vllm_config, prefix=prefix)
 
-    def set_moe_parameters(self) -> None:
-        self.expert_weights = []
-        self.num_expert_groups = getattr(self.config, "n_group", 1)
-        self.moe_layers = []
-        self.moe_mlp_layers = []
-        example_moe = None
-        for layer in self.model.layers:
-            if isinstance(layer, native.PPMissingLayer):
-                continue
-            if not isinstance(layer, native.DeepseekV2DecoderLayer):
-                continue
-            mlp = layer._modules.get("mlp")
-            if (self.afd_role is None or self.afd_role == "ffn") and isinstance(
-                mlp, native.DeepseekV2MoE
-            ):
-                example_moe = mlp
-                self.moe_mlp_layers.append(mlp)
-                self.moe_layers.append(mlp.experts)
-        if self.afd_role == "attention":
-            return
-        self.extract_moe_parameters(example_moe)
-
     def compute_ffn_output(
         self,
         hidden_states: torch.Tensor,
@@ -668,243 +624,16 @@ class AFDDeepseekV2ForCausalLM(native.DeepseekV2ForCausalLM):
         return self.model.compute_ffn_output(hidden_states, layer_idx, **kwargs)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        ascend_config = get_ascend_config() if get_ascend_config is not None else None
-        stacked_params_mapping = [
-            ("gate_up_proj", "gate_proj", 0),
-            ("gate_up_proj", "up_proj", 1),
-            ("fused_qkv_a_proj", "q_a_proj", 0),
-            ("fused_qkv_a_proj", "kv_a_proj_with_mqa", 1),
-        ]
-
-        mix_placement = (
-            getattr(ascend_config, "mix_placement", False) if ascend_config else False
-        )
-
-        if self.afd_role == "attention":
-            vllm_config = get_current_vllm_config()
-            num_redundant_experts = (
-                vllm_config.parallel_config.eplb_config.num_redundant_experts
+        return super().load_weights(
+            _iter_role_weights(
+                weights,
+                role=self.afd_role,
+                config=self.config,
+                compute_gate_on_attention=bool(
+                    self.afd_config is not None
+                    and self.afd_config.compute_gate_on_attention
+                ),
             )
-        else:
-            num_redundant_experts = self.num_redundant_experts
-
-        expert_params_mapping = SharedFusedMoE.make_expert_params_mapping(
-            self,
-            ckpt_gate_proj_name="gate_proj",
-            ckpt_down_proj_name="down_proj",
-            ckpt_up_proj_name="up_proj",
-            num_experts=self.config.n_routed_experts
-            + (self.config.n_shared_experts if mix_placement else 0),
-            num_redundant_experts=num_redundant_experts,
-        )
-
-        params_dict = dict(self.named_parameters())
-        loaded_params: set[str] = set()
-        for name, loaded_weight in weights:
-            if "rotary_emb.inv_freq" in name:
-                continue
-
-            if (
-                self.afd_role == "attention"
-                and self.afd_config is not None
-                and self.afd_config.compute_gate_on_attention
-                and (
-                    "mlp.gate.weight" in name
-                    or "mlp.gate.e_score_correction_bias" in name
-                )
-            ):
-                mapped_name = name.replace(".mlp.gate", ".gate")
-                if mapped_name in params_dict:
-                    param = params_dict[mapped_name]
-                    weight_loader = getattr(
-                        param, "weight_loader", default_weight_loader
-                    )
-                    weight_loader(param, loaded_weight)
-                    loaded_params.add(mapped_name)
-                    continue
-
-            if (
-                self.afd_role == "attention"
-                and self.is_moe_weight(name)
-                and (
-                    not self.afd_config.compute_gate_on_attention
-                    or self.is_moe_layer_weight(name)
-                )
-            ):
-                continue
-
-            if (
-                self.afd_role == "ffn"
-                and self.afd_config.compute_gate_on_attention
-                and self.is_dense_mlp_weight(name)
-            ):
-                continue
-
-            spec_layer = get_spec_layer_idx_from_weight_name(self.config, name)
-            if spec_layer is not None:
-                continue
-
-            is_fuse_shared_experts_layer = mix_placement and (
-                "mlp.shared_experts" in name
-            )
-
-            for param_name, weight_name, shard_id in stacked_params_mapping:
-                if weight_name not in name:
-                    continue
-                if ("mlp.experts." in name) and name not in params_dict:
-                    continue
-                if is_fuse_shared_experts_layer:
-                    continue
-                name_mapped = name.replace(weight_name, param_name)
-
-                if (
-                    param_name == "fused_qkv_a_proj"
-                ) and name_mapped not in params_dict:
-                    continue
-                else:
-                    name = name_mapped
-                if name.endswith(".bias") and name not in params_dict:
-                    continue
-                if is_pp_missing_parameter(name, self):
-                    continue
-                if name not in params_dict:
-                    continue
-
-                param = params_dict[name]
-                weight_loader = param.weight_loader
-                weight_loader(param, loaded_weight, shard_id)
-                break
-            else:
-                is_expert_weight = False
-                num_chunks = 1
-                if is_fuse_shared_experts_layer:
-                    num_chunks = getattr(self.config, "n_shared_experts", 1) or 1
-                    split_dim = 1 if "down_proj.weight" in name else 0
-                    total = loaded_weight.shape[split_dim]
-                    assert total % num_chunks == 0, (
-                        f"Shared expert weight dim {total} "
-                        f"not divisible by num_chunks {num_chunks}"
-                    )
-                    chunk_size = total // num_chunks
-
-                for j in range(num_chunks):
-                    chunk_name = name
-                    weight_to_load = loaded_weight
-
-                    if is_fuse_shared_experts_layer:
-                        if split_dim == 0:
-                            weight_to_load = loaded_weight[
-                                j * chunk_size : (j + 1) * chunk_size, :
-                            ]
-                        else:
-                            weight_to_load = loaded_weight[
-                                :, j * chunk_size : (j + 1) * chunk_size
-                            ]
-                        chunk_name = name.replace(
-                            "mlp.shared_experts",
-                            f"mlp.experts.{self.config.n_routed_experts + j}",
-                        )
-
-                    for mapping in expert_params_mapping:
-                        param_name, weight_name, expert_id, shard_id = mapping
-                        if weight_name not in chunk_name:
-                            continue
-
-                        is_expert_weight = True
-                        if self.afd_role is not None and self.afd_role == "attention":
-                            continue
-                        name_mapped = chunk_name.replace(weight_name, param_name)
-
-                        if is_pp_missing_parameter(name_mapped, self):
-                            continue
-                        if name_mapped not in params_dict:
-                            continue
-                        param = params_dict[name_mapped]
-                        weight_loader = typing.cast(
-                            Callable[..., bool], param.weight_loader
-                        )
-                        success = weight_loader(
-                            param,
-                            weight_to_load,
-                            name_mapped,
-                            shard_id=shard_id,
-                            expert_id=expert_id,
-                            return_success=True,
-                        )
-                        if success:
-                            if not is_fuse_shared_experts_layer:
-                                name = name_mapped
-                            else:
-                                loaded_params.add(name_mapped)
-                            break
-                    else:
-                        if (
-                            self.afd_role == "ffn"
-                            and not self.is_moe_weight(name)
-                            and not self.is_common_weight(name)
-                        ):
-                            continue
-                        if is_expert_weight:
-                            continue
-                        if name.endswith(".bias") and name not in params_dict:
-                            continue
-                        name = maybe_remap_kv_scale_name(name, params_dict)
-                        if name is None:
-                            continue
-                        if is_pp_missing_parameter(name, self):
-                            continue
-                        if name not in params_dict:
-                            continue
-
-                        param = params_dict[name]
-                        weight_loader = getattr(
-                            param, "weight_loader", default_weight_loader
-                        )
-                        weight_loader(param, loaded_weight)
-            if not is_fuse_shared_experts_layer:
-                loaded_params.add(name)
-        return loaded_params
-
-    def is_moe_weight(self, name):
-        return (
-            "shared_experts" in name
-            or "experts" in name
-            or "gate" in name
-            or "up" in name
-            or "down" in name
-        )
-
-    def is_moe_layer_weight(self, name: str) -> bool:
-        layer_idx = self.weight_layer_idx(name)
-        return layer_idx is not None and _is_moe_layer(self.config, layer_idx)
-
-    def is_dense_mlp_weight(self, name: str) -> bool:
-        layer_idx = self.weight_layer_idx(name)
-        return (
-            ".mlp." in name
-            and layer_idx is not None
-            and not _is_moe_layer(self.config, layer_idx)
-        )
-
-    @staticmethod
-    def weight_layer_idx(name: str) -> int | None:
-        parts = name.split(".")
-        for idx, part in enumerate(parts[:-1]):
-            if part != "layers":
-                continue
-            try:
-                return int(parts[idx + 1])
-            except ValueError:
-                return None
-        return None
-
-    def is_common_weight(self, name):
-        return (
-            "lm_head" in name
-            or "model.norm.weight" in name
-            or "embed_tokens" in name
-            or "input_layernorm" in name
-            or "post_attention_layernorm" in name
         )
 
 
