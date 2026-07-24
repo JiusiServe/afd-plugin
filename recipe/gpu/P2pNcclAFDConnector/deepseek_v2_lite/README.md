@@ -118,6 +118,8 @@ shape; `role` differs between attention and FFN:
 
 DBO (Dual Batch Overlap) is turned on for all examples with
 `--dbo-decode-token-threshold 2 --dbo-prefill-token-threshold 12`.
+These threshold values are example defaults; tune them for the actual workload
+and deployment configuration.
 
 ### Switching eager → graph
 
@@ -128,3 +130,7 @@ Graph mode replaces `--enforce-eager` with:
 --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY",
                        "cudagraph_capture_sizes":[64]}'
 ```
+
+The capture size of `64` is an example value; adjust
+`--max-cudagraph-capture-size` and `cudagraph_capture_sizes` together based on
+the actual batch sizes and available GPU memory.
