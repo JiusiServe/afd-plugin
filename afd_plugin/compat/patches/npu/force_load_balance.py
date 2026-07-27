@@ -45,6 +45,7 @@ class ForceLoadBalanceConfig:
     Args:
         n_routed_experts: Number of routed experts in the MoE layer.
         ep_size: Number of expert-parallel ranks.
+        ep_rank: Source expert-parallel rank that builds the fake routing cycle.
         top_k: Number of routed experts selected for each token.
         topn_per_rank: Number of local experts per EP rank used by the fake
             routing cycle. A value of 0 means all routed experts participate.
@@ -52,6 +53,7 @@ class ForceLoadBalanceConfig:
 
     n_routed_experts: int
     ep_size: int
+    ep_rank: int
     top_k: int
     topn_per_rank: int
 
@@ -67,22 +69,25 @@ def _get_force_lb_config(layer: object) -> ForceLoadBalanceConfig:
     return ForceLoadBalanceConfig(
         n_routed_experts=int(layer.n_routed_experts),
         ep_size=int(layer.ep_size),
+        ep_rank=int(layer.ep_rank),
         top_k=int(layer.top_k),
         topn_per_rank=int(layer.force_load_balance_topn_per_rank),
     )
 
 
 def _validate_force_lb_config(config: ForceLoadBalanceConfig) -> None:
+    assert config.ep_size > 0, "ep_size must be positive"
+    assert 0 <= config.ep_rank < config.ep_size, (
+        "ep_rank must be within the expert-parallel group"
+    )
+    assert config.n_routed_experts % config.ep_size == 0, (
+        "force load balance requires n_routed_experts to be divisible by ep_size"
+    )
+
     if config.topn_per_rank == 0:
         return
 
     assert config.topn_per_rank > 0, "force_load_balance_topn_per_rank must be >= 0"
-    assert config.ep_size > 0, "ep_size must be positive"
-    assert config.n_routed_experts % config.ep_size == 0, (
-        "force_load_balance_topn_per_rank requires n_routed_experts to be"
-        " divisible by ep_size"
-    )
-
     local_routed_experts = config.n_routed_experts // config.ep_size
     assert config.topn_per_rank <= local_routed_experts, (
         "force_load_balance_topn_per_rank exceeds routed experts on each FFN rank"
@@ -96,8 +101,8 @@ def _build_expert_cycle(
     config: ForceLoadBalanceConfig,
     device: torch.device,
 ) -> torch.Tensor:
+    local_routed_experts = config.n_routed_experts // config.ep_size
     if config.topn_per_rank > 0:
-        local_routed_experts = config.n_routed_experts // config.ep_size
         per_rank_cycles = [
             torch.arange(
                 rank * local_routed_experts,
@@ -107,15 +112,20 @@ def _build_expert_cycle(
             )
             for rank in range(config.ep_size)
         ]
-        return torch.cat(per_rank_cycles, dim=0)
+        expert_cycle = torch.cat(per_rank_cycles, dim=0)
+    else:
+        generator = torch.Generator()
+        generator.manual_seed(_FORCE_LB_DETERMINISTIC_SEED)
+        expert_cycle = torch.randperm(
+            config.n_routed_experts,
+            generator=generator,
+            dtype=torch.int32,
+        ).to(device=device, non_blocking=True)
 
-    generator = torch.Generator()
-    generator.manual_seed(_FORCE_LB_DETERMINISTIC_SEED)
-    return torch.randperm(
-        config.n_routed_experts,
-        generator=generator,
-        dtype=torch.int32,
-    ).to(device=device, non_blocking=True)
+    # Shift every expert by whole target-rank blocks so source EP ranks use
+    # different phases without changing the deterministic cycle order.
+    source_rank_expert_offset = config.ep_rank * local_routed_experts
+    return (expert_cycle + source_rank_expert_offset) % config.n_routed_experts
 
 
 def _build_topk_buffer(

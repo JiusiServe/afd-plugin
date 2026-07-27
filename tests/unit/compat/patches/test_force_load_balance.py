@@ -209,9 +209,41 @@ def _new_layer(force_lb_mod: types.ModuleType) -> object:
     return force_lb_mod.AscendFusedMoE.__new__(force_lb_mod.AscendFusedMoE)
 
 
+def _aggregate_target_rank_counts(
+    force_lb_mod: types.ModuleType,
+    *,
+    n_routed_experts: int,
+    ep_size: int,
+    top_k: int,
+    topn_per_rank: int,
+    batch_tokens: int,
+) -> torch.Tensor:
+    local_routed_experts = n_routed_experts // ep_size
+    expert_ids: list[torch.Tensor] = []
+    for ep_rank in range(ep_size):
+        config = force_lb_mod.ForceLoadBalanceConfig(
+            n_routed_experts=n_routed_experts,
+            ep_size=ep_size,
+            ep_rank=ep_rank,
+            top_k=top_k,
+            topn_per_rank=topn_per_rank,
+        )
+        expert_ids.append(
+            force_lb_mod._build_topk_buffer(
+                config,
+                max_tokens=batch_tokens,
+                device=torch.device("cpu"),
+            ).flatten()
+        )
+
+    target_ranks = torch.cat(expert_ids) // local_routed_experts
+    return torch.bincount(target_ranks.to(torch.int64), minlength=ep_size)
+
+
 def test_force_load_balance_buffer_topn_per_rank(force_lb_mod: types.ModuleType):
     layer = _new_layer(force_lb_mod)
     layer.ep_size = 4
+    layer.ep_rank = 0
     layer.n_routed_experts = 8
     layer.top_k = 2
     layer.force_load_balance_topn_per_rank = 1
@@ -236,6 +268,7 @@ def test_force_load_balance_buffer_uses_max_num_batched_tokens(
 
     layer = _new_layer(force_lb_mod)
     layer.ep_size = 2
+    layer.ep_rank = 0
     layer.n_routed_experts = 4
     layer.top_k = 2
     layer.force_load_balance_topn_per_rank = 0
@@ -263,6 +296,7 @@ def test_force_load_balance_buffer_ids_within_routed_experts(
 ):
     layer = _new_layer(force_lb_mod)
     layer.ep_size = 2
+    layer.ep_rank = 0
     layer.n_routed_experts = 4
     layer.global_num_experts = 6
     layer.top_k = 2
@@ -283,6 +317,7 @@ def test_force_load_balance_full_expert_cycle_is_deterministic(
     config = force_lb_mod.ForceLoadBalanceConfig(
         n_routed_experts=8,
         ep_size=4,
+        ep_rank=0,
         top_k=2,
         topn_per_rank=0,
     )
@@ -294,11 +329,62 @@ def test_force_load_balance_full_expert_cycle_is_deterministic(
     assert sorted(first.tolist()) == list(range(8))
 
 
+@pytest.mark.parametrize(
+    ("ep_size", "batch_tokens"),
+    [
+        pytest.param(64, 16, id="ep64-bs16"),
+        pytest.param(16, 42, id="ep16-bs42"),
+        pytest.param(16, 56, id="ep16-bs56"),
+    ],
+)
+def test_force_load_balance_aggregates_evenly_for_published_batches(
+    force_lb_mod: types.ModuleType,
+    ep_size: int,
+    batch_tokens: int,
+):
+    top_k = 8
+    counts = _aggregate_target_rank_counts(
+        force_lb_mod,
+        n_routed_experts=256,
+        ep_size=ep_size,
+        top_k=top_k,
+        topn_per_rank=4,
+        batch_tokens=batch_tokens,
+    )
+
+    assert torch.equal(
+        counts,
+        torch.full((ep_size,), batch_tokens * top_k, dtype=torch.int64),
+    )
+
+
+def test_force_load_balance_all_experts_aggregates_partial_cycle_evenly(
+    force_lb_mod: types.ModuleType,
+):
+    ep_size = 4
+    top_k = 2
+    batch_tokens = 1
+    counts = _aggregate_target_rank_counts(
+        force_lb_mod,
+        n_routed_experts=8,
+        ep_size=ep_size,
+        top_k=top_k,
+        topn_per_rank=0,
+        batch_tokens=batch_tokens,
+    )
+
+    assert torch.equal(
+        counts,
+        torch.full((ep_size,), batch_tokens * top_k, dtype=torch.int64),
+    )
+
+
 def test_force_load_balance_buffer_grows_for_large_batch(
     force_lb_mod: types.ModuleType,
 ):
     layer = _new_layer(force_lb_mod)
     layer.ep_size = 2
+    layer.ep_rank = 0
     layer.n_routed_experts = 4
     layer.top_k = 2
     layer.force_load_balance_topn_per_rank = 2
