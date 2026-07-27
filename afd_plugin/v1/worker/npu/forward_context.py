@@ -27,6 +27,9 @@ def create_ascend_forward_context(
     cudagraph_runtime_mode: CUDAGraphMode | None = None,
     batch_descriptor: BatchDescriptor | None = None,
     skip_compiled: bool = False,
+    afd_comm_stream=None,
+    afd_comm_event=None,
+    afd_multistream_enabled: bool = False,
 ) -> ForwardContext:
     if cudagraph_runtime_mode is None:
         cudagraph_runtime_mode = CUDAGraphMode.NONE
@@ -130,6 +133,9 @@ def create_ascend_forward_context(
         new_forward_context.mc2_mask = mc2_mask
 
     new_forward_context.dbo_enabled = True
+    new_forward_context.afd_comm_stream = afd_comm_stream
+    new_forward_context.afd_comm_event = afd_comm_event
+    new_forward_context.afd_multistream_enabled = afd_multistream_enabled
     return new_forward_context
 
 

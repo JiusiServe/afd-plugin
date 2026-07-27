@@ -241,7 +241,22 @@ def _new_ffn_runner():
     runner = object.__new__(AFDNPUFFNModelRunner)
     runner.prof = None
     runner.device = SimpleNamespace(type="npu")
+    runner.ffn_multistream_enabled = False
+    runner.ffn_comm_stream = None
+    runner.ffn_comm_events = []
     return runner
+
+
+def _queue_ffn_inputs(connector, *, layers, stages):
+    for layer_idx in range(layers):
+        for stage_idx in range(stages):
+            metadata = AFDTransferMetadata.create_attention_metadata(
+                layer_idx=layer_idx,
+                stage_idx=stage_idx,
+                seq_len=1,
+            )
+            connector.attn_outputs.append(("hidden", metadata))
+    return {stage_idx: _FakeDPMetadata([1]) for stage_idx in range(stages)}
 
 
 def _new_ffn_worker():
@@ -634,6 +649,9 @@ def test_npu_create_ascend_forward_context_marks_current_ubatch(monkeypatch):
         vllm_config=vllm_config,
         ubatch_slices=ubatch_slices,
         ubatch_num=1,
+        afd_comm_stream="attention-comm-stream",
+        afd_comm_event="ubatch-1-event",
+        afd_multistream_enabled=True,
     )
 
     child_metadata = new_forward_context.additional_kwargs["afd_metadata"]
@@ -641,6 +659,9 @@ def test_npu_create_ascend_forward_context_marks_current_ubatch(monkeypatch):
     assert new_forward_context.num_ubatches == 2
     assert new_forward_context.num_tokens == 3
     assert child_metadata.stage_idx == 1
+    assert new_forward_context.afd_comm_stream == "attention-comm-stream"
+    assert new_forward_context.afd_comm_event == "ubatch-1-event"
+    assert new_forward_context.afd_multistream_enabled is True
 
 
 def test_npu_ffn_runner_executes_eager_ffn_step(monkeypatch):
@@ -668,6 +689,95 @@ def test_npu_ffn_runner_executes_eager_ffn_step(monkeypatch):
     assert update_flags == {"is_graph_capturing": False, "is_warmup": False}
     assert runner.connector.ffn_outputs == [
         ("npu-ffn(hidden, layer=0)", metadata, {"ubatch_idx": 0}),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("enabled", "stages"),
+    [(True, 1), (False, 2)],
+)
+def test_npu_ffn_multistream_requires_switch_and_multiple_stages(enabled, stages):
+    runner = _new_ffn_runner()
+    runner.vllm_config = _vllm_config(role="ffn")
+    runner.afd_config = SimpleNamespace(compute_gate_on_attention=False)
+    runner.connector = _FakeFFNConnector()
+    runner.model = _FakeModel()
+    runner.num_layers = 2
+    runner.max_num_tokens = 1
+    runner.ffn_multistream_enabled = enabled
+    dp_metadata = _queue_ffn_inputs(runner.connector, layers=2, stages=stages)
+
+    runner._ffn_forward(dp_metadata_list=dp_metadata)
+
+    assert all(
+        "multistream_enable" not in kwargs
+        for _output, _metadata, kwargs in runner.connector.ffn_outputs
+    )
+
+
+def test_npu_ffn_multistream_waits_before_stage_reuse(monkeypatch):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import ffn_model_runner
+
+    trace = []
+
+    class FakeEvent:
+        def __init__(self, stage_idx):
+            self.stage_idx = stage_idx
+
+        def record(self, stream):
+            assert stream == "comm"
+            trace.append(("record", self.stage_idx))
+
+        def wait(self, stream):
+            assert stream == "compute"
+            trace.append(("wait", self.stage_idx))
+
+    class RecordingConnector(_FakeFFNConnector):
+        def send_ffn_output(self, ffn_output, metadata, **kwargs):
+            if kwargs.get("multistream_enable"):
+                kwargs["comm_event"].record(kwargs["comm_stream"])
+            super().send_ffn_output(ffn_output, metadata, **kwargs)
+
+    @contextmanager
+    def fake_ascend_forward_context(**_kwargs):
+        yield SimpleNamespace(additional_kwargs={}, dp_metadata=None)
+
+    monkeypatch.setattr(
+        ffn_model_runner,
+        "ascend_forward_context",
+        fake_ascend_forward_context,
+    )
+    monkeypatch.setattr(ffn_model_runner, "_set_moe_layer_index", lambda *_args: None)
+    monkeypatch.setattr(
+        ffn_model_runner.torch.npu,
+        "current_stream",
+        lambda: "compute",
+    )
+
+    runner = _new_ffn_runner()
+    runner.vllm_config = _vllm_config(role="ffn")
+    runner.afd_config = SimpleNamespace(compute_gate_on_attention=False)
+    runner.connector = RecordingConnector()
+    runner.model = _FakeModel()
+    runner.num_layers = 3
+    runner.max_num_tokens = 1
+    runner.ffn_multistream_enabled = True
+    runner.ffn_comm_stream = "comm"
+    runner.ffn_comm_events = [FakeEvent(0), FakeEvent(1)]
+    dp_metadata = _queue_ffn_inputs(runner.connector, layers=3, stages=2)
+
+    runner._ffn_forward(dp_metadata_list=dp_metadata)
+
+    assert trace == [
+        ("record", 0),
+        ("record", 1),
+        ("wait", 0),
+        ("record", 0),
+        ("wait", 1),
+        ("record", 1),
+        ("wait", 0),
+        ("wait", 1),
     ]
 
 

@@ -28,6 +28,9 @@ from vllm.v1.worker.gpu_ubatch_wrapper import UbatchMetadata, UBatchWrapper
 from vllm_ascend.compilation.acl_graph import ACLGraphWrapper
 from vllm_ascend.utils import enable_sp
 
+from afd_plugin.config import parse_afd_config
+from afd_plugin.connectors import AFDConnectorFactory
+from afd_plugin.connectors.npu.camp2p import CAMP2PExtraInfo
 from afd_plugin.v1.worker.npu.forward_context import (
     create_ascend_forward_context,
 )
@@ -63,7 +66,25 @@ class AscendUBatchWrapper(UBatchWrapper):
         self.runnable = runnable
         self.vllm_config = vllm_config
         self.compilation_config = vllm_config.compilation_config
-        self.comm_stream = torch.npu.Stream(device=device)
+        afd_config = parse_afd_config(vllm_config)
+        self.attn_multistream_enabled = False
+        if afd_config.connector == "CAMP2pAFDConnector":
+            extra_info = AFDConnectorFactory.parse_connector_extra_info(
+                afd_config.connector,
+                vllm_config,
+            )
+            if not isinstance(extra_info, CAMP2PExtraInfo):
+                raise TypeError("CAMP2P connector returned unexpected extra config")
+            self.attn_multistream_enabled = extra_info.is_attn_multistream
+        self.comm_stream = (
+            torch.npu.Stream(device=device) if self.attn_multistream_enabled else None
+        )
+        configured_ubatches = vllm_config.parallel_config.num_ubatches or 1
+        self.comm_events = (
+            [torch.npu.Event() for _ in range(configured_ubatches)]
+            if self.attn_multistream_enabled
+            else []
+        )
         self.ready_barrier = threading.Barrier(3)
         self.cudagraphs: dict[int, AscendNPUGraphMetaData] = {}
         self.cudagraph_wrapper = None
@@ -193,6 +214,10 @@ class AscendUBatchWrapper(UBatchWrapper):
         cudagraph_runtime_mode,
     ) -> list[AscendUbatchMetadata]:
         cur_forward_context = get_forward_context()
+        while self.attn_multistream_enabled and len(self.comm_events) < len(
+            ubatch_slices
+        ):
+            self.comm_events.append(torch.npu.Event())
         forward_contexts = []
         for i, _ubatch_slice in enumerate(ubatch_slices):
             forward_contexts.append(
@@ -208,6 +233,11 @@ class AscendUBatchWrapper(UBatchWrapper):
                     cudagraph_runtime_mode=cudagraph_runtime_mode,
                     ubatch_num=i,
                     skip_compiled=cur_forward_context.skip_compiled,
+                    afd_comm_stream=self.comm_stream,
+                    afd_comm_event=self.comm_events[i]
+                    if self.attn_multistream_enabled
+                    else None,
+                    afd_multistream_enabled=self.attn_multistream_enabled,
                 )
             )
 
