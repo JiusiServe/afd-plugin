@@ -94,7 +94,23 @@ output length of `1` to simulate a prefill workload.
 
 Dataset:
 
-- File: `cp8sp50k_custom_dataset_token_ids.jsonl`
+- File:
+  [`tools/datasets/cp8sp50k_custom_dataset_text_matched_token_ids.jsonl`](../../../../tools/datasets/cp8sp50k_custom_dataset_text_matched_token_ids.jsonl)
+- The prompt-length distribution is derived from a real-world workload.
+- Prompt text is randomized and intentionally has no semantic meaning.
+- Every request uses an output length of `1`.
+
+The dataset is stored with Git LFS and excluded from the default LFS fetch, so
+a normal clone does not download its contents. Before running this benchmark,
+fetch the dataset from the repository root:
+
+```bash
+git lfs pull \
+  --include="tools/datasets/cp8sp50k_custom_dataset_text_matched_token_ids.jsonl" \
+  --exclude=""
+```
+
+Run the benchmark command from the repository root:
 
 ```bash
 vllm bench serve \
@@ -107,9 +123,9 @@ vllm bench serve \
   --host 127.0.0.1 \
   --port 8000 \
   --dataset-name custom \
-  --dataset-path /path/to/cp8sp50k_custom_dataset_token_ids.jsonl \
+  --dataset-path tools/datasets/cp8sp50k_custom_dataset_text_matched_token_ids.jsonl \
   --skip-chat-template \
-  --custom-output-len -1 \
+  --custom-output-len 1 \
   --request-rate 10 \
   --no-oversample \
   --disable-shuffle \
