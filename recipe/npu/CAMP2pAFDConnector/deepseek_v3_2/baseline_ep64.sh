@@ -78,8 +78,7 @@ KV_TRANSFER_CONFIG='{
 }'
 
 ADDITIONAL_CONFIG='{
-  "enable_force_load_balance": true,
-  "force_load_balance_topn_per_rank": 4
+  "enable_force_load_balance": true
 }'
 
 exec env VLLM_USE_V1=1 vllm serve "$MODEL_PATH" \

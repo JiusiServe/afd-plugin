@@ -81,7 +81,16 @@ BS112, BS42, and BS56.
 
 ## Important configuration
 
-All six cases use forced expert balancing:
+All six cases use forced expert balancing. The baseline EP64 case uses:
+
+```json
+{
+  "enable_force_load_balance": true
+}
+```
+
+EP64 already places four routed experts on each rank, so the baseline does not
+set an explicit per-rank expert limit. The AFD cases use:
 
 ```json
 {
@@ -99,11 +108,12 @@ weights are retained. This produces a controlled, balanced MoE communication
 load, but it changes model outputs and must not be used for accuracy or
 production-serving evaluation.
 
-`force_load_balance_topn_per_rank=4` includes four local experts from each EP
-rank/NPU in that synthetic routing cycle. With this mapping, the physical
-48A16F and 64A16F deployments are used to simulate the logical scales of
-192A64F and 256A64F, respectively. These are simulated logical scales; the
-physical deployments still use 48 or 64 attention dies and 16 FFN dies.
+For the AFD cases, `force_load_balance_topn_per_rank=4` includes four local
+experts from each EP rank/NPU in that synthetic routing cycle. With this
+mapping, the physical 48A16F and 64A16F deployments are used to simulate the
+logical scales of 192A64F and 256A64F, respectively. These are simulated
+logical scales; the physical deployments still use 48 or 64 attention dies
+and 16 FFN dies.
 
 The decode KV cache is populated through:
 
