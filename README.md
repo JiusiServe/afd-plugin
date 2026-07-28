@@ -1,5 +1,9 @@
 # afd-plugin
 
+<p align="center">
+| <a href="docs/design/module/index.md"><b>Documentation</b></a> | <a href="recipe/README.md"><b>Recipe</b></a> | <a href="https://deepwiki.com/vllm-project/afd-plugin"><b>DeepWiki</b></a> | <a href="https://discuss.vllm.ai"><b>User Forum</b></a> | <a href="https://vllm-dev.slack.com/archives/C0B4C1D84GG"><b>Developer Slack</b></a> | <a href="docs/assets/WeChat.jpg"><b>WeChat</b></a> |
+</p>
+
 ## Overview
 
 **afd-plugin** is a [vLLM](https://github.com/vllm-project/vllm)
@@ -16,10 +20,6 @@ The target runtime is **vLLM `v0.19.1`**. The plugin does not modify the vLLM
 source tree. AFD behavior is installed through the `vllm.general_plugins` entry
 point, `--additional-config`, automatically selected role workers, plugin-owned
 model wrappers, and narrow version-scoped compatibility shims.
-
-<p align="center">
-| <a href="docs/design/module/index.md"><b>Documentation</b></a> | <a href="recipe/README.md"><b>Recipe</b></a> | <a href="https://deepwiki.com/vllm-project/afd-plugin"><b>DeepWiki</b></a> | <a href="https://discuss.vllm.ai"><b>User Forum</b></a> | <a href="https://vllm-dev.slack.com/archives/C0B4C1D84GG"><b>Developer Slack</b></a> | <a href="docs/assets/WeChat.jpg"><b>WeChat</b></a> |
-</p>
 
 ## Architecture
 
