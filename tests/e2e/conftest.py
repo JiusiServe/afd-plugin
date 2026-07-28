@@ -201,6 +201,8 @@ def _launch_afd_server(
     afd_async: bool = False,
     compute_gate_on_attention: bool = False,
     afd_connector_extra_config: list[str] | None = None,
+    attention_env: dict[str, str] | None = None,
+    ffn_env: dict[str, str] | None = None,
 ) -> AFDServer:
     """Start AFD servers and return an AFDServer once the API is ready.
 
@@ -228,6 +230,12 @@ def _launch_afd_server(
     afd_connector_extra_config:
         JSON strings merged into
         ``additional_config['afd']['connector_extra_config']``.
+    attention_env:
+        Extra environment variables applied only to the attention process,
+        e.g. ``{"VLLM_ASCEND_ENABLE_FLASHCOMM1": "1"}`` to enable sequence
+        parallelism on the attention role.
+    ffn_env:
+        Extra environment variables applied only to the FFN process.
     """
     attention_devices = attention_devices or ["0"]
     ffn_devices = ffn_devices or ["1"]
@@ -276,10 +284,12 @@ def _launch_afd_server(
             else f"CUDA_VISIBLE_DEVICES={ffn_devices_str}"
         )
         print(f"\n[conftest] Starting FFN ({device_label})")
+        ffn_process_env = build_env(ffn_devices_str, args, role="ffn")
+        ffn_process_env.update(ffn_env or {})
         ffn_proc = start_process(
             "ffn",
             ffn_cmd,
-            build_env(ffn_devices_str, args, role="ffn"),
+            ffn_process_env,
         )
         processes.append(ffn_proc)
         log_threads.append(stream_output("ffn", ffn_proc))
@@ -296,10 +306,12 @@ def _launch_afd_server(
             else f"CUDA_VISIBLE_DEVICES={attn_devices_str}"
         )
         print(f"[conftest] Starting ATTN ({device_label})")
+        attn_process_env = build_env(attn_devices_str, args, role="attention")
+        attn_process_env.update(attention_env or {})
         attn_proc = start_process(
             "attention",
             attn_cmd,
-            build_env(attn_devices_str, args, role="attention"),
+            attn_process_env,
         )
         processes.append(attn_proc)
         log_threads.append(stream_output("attention", attn_proc))

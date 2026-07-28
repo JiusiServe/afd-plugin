@@ -86,6 +86,9 @@ short pre-flight summary before running.
 - (NPU) offline task dir `AFD_NPU_GSM8K_TASK_DIR` exists — if unset, try the
   known default `/root/.cache/gsm8k`; ask the user if neither is present.
 - `AFD_GSM8K_THRESHOLD` (0.20) / `AFD_GSM8K_TOLERANCE` (0.05) have defaults — optional.
+- `AFD_GSM8K_BATCH_SIZE` overrides the lm-eval `--batch_size`. If unset, tests
+  use their own defaults: sync GPU/NPU GSM8K tests do not set batch_size; async
+  CAM tests default to `1` for 1A1F and `8` for DP3TP2+EP2.
 
 If a **required** prereq is missing and the user can't trivially fix it, stop and
 report rather than running a guaranteed-all-skip batch.
@@ -119,7 +122,7 @@ Set env from steps 4–5, then:
 ```bash
 cd /path/to/afd-plugin
 AFD_GPU_E2E_MODEL=<model> AFD_GPU_E2E_GPUS=<gpus> \
-  [AFD_GSM8K_LIMIT=<N>] \
+  [AFD_GSM8K_LIMIT=<N>] [AFD_GSM8K_BATCH_SIZE=<B>] \
   uv run pytest -m gpu tests/e2e/<category>
 ```
 
@@ -127,7 +130,7 @@ AFD_GPU_E2E_MODEL=<model> AFD_GPU_E2E_GPUS=<gpus> \
 ```bash
 cd /path/to/afd-plugin
 AFD_NPU_E2E_MODEL=<model> AFD_NPU_ATTN_DEVICES=<d0> AFD_NPU_FFN_DEVICES=<d1> \
-  [AFD_GSM8K_LIMIT=<N>] [AFD_NPU_GSM8K_TASK_DIR=<dir>] \
+  [AFD_GSM8K_LIMIT=<N>] [AFD_GSM8K_BATCH_SIZE=<B>] [AFD_NPU_GSM8K_TASK_DIR=<dir>] \
   python -m pytest -m npu tests/e2e/<category>
 ```
 
@@ -161,6 +164,7 @@ Parse the pytest summary. Report:
 | `AFD_NPU_FFN_DEVICES` | npu | `1` | no |
 | `AFD_NPU_VLLM_BIN` | npu | `vllm` | no |
 | `AFD_GSM8K_LIMIT` | accuracy | unset=full(1319) | no |
+| `AFD_GSM8K_BATCH_SIZE` | accuracy | unset=test-specific | no |
 | `AFD_GSM8K_THRESHOLD` | accuracy | `0.20` | no |
 | `AFD_GSM8K_TOLERANCE` | accuracy | `0.05` | no |
 | `AFD_NPU_GSM8K_TASK_DIR` | npu accuracy | — | yes for npu gsm8k |

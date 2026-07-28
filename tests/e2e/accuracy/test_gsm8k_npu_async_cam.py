@@ -55,6 +55,7 @@ def _run_gsm8k_async_cam(
     api_port_base: int,
     afd_port: int,
     batch_size: int = 1,
+    enable_attention_sp: bool = False,
 ) -> None:
     """Run GSM8K via lm-eval against a CAMAsync server."""
     pytest.importorskip("lm_eval", reason="lm-eval not installed")
@@ -98,6 +99,19 @@ def _run_gsm8k_async_cam(
     if max_model_len:
         common_vllm_args.extend(["--max-model-len", max_model_len])
 
+    # Sequence parallelism in vllm-ascend v0.19.1rc1 is driven by the
+    # VLLM_ASCEND_ENABLE_FLASHCOMM1 env var (vllm_ascend.utils.enable_sp).
+    # Enable it on the attention role only: attention TP ranks then hold
+    # SP-sharded token ranges, which is the layout CAM dispatch expects.
+    # FFN keeps SP off because its CAM-received tokens are expert-routed
+    # per rank, not a replicated batch to shard; "0" also guards against a
+    # globally exported value leaking in from the outer shell.
+    attention_env: dict[str, str] | None = None
+    ffn_env: dict[str, str] | None = None
+    if enable_attention_sp:
+        attention_env = {"VLLM_ASCEND_ENABLE_FLASHCOMM1": "1"}
+        ffn_env = {"VLLM_ASCEND_ENABLE_FLASHCOMM1": "0"}
+
     afd_server: AFDServer | None = None
     try:
         afd_server = _launch_afd_server(
@@ -117,6 +131,8 @@ def _run_gsm8k_async_cam(
             startup_timeout=float(os.environ.get("AFD_NPU_E2E_STARTUP_TIMEOUT", "900")),
             served_model_name_prefix="deepseek-v2-lite-afd",
             common_vllm_args=common_vllm_args,
+            attention_env=attention_env,
+            ffn_env=ffn_env,
         )
 
         results = _run_lm_eval(
@@ -216,4 +232,5 @@ def test_gsm8k_lm_eval_async_cam_dp3tp2_ep2(
         api_port_base=int(os.environ.get("AFD_NPU_ASYNC_CAM_E2E_API_PORT", "19080")),
         afd_port=int(os.environ.get("AFD_NPU_ASYNC_CAM_E2E_AFD_PORT", "6453")),
         batch_size=8,
+        enable_attention_sp=True,
     )
