@@ -329,6 +329,31 @@ def test_force_load_balance_full_expert_cycle_is_deterministic(
     assert sorted(first.tolist()) == list(range(8))
 
 
+def test_force_load_balance_full_expert_cycle_generates_on_cpu(
+    force_lb_mod: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = force_lb_mod.ForceLoadBalanceConfig(
+        n_routed_experts=8,
+        ep_size=4,
+        ep_rank=0,
+        top_k=2,
+        topn_per_rank=0,
+    )
+    randperm_devices: list[torch.device | str | None] = []
+    original_randperm = torch.randperm
+
+    def recording_randperm(*args, **kwargs):
+        randperm_devices.append(kwargs.get("device"))
+        return original_randperm(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "randperm", recording_randperm)
+
+    force_lb_mod._build_expert_cycle(config, torch.device("cpu"))
+
+    assert randperm_devices == [torch.device("cpu")]
+
+
 @pytest.mark.parametrize(
     ("ep_size", "batch_tokens"),
     [

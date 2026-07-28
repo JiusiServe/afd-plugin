@@ -114,11 +114,13 @@ def _build_expert_cycle(
         ]
         expert_cycle = torch.cat(per_rank_cycles, dim=0)
     else:
-        generator = torch.Generator()
+        generator_device = torch.device("cpu")
+        generator = torch.Generator(device=generator_device)
         generator.manual_seed(_FORCE_LB_DETERMINISTIC_SEED)
         expert_cycle = torch.randperm(
             config.n_routed_experts,
             generator=generator,
+            device=generator_device,
             dtype=torch.int32,
         ).to(device=device, non_blocking=True)
 
