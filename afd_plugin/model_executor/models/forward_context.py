@@ -18,7 +18,44 @@ from afd_plugin.connectors import AFDForwardContextMetadata
 ASYNC_MOE_UBATCH_METADATA_KEY: Final[str] = "afd_async_moe_ubatch_metadata"
 
 
-class AsyncMoeUbatchMetadata(TypedDict):
+class _AsyncMoeUbatchMetadataOptional(TypedDict, total=False):
+    """Optional SP-local fields for ``AsyncMoeUbatchMetadata``.
+
+    A separate ``total=False`` base class is used instead of
+    ``typing.NotRequired`` because the plugin supports Python 3.10, where
+    ``NotRequired`` is only available via the external ``typing_extensions``
+    package. Keeping the base class avoids adding a new runtime dependency.
+    """
+
+    # SP-local stage layout: when SP shards the full batch across TP ranks,
+    # transpose it into equal per-stage rank shards before attention and
+    # restore the original layout after the async MoE pipeline.
+    use_sp_stage_resharding: bool
+    sp_local_stage_slices: UBatchSlices
+    stage_actual_token_counts: list[int]
+    sp_local_stage_actual_token_counts: list[int]
+
+
+class AsyncMoeUbatchMetadata(_AsyncMoeUbatchMetadataOptional):
+    """Async MoE ubatch sidecar metadata carried by the forward context.
+
+    The required fields (``attn_metadata``, ``ubatch_slices``) are always
+    populated by the attention model runner before the model forward starts.
+    The optional layout fields describe padded stage inputs and their real
+    token coverage:
+
+    - ``use_sp_stage_resharding``: set to ``True`` by the attention model
+      runner when Ascend sequence parallelism is active and the applied split
+      is TP-aligned.
+    - ``sp_local_stage_slices``: set by
+      ``build_async_moe_stage_inputs`` during model forward; its lengths
+      describe the equal per-rank stage shards, not ranges into the original
+      full-batch local shard.
+    - ``stage_actual_token_counts`` and
+      ``sp_local_stage_actual_token_counts`` distinguish real token rows from
+      DP/SP padding globally and on the current TP rank.
+    """
+
     attn_metadata: object
     ubatch_slices: UBatchSlices
 

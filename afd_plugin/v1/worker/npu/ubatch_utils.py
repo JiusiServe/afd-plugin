@@ -2,8 +2,11 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """Ascend ubatch helpers owned by the AFD plugin.
 
-Copied from vLLM-Ascend commit cdd212830271249a1cafcb850c210133f21771c5;
-kept plugin-owned so AFD retains DBO support independent of upstream changes.
+Ubatch token-space planning (split policies, padding, attention-metadata
+rebuilds) plus the TP/SP-aware local-token mapping consumed by model-side
+stage slicing. Parts of this module mirror the Ascend DBO logic from
+vLLM-Ascend commit cdd212830271249a1cafcb850c210133f21771c5, kept
+plugin-owned so AFD retains DBO support independent of upstream changes.
 """
 
 import numpy as np
@@ -141,6 +144,129 @@ def create_request_boundary_ubatch_slices(
     ]
 
 
+ASYNC_MOE_SPLIT_REQUEST_BOUNDARY = "request_boundary"
+ASYNC_MOE_SPLIT_TOKEN_BALANCED_TP = "token_balanced_tp"
+
+
+def enable_token_balanced_async_moe_split(vllm_config: VllmConfig) -> bool:
+    """Whether async MoE ubatches split on TP-aligned token counts.
+
+    Non-PCP DP+TP/SP topologies can schedule requests with heavily skewed
+    lengths, where a request-boundary split produces imbalanced stages; a
+    token-balanced split keeps both pipeline stages close to half the token
+    workload. PCP topologies keep the request-boundary split because their
+    metadata is rebuilt per request.
+    """
+    parallel_config = vllm_config.parallel_config
+    if int(parallel_config.tensor_parallel_size) <= 1:
+        return False
+    if int(parallel_config.prefill_context_parallel_size) != 1:
+        return False
+    return int(parallel_config.decode_context_parallel_size) == 1
+
+
+def token_balanced_split_points(
+    num_tokens: int,
+    num_ubatches: int,
+    tp_size: int,
+) -> list[int] | None:
+    """Even token split points aligned down to multiples of ``tp_size``.
+
+    Alignment keeps every stage divisible by the TP size so that, under
+    sequence parallelism, each rank's local stage shards have equal length.
+    Returns None when an aligned split is impossible (too few tokens, or
+    alignment collapses a stage boundary).
+    """
+    if num_ubatches <= 1 or num_tokens < num_ubatches:
+        return None
+    split_points: list[int] = []
+    for idx in range(1, num_ubatches):
+        split_point = (num_tokens * idx) // num_ubatches
+        if tp_size > 1:
+            split_point = (split_point // tp_size) * tp_size
+        if split_point <= 0 or split_point >= num_tokens:
+            return None
+        if split_points and split_point <= split_points[-1]:
+            return None
+        split_points.append(split_point)
+    return split_points
+
+
+def create_async_moe_ubatch_slices(
+    vllm_config: VllmConfig,
+    num_scheduled_tokens_np: np.ndarray,
+    *,
+    num_tokens: int,
+    num_tokens_padded: int | None,
+    num_reqs_padded: int | None,
+    num_ubatches: int,
+    split: str,
+) -> tuple[UBatchSlices | None, str]:
+    """Split async MoE work into ubatches and report the split policy used.
+
+    ``split`` is the connector's ``async_moe_split`` value. ``"token"``
+    selects the TP-aligned token-balanced split on non-PCP DP+TP/SP
+    topologies: the padded token count is split evenly with split points
+    aligned to the TP size, so both stages — and, under SP, every rank's
+    local stage shard — carry close to half the workload. When DP padding
+    makes the balanced split land past this rank's real tokens, the split
+    point is moved left to the largest TP-aligned boundary that still leaves
+    real tokens in both stages. If no such boundary exists, the step runs
+    unbatched; falling back to request boundaries would create stage lengths
+    that cannot be represented by equal SP shards.
+
+    Any non-token policy selects the request-boundary split. Unsupported token
+    topologies also retain the request-boundary result because startup
+    validation rejects that configuration before serving.
+
+    The returned policy string (``"token_balanced_tp"`` or
+    ``"request_boundary"``) describes the split actually applied to this
+    batch, so callers can adapt downstream handling without re-deriving the
+    decision; it is a string (not a boolean) so additional split policies
+    can be introduced without changing the contract.
+
+    Returns ``(None, policy)`` when the batch is too small to split; callers
+    should run such steps unbatched. Raises AssertionError if
+    ``num_ubatches`` is not 2.
+    """
+    assert num_ubatches == 2, "Async MoE ubatching currently supports 2 stages."
+    if split == "token" and enable_token_balanced_async_moe_split(vllm_config):
+        split_total = int(num_tokens_padded or num_tokens)
+        tp_size = int(vllm_config.parallel_config.tensor_parallel_size)
+        token_split_points = token_balanced_split_points(
+            split_total,
+            num_ubatches,
+            tp_size,
+        )
+        if token_split_points is not None:
+            largest_real_split = ((int(num_tokens) - 1) // tp_size) * tp_size
+            token_split_points[-1] = min(
+                token_split_points[-1],
+                largest_real_split,
+            )
+        if token_split_points is not None and token_split_points[-1] > 0:
+            ubatch_slices = create_ubatch_slices(
+                num_scheduled_tokens_np,
+                token_split_points,
+            )
+            if num_tokens_padded is not None and num_reqs_padded is not None:
+                ubatch_slices = pad_out_ubatch_slices(
+                    ubatch_slices,
+                    int(num_tokens_padded),
+                    int(num_reqs_padded),
+                )
+            return ubatch_slices, ASYNC_MOE_SPLIT_TOKEN_BALANCED_TP
+        return None, ASYNC_MOE_SPLIT_TOKEN_BALANCED_TP
+
+    return (
+        create_request_boundary_ubatch_slices(
+            num_scheduled_tokens_np,
+            num_ubatches=num_ubatches,
+        ),
+        ASYNC_MOE_SPLIT_REQUEST_BOUNDARY,
+    )
+
+
 def maybe_create_ubatch_slices(
     should_ubatch: bool,
     num_scheduled_tokens_per_request: np.ndarray,
@@ -191,10 +317,35 @@ def _make_metadata_with_slice(
     request_slice = ubatch_slice.request_slice
     token_slice = ubatch_slice.token_slice
     start_locs = attn_metadata.query_start_loc_cpu
+    num_parent_actual_tokens = int(attn_metadata.num_actual_tokens)
+    actual_token_stop = min(int(token_slice.stop), num_parent_actual_tokens)
+    num_actual_tokens = actual_token_stop - int(token_slice.start)
+    if num_actual_tokens <= 0:
+        raise ValueError(
+            "Async MoE stage must contain at least one real token; "
+            f"got token_slice={token_slice} and "
+            f"num_actual_tokens={num_parent_actual_tokens}",
+        )
+
+    # DP/SP padding extends the final stage's input token range without
+    # creating real requests. Exclude repeated padded request entries from
+    # query metadata while retaining the full input range for positions and
+    # slot_mapping.
+    actual_request_stop = int(
+        np.searchsorted(
+            start_locs.numpy(),
+            actual_token_stop,
+            side="left",
+        ),
+    )
+    request_slice = slice(
+        int(request_slice.start),
+        min(int(request_slice.stop), actual_request_stop),
+    )
     first_req = request_slice.start
     first_tok = token_slice.start
     last_req = request_slice.stop - 1
-    last_tok = token_slice.stop - 1
+    last_tok = actual_token_stop - 1
 
     assert start_locs[first_req] <= first_tok < start_locs[first_req + 1], (
         "Token slice start outside of first request"
@@ -222,7 +373,7 @@ def _make_metadata_with_slice(
     )
 
     if splits_last_request:
-        tokens_skipped = start_locs[last_req + 1] - token_slice.stop
+        tokens_skipped = start_locs[last_req + 1] - actual_token_stop
         query_start_loc[-1] -= tokens_skipped
         query_start_loc_cpu[-1] -= tokens_skipped
         seq_lens = seq_lens.clone()
@@ -242,7 +393,7 @@ def _make_metadata_with_slice(
     )
 
     num_requests = request_slice.stop - request_slice.start
-    num_actual_tokens = token_slice.stop - token_slice.start
+    num_input_tokens = int(token_slice.stop) - int(token_slice.start)
     max_query_len = int(
         torch.max(torch.abs(query_start_loc_cpu[1:] - query_start_loc_cpu[:-1])).item()
     )
@@ -250,7 +401,9 @@ def _make_metadata_with_slice(
         max_query_len = attn_metadata.max_query_len
 
     if len(attn_metadata.actual_seq_lengths_q) > 0:
-        actual_seq_lengths_q = attn_metadata.actual_seq_lengths_q[token_slice]
+        actual_seq_lengths_q = attn_metadata.actual_seq_lengths_q[
+            int(token_slice.start) : actual_token_stop
+        ]
         if max_num_tokens and len(actual_seq_lengths_q) == 0:
             actual_seq_lengths_q = list(
                 range(
@@ -277,7 +430,7 @@ def _make_metadata_with_slice(
         block_table_tensor=attn_metadata.block_table_tensor[request_slice],
         slot_mapping=attn_metadata.slot_mapping[token_slice],
         causal=attn_metadata.causal,
-        num_input_tokens=num_actual_tokens,
+        num_input_tokens=num_input_tokens,
         actual_seq_lengths_q=actual_seq_lengths_q,
         positions=attn_metadata.positions[token_slice],
         attn_state=attn_metadata.attn_state,
@@ -312,14 +465,19 @@ def split_attn_metadata(
 
 
 __all__ = [
+    "ASYNC_MOE_SPLIT_REQUEST_BOUNDARY",
+    "ASYNC_MOE_SPLIT_TOKEN_BALANCED_TP",
     "UBatchSlice",
     "UBatchSlices",
     "check_enable_ubatch",
+    "create_async_moe_ubatch_slices",
     "create_request_boundary_ubatch_slices",
     "create_ubatch_slices",
+    "enable_token_balanced_async_moe_split",
     "is_last_ubatch_empty",
     "maybe_create_ubatch_slices",
     "pad_out_ubatch_slices",
     "slice_query_start_locs",
     "split_attn_metadata",
+    "token_balanced_split_points",
 ]

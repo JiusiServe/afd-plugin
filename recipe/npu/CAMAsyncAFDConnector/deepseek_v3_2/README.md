@@ -69,13 +69,13 @@ for both sides.
 | `dynamicQuant` | Enables dynamic quantization metadata for CAM dispatch/combine. |
 | `async_moe_ubatching` | Enables AFD-managed MoE ubatching instead of vLLM native DBO. |
 | `async_moe_num_ubatches` | Number of async MoE stages. The current CAM async setup uses `2`. |
-| `async_moe_split` | Split policy for async MoE ubatches. This recipe uses request-level splitting. |
+| `async_moe_split` | Split policy for async MoE ubatches. `"request"` (default) splits at request boundaries; `"token"` splits the padded token workload into two TP-aligned stages of approximately equal size on non-PCP DP+TP/SP topologies. This recipe uses request-level splitting. |
 | `attn_ranks_per_dp` | Number of attention ranks per DP replica. With `PCP8`, this value is `8`. |
 
 Do not add `--enable-dbo`, `--dbo-decode-token-threshold`, or
 `--dbo-prefill-token-threshold` to these commands. Those flags enable vLLM
 native DBO, which CAM async rejects. `async_moe_ubatching` is AFD-managed,
-MoE-only request-boundary staging and is not vLLM native DBO.
+MoE-only two-stage staging and is not vLLM native DBO.
 
 ## Experiment Configuration
 

@@ -18,9 +18,11 @@ control plane.
 The supported deployment requires ``async=true``, eager execution, Ascend CAM
 operator packages, and matching topology/configuration on every rank. vLLM
 native DBO, ACL graph execution, and decode are not supported.
-Optional AFD-managed MoE ubatching is a separate two-stage request-boundary
-pipeline. See ``docs/npu/CAM_ASYNC_CONNECTOR_USER_GUIDE.md`` for configuration,
-rank derivation, launch guidance, and the full limitations.
+Optional AFD-managed MoE ubatching is a separate two-stage pipeline. It uses
+request boundaries without sequence parallelism and TP-aligned token stages
+when sequence parallelism is active. See
+``docs/npu/CAM_ASYNC_CONNECTOR_USER_GUIDE.md`` for configuration, rank
+derivation, launch guidance, and the full limitations.
 """
 
 from __future__ import annotations
@@ -65,6 +67,7 @@ AFD_ASYNC_CAM_GROUP_NAME = "afd_async_cam"
 CAM_COMM_ID = 0
 ATTN_RANKS_PER_DP_CONFIG_KEY = "attn_ranks_per_dp"
 ASYNC_MOE_REQUEST_SPLIT = "request"
+ASYNC_MOE_TOKEN_SPLIT = "token"
 
 _AFD_ASYNC_EXTRA_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
     {
@@ -85,10 +88,14 @@ class AFDAsyncExtraInfo(ConnectorExtraInfo):
 
     Attributes:
         dynamic_quant: Dynamic quantization mode accepted by CAM operators.
-        attn_ranks_per_dp: Number of Attention ranks in each data-parallel group.
-        async_moe_ubatching: Whether request-boundary async MoE ubatching is used.
+        attn_ranks_per_dp: Number of Attention ranks in each data-parallel
+            replica. This is the CAM Attention grouping width and is
+            independent of the FFN process's local TP size.
+        async_moe_ubatching: Whether two-stage async MoE ubatching is used.
         async_moe_num_ubatches: Number of stages used by async MoE ubatching.
-        async_moe_split: Boundary at which async MoE work is split.
+        async_moe_split: Boundary at which async MoE work is split: "request"
+            for request boundaries, "token" for TP-aligned token-balanced
+            split points (non-PCP DP+TP/SP topologies only).
     """
 
     dynamic_quant: int = 0
@@ -233,8 +240,9 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
 
         Communication resources are created collectively by
         ``init_afd_connector``. ``afd_role_rank`` must already contain the
-        process's role-local DP/PCP-derived offset; ``attn_ranks_per_dp`` is
-        used as the CAM Attention TP width.
+        process's role-local distributed-rank-derived offset;
+        ``attn_ranks_per_dp`` is used as the CAM Attention grouping width and
+        does not describe the FFN process's local TP topology.
         """
         super().__init__(rank, local_rank, vllm_config, afd_config)
         self._initialized = False

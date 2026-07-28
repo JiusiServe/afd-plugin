@@ -90,8 +90,9 @@ from afd_plugin.v1.worker.npu.pcp_debug import (
     snapshot_pcp_manager_state,
 )
 from afd_plugin.v1.worker.npu.ubatch_utils import (
+    ASYNC_MOE_SPLIT_TOKEN_BALANCED_TP,
     check_enable_ubatch,
-    create_request_boundary_ubatch_slices,
+    create_async_moe_ubatch_slices,
     maybe_create_ubatch_slices,
     pad_out_ubatch_slices,
     split_attn_metadata,
@@ -237,6 +238,14 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         kwargs: dict[str, Any],
         values: dict[str, Any],
     ) -> Any:
+        """Build attention metadata for async MoE ubatches.
+
+        PCP compatibility: request-boundary stages remain supported when
+        sequence parallelism is disabled. Under SP, every stage must have a
+        TP-divisible token count and must be explicitly re-sharded from the
+        full-batch rank-major layout. A request-boundary stage cannot guarantee
+        that invariant, so such steps safely run without async MoE ubatching.
+        """
         full_metadata = super()._build_attention_metadata(*args, **kwargs)
         self._afd_async_moe_ubatch_metadata = None
         self._afd_pending_metadata = self._build_afd_metadata(
@@ -248,20 +257,50 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         if num_scheduled_tokens_np is None:
             return full_metadata
 
-        ubatch_slices = create_request_boundary_ubatch_slices(
+        ubatch_slices, split_mode = create_async_moe_ubatch_slices(
+            self.vllm_config,
             num_scheduled_tokens_np,
+            num_tokens=int(values.get("num_tokens", 0)),
+            num_tokens_padded=values.get("num_tokens_padded"),
+            num_reqs_padded=values.get("num_reqs_padded"),
             num_ubatches=self.afd_async_extra_info.async_moe_num_ubatches,
+            split=self.afd_async_extra_info.async_moe_split,
         )
-        if ubatch_slices is None:
+        can_ubatch_all_dp_ranks = torch.tensor(
+            int(ubatch_slices is not None),
+            dtype=torch.int32,
+            device="cpu",
+        )
+        if int(self.vllm_config.parallel_config.data_parallel_size) > 1:
+            dist.all_reduce(
+                can_ubatch_all_dp_ranks,
+                op=dist.ReduceOp.MIN,
+                group=get_dp_group().cpu_group,
+            )
+        if not bool(can_ubatch_all_dp_ranks.item()):
+            logger.debug(
+                "AFD NPU async MoE ubatching disabled for this step because "
+                "at least one DP rank cannot build two valid stages",
+            )
+            return full_metadata
+        assert ubatch_slices is not None
+        use_sp_stage_resharding = bool(enable_sp(self.vllm_config))
+        if use_sp_stage_resharding and split_mode != ASYNC_MOE_SPLIT_TOKEN_BALANCED_TP:
+            logger.debug(
+                "AFD NPU async MoE ubatching disabled for this SP step "
+                "because split_mode=%s is not TP-aligned",
+                split_mode,
+            )
             return full_metadata
 
         logger.debug(
             "AFD NPU async MoE ubatch split; num_reqs=%s num_tokens=%s "
-            "num_scheduled_tokens=%s request_slices=%s token_slices=%s "
-            "stage_num_tokens=%s",
+            "num_scheduled_tokens=%s split_mode=%s request_slices=%s "
+            "token_slices=%s stage_num_tokens=%s",
             len(num_scheduled_tokens_np),
             int(values.get("num_tokens", 0)),
             num_scheduled_tokens_np.tolist(),
+            split_mode,
             [
                 (ubatch_slice.request_slice.start, ubatch_slice.request_slice.stop)
                 for ubatch_slice in ubatch_slices
@@ -289,6 +328,18 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         self._afd_async_moe_ubatch_metadata = {
             "attn_metadata": stage_attn_metadata,
             "ubatch_slices": ubatch_slices,
+            "use_sp_stage_resharding": use_sp_stage_resharding,
+            "stage_actual_token_counts": [
+                max(
+                    0,
+                    min(
+                        int(ubatch_slice.token_slice.stop),
+                        int(values.get("num_tokens", 0)),
+                    )
+                    - int(ubatch_slice.token_slice.start),
+                )
+                for ubatch_slice in ubatch_slices
+            ],
         }
         return full_metadata
 

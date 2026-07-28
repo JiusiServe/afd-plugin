@@ -19,7 +19,8 @@ prefill path when all of the following are true:
 - Attention performs MoE gating before dispatch to FFN ranks;
 - execution is eager and AFD async-DP is enabled; **`async=true` is required**;
 - the service is the prefill stage of a prefill/decode-disaggregated deployment;
-- optional MoE ubatching is managed by AFD as two request-boundary stages.
+- optional MoE ubatching is managed by AFD as two stages (request-boundary by
+  default; token-balanced is available on non-PCP DP+TP/SP topologies).
 
 CAM async currently does not support decode, ACL graph execution, or vLLM
 native DBO.
@@ -65,9 +66,11 @@ For `A = num_attention_ranks` and `F = num_ffn_ranks`:
 - world size is `A + F`;
 - each role rank must be unique and within its role's configured rank count.
 
-Attention ranks are normally `DP x PCP`. `attn_ranks_per_dp` is the PCP width
-and is also passed to CAM as its Attention TP width. For an Attention process
-whose first data-parallel rank is `d`, use:
+Attention ranks are `DP x PCP x TP`. `attn_ranks_per_dp` is the number of
+Attention ranks in one DP replica (`PCP x TP`) and is also passed to CAM as its
+Attention grouping width. It describes the Attention topology only; the FFN
+process may use a different local TP size. For an Attention process whose first
+data-parallel rank is `d`, use:
 
 ```text
 afd_role_rank = d * attn_ranks_per_dp
@@ -86,6 +89,22 @@ FFN EP8 process:              afd_role_rank = 0
 
 CAM world ranks: A0..A23 = 0..23, F0..F7 = 24..31
 ```
+
+For an Attention `DP3 x TP2` and FFN `DP2 x TP1 + EP2` deployment:
+
+```text
+num_attention_ranks = 3 * 2 = 6
+num_ffn_ranks = 2 * 1 = 2
+attn_ranks_per_dp = 2
+
+Attention role ranks: 0..5
+FFN role ranks:       0..1
+CAM world ranks:      A0..A5 = 0..5, F0..F1 = 6..7
+```
+
+Enable FlashComm1/SP only in the Attention process for this topology. The FFN
+process uses TP1 with FlashComm1/SP disabled and relies on CAM plus expert
+parallelism to route work across its two DP ranks.
 
 FFN ranks follow expert parallel placement. The runtime derives experts per rank
 from the model routed-expert count and `num_ffn_ranks`; use a model/topology in
@@ -148,10 +167,10 @@ spelling used by the recipes.
 | Field | Type | Default | Meaning and constraint |
 | --- | --- | --- | --- |
 | `dynamicQuant` | `int` | `0` | Enables CAM dispatch/combine dynamic-quant metadata. Only `0` and `1` are accepted. With `1`, FFN receives quantized routed activations plus scale tensors and must return output compatible with combine-send. |
-| `attn_ranks_per_dp` | `int` | `1` | Positive Attention rank count per DP replica, normally the PCP width. It affects Attention role-rank derivation and CAM TP size. |
+| `attn_ranks_per_dp` | `int` | `1` | Positive Attention rank count per DP replica (`PCP x TP`). It must match the Attention distributed layout and is passed to CAM as its Attention grouping width; it is independent of the FFN process's local TP size. |
 | `async_moe_ubatching` | `bool` | `false` | Enables AFD-managed asynchronous MoE-only ubatching. |
 | `async_moe_num_ubatches` | `int` | `2` | Number of asynchronous MoE stages. Only `2` is supported. |
-| `async_moe_split` | `str` | `"request"` | Stage split policy. The current async connector supports request-boundary splitting only. |
+| `async_moe_split` | `str` | `"request"` | Stage split policy. `"request"` (default) splits at request boundaries and is required on PCP topologies. `"token"` splits the padded prefill token workload into two TP-aligned stages of approximately equal size; the Attention process must use a non-PCP DP+TP/SP topology (`tensor_parallel_size > 1`, no prefill/decode context parallel). The FFN process consumes CAM-routed stage payloads and may independently use TP1. |
 
 ## Native DBO and async MoE ubatching are different
 
@@ -172,10 +191,19 @@ synchronous connector deployments.
 ### AFD-managed asynchronous MoE ubatching
 
 `async_moe_ubatching` pipelines only the MoE portion of CAM async execution.
-Requests are divided at request boundaries into exactly two stages. Each stage
-keeps its own pending Attention routing metadata so dispatch and combine remain
-paired while Attention and FFN work overlap. It does not enable vLLM native DBO
-and does not use the DBO threshold flags.
+Requests are divided into exactly two stages. With the default
+`async_moe_split="request"` the split happens at request boundaries, which is
+required on PCP topologies. With `async_moe_split="token"` the padded prefill
+token workload is split into two TP-aligned stages of approximately equal
+size, which is useful on non-PCP DP+TP/SP topologies where request lengths
+can be skewed. Sequence-parallel deployments must use the token policy:
+request boundaries are not guaranteed to form equal TP shards, so a request
+split runs safely without MoE stage pipelining for that step. If any DP rank
+has too few real tokens for two TP-aligned stages, all DP ranks make the same
+per-step unbatched decision to keep CAM collective call counts consistent.
+Each stage keeps its own pending Attention routing metadata so dispatch and
+combine remain paired while Attention and FFN work overlap. It does not enable
+vLLM native DBO and does not use the DBO threshold flags.
 
 When `async_moe_ubatching=true`, all roles must set:
 
@@ -230,8 +258,13 @@ available: `async_dispatch_send`, `async_dispatch_recv`,
 - Eager execution only; ACL graph mode is unsupported.
 - Prefill stage only in a prefill/decode-disaggregated deployment.
 - vLLM native DBO/ubatching is unsupported.
-- AFD-managed MoE ubatching supports exactly two request-boundary stages.
-- Decode context parallel metadata is unsupported with async MoE ubatching.
+- AFD-managed MoE ubatching supports exactly two stages; request-boundary
+  splitting is the default, and token-balanced splitting is available on
+  non-PCP Attention DP+TP/SP topologies. Sequence parallelism requires the
+  token policy for stage pipelining. The FFN topology is independent and may
+  use TP1.
+- Decode context parallel metadata is unsupported on Attention with async MoE
+  ubatching.
 - Routed experts should divide evenly across FFN ranks.
 - Other Ascend hardware, full unmodified DeepSeek-V3.2, different model
   families, CAM/CANN/container versions, cross-version combinations, and

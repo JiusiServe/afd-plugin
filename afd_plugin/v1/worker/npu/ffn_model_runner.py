@@ -272,6 +272,11 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         return rank_ffn_output
 
     def _ffn_forward_connector_driven(self) -> Any:
+        # CAM carries the authoritative layer index and token counts, but its
+        # dispatch-recv metadata has no stage identifier. Stage pairing is
+        # therefore FIFO in CAM collective-call order; this local value is only
+        # a placeholder for the per-item AFD context and must not be used to
+        # infer how Attention split the current scheduler step.
         stage_idx = 0
         rank_ffn_output = None
         recv_work_item = getattr(self.connector, "recv_ffn_work_item", None)

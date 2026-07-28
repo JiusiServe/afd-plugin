@@ -191,7 +191,18 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
     assert "dense_end_layer = min(model.end_layer, first_moe_layer)" in (
         async_ubatch_forward
     )
-    assert "stage_hidden_states = [" in async_ubatch_forward
+    assert "stage_hidden_states," in async_ubatch_forward
+    assert "build_async_moe_stage_inputs(" in async_ubatch_forward
+    assert async_ubatch_forward.index(
+        "build_async_moe_stage_inputs(",
+    ) < async_ubatch_forward.index(
+        "for stage_idx in range(len(ubatch_slices)):",
+    )
+    assert (
+        "stage_hidden_states[stage_idx],\n"
+        "                    stage_residual[stage_idx],\n"
+        "                ) = layer("
+    ) in async_ubatch_forward
     assert (
         "moe_layers = list(islice(model.layers, moe_start_layer, model.end_layer))"
         in async_ubatch_forward
@@ -203,7 +214,7 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
         async_ubatch_forward
     )
     assert "def flush_pending_ffn_outputs()" not in async_ubatch_forward
-    assert "torch.cat(stage_hidden_states, dim=0)" in async_ubatch_forward
+    assert "restore_async_moe_stage_outputs(" in async_ubatch_forward
     assert "_run_async_moe_ubatch_layer(" not in executor_source
     assert "_recv_async_moe_ubatch_outputs(" not in executor_source
     assert "forward_context.attn_metadata = attn_metadata[stage_idx]" in executor_source
@@ -231,6 +242,81 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
     assert async_ubatch_forward.index(
         "send_stage_attention(\n        last_layer,\n        1",
     ) < (async_ubatch_forward.rindex("recv_stage_ffn(1)"))
+
+
+def test_async_moe_stage_context_uses_global_input_and_local_transfer_counts():
+    torch = pytest.importorskip("torch")
+    from vllm.v1.worker.ubatch_utils import UBatchSlice
+
+    from afd_plugin.connectors import AFDForwardContextMetadata
+    from afd_plugin.model_executor.models.npu.deepseek_v2_async_cam_forward import (
+        _use_async_moe_ubatch_forward_context,
+    )
+
+    parent_afd_metadata = AFDForwardContextMetadata(
+        tokens_start_loc=[0],
+        requests_start_loc=[0],
+        stage_idx=0,
+        connector=object(),
+        tokens_lens=[56],
+        num_stages=1,
+        transaction_id=1,
+        tokens_unpadded_lens=[40],
+    )
+    parent_mask = torch.ones(112, dtype=torch.bool)
+    forward_context = SimpleNamespace(
+        attn_metadata="parent-attention",
+        additional_kwargs={"afd_metadata": parent_afd_metadata, "keep": "value"},
+        ubatch_idx=0,
+        num_ubatches=1,
+        num_tokens=112,
+        pad_size=72,
+        padded_length=112,
+        max_tokens_across_dp=112,
+        padded_num_tokens=112,
+        mc2_mask=parent_mask,
+        dbo_enabled=False,
+    )
+    global_slices = [
+        UBatchSlice(slice(0, 1), slice(0, 38)),
+        UBatchSlice(slice(0, 1), slice(38, 112)),
+    ]
+    local_slices = [
+        UBatchSlice(slice(0, 1), slice(0, 19)),
+        UBatchSlice(slice(0, 1), slice(19, 56)),
+    ]
+    sidecar = {
+        "attn_metadata": ["stage-0-attention", "stage-1-attention"],
+        "ubatch_slices": global_slices,
+        "sp_local_stage_slices": local_slices,
+        "stage_actual_token_counts": [38, 2],
+        "sp_local_stage_actual_token_counts": [19, 2],
+    }
+
+    with _use_async_moe_ubatch_forward_context(
+        forward_context=forward_context,
+        parent_afd_metadata=parent_afd_metadata,
+        async_moe_ubatch_metadata=sidecar,
+        stage_idx=1,
+    ):
+        assert forward_context.attn_metadata == "stage-1-attention"
+        assert forward_context.num_tokens == 74
+        assert forward_context.pad_size == 0
+        assert forward_context.padded_length == 74
+        assert forward_context.padded_num_tokens == 74
+        assert forward_context.dbo_enabled is True
+        assert forward_context.mc2_mask[:2].all()
+        assert not forward_context.mc2_mask[2:].any()
+        stage_afd_metadata = forward_context.additional_kwargs["afd_metadata"]
+        assert stage_afd_metadata.tokens_lens == [37]
+        assert stage_afd_metadata.tokens_unpadded_lens == [2]
+        assert forward_context.additional_kwargs["keep"] == "value"
+
+    assert forward_context.attn_metadata == "parent-attention"
+    assert forward_context.num_tokens == 112
+    assert forward_context.pad_size == 72
+    assert forward_context.mc2_mask is parent_mask
+    assert forward_context.dbo_enabled is False
 
 
 def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():

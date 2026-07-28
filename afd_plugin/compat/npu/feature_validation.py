@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from afd_plugin.config import (
@@ -17,6 +18,8 @@ if TYPE_CHECKING:
     from vllm.config import VllmConfig
 
     from afd_plugin.connectors.base import ConnectorExtraInfo
+
+logger = logging.getLogger(__name__)
 
 
 def fail_if_unsupported_npu_afd_features(
@@ -111,7 +114,13 @@ def _fail_if_unsupported_npu_async_moe_ubatching_features(
     num_ubatches: int,
     split: str,
 ) -> None:
-    from afd_plugin.connectors.npu.async_cam import ASYNC_MOE_REQUEST_SPLIT
+    from afd_plugin.connectors.npu.async_cam import (
+        ASYNC_MOE_REQUEST_SPLIT,
+        ASYNC_MOE_TOKEN_SPLIT,
+    )
+    from afd_plugin.v1.worker.npu.ubatch_utils import (
+        enable_token_balanced_async_moe_split,
+    )
 
     parallel_config = vllm_config.parallel_config
     if not afd_config.compute_gate_on_attention:
@@ -123,14 +132,34 @@ def _fail_if_unsupported_npu_async_moe_ubatching_features(
             "async_moe_ubatching currently supports exactly two stages; "
             f"got async_moe_num_ubatches={num_ubatches}",
         )
-    if split != ASYNC_MOE_REQUEST_SPLIT:
+    if split not in (ASYNC_MOE_REQUEST_SPLIT, ASYNC_MOE_TOKEN_SPLIT):
         raise RuntimeError(
-            "async_moe_ubatching currently supports only request-boundary split; "
+            "async_moe_split must be 'request' or 'token'; "
             f"got async_moe_split={split!r}",
         )
+    # The Attention process owns stage planning and SP layout conversion.
+    # FFN processes consume the resulting stage payloads, so their independent
+    # TP/CP topology must not be used to validate the Attention split policy.
+    if afd_config.is_ffn_server:
+        return
     if int(parallel_config.decode_context_parallel_size) > 1:
         raise RuntimeError(
             "async_moe_ubatching does not support decode context parallel metadata yet",
+        )
+    token_split_capable = enable_token_balanced_async_moe_split(vllm_config)
+    if split == ASYNC_MOE_TOKEN_SPLIT:
+        if not token_split_capable:
+            raise RuntimeError(
+                "async_moe_split='token' requires a non-PCP Attention DP+TP/SP "
+                "topology (Attention tensor_parallel_size > 1, no "
+                "prefill/decode context parallel)",
+            )
+    elif split == ASYNC_MOE_REQUEST_SPLIT and token_split_capable:
+        logger.warning(
+            "async_moe_ubatching runs on a non-PCP DP+TP/SP topology with "
+            "async_moe_split='request'; request lengths can be skewed, "
+            "consider async_moe_split='token' for token-balanced "
+            "microbatches",
         )
 
 
