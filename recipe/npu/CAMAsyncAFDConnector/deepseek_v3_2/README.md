@@ -141,6 +141,9 @@ vllm bench serve \
 ### Baseline
 
 - Topology: `DP4PCP8`.
+- Forced expert balancing is enabled through `additional_config`. The baseline
+  leaves `force_load_balance_topn_per_rank` unset so all routed experts
+  participate.
 
 <details>
 <summary>Node0 Deployment Command (DP4PCP8)</summary>
@@ -180,7 +183,10 @@ vllm serve /path/to/DeepSeek-V3.2 \
   --trust-remote-code \
   --gpu-memory-utilization 0.90 \
   --no-enable-prefix-caching \
-  --enable-expert-parallel
+  --enable-expert-parallel \
+  --additional-config '{
+    "enable_force_load_balance": true
+  }'
 ```
 
 </details>
@@ -224,7 +230,10 @@ vllm serve /path/to/DeepSeek-V3.2 \
   --trust-remote-code \
   --gpu-memory-utilization 0.90 \
   --no-enable-prefix-caching \
-  --enable-expert-parallel
+  --enable-expert-parallel \
+  --additional-config '{
+    "enable_force_load_balance": true
+  }'
 ```
 </details>
 
