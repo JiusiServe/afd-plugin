@@ -32,6 +32,7 @@ from afd_plugin.connectors import (
     AFDForwardContextMetadata,
     AFDTransferContext,
 )
+from afd_plugin.connectors.npu.camp2p import CAMP2PExtraInfo
 from afd_plugin.v1.worker.attention_model_runner import (
     _resolve_world_ranks,
     _with_dp_derived_afd_rank,
@@ -76,6 +77,20 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             self.afd_config,
         )
         self.num_layers = int(self.model_config.hf_config.num_hidden_layers)
+        connector_extra_info = self.connector.extra_info
+        self.ffn_multistream_enabled = (
+            isinstance(connector_extra_info, CAMP2PExtraInfo)
+            and connector_extra_info.is_ffn_multistream
+        )
+        configured_ubatches = self.parallel_config.num_ubatches or 1
+        self.ffn_comm_stream = (
+            torch.npu.Stream(device=device) if self.ffn_multistream_enabled else None
+        )
+        self.ffn_comm_events = (
+            [torch.npu.Event() for _ in range(configured_ubatches)]
+            if self.ffn_multistream_enabled
+            else []
+        )
         self.use_aclgraph = _use_npu_aclgraph(vllm_config, self)
         self._acl_graphs: dict[tuple, dict[str, Any]] = {}
         self.graph_pool = (
@@ -223,6 +238,11 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         )
         num_tokens = _ffn_token_count_for_rank(self.connector, num_tokens_across_dp)
         rank_ffn_output = None
+        multistream_enabled = self.ffn_multistream_enabled and num_stages > 1
+        required_event_count = max(stage_ids) + 1
+        while multistream_enabled and len(self.ffn_comm_events) < required_event_count:
+            self.ffn_comm_events.append(torch.npu.Event())
+        event_recorded = [False] * required_event_count
 
         # Build DP-level token counts for vLLM's forward context.
         # num_tokens_across_dp has ffn_size entries (AFD-level, one per
@@ -242,7 +262,12 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             aclgraph_runtime_mode=aclgraph_runtime_mode,
         ) as forward_context:
             for layer_idx in _ffn_layer_indices(self):
+                layer_multistream = multistream_enabled and layer_idx > 0
                 for stage_idx in stage_ids:
+                    if multistream_enabled and event_recorded[stage_idx]:
+                        self.ffn_comm_events[stage_idx].wait(
+                            torch.npu.current_stream(),
+                        )
                     payload = self.connector.recv_attn_output(
                         ubatch_idx=stage_idx,
                         layer_idx=layer_idx,
@@ -268,7 +293,20 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                         rank_ffn_output,
                         context,
                         stage_idx=stage_idx,
+                        multistream_enable=layer_multistream,
+                        comm_stream=self.ffn_comm_stream,
+                        comm_event=self.ffn_comm_events[stage_idx]
+                        if layer_multistream
+                        else None,
                     )
+                    if layer_multistream:
+                        event_recorded[stage_idx] = True
+
+            if multistream_enabled:
+                current_stream = torch.npu.current_stream()
+                for stage_idx in stage_ids:
+                    if event_recorded[stage_idx]:
+                        self.ffn_comm_events[stage_idx].wait(current_stream)
         return rank_ffn_output
 
     def _ffn_forward_connector_driven(self) -> Any:
@@ -435,20 +473,27 @@ def _send_ffn_output(
     context: AFDTransferContext,
     *,
     stage_idx: int,
+    multistream_enable: bool = False,
+    comm_stream=None,
+    comm_event=None,
 ) -> None:
-    if not isinstance(ffn_output, AFDF2ATransferPayload):
-        connector.send_ffn_output(
-            ffn_output,
-            context,
-            ubatch_idx=stage_idx,
-        )
-        return
-
     kwargs: dict[str, object] = {"ubatch_idx": stage_idx}
-    if ffn_output.shared_output is not None:
-        kwargs["expand_x_shared"] = ffn_output.shared_output
+    if multistream_enable:
+        kwargs.update(
+            multistream_enable=True,
+            comm_stream=comm_stream,
+            comm_event=comm_event,
+        )
+
+    if isinstance(ffn_output, AFDF2ATransferPayload):
+        output_to_send = ffn_output.routed_output
+        if ffn_output.shared_output is not None:
+            kwargs["expand_x_shared"] = ffn_output.shared_output
+    else:
+        output_to_send = ffn_output
+
     connector.send_ffn_output(
-        ffn_output.routed_output,
+        output_to_send,
         context,
         **kwargs,
     )
