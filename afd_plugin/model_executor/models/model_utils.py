@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from copy import copy
+from copy import deepcopy
 from typing import TYPE_CHECKING
 
 from afd_plugin import _DEEPSEEK_MODEL_REGISTRATIONS
@@ -18,15 +18,11 @@ def get_afd_model_config(model_config: ModelConfig) -> ModelConfig:
 
     for model_arch in model_config.hf_config.architectures:
         if model_arch in _DEEPSEEK_MODEL_REGISTRATIONS:
-            afd_model_config = copy(model_config)
-            afd_hf_config = copy(model_config.hf_config)
-            afd_hf_config.architectures = [f"AFD{model_arch}"]
-            afd_model_config.hf_config = afd_hf_config
-
-            # Pure-text ModelConfig uses the same object for hf_config and
-            # hf_text_config. Preserve that identity: vLLM Ascend uses it to
-            # distinguish text models from multimodal models.
-            if model_config.hf_text_config is model_config.hf_config:
-                afd_model_config.hf_text_config = afd_hf_config
+            # deepcopy preserves aliasing within the copied object graph, so
+            # the pure-text identity hf_text_config is hf_config is retained
+            # automatically. vLLM Ascend uses that identity to distinguish
+            # text models from multimodal models.
+            afd_model_config = deepcopy(model_config)
+            afd_model_config.hf_config.architectures = [f"AFD{model_arch}"]
             return afd_model_config
     return model_config

@@ -77,8 +77,10 @@ def test_afd_model_config_preserves_nested_text_config():
 
     afd_model_config = get_afd_model_config(model_config)
 
+    # deepcopy privatizes the whole graph; a genuinely distinct nested
+    # hf_text_config stays distinct from hf_config.
     assert afd_model_config.hf_config is not model_config.hf_config
-    assert afd_model_config.hf_text_config is hf_text_config
+    assert afd_model_config.hf_text_config is not hf_text_config
     assert afd_model_config.hf_text_config is not afd_model_config.hf_config
 
 
