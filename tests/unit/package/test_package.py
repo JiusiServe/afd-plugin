@@ -50,16 +50,38 @@ def test_afd_model_config_uses_private_architecture_copy():
     pytest.importorskip("vllm")
     from afd_plugin.model_executor.models.model_utils import get_afd_model_config
 
+    hf_config = SimpleNamespace(architectures=["DeepseekV2ForCausalLM"])
     model_config = SimpleNamespace(
-        hf_config=SimpleNamespace(architectures=["DeepseekV2ForCausalLM"]),
+        hf_config=hf_config,
+        hf_text_config=hf_config,
     )
 
     afd_model_config = get_afd_model_config(model_config)
 
     assert afd_model_config is not model_config
     assert afd_model_config.hf_config is not model_config.hf_config
+    assert afd_model_config.hf_text_config is afd_model_config.hf_config
     assert afd_model_config.hf_config.architectures == ["AFDDeepseekV2ForCausalLM"]
     assert model_config.hf_config.architectures == ["DeepseekV2ForCausalLM"]
+
+
+def test_afd_model_config_preserves_nested_text_config():
+    pytest.importorskip("vllm")
+    from afd_plugin.model_executor.models.model_utils import get_afd_model_config
+
+    hf_text_config = SimpleNamespace()
+    model_config = SimpleNamespace(
+        hf_config=SimpleNamespace(architectures=["DeepseekV2ForCausalLM"]),
+        hf_text_config=hf_text_config,
+    )
+
+    afd_model_config = get_afd_model_config(model_config)
+
+    # deepcopy privatizes the whole graph; a genuinely distinct nested
+    # hf_text_config stays distinct from hf_config.
+    assert afd_model_config.hf_config is not model_config.hf_config
+    assert afd_model_config.hf_text_config is not hf_text_config
+    assert afd_model_config.hf_text_config is not afd_model_config.hf_config
 
 
 def test_entry_point_is_registered():
