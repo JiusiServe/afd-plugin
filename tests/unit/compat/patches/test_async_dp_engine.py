@@ -38,6 +38,7 @@ def _config(
             local_engines_only=False,
             data_parallel_backend="mp",
             enable_elastic_ep=False,
+            numa_bind=False,
         ),
         kv_transfer_config=None,
         needs_dp_coordinator=True,
@@ -160,6 +161,7 @@ def _install_fake_vllm_engine(monkeypatch: pytest.MonkeyPatch):
     utils_module.CoreEngineProcManager = CoreEngineProcManager
     utils_module.CoreEngineActorManager = CoreEngineActorManager
     utils_module.get_engine_client_zmq_addr = lambda *_args: "handshake"
+    utils_module.get_open_port = lambda: 12345
     utils_module.get_open_zmq_ipc_path = lambda: "ipc"
     utils_module.zmq_socket_ctx = zmq_socket_ctx
     utils_module.zmq = SimpleNamespace(ROUTER="ROUTER")

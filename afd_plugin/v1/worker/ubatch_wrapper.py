@@ -7,6 +7,7 @@ This runtime module depends on vLLM's native ubatching stack.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
@@ -24,28 +25,48 @@ from afd_plugin.connectors import AFDDPMetadata, AFDForwardContextMetadata
 class AFDUBatchWrapper(UBatchWrapper):
     """Thin AFD-aware subclass of vLLM's native ``UBatchWrapper``."""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        runnable: Callable,
+        vllm_config: VllmConfig,
+        runtime_mode: CUDAGraphMode,
+        device: torch.cuda.device,
+    ):
+        super().__init__(runnable, vllm_config, runtime_mode, device)
         self._afd_context_provider: Any | None = None
 
     def configure_afd_context_provider(self, provider: Any) -> None:
         self._afd_context_provider = provider
 
+    # Patch reason: native SM partitioning conflicts with AFD connector work.
+    # Patch functionality: disable native SM partitioning only for active AFD.
+    # Signature: matches upstream; no added parameters.
+    # Upstream: vLLM v0.26.0, vllm/v1/worker/gpu_ubatch_wrapper.py
+    # Commit: 568afb3a13806beb53bb2e6bd518269357b237c0
     @staticmethod
     def _create_sm_control_context(
         vllm_config: VllmConfig,
     ) -> AbstractContextManager[None]:
+        # ### PATCH START: leave all SMs visible to AFD compute and communication.
         if is_afd_active(vllm_config):
             return nullcontext()
+        # ### PATCH END: leave all SMs visible to AFD compute and communication.
         return UBatchWrapper._create_sm_control_context(vllm_config)
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+    # Patch reason: native ubatch contexts do not carry AFD transfer metadata.
+    # Patch functionality: install per-ubatch AFD context and control-plane
+    # metadata while preserving native capture, replay, and execution behavior.
+    # Signature: matches upstream; no added parameters.
+    # Upstream: vLLM v0.26.0, vllm/v1/worker/gpu_ubatch_wrapper.py
+    # Commit: 568afb3a13806beb53bb2e6bd518269357b237c0
+    def __call__(self, *args, **kwargs):
         forward_context = get_forward_context()
         ubatch_slices = forward_context.ubatch_slices
         if ubatch_slices is None:
             return super().__call__(*args, **kwargs)
 
         cudagraph_runtime_mode = forward_context.cudagraph_runtime_mode
+        # ### PATCH START: install AFD metadata before splitting ubatches.
         parent_additional_kwargs = dict(forward_context.additional_kwargs)
         if "afd_metadata" not in parent_additional_kwargs:
             self._install_missing_afd_metadata(forward_context, ubatch_slices)
@@ -56,6 +77,7 @@ class AFDUBatchWrapper(UBatchWrapper):
             self.vllm_config,
             ubatch_slices,
         )
+        # ### PATCH END: install AFD metadata before splitting ubatches.
 
         if (
             num_tokens not in self.cudagraphs
@@ -125,20 +147,26 @@ class AFDUBatchWrapper(UBatchWrapper):
                 ubatch_slices,
             )
 
+    # Patch reason: native per-ubatch contexts omit AFD transfer metadata.
+    # Patch functionality: clone the parent AFD context into each native ubatch.
+    # Signature: matches upstream; no added parameters.
+    # Upstream: vLLM v0.26.0, vllm/v1/worker/gpu_ubatch_wrapper.py
+    # Commit: 568afb3a13806beb53bb2e6bd518269357b237c0
     def _make_ubatch_metadata(
         self,
-        ubatch_slices: Any,
-        attn_metadata: Any,
-        slot_mapping: Any,
-        input_ids: Any,
-        positions: Any,
-        inputs_embeds: Any,
-        intermediate_tensors: Any,
-        compute_stream: Any,
-        dp_metadata: list[DPMetadata | AFDDPMetadata],
-        batch_descriptor: Any,
-        cudagraph_runtime_mode: Any,
+        ubatch_slices,
+        attn_metadata,
+        slot_mapping,
+        input_ids,
+        positions,
+        inputs_embeds,
+        intermediate_tensors,
+        compute_stream,
+        dp_metadata,
+        batch_descriptor,
+        cudagraph_runtime_mode,
     ) -> list[UbatchMetadata]:
+        # ### PATCH START: resolve and validate the parent AFD context.
         parent_forward_context = get_forward_context()
         parent_additional_kwargs = dict(parent_forward_context.additional_kwargs)
         afd_metadata = parent_additional_kwargs.get("afd_metadata")
@@ -165,10 +193,12 @@ class AFDUBatchWrapper(UBatchWrapper):
                 "AFDUBatchWrapper requires "
                 "ForwardContext.additional_kwargs['afd_metadata']",
             )
+        # ### PATCH END: resolve and validate the parent AFD context.
 
         forward_contexts = []
         has_slot_mapping = slot_mapping and isinstance(slot_mapping, list)
         for idx, _ubatch_slice in enumerate(ubatch_slices):
+            # ### PATCH START: attach one AFD context to each native ubatch.
             ubatch_afd_metadata = build_ubatch_afd_metadata(
                 afd_metadata,
                 ubatch_slices,
@@ -188,6 +218,7 @@ class AFDUBatchWrapper(UBatchWrapper):
                     ),
                 ),
             )
+            # ### PATCH END: attach one AFD context to each native ubatch.
 
         ubatch_ctxs = make_ubatch_contexts(
             num_micro_batches=len(ubatch_slices),

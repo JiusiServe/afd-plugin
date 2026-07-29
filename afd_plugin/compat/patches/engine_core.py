@@ -74,6 +74,7 @@ def __init__(
 
     # Setup Model.
     self.model_executor = executor_class(vllm_config)
+    self._pooler_config_logged = False
     if executor_fail_callback is not None:
         self.model_executor.register_failure_callback(executor_fail_callback)
 
@@ -98,10 +99,9 @@ def __init__(
             )
             vllm_config.scheduler_config.enable_chunked_prefill = False
 
-    scheduler_block_size = (
-        vllm_config.cache_config.block_size
-        * vllm_config.parallel_config.decode_context_parallel_size
-        * vllm_config.parallel_config.prefill_context_parallel_size
+    scheduler_block_size, hash_block_size = core_module.resolve_kv_cache_block_sizes(
+        kv_cache_config,
+        vllm_config,
     )
 
     self.scheduler = Scheduler(
@@ -111,8 +111,12 @@ def __init__(
         include_finished_set=include_finished_set,
         log_stats=self.log_stats,
         block_size=scheduler_block_size,
+        hash_block_size=hash_block_size,
     )
     self.use_spec_decode = vllm_config.speculative_config is not None
+    self.check_for_draft_tokens = (
+        self.use_spec_decode or vllm_config.model_config.is_diffusion
+    )
     if self.scheduler.connector is not None:  # type: ignore
         self.model_executor.init_kv_output_aggregator(self.scheduler.connector)  # type: ignore
 
@@ -132,19 +136,19 @@ def __init__(
 
         if xfer_handshake_metadata:
             # xfer_handshake_metadata is list of dicts from workers
-            # Each dict already has structure {tp_rank: metadata}
+            # Each dict already has structure {(pp_rank, tp_rank): metadata}
             # Merge all worker dicts into a single dict
-            content: dict[int, Any] = {}
+            content: dict[tuple[int, int], Any] = {}
             for worker_dict in xfer_handshake_metadata:
                 if worker_dict is not None:
                     content.update(worker_dict)
-            kv_connector.set_xfer_handshake_metadata(content)
+            kv_connector.set_xfer_handshake_metadata_pp_aware(content)
 
     # Setup batch queue for pipeline parallelism.
     # Batch queue for scheduled batches. This enables us to asynchronously
     # schedule and execute batches, and is required by pipeline parallelism
     # to eliminate pipeline bubbles.
-    self.batch_queue_size = self.model_executor.max_concurrent_batches
+    self.batch_queue_size = vllm_config.max_concurrent_batches
     self.batch_queue = None
     if self.batch_queue_size > 1:
         core_module.logger.debug(
@@ -167,7 +171,8 @@ def __init__(
         core_module.init_none_hash(caching_hash_fn)
 
         self.request_block_hasher = core_module.get_request_block_hasher(
-            scheduler_block_size, caching_hash_fn
+            hash_block_size,
+            caching_hash_fn,
         )
 
     self.step_fn = self.step if self.batch_queue is None else self.step_with_batch_queue
@@ -204,14 +209,21 @@ def shutdown(self):
             model_executor.shutdown()
         with suppress(Exception):
             gc.unfreeze()
+        core_module.cleanup_dist_env_and_memory()
         return
     # ### PATCH END: AFD FFN EngineCore shutdown
 
+    core_module.logger.debug_once("[shutdown] EngineCore: tearing down local resources")
     self.structured_output_manager.clear_backend()
     if self.model_executor:
         self.model_executor.shutdown()
     if self.scheduler:
         self.scheduler.shutdown()
+    gc.unfreeze()
+    core_module.cleanup_dist_env_and_memory()
+    core_module.logger.debug_once(
+        "[shutdown] EngineCore: local resource teardown complete"
+    )
 
 
 # Patch reason: late-loaded AFD FFN EngineCore paths may ask for KV cache setup
@@ -230,8 +242,26 @@ def _initialize_kv_caches(self, vllm_config: VllmConfig) -> KVCacheConfig:
 
     start = time.time()
 
+    core_module.register_all_kvcache_specs(vllm_config)
+
     # Get all kv cache needed by the model
     kv_cache_specs = self.model_executor.get_kv_cache_specs()
+
+    if any(
+        getattr(spec, "non_causal", False)
+        for worker_specs in kv_cache_specs
+        for spec in worker_specs.values()
+    ):
+        if vllm_config.scheduler_config.enable_chunked_prefill:
+            core_module.logger.info(
+                "Disabling chunked prefill: model has non-causal attention layers."
+            )
+            vllm_config.scheduler_config.enable_chunked_prefill = False
+        if vllm_config.cache_config.enable_prefix_caching:
+            core_module.logger.info(
+                "Disabling prefix caching: model has non-causal attention layers."
+            )
+            vllm_config.cache_config.enable_prefix_caching = False
 
     has_kv_cache = any(kv_cache_spec for kv_cache_spec in kv_cache_specs)
     if has_kv_cache:
@@ -276,6 +306,12 @@ def _initialize_kv_caches(self, vllm_config: VllmConfig) -> KVCacheConfig:
         vllm_config.cache_config.block_size = min(
             g.kv_cache_spec.block_size for g in kv_cache_groups
         )
+        num_tokens, max_concurrency = core_module.get_kv_cache_capacity(
+            vllm_config,
+            scheduler_kv_cache_config,
+        )
+        vllm_config.cache_config.kv_cache_size_tokens = num_tokens
+        vllm_config.cache_config.kv_cache_max_concurrency = max_concurrency
 
     vllm_config.validate_block_size()
 
@@ -283,11 +319,30 @@ def _initialize_kv_caches(self, vllm_config: VllmConfig) -> KVCacheConfig:
     self.model_executor.initialize_from_config(kv_cache_configs)
 
     elapsed = time.time() - start
-    core_module.logger.info_once(
-        "init engine (profile, create kv cache, warmup model) took %.2f seconds",
-        elapsed,
-        scope="local",
-    )
+    compile_time = vllm_config.compilation_config.compilation_time
+    encoder_compile_time = vllm_config.compilation_config.encoder_compilation_time
+    if encoder_compile_time > 0:
+        core_module.logger.info_once(
+            "init engine (profile, create kv cache, warmup model) took "
+            "%.2f s (compilation: %.2f s — language_model: %.2f s, "
+            "encoder: %.2f s)",
+            elapsed,
+            compile_time + encoder_compile_time,
+            compile_time,
+            encoder_compile_time,
+        )
+    elif compile_time > 0:
+        core_module.logger.info_once(
+            "init engine (profile, create kv cache, warmup model) took "
+            "%.2f s (compilation: %.2f s)",
+            elapsed,
+            compile_time,
+        )
+    else:
+        core_module.logger.info_once(
+            "init engine (profile, create kv cache, warmup model) took %.2f s",
+            elapsed,
+        )
     return scheduler_kv_cache_config
 
 
@@ -306,10 +361,14 @@ def run_busy_loop(self):
     # ### PATCH END: AFD FFN connector busy loop
 
     if isinstance(self, core_module.DPEngineCoreProc):
+        """Core busy loop of the EngineCore for data parallel case."""
+
         # Loop until process is sent a SIGINT or SIGTERM
         while self._handle_shutdown():
             # 1) Poll the input queue until there is work to do.
             self._process_input_queue()
+            # Publish request counts before and after GPU step to ensure freshness.
+            self._maybe_publish_request_counts()
 
             if self.eep_scaling_state is not None:
                 _ = self.eep_scaling_state.progress()
@@ -328,9 +387,21 @@ def run_busy_loop(self):
                     # All engines are idle.
                     continue
 
-                # We are in a running state and so must execute a dummy pass
-                # if the model didn't execute any ready requests.
-                self.execute_dummy_batch()
+                # Execute a dummy pass when no ready requests ran, unless the
+                # engine is sleeping.
+                elif not self.model_executor.is_sleeping:
+                    with self.capture_iteration_details(None) as iteration_details:
+                        self.execute_dummy_batch()
+                    if iteration_details is not None and not self.has_coordinator:
+                        stats = self._make_iteration_details_stats(iteration_details)
+                        self.output_queue.put_nowait(
+                            (
+                                0,
+                                core_module.EngineCoreOutputs(
+                                    scheduler_stats=stats,
+                                ),
+                            )
+                        )
 
             # 3) All-reduce operation to determine global unfinished reqs.
             self.engines_running = self._has_global_unfinished_reqs(

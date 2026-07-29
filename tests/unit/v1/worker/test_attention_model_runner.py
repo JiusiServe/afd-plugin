@@ -8,6 +8,7 @@ import pytest
 pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
+from vllm.config import CUDAGraphMode
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
 import afd_plugin.model_executor.models.forward_context as afd_forward_context
@@ -580,20 +581,50 @@ def test_attention_runner_steps_gpu_profiler(monkeypatch):
         execute_model,
     )
 
-    result = runner.execute_model("scheduler", flag=True)
+    result = runner.execute_model("scheduler", "intermediate")
 
     assert runner.prof.steps == 1
-    assert result == (("scheduler",), {"flag": True})
+    assert result == (("scheduler", "intermediate"), {})
 
 
-def test_attention_runner_stops_gpu_profiler_on_shutdown():
+def test_attention_runner_preserves_native_shutdown(monkeypatch):
     runner = object.__new__(AFDAttentionModelRunner)
     runner.prof = _StepProfiler()
     runner.connector = _RecordingConnector()
+    native_shutdowns = []
+    monkeypatch.setattr(
+        GPUModelRunner,
+        "shutdown",
+        lambda self: native_shutdowns.append(self),
+    )
+
     runner.shutdown()
 
+    assert native_shutdowns == [runner]
     assert runner.prof.stopped is True
     assert runner.connector.closed is True
+
+
+def test_attention_warmup_preserves_profile_seq_lens():
+    runner = object.__new__(AFDAttentionModelRunner)
+    runner.compilation_config = SimpleNamespace(cudagraph_num_of_warmups=1)
+    runner._is_warmup = False
+    runner._afd_pending_metadata = None
+    runner._afd_suppress_metadata_send = False
+    runner._afd_is_graph_capturing = False
+    runner._build_afd_metadata = lambda *_args: object()
+    runner._build_capture_dp_metadata = lambda *_args: object()
+    runner._send_dp_metadata = lambda *_args: None
+    dummy_runs = []
+    runner._dummy_run = lambda *args, **kwargs: dummy_runs.append((args, kwargs))
+
+    runner._warmup_and_capture(
+        SimpleNamespace(num_tokens=8, uniform=True, num_active_loras=0),
+        CUDAGraphMode.FULL,
+        profile_seq_lens=7,
+    )
+
+    assert [kwargs["profile_seq_lens"] for _, kwargs in dummy_runs] == [7, 7]
 
 
 def test_forward_context_provider_installs_metadata_before_model_forward(monkeypatch):
@@ -706,7 +737,7 @@ def test_attention_runner_builds_capture_dp_metadata_for_native_dp():
     if hasattr(tokens, "tolist"):
         tokens = tokens.tolist()
     assert tokens == [64, 64]
-    assert int(metadata.max_tokens_across_dp_cpu) == 64
+    assert not hasattr(metadata, "max_tokens_across_dp_cpu")
 
 
 def test_afd_rank_derives_from_data_parallel_rank():

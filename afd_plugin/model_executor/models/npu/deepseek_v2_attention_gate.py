@@ -18,7 +18,12 @@ except ImportError:
     get_ascend_config = None
 
 if TYPE_CHECKING:
-    from afd_plugin.model_executor.models.deepseek_v2 import AFDDeepseekV2DecoderLayer
+    from vllm.config import VllmConfig
+
+    from afd_plugin.model_executor.models.deepseek_v2 import (
+        AFDDeepseekV2DecoderLayer,
+        _DeepseekAdapterConfig,
+    )
 
 
 def compute_attention_gate_topk(
@@ -27,7 +32,26 @@ def compute_attention_gate_topk(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compute router logits and top-k payloads for Attention-side gate."""
 
-    router_logits, _ = layer.gate(hidden_states)
+    return compute_gate_topk(
+        gate=layer.mlp.gate,
+        vllm_config=layer.vllm_config,
+        config=layer.config,
+        top_k=layer.top_k,
+        hidden_states=hidden_states,
+    )
+
+
+def compute_gate_topk(
+    *,
+    gate: torch.nn.Module,
+    vllm_config: VllmConfig,
+    config: _DeepseekAdapterConfig,
+    top_k: int,
+    hidden_states: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute routing payloads for a native-path gate proxy."""
+
+    router_logits, _ = gate(hidden_states)
     afd_metadata = get_afd_metadata_from_forward_context()
     if afd_metadata is None:
         raise RuntimeError(
@@ -36,37 +60,35 @@ def compute_attention_gate_topk(
         )
     afd_connector = afd_metadata.connector
     mix_placement = bool(
-        getattr(layer.vllm_config, "additional_config", {}).get(
+        getattr(vllm_config, "additional_config", {}).get(
             "mix_placement",
             False,
         ),
     )
     num_redundant_experts = (
-        layer.vllm_config.parallel_config.eplb_config.num_redundant_experts
+        vllm_config.parallel_config.eplb_config.num_redundant_experts
     )
     if mix_placement:
         global_num_experts = (
-            layer.config.n_shared_experts
-            + layer.config.n_routed_experts
-            + num_redundant_experts
+            config.n_shared_experts + config.n_routed_experts + num_redundant_experts
         )
     else:
-        global_num_experts = layer.config.n_routed_experts + num_redundant_experts
-    routed_scaling_factor = getattr(layer.config, "routed_scaling_factor", 1.0)
+        global_num_experts = config.n_routed_experts + num_redundant_experts
+    routed_scaling_factor = getattr(config, "routed_scaling_factor", 1.0)
     topk_weights, topk_ids = afd_connector.select_experts(
         hidden_states=hidden_states,
         router_logits=router_logits,
-        top_k=layer.top_k,
+        top_k=top_k,
         use_grouped_topk=True,
-        renormalize=getattr(layer.config, "norm_topk_prob", True),
-        scoring_func=getattr(layer.config, "scoring_func", "softmax"),
-        num_expert_group=getattr(layer.config, "n_group", 1),
-        topk_group=getattr(layer.config, "topk_group", 1),
+        renormalize=getattr(config, "norm_topk_prob", True),
+        scoring_func=getattr(config, "scoring_func", "softmax"),
+        num_expert_group=getattr(config, "n_group", 1),
+        topk_group=getattr(config, "topk_group", 1),
         routed_scaling_factor=(routed_scaling_factor if mix_placement else 1.0),
-        e_score_correction_bias=layer.gate.e_score_correction_bias,
+        e_score_correction_bias=gate.e_score_correction_bias,
         mix_placement=mix_placement,
         num_logical_experts=router_logits.shape[1],
-        num_shared_experts=layer.config.n_shared_experts,
+        num_shared_experts=config.n_shared_experts,
         global_num_experts=global_num_experts,
     )
     if force_balanced_topk_ids_enabled():

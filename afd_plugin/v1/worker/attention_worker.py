@@ -4,9 +4,8 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import torch
+from vllm.config import VllmConfig
 from vllm.v1.worker.gpu_worker import Worker
 
 from afd_plugin.model_executor.models.model_utils import get_afd_model_config
@@ -22,10 +21,23 @@ class AFDAttentionWorker(Worker):
 
     afd_expected_role = "attention"
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        vllm_config: VllmConfig,
+        local_rank: int,
+        rank: int,
+        distributed_init_method: str,
+        is_driver_worker: bool = False,
+    ):
+        super().__init__(
+            vllm_config,
+            local_rank,
+            rank,
+            distributed_init_method,
+            is_driver_worker,
+        )
 
-    def init_device(self) -> None:
+    def init_device(self):
         """Initialize the native GPU worker and swap in the AFD runner."""
 
         assert_compatible_afd_stack(
@@ -36,7 +48,7 @@ class AFDAttentionWorker(Worker):
         if self.use_v2_model_runner:
             raise RuntimeError(
                 "AFD Attention runtime currently supports only the vLLM v1 "
-                "GPUModelRunner; unset VLLM_USE_V2_MODEL_RUNNER",
+                "GPUModelRunner; set VLLM_USE_V2_MODEL_RUNNER=0",
             )
 
         fail_if_unsupported_ubatching(self.vllm_config)
