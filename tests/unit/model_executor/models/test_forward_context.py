@@ -5,9 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
+torch = pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
-from afd_plugin.model_executor.models import (
+from afd_plugin.model_executor.models import (  # noqa: E402
     ASYNC_MOE_UBATCH_METADATA_KEY,
     get_afd_metadata_from_forward_context,
     get_async_moe_ubatch_metadata_from_forward_context,
@@ -43,6 +44,211 @@ def test_get_async_moe_ubatch_metadata_from_additional_kwargs():
     )
 
 
+@pytest.mark.parametrize("raise_inside", [False, True])
+def test_async_moe_ubatch_forward_context_restores_state(raise_inside):
+    from afd_plugin.model_executor.models.npu import (
+        deepseek_v2_async_cam_forward as async_forward,
+    )
+
+    class CloneableMetadata(SimpleNamespace):
+        def clone(self):
+            return CloneableMetadata(**vars(self))
+
+    parent_metadata = CloneableMetadata(
+        stage_idx=7,
+        num_stages=1,
+        tokens_unpadded_lens=[2, 3],
+    )
+    ubatch_slices = [
+        SimpleNamespace(
+            token_slice=slice(0, 2),
+            request_slice=slice(0, 1),
+            num_tokens=2,
+        ),
+        SimpleNamespace(
+            token_slice=slice(2, 5),
+            request_slice=slice(1, 2),
+            num_tokens=3,
+        ),
+    ]
+    async_metadata = {
+        "ubatch_slices": ubatch_slices,
+        "attn_metadata": ["attention-0", "attention-1"],
+    }
+    original_kwargs = {
+        "afd_metadata": parent_metadata,
+        "preserved": object(),
+    }
+    forward_context = SimpleNamespace(
+        attn_metadata="parent-attention",
+        additional_kwargs=original_kwargs,
+        ubatch_idx=7,
+        num_tokens=5,
+    )
+
+    def run_context():
+        with async_forward._use_async_moe_ubatch_forward_context(
+            forward_context=forward_context,
+            parent_afd_metadata=parent_metadata,
+            async_moe_ubatch_metadata=async_metadata,
+            stage_idx=1,
+        ):
+            assert forward_context.attn_metadata == "attention-1"
+            assert forward_context.ubatch_idx == 1
+            assert forward_context.num_ubatches == 2
+            assert forward_context.num_tokens == 3
+            assert forward_context.additional_kwargs is not original_kwargs
+            assert (
+                forward_context.additional_kwargs["preserved"]
+                is original_kwargs["preserved"]
+            )
+            stage_metadata = forward_context.additional_kwargs["afd_metadata"]
+            assert stage_metadata is not parent_metadata
+            assert stage_metadata.stage_idx == 1
+            assert stage_metadata.tokens_start_loc == [2]
+            assert stage_metadata.requests_start_loc == [1]
+            assert stage_metadata.tokens_lens == [3]
+            assert stage_metadata.tokens_unpadded_lens == [3]
+            if raise_inside:
+                raise RuntimeError("test failure")
+
+    if raise_inside:
+        with pytest.raises(RuntimeError, match="test failure"):
+            run_context()
+    else:
+        run_context()
+
+    assert forward_context.attn_metadata == "parent-attention"
+    assert forward_context.additional_kwargs is original_kwargs
+    assert forward_context.ubatch_idx == 7
+    assert forward_context.num_tokens == 5
+    assert not hasattr(forward_context, "num_ubatches")
+
+
+@pytest.mark.parametrize(
+    ("is_first_rank", "is_last_rank"),
+    [(True, False), (False, True)],
+)
+def test_async_model_forward_preserves_pp_boundaries(
+    monkeypatch,
+    is_first_rank,
+    is_last_rank,
+):
+    from afd_plugin.model_executor.models.npu import (
+        deepseek_v2_async_cam_forward as async_forward,
+    )
+
+    class FakeIntermediateTensors(dict):
+        pass
+
+    monkeypatch.setattr(async_forward, "IntermediateTensors", FakeIntermediateTensors)
+    monkeypatch.setattr(
+        async_forward,
+        "get_pp_group",
+        lambda: SimpleNamespace(
+            is_first_rank=is_first_rank,
+            is_last_rank=is_last_rank,
+        ),
+    )
+    forward_context = SimpleNamespace()
+    afd_metadata = object()
+    monkeypatch.setattr(async_forward, "get_forward_context", lambda: forward_context)
+    monkeypatch.setattr(
+        async_forward,
+        "get_afd_metadata_from_forward_context",
+        lambda context: afd_metadata if context is forward_context else None,
+    )
+    monkeypatch.setattr(
+        async_forward,
+        "get_async_moe_ubatch_metadata_from_forward_context",
+        lambda context: None,
+    )
+
+    schedule_calls = []
+
+    def run_schedule(
+        model,
+        hidden_states,
+        residual,
+        positions,
+        received_metadata,
+        llama_4_scaling,
+    ):
+        schedule_calls.append(
+            (
+                model,
+                hidden_states,
+                residual,
+                positions,
+                received_metadata,
+                llama_4_scaling,
+            )
+        )
+        next_residual = (
+            torch.zeros_like(hidden_states) if residual is None else residual + 2
+        )
+        return hidden_states + 1, next_residual
+
+    monkeypatch.setattr(
+        async_forward,
+        "run_attention_gate_afd_forward",
+        run_schedule,
+    )
+    norm_calls = []
+
+    def run_norm(hidden_states, residual):
+        norm_calls.append((hidden_states, residual))
+        return hidden_states + residual, None
+
+    model = SimpleNamespace(
+        aux_hidden_state_layers=(),
+        embed_input_ids=lambda input_ids: input_ids.to(torch.float32).unsqueeze(-1),
+        _get_llama_4_scaling=lambda positions: None,
+        norm=run_norm,
+    )
+    positions = torch.arange(2)
+    if is_first_rank:
+        input_ids = torch.tensor([3, 4])
+        intermediate_tensors = None
+        expected_hidden_states = model.embed_input_ids(input_ids)
+        expected_residual = None
+    else:
+        input_ids = None
+        expected_hidden_states = torch.full((2, 1), 5.0)
+        expected_residual = torch.full((2, 1), 7.0)
+        intermediate_tensors = FakeIntermediateTensors(
+            {
+                "hidden_states": expected_hidden_states,
+                "residual": expected_residual,
+            }
+        )
+
+    output = async_forward.run_model_forward(
+        model,
+        input_ids,
+        positions,
+        intermediate_tensors,
+    )
+
+    assert len(schedule_calls) == 1
+    assert torch.equal(schedule_calls[0][1], expected_hidden_states)
+    assert schedule_calls[0][2] is expected_residual
+    assert schedule_calls[0][4] is afd_metadata
+    scheduled_hidden_states = expected_hidden_states + 1
+    scheduled_residual = (
+        torch.zeros_like(expected_hidden_states)
+        if expected_residual is None
+        else expected_residual + 2
+    )
+    if is_last_rank:
+        assert len(norm_calls) == 1
+        assert torch.equal(output, scheduled_hidden_states + scheduled_residual)
+    else:
+        assert isinstance(output, FakeIntermediateTensors)
+        assert torch.equal(output["hidden_states"], scheduled_hidden_states)
+        assert torch.equal(output["residual"], scheduled_residual)
+
+
 def test_deepseek_afd_wrapper_keeps_full_model_compile_enabled():
     source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
 
@@ -72,12 +278,16 @@ def test_deepseek_afd_attention_path_can_compute_gate_before_send():
         "afd_plugin/model_executor/models/npu/deepseek_v2_async_cam_forward.py",
     ).read_text()
     module_imports = source.split("logger = init_logger(__name__)", 1)[0]
-    forward_with_afd = source.split("    def forward_with_afd(", 1)[1].split(
-        "    def forward_with_afd_v2(",
+    model_source = source.split("class AFDDeepseekV2Model", 1)[1].split(
+        "class AFDDeepseekV2ForCausalLM",
         1,
     )[0]
-    forward_with_afd_v2 = source.split("    def forward_with_afd_v2(", 1)[1].split(
-        "    def forward_with_afd_v3(",
+    model_forward = model_source.split("    def forward(", 1)[1].split(
+        "    def compute_ffn_output(",
+        1,
+    )[0]
+    gate_proxy = source.split("class GateOnlyRemoteMoE", 1)[1].split(
+        "class AFDDeepseekV2RemoteExpertsMoE",
         1,
     )[0]
     attention_gate_forward = executor_source.split(
@@ -85,18 +295,15 @@ def test_deepseek_afd_attention_path_can_compute_gate_before_send():
         1,
     )[1].split("def run_async_moe_ubatch_afd_forward(", 1)[0]
 
-    assert 'if self.afd_role == "attention":' in source
+    assert 'if afd_role == "attention":' in source
     assert "afd_plugin.model_executor.models.npu" not in module_imports
-    assert "from afd_plugin.model_executor.models.npu import (" in forward_with_afd_v2
-    assert "deepseek_v2_async_cam_forward," in forward_with_afd_v2
     assert "def _forward_attention(" not in source
-    assert "return self.forward_with_afd_v3(" in forward_with_afd
-    assert "return self.forward_with_afd_v2(" in forward_with_afd
-    assert (
-        "return deepseek_v2_async_cam_forward.run_attention_gate_afd_forward("
-        in forward_with_afd_v2
-    )
-    assert "layer.compute_attn_output(" not in forward_with_afd
+    assert "return super().forward(" in model_forward
+    assert "deepseek_v2_async_cam_forward.run_model_forward(" in model_forward
+    assert "compute_gate_topk(" in gate_proxy
+    assert "topk_weights=topk_weights" in gate_proxy
+    assert "topk_ids=topk_ids" in gate_proxy
+    assert "router_logits=router_logits" in gate_proxy
     assert "layer.compute_attn_output(" in attention_gate_forward
     assert "pending_ffn_recv" in attention_gate_forward
     assert "topk_weights" in attention_gate_forward
@@ -138,18 +345,21 @@ def test_deepseek_afd_gate_on_attention_keeps_dense_layers_local():
         "afd_plugin/model_executor/models/npu/deepseek_v2_async_cam_forward.py",
     ).read_text()
 
-    assert "self.is_moe_layer = _is_moe_layer(config, layer_idx)" in source
+    assert "self.is_moe_layer = is_moe_layer" in source
     assert "self.compute_gate_on_attention and not self.is_moe_layer" in source
     assert "if not layer.is_moe_layer:" in executor_source
-    assert "self.is_dense_mlp_weight(name)" in source
+    assert (
+        "return _ATTENTION_ROLE if compute_gate_on_attention else _FFN_ROLE" in source
+    )
 
 
-def test_deepseek_compute_gate_on_attention_is_npu_only():
+def test_deepseek_compute_gate_on_attention_selects_backend_boundary():
     source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
 
-    assert 'native.current_platform.device_type != "npu"' in source
-    assert "DeepSeekV2 compute_gate_on_attention is supported only on NPU" in source
-    assert "# NPU-only: non-NPU platforms are rejected before this branch." in source
+    assert 'device_type not in ("cuda", "npu")' in source
+    assert "self.mlp = AFDDeepseekV2RemoteExpertsMoE(" in source
+    assert "self.mlp = GateOnlyRemoteMoE(" in source
+    assert 'prefix=f"{prefix}.mlp"' in source
     assert (
         "# NPU-only: Attention-side gate/topk is implemented in the NPU helper."
         in source
@@ -161,12 +371,11 @@ def test_deepseek_compute_gate_on_attention_is_npu_only():
 
 
 def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
-    source = Path("afd_plugin/model_executor/models/deepseek_v2.py").read_text()
     executor_source = Path(
         "afd_plugin/model_executor/models/npu/deepseek_v2_async_cam_forward.py",
     ).read_text()
-    forward_with_afd_v3 = source.split("    def forward_with_afd_v3(", 1)[1].split(
-        "    def compute_ffn_output(",
+    model_forward = executor_source.split("def run_model_forward(", 1)[1].split(
+        "def run_attention_gate_afd_forward(",
         1,
     )[0]
     async_ubatch_forward = executor_source.split(
@@ -177,13 +386,8 @@ def test_deepseek_async_moe_ubatching_runs_attention_inside_stage_context():
         1,
     )[0]
 
-    assert "async_moe_ubatch_metadata" in forward_with_afd_v3
-    assert (
-        "return deepseek_v2_async_cam_forward.run_async_moe_ubatch_afd_forward("
-        in forward_with_afd_v3
-    )
-    assert "from afd_plugin.model_executor.models.npu import (" in forward_with_afd_v3
-    assert "deepseek_v2_async_cam_forward," in forward_with_afd_v3
+    assert "async_moe_ubatch_metadata" in model_forward
+    assert "run_async_moe_ubatch_afd_forward(" in model_forward
     assert "_log_async_moe_forward_step(" not in async_ubatch_forward
     assert "first_moe_layer = int(model.config.first_k_dense_replace)" in (
         async_ubatch_forward

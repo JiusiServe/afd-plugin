@@ -87,11 +87,17 @@ def _install_fake_vllm_core(monkeypatch: pytest.MonkeyPatch):
     def get_request_block_hasher(block_size, hash_fn):
         return block_size, hash_fn
 
+    def register_all_kvcache_specs(_vllm_config):
+        return None
+
+    def resolve_kv_cache_block_sizes(_kv_cache_config, _vllm_config):
+        return 16, 16
+
     core_module.EngineCore = EngineCore
     core_module.EngineCoreProc = EngineCoreProc
     core_module.DPEngineCoreProc = DPEngineCoreProc
     core_module.EngineShutdownState = _EngineShutdownState
-    core_module.VLLM_VERSION = "0.19.1"
+    core_module.VLLM_VERSION = "0.26.0"
     core_module.logger = logging.getLogger("fake-vllm-core")
     core_module.logger.info_once = lambda *args, **kwargs: None
     core_module.envs = SimpleNamespace(VLLM_ELASTIC_EP_SCALE_UP_LAUNCH=False)
@@ -102,6 +108,8 @@ def _install_fake_vllm_core(monkeypatch: pytest.MonkeyPatch):
     core_module.get_hash_fn_by_name = get_hash_fn_by_name
     core_module.init_none_hash = init_none_hash
     core_module.get_request_block_hasher = get_request_block_hasher
+    core_module.register_all_kvcache_specs = register_all_kvcache_specs
+    core_module.resolve_kv_cache_block_sizes = resolve_kv_cache_block_sizes
     core_module.freeze_gc_heap = lambda: None
     core_module.maybe_attach_gc_debug_callback = lambda: None
     core_module.enable_envs_cache = lambda: None
@@ -151,7 +159,11 @@ def _config(role: str):
         decode_context_parallel_size=1,
         prefill_context_parallel_size=1,
     )
-    model_config = SimpleNamespace(max_model_len=8, runner_type="generate")
+    model_config = SimpleNamespace(
+        max_model_len=8,
+        runner_type="generate",
+        is_diffusion=False,
+    )
 
     def validate_block_size():
         cache_config.validated = True
@@ -164,6 +176,11 @@ def _config(role: str):
         model_config=model_config,
         speculative_config=None,
         ec_transfer_config=None,
+        max_concurrent_batches=1,
+        compilation_config=SimpleNamespace(
+            compilation_time=0.0,
+            encoder_compilation_time=0.0,
+        ),
         validate_block_size=validate_block_size,
     )
 

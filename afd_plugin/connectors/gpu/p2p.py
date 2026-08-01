@@ -82,6 +82,7 @@ from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
     AFDControlPayload,
     AFDDPMetadata,
+    AFDExpertRoutingSpec,
     AFDTransferContext,
     AFDTransferMetadata,
     recv_control_payload,
@@ -207,6 +208,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         self.e2a_pynccl: PyNcclCommunicator | None = None
         self.a2e_comm_id: int | None = None
         self.e2a_comm_id: int | None = None
+        self._p2p_ordering_token: torch.Tensor | None = None
         self.control_plane = P2pNcclAFDControlPlane(self)
 
     def close(self) -> None:
@@ -228,6 +230,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             if callable(shutdown):
                 shutdown()
             setattr(self, communicator_name, None)
+        self._p2p_ordering_token = None
         self._initialized = False
 
     def init_afd_connector(self) -> None:
@@ -282,6 +285,11 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                 device=self.local_rank,
             )
             self.e2a_comm_id = _register_comm(self.e2a_pynccl)
+            self._p2p_ordering_token = torch.zeros(
+                1,
+                dtype=torch.int64,
+                device=torch.device("cuda", self.local_rank),
+            )
 
         if self.mapping.participates_in_dp_metadata_group:
             self.p2p_pg = init_afd_process_group(
@@ -313,7 +321,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                 whose leading dimension matches
                 ``context.metadata.total_tokens``.
             context: Per-transfer context describing the token layout.
-            **kwargs: Unused; accepted for interface compatibility.
+            **kwargs: Optional ``router_logits`` tensor sent after hidden states.
 
         Raises:
             ValueError: If the tensor shape does not match the metadata token
@@ -329,12 +337,27 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                 f"hidden_states shape {hidden_states.shape!r} does not match "
                 f"AFD metadata token count {metadata.total_tokens}",
             )
+        router_logits: torch.Tensor | None = kwargs.get("router_logits")
+        if (
+            router_logits is not None
+            and router_logits.shape[0] != hidden_states.shape[0]
+        ):
+            raise ValueError(
+                "router_logits and hidden_states must have equal token counts",
+            )
         self._send_hidden_states(
             hidden_states,
             0,
             self.a2e_group,
             self.a2e_comm_id,
         )
+        if router_logits is not None:
+            self._send_hidden_states(
+                router_logits,
+                0,
+                self.a2e_group,
+                self.a2e_comm_id,
+            )
 
     def recv_ffn_output(
         self,
@@ -388,7 +411,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
 
         Args:
             ubatch_idx: Stage/microbatch index to receive. Defaults to ``0``.
-            **kwargs: Unused; accepted for interface compatibility.
+            **kwargs: Optional ``routing_spec`` for an experts-boundary layer.
 
         Returns:
             ``AFDA2FTransferPayload`` with the concatenated hidden states and a
@@ -399,7 +422,9 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             RuntimeError: If the connector is not initialized or the subgroup
                 has no Attention peers.
         """
+        routing_spec: AFDExpertRoutingSpec | None = kwargs.get("routing_spec")
         hidden_states_list: list[torch.Tensor] = []
+        router_logits_list: list[torch.Tensor] = []
 
         for src in range(1, self.group_size):
             tensor_metadata = self._recv_attn_tensor_metadata_list.get(
@@ -420,6 +445,25 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                     ref_tensor=ref_tensor,
                 ),
             )
+            if routing_spec is not None:
+                router_metadata = _TensorMetadata(
+                    device=tensor_metadata.device,
+                    dtype=routing_spec.router_logits_dtype,
+                    size=torch.Size(
+                        [
+                            tensor_metadata.size[0],
+                            routing_spec.router_logits_width,
+                        ],
+                    ),
+                )
+                router_logits_list.append(
+                    self._recv_hidden_states(
+                        src,
+                        self.a2e_group,
+                        self.a2e_comm_id,
+                        router_metadata,
+                    ),
+                )
 
         if not hidden_states_list:
             raise RuntimeError("P2P FFN rank has no Attention peers")
@@ -428,6 +472,14 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             if len(hidden_states_list) > 1
             else hidden_states_list[0]
         )
+        router_logits = None
+        if routing_spec is not None:
+            router_logits = (
+                torch.cat(router_logits_list, dim=0)
+                if len(router_logits_list) > 1
+                else router_logits_list[0]
+            )
+
         metadata = AFDTransferMetadata.create_ffn_metadata(
             layer_idx=0,
             stage_idx=ubatch_idx,
@@ -435,7 +487,10 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         )
         return AFDA2FTransferPayload(
             hidden_states=hidden_states,
-            context=AFDTransferContext(metadata=metadata),
+            context=AFDTransferContext(
+                metadata=metadata,
+            ),
+            router_logits=router_logits,
         )
 
     def send_ffn_output(
@@ -525,9 +580,12 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             raise ValueError(f"invalid P2P destination rank {dst}")
         if getattr(hidden_states, "is_cpu", False):
             raise ValueError("P2P hidden states must be on GPU")
+        if self._p2p_ordering_token is None:
+            raise RuntimeError("P2P connector ordering token is not initialized")
 
         torch.ops.vllm.afd_p2p_send(
             hidden_states,
+            self._p2p_ordering_token,
             dst,
             comm_id,
         )
@@ -576,7 +634,14 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                 dtype=tensor_metadata.dtype,
                 device=tensor_metadata.device,
             )
-        torch.ops.vllm.afd_p2p_recv(hidden_states, src, comm_id)
+        if self._p2p_ordering_token is None:
+            raise RuntimeError("P2P connector ordering token is not initialized")
+        torch.ops.vllm.afd_p2p_recv(
+            hidden_states,
+            self._p2p_ordering_token,
+            src,
+            comm_id,
+        )
         return hidden_states
 
 
@@ -792,7 +857,7 @@ def _register_comm(communicator: PyNcclCommunicator) -> int:
 
 
 def _register_p2p_custom_ops() -> None:
-    """Register ``afd_p2p_send`` / ``afd_p2p_recv`` as vLLM custom ops.
+    """Register the ordered AFD P2P send and receive custom ops.
 
     Wrapping ``PyNcclCommunicator.send()`` / ``recv()`` in custom ops with
     fake implementations keeps the transfers traceable by ``torch.compile``
@@ -806,12 +871,14 @@ def _register_p2p_custom_ops() -> None:
 
     def afd_p2p_send_impl(
         tensor: torch.Tensor,
+        ordering_token: torch.Tensor,
         dst: int,
         comm_id: int,
     ) -> None:
         communicator = _AFD_COMMUNICATORS.get(comm_id)
         if communicator is None:
             raise RuntimeError(f"AFD communicator id {comm_id} is not registered")
+        ordering_token.add_(1)
         communicator.send(
             tensor,
             dst,
@@ -821,22 +888,34 @@ def _register_p2p_custom_ops() -> None:
 
     def afd_p2p_send_fake(
         tensor: torch.Tensor,
+        ordering_token: torch.Tensor,
         dst: int,
         comm_id: int,
     ) -> None:
         pass
 
-    def afd_p2p_recv_impl(out: torch.Tensor, src: int, comm_id: int) -> None:
+    def afd_p2p_recv_impl(
+        out: torch.Tensor,
+        ordering_token: torch.Tensor,
+        src: int,
+        comm_id: int,
+    ) -> None:
         communicator = _AFD_COMMUNICATORS.get(comm_id)
         if communicator is None:
             raise RuntimeError(f"AFD communicator id {comm_id} is not registered")
+        ordering_token.add_(1)
         communicator.recv(
             out,
             src,
             stream=torch.cuda.current_stream(out.device),
         )
 
-    def afd_p2p_recv_fake(out: torch.Tensor, src: int, comm_id: int) -> None:
+    def afd_p2p_recv_fake(
+        out: torch.Tensor,
+        ordering_token: torch.Tensor,
+        src: int,
+        comm_id: int,
+    ) -> None:
         pass
 
     def register_one(
@@ -861,16 +940,15 @@ def _register_p2p_custom_ops() -> None:
     register_one(
         op_name="afd_p2p_send",
         op_func=afd_p2p_send_impl,
-        mutates_args=["tensor"],
+        mutates_args=["ordering_token"],
         fake_impl=afd_p2p_send_fake,
     )
     register_one(
         op_name="afd_p2p_recv",
         op_func=afd_p2p_recv_impl,
-        mutates_args=["out"],
+        mutates_args=["out", "ordering_token"],
         fake_impl=afd_p2p_recv_fake,
     )
-
     _AFD_CUSTOM_OPS_REGISTERED = True
 
 

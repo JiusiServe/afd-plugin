@@ -6,7 +6,7 @@ This module patches:
 1. ``vllm.forward_context.set_forward_context``
 
 Why:
-    vLLM 0.19.1 constructs ``DPMetadata`` and coordinates token counts across
+    vLLM 0.26.0 constructs ``DPMetadata`` and coordinates token counts across
     MoE DP ranks whenever DP size is greater than one. AFD async-DP uses the
     connector data flow instead of vLLM's DP metadata control plane, so those
     all-reduce and metadata paths must be skipped for the AFD async connector.
@@ -44,8 +44,6 @@ if TYPE_CHECKING:
     AttentionMetadataMapping: TypeAlias = (
         dict[str, AttentionMetadata] | list[dict[str, AttentionMetadata]]
     )
-    SlotMapping: TypeAlias = dict[str, torch.Tensor] | list[dict[str, torch.Tensor]]
-
 _FORWARD_CONTEXT_IMPORT_MODULES = (
     "vllm.v1.worker.gpu_model_runner",
     "vllm.v1.worker.gpu.model_runner",
@@ -68,8 +66,9 @@ def set_forward_context(
     cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
     batch_descriptor: BatchDescriptor | None = None,
     ubatch_slices: UBatchSlices | None = None,
-    slot_mapping: SlotMapping | None = None,
+    slot_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None = None,
     skip_compiled: bool = False,
+    is_padding: torch.Tensor | None = None,
 ):
     """A context manager that stores the current forward context,
     can be attention metadata, etc.
@@ -88,14 +87,20 @@ def set_forward_context(
     # AFD async-DP coordinates batches through connector flow, so skip vLLM's
     # native DPMetadata construction only for AFD async configs.
     if not is_afd_async_dp(vllm_config) and (
-        vllm_config.parallel_config.data_parallel_size > 1
+        (
+            vllm_config.parallel_config.data_parallel_size > 1
+            or vllm_config.parallel_config.use_sequence_parallel_moe
+        )
         and vllm_config.parallel_config.is_moe_model is not False
         and (attn_metadata is not None or num_tokens is not None)
     ):
         # If num_tokens_across_dp hasn't already been initialized, then
         # initialize it here. Both DP padding and Microbatching will be
         # disabled.
-        if num_tokens_across_dp is None:
+        if (
+            num_tokens_across_dp is None
+            and vllm_config.parallel_config.data_parallel_size > 1
+        ):
             assert ubatch_slices is None
             assert num_tokens is not None
             _, num_tokens_across_dp, _ = (
@@ -106,6 +111,12 @@ def set_forward_context(
                 )
             )
             assert num_tokens_across_dp is not None
+        elif num_tokens_across_dp is None:
+            assert num_tokens is not None
+            num_tokens_across_dp = forward_context_module.torch.tensor(
+                [num_tokens],
+                dtype=forward_context_module.torch.int32,
+            )
         dp_metadata = forward_context_module.DPMetadata.make(
             vllm_config.parallel_config,
             num_tokens or 0,
@@ -144,6 +155,7 @@ def set_forward_context(
         slot_mapping,
         additional_kwargs,
         skip_compiled,
+        is_padding=is_padding,
     )
 
     try:
