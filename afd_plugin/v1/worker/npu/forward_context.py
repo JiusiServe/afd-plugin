@@ -39,6 +39,12 @@ def create_ascend_forward_context(
             build_ubatch_afd_metadata(afd_metadata, ubatch_slices, ubatch_num),
         )
 
+    ubatch_slice = ubatch_slices[ubatch_num]
+    is_padding = (
+        cur_forward_context.is_padding[ubatch_slice.token_slice]
+        if cur_forward_context.is_padding is not None
+        else None
+    )
     new_forward_context = ForwardContext(
         no_compile_layers=vllm_config.compilation_config.static_forward_context,
         all_moe_layers=cur_forward_context.all_moe_layers,
@@ -50,9 +56,9 @@ def create_ascend_forward_context(
         ubatch_slices=ubatch_slices,
         skip_compiled=skip_compiled,
         additional_kwargs=parent_kwargs,
+        is_padding=is_padding,
     )
 
-    ubatch_slice = ubatch_slices[ubatch_num]
     num_tokens = ubatch_slice.num_tokens
     tp_world_size = get_tensor_model_parallel_world_size()
     dp_world_size = get_dp_group().world_size
@@ -70,7 +76,6 @@ def create_ascend_forward_context(
     new_forward_context.flash_comm_v1_enabled = (
         cur_forward_context.flash_comm_v1_enabled
     )
-    new_forward_context.flashcomm_v2_enabled = cur_forward_context.flashcomm_v2_enabled
     new_forward_context.pad_size = 0
     new_forward_context.is_first_layer = cur_forward_context.is_first_layer
     new_forward_context.layer_idx = cur_forward_context.layer_idx
@@ -89,21 +94,20 @@ def create_ascend_forward_context(
     new_forward_context.max_tokens_across_pcp = (
         cur_forward_context.max_tokens_across_pcp
     )
+    new_forward_context.sinks = cur_forward_context.sinks
+    new_forward_context.input_ids = cur_forward_context.input_ids
+    new_forward_context.eplb_heat_collection_status = (
+        cur_forward_context.eplb_heat_collection_status
+    )
 
-    if (
-        new_forward_context.flash_comm_v1_enabled
-        or new_forward_context.flashcomm_v2_enabled
-    ):
+    if new_forward_context.flash_comm_v1_enabled:
         new_forward_context.pad_size = (
             tp_world_size - (num_tokens % tp_world_size)
         ) % tp_world_size
 
     if dp_world_size > 1 and dp_metadata is not None:
-        max_tokens_across_dp = dp_metadata.max_tokens_across_dp_cpu.item()
-        if (
-            new_forward_context.flash_comm_v1_enabled
-            or new_forward_context.flashcomm_v2_enabled
-        ):
+        max_tokens_across_dp = dp_metadata.num_tokens_across_dp_cpu.max().item()
+        if new_forward_context.flash_comm_v1_enabled:
             padded_length = (
                 (max_tokens_across_dp + tp_world_size - 1)
                 // tp_world_size
@@ -118,7 +122,7 @@ def create_ascend_forward_context(
     new_forward_context.padded_num_tokens = (
         math.ceil(max_tokens_across_dp / tp_world_size) * tp_world_size
     )
-    cur_mc2_mask = getattr(cur_forward_context, "mc2_mask", None)
+    cur_mc2_mask = cur_forward_context.mc2_mask
     if cur_mc2_mask is not None:
         mc2_mask = torch.zeros(
             (new_forward_context.padded_num_tokens,),

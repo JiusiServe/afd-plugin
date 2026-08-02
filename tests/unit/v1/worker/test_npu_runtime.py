@@ -232,6 +232,111 @@ def _new_attention_runner():
     return object.__new__(AFDNPUAttentionModelRunner)
 
 
+def test_npu_attention_live_execution_scope_restores_on_success_and_error(
+    monkeypatch,
+):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import attention_model_runner
+
+    runner = _new_attention_runner()
+    runner.prof = None
+    runner._afd_live_execution = False
+    observed_live_state = []
+
+    monkeypatch.setattr(
+        attention_model_runner,
+        "step_afd_npu_profiler",
+        lambda _prof: None,
+    )
+
+    def execute_success(_runner, _scheduler_output, _intermediate_tensors=None):
+        observed_live_state.append(_runner._afd_live_execution)
+        return "success"
+
+    monkeypatch.setattr(
+        attention_model_runner.NPUModelRunner,
+        "execute_model",
+        execute_success,
+    )
+    assert runner.execute_model(object()) == "success"
+    assert observed_live_state == [True]
+    assert runner._afd_live_execution is False
+
+    def execute_failure(_runner, _scheduler_output, _intermediate_tensors=None):
+        observed_live_state.append(_runner._afd_live_execution)
+        raise RuntimeError("execute failure")
+
+    monkeypatch.setattr(
+        attention_model_runner.NPUModelRunner,
+        "execute_model",
+        execute_failure,
+    )
+    with pytest.raises(RuntimeError, match="execute failure"):
+        runner.execute_model(object())
+    assert observed_live_state == [True, True]
+    assert runner._afd_live_execution is False
+
+
+def test_npu_attention_non_live_execution_disables_microbatching(monkeypatch):
+    _require_npu_runtime()
+    import numpy as np
+    from vllm.config import CUDAGraphMode
+    from vllm.forward_context import BatchDescriptor
+
+    from afd_plugin.v1.worker.npu import attention_model_runner
+
+    runner = _new_attention_runner()
+    runner._afd_live_execution = False
+    runner._pad_for_sequence_parallelism = lambda num_tokens: num_tokens
+    runner.input_batch = SimpleNamespace(
+        num_computed_tokens_cpu=np.ones(4, dtype=np.int32),
+        lora_id_to_lora_request={},
+    )
+    runner.speculative_config = None
+    runner.uniform_decode_query_len = 1
+    runner.model_config = SimpleNamespace(is_encoder_decoder=False)
+    runner.vllm_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            data_parallel_size=1,
+            tensor_parallel_size=1,
+        ),
+        observability_config=SimpleNamespace(cudagraph_metrics=False),
+    )
+    runner.cudagraph_dispatcher = SimpleNamespace(
+        dispatch=lambda **kwargs: (
+            CUDAGraphMode.NONE,
+            BatchDescriptor(kwargs["num_tokens"]),
+        ),
+    )
+    monkeypatch.setattr(attention_model_runner, "enable_sp", lambda _config: False)
+    monkeypatch.setattr(
+        attention_model_runner,
+        "check_enable_ubatch",
+        lambda *_args, **_kwargs: True,
+    )
+
+    result = runner._determine_batch_execution_and_padding(
+        num_tokens=4,
+        num_reqs=4,
+        num_scheduled_tokens_np=np.ones(4, dtype=np.int32),
+        max_num_scheduled_tokens=1,
+        use_cascade_attn=False,
+        allow_microbatching=False,
+    )
+    assert result[2] is False
+
+    runner._afd_live_execution = True
+    result = runner._determine_batch_execution_and_padding(
+        num_tokens=4,
+        num_reqs=4,
+        num_scheduled_tokens_np=np.ones(4, dtype=np.int32),
+        max_num_scheduled_tokens=1,
+        use_cascade_attn=False,
+        allow_microbatching=False,
+    )
+    assert result[2] is True
+
+
 def _new_ffn_runner():
     _require_npu_runtime()
     from afd_plugin.v1.worker.npu.ffn_model_runner import AFDNPUFFNModelRunner
@@ -600,7 +705,6 @@ def test_npu_create_ascend_forward_context_marks_current_ubatch(monkeypatch):
         capturing=False,
         mmrs_fusion=False,
         flash_comm_v1_enabled=False,
-        flashcomm_v2_enabled=False,
         is_first_layer=True,
         layer_idx=0,
         prefetch_mlp_gate_up_proj=False,
@@ -610,6 +714,10 @@ def test_npu_create_ascend_forward_context_marks_current_ubatch(monkeypatch):
         is_draft_model_prefill=False,
         draft_attn_metadatas=None,
         max_tokens_across_pcp=None,
+        sinks=False,
+        input_ids=None,
+        eplb_heat_collection_status=False,
+        is_padding=None,
         mc2_mask=None,
     )
     ubatch_slices = [
@@ -1139,6 +1247,64 @@ def test_npu_feature_validation_allows_two_ubatches_only():
     fail_if_unsupported_npu_afd_features(config)
 
 
+def test_npu_ubatch_output_merge_preserves_aux_hidden_states():
+    _require_npu_runtime()
+    import torch
+
+    from afd_plugin.v1.worker.npu.npu_ubatch_wrapper import _cat_ubatch_outputs
+
+    merged = _cat_ubatch_outputs(
+        [
+            (torch.tensor([[1.0]]), [torch.tensor([[2.0]])]),
+            (torch.tensor([[3.0]]), [torch.tensor([[4.0]])]),
+        ],
+    )
+
+    assert isinstance(merged, tuple)
+    assert merged[0].tolist() == [[1.0], [3.0]]
+    assert len(merged[1]) == 1
+    assert merged[1][0].tolist() == [[2.0], [4.0]]
+
+
+def test_npu_ubatch_all_gather_preserves_aux_outputs_and_trims_padding(
+    monkeypatch,
+):
+    _require_npu_runtime()
+    import torch
+
+    from afd_plugin.v1.worker.npu import npu_ubatch_wrapper
+
+    gathered_inputs = []
+
+    def fake_all_gather(output, dim):
+        assert dim == 0
+        gathered_inputs.append(output.clone())
+        return torch.cat((output, output + 10), dim=0)
+
+    monkeypatch.setattr(
+        npu_ubatch_wrapper,
+        "tensor_model_parallel_all_gather",
+        fake_all_gather,
+    )
+    output = (
+        torch.tensor([[1.0], [2.0]]),
+        [
+            torch.tensor([[3.0], [4.0]]),
+            torch.tensor([[5.0], [6.0]]),
+        ],
+    )
+
+    gathered = npu_ubatch_wrapper._all_gather_ubatch_output(output, pad_size=1)
+
+    assert isinstance(gathered, tuple)
+    assert gathered[0].tolist() == [[1.0], [2.0], [11.0]]
+    assert [tensor.tolist() for tensor in gathered[1]] == [
+        [[3.0], [4.0], [13.0]],
+        [[5.0], [6.0], [15.0]],
+    ]
+    assert len(gathered_inputs) == 3
+
+
 def test_npu_async_feature_validation_requires_async_config_and_eager():
     with pytest.raises(RuntimeError, match="async=true"):
         fail_if_unsupported_npu_afd_features(
@@ -1242,7 +1408,7 @@ def test_npu_async_moe_ubatching_validation_requires_supported_shape():
         )
 
 
-def test_npu_ubatch_allows_mc2_comm_when_thresholds_are_met(monkeypatch):
+def test_npu_ubatch_enabled_when_thresholds_are_met(monkeypatch):
     fake_numpy = ModuleType("numpy")
     fake_numpy.ndarray = object
     fake_torch = ModuleType("torch")
@@ -1268,11 +1434,6 @@ def test_npu_ubatch_allows_mc2_comm_when_thresholds_are_met(monkeypatch):
     fake_vllm_ascend = ModuleType("vllm_ascend")
     fake_forward_context = ModuleType("vllm_ascend.ascend_forward_context")
 
-    class MoECommType:
-        MC2 = object()
-        FUSED_MC2 = object()
-
-    fake_forward_context.MoECommType = MoECommType
     fake_attention = ModuleType("vllm_ascend.attention")
     fake_attention_utils = ModuleType("vllm_ascend.attention.utils")
     fake_attention_utils.AscendCommonAttentionMetadata = object
@@ -1319,14 +1480,12 @@ def test_npu_ubatch_allows_mc2_comm_when_thresholds_are_met(monkeypatch):
             num_tokens_padded=12,
             uniform_decode=True,
             vllm_config=config,
-            moe_comm_type=ubatch_utils.MoECommType.MC2,
         )
         assert ubatch_utils.check_enable_ubatch(
             num_tokens_unpadded=12,
             num_tokens_padded=12,
             uniform_decode=True,
             vllm_config=config,
-            moe_comm_type=ubatch_utils.MoECommType.FUSED_MC2,
         )
     finally:
         sys.modules.pop(module_name, None)

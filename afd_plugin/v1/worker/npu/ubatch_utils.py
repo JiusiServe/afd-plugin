@@ -2,8 +2,10 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """Ascend ubatch helpers owned by the AFD plugin.
 
-Copied from vLLM-Ascend commit cdd212830271249a1cafcb850c210133f21771c5;
-kept plugin-owned so AFD retains DBO support independent of upstream changes.
+Originally copied from vLLM-Ascend commit
+``cdd212830271249a1cafcb850c210133f21771c5`` and aligned with the attention
+metadata schema at commit ``80d8c194f``. It remains plugin-owned because the
+current vLLM-Ascend release no longer provides NPU ubatch helpers.
 """
 
 import numpy as np
@@ -14,7 +16,6 @@ from vllm.v1.worker.ubatch_utils import (
     UBatchSlices,
     check_ubatch_thresholds,
 )
-from vllm_ascend.ascend_forward_context import MoECommType
 from vllm_ascend.attention.utils import AscendCommonAttentionMetadata
 
 
@@ -29,8 +30,8 @@ def is_last_ubatch_empty(
 def _cp_enabled(vllm_config: VllmConfig) -> bool:
     parallel_config = vllm_config.parallel_config
     return (
-        getattr(parallel_config, "prefill_context_parallel_size", 1) > 1
-        or getattr(parallel_config, "decode_context_parallel_size", 1) > 1
+        parallel_config.prefill_context_parallel_size > 1
+        or parallel_config.decode_context_parallel_size > 1
     )
 
 
@@ -39,10 +40,9 @@ def check_enable_ubatch(
     num_tokens_padded: int,
     uniform_decode: bool,
     vllm_config: VllmConfig,
-    moe_comm_type: MoECommType | None,
 ) -> bool:
     parallel_config = vllm_config.parallel_config
-    num_ubatches = getattr(parallel_config, "num_ubatches", 2)
+    num_ubatches = parallel_config.num_ubatches
     if num_ubatches != 2:
         return False
     if num_tokens_padded < num_ubatches:
@@ -56,7 +56,7 @@ def check_enable_ubatch(
         num_tokens_unpadded,
         uniform_decode=uniform_decode,
     )
-    if not getattr(parallel_config, "enable_dbo", False):
+    if not parallel_config.enable_dbo:
         return False
     if not should_attempt_ubatching:
         return False
@@ -151,7 +151,7 @@ def maybe_create_ubatch_slices(
     if not should_ubatch:
         return None, None
 
-    num_ubatches = getattr(vllm_config.parallel_config, "num_ubatches", 2)
+    num_ubatches = vllm_config.parallel_config.num_ubatches
     assert num_ubatches == 2, "Ascend ubatching currently supports exactly 2 ubatches."
 
     split_point = int(num_tokens_padded) // num_ubatches
@@ -279,11 +279,65 @@ def _make_metadata_with_slice(
         causal=attn_metadata.causal,
         num_input_tokens=num_actual_tokens,
         actual_seq_lengths_q=actual_seq_lengths_q,
-        positions=attn_metadata.positions[token_slice],
+        positions=(
+            attn_metadata.positions[:, token_slice]
+            if attn_metadata.positions.ndim == 2
+            else attn_metadata.positions[token_slice]
+        ),
+        positions_cpu=(
+            (
+                attn_metadata.positions_cpu[:, token_slice]
+                if attn_metadata.positions_cpu.ndim == 2
+                else attn_metadata.positions_cpu[token_slice]
+            )
+            if attn_metadata.positions_cpu is not None
+            else None
+        ),
         attn_state=attn_metadata.attn_state,
         graph_pad_size=attn_metadata.graph_pad_size,
         decode_token_per_req=attn_metadata.decode_token_per_req,
-        kvcomp_metadata=attn_metadata.kvcomp_metadata,
+        dcp_local_seq_lens=(
+            attn_metadata.dcp_local_seq_lens[request_slice]
+            if attn_metadata.dcp_local_seq_lens is not None
+            else None
+        ),
+        dcp_local_seq_lens_cpu=(
+            attn_metadata.dcp_local_seq_lens_cpu[request_slice]
+            if attn_metadata.dcp_local_seq_lens_cpu is not None
+            else None
+        ),
+        is_prefilling=(
+            attn_metadata.is_prefilling[request_slice]
+            if attn_metadata.is_prefilling is not None
+            else None
+        ),
+        seq_lens_cpu_upper_bound=(
+            attn_metadata.seq_lens_cpu_upper_bound[request_slice]
+            if attn_metadata.seq_lens_cpu_upper_bound is not None
+            else None
+        ),
+        mm_req_doc_ranges=attn_metadata.mm_req_doc_ranges,
+        rswa_prefix_lens=(
+            attn_metadata.rswa_prefix_lens[request_slice]
+            if attn_metadata.rswa_prefix_lens is not None
+            else None
+        ),
+        context_parallel_metadata=attn_metadata.context_parallel_metadata,
+        group_len=(
+            attn_metadata.group_len[request_slice]
+            if attn_metadata.group_len is not None
+            else None
+        ),
+        group_key_idx=(
+            attn_metadata.group_key_idx[request_slice]
+            if attn_metadata.group_key_idx is not None
+            else None
+        ),
+        group_key_cache_idx=(
+            attn_metadata.group_key_cache_idx[request_slice]
+            if attn_metadata.group_key_cache_idx is not None
+            else None
+        ),
     )
     metadata.encoder_seq_lens = (
         attn_metadata.encoder_seq_lens[request_slice]

@@ -136,19 +136,27 @@ def test_config_validation_patch_allows_vllm_dev_checkout(monkeypatch):
     assert cfg.parallel_config.all2all_backend == "allgather_reducescatter"
 
 
-def test_config_validation_patch_relaxes_repeated_vllm_post_init(monkeypatch):
+def test_config_validation_patch_selects_worker_after_upstream_post_init(monkeypatch):
     arg_utils_module, _config_module = _install_fake_vllm_config(monkeypatch)
     _load_patch_module()
     args = _engine_args(active=True)
 
     cfg = arg_utils_module.EngineArgs.create_engine_config(args)
-    cfg.additional_config = args.additional_config
-    cfg.parallel_config.use_ubatching = True
+    assert cfg.post_init_backend == "deepep_low_latency"
+    assert cfg.parallel_config.all2all_backend == "allgather_reducescatter"
+    assert cfg.parallel_config.worker_cls == ATTENTION_WORKER_FQCN
+
+
+def test_config_validation_patch_relaxes_explicit_post_init_revalidation(monkeypatch):
+    arg_utils_module, _config_module = _install_fake_vllm_config(monkeypatch)
+    _load_patch_module()
+    args = _engine_args(active=True)
+
+    cfg = arg_utils_module.EngineArgs.create_engine_config(args)
     cfg.__post_init__()
 
     assert cfg.post_init_backend == "deepep_low_latency"
     assert cfg.parallel_config.all2all_backend == "allgather_reducescatter"
-    assert cfg.parallel_config.worker_cls == ATTENTION_WORKER_FQCN
 
 
 @pytest.mark.parametrize(
@@ -228,6 +236,30 @@ def test_config_validation_patch_auto_selects_without_ubatching(monkeypatch):
     cfg = arg_utils_module.EngineArgs.create_engine_config(args)
 
     assert cfg.parallel_config.worker_cls == FFN_WORKER_FQCN
+
+
+def test_config_validation_installs_ascend_patch_only_on_npu(monkeypatch):
+    arg_utils_module, config_module = _install_fake_vllm_config(monkeypatch)
+    import afd_plugin.compat.npu as npu_compat
+
+    calls = []
+    monkeypatch.setattr(
+        npu_compat,
+        "apply_afd_ascend_patches_if_needed",
+        lambda: calls.append("npu"),
+    )
+    patch_module = _load_patch_module()
+    importlib.reload(patch_module)
+
+    cuda_args = _engine_args(active=True)
+    arg_utils_module.EngineArgs.create_engine_config(cuda_args)
+    assert calls == []
+
+    config_module.VllmConfig.platform_worker_cls = VLLM_ASCEND_NPU_WORKER_FQCN
+    _set_fake_platform(is_cuda=False, device_type="npu")
+    npu_args = _engine_args(active=True)
+    arg_utils_module.EngineArgs.create_engine_config(npu_args)
+    assert calls == ["npu"]
 
 
 def test_config_validation_patch_preserves_non_afd_platform_default(monkeypatch):

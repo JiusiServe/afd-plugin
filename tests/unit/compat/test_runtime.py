@@ -6,6 +6,8 @@ import sys
 from contextlib import contextmanager
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 from afd_plugin.compat.npu import runtime as ascend_runtime
 from afd_plugin.compat.npu.runtime import fix_all2all_backend_for_afd
 
@@ -136,6 +138,7 @@ def test_npu_afd_config_patch_restores_dbo_for_afd(monkeypatch):
         def __init__(self, *, enable_dbo, ubatch_size):
             self.enable_dbo = enable_dbo
             self.ubatch_size = ubatch_size
+            self.all2all_backend = "deepep_low_latency"
 
         @property
         def use_ubatching(self):
@@ -147,7 +150,14 @@ def test_npu_afd_config_patch_restores_dbo_for_afd(monkeypatch):
             parallel_config = vllm_config.parallel_config
             parallel_config.enable_dbo = False
             parallel_config.ubatch_size = 0
-            return "fixed"
+
+        @classmethod
+        def check_and_update_config(cls, vllm_config):
+            cls._fix_incompatible_config(vllm_config)
+            parallel_config = vllm_config.parallel_config
+            parallel_config.all2all_backend = "flashinfer_all2allv"
+            if getattr(vllm_config, "fail_update", False):
+                raise RuntimeError("upstream config failure")
 
     def afd_vllm_config(*, active=True):
         config = _vllm_config()
@@ -172,12 +182,22 @@ def test_npu_afd_config_patch_restores_dbo_for_afd(monkeypatch):
     ascend_runtime.apply_afd_ascend_patches_if_needed()
 
     config = afd_vllm_config()
-    assert NPUPlatform._fix_incompatible_config(config) == "fixed"
+    assert NPUPlatform.check_and_update_config(config) is None
     assert config.parallel_config.enable_dbo is True
     assert config.parallel_config.use_ubatching is True
     assert config.parallel_config.ubatch_size == 4
+    assert config.parallel_config.all2all_backend == "deepep_low_latency"
+
+    failing_config = afd_vllm_config()
+    failing_config.fail_update = True
+    with pytest.raises(RuntimeError, match="upstream config failure"):
+        NPUPlatform.check_and_update_config(failing_config)
+    assert failing_config.parallel_config.enable_dbo is True
+    assert failing_config.parallel_config.ubatch_size == 4
+    assert failing_config.parallel_config.all2all_backend == "deepep_low_latency"
 
     inactive_config = afd_vllm_config(active=False)
-    assert NPUPlatform._fix_incompatible_config(inactive_config) == "fixed"
+    assert NPUPlatform.check_and_update_config(inactive_config) is None
     assert inactive_config.parallel_config.enable_dbo is False
     assert inactive_config.parallel_config.use_ubatching is False
+    assert inactive_config.parallel_config.all2all_backend == "flashinfer_all2allv"
