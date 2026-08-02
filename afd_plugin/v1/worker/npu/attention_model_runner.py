@@ -26,7 +26,6 @@ from vllm.sequence import IntermediateTensors
 from vllm.utils.math_utils import cdiv
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
 from vllm.v1.kv_cache_interface import EncoderOnlyAttentionSpec
-from vllm.v1.worker.ubatch_utils import UBatchSlice
 from vllm_ascend.ascend_forward_context import (
     select_moe_comm_method,
     set_ascend_forward_context,
@@ -76,17 +75,6 @@ from afd_plugin.v1.worker.attention_model_runner import (
     _with_dp_derived_afd_rank,
 )
 from afd_plugin.v1.worker.npu.npu_ubatch_wrapper import AscendUBatchWrapper
-from afd_plugin.v1.worker.npu.pcp_debug import (
-    clone_pcp_metadata,
-    debug_pcp_common_metadata_summary,
-    debug_pcp_manager_summary,
-    debug_pcp_metadata_enabled,
-    debug_pcp_metadata_summary,
-    debug_slice_summary,
-    debug_value_summary,
-    restore_pcp_manager_state,
-    snapshot_pcp_manager_state,
-)
 from afd_plugin.v1.worker.npu.ubatch_utils import (
     check_enable_ubatch,
     create_request_boundary_ubatch_slices,
@@ -327,157 +315,9 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
         kv_cache_groups = self.kv_cache_config.kv_cache_groups
 
-        def _get_pcp_metadata(block_table_tensor):
-            if not self.use_cp:
-                return None, block_table_tensor
-            return self.pcp_manager.generate_pcp_metadata(
-                num_tokens,
-                self.query_lens,
-                self.input_batch,
-                num_scheduled_tokens_np,
-                block_table_tensor,
-                num_reqs_padded,
-                num_reqs,
-            )
-
-        def _build_stage_local_pcp_metadata(
-            common_attn_metadata: AscendCommonAttentionMetadata,
-            ubatch_slice: UBatchSlice,
-            ubid: int,
-            kv_cache_gid: int,
-            attn_gid: int,
-        ) -> None:
-            if not self.use_cp or int(self.pcp_size) <= 1:
-                return
-            if self.speculative_config is not None:
-                raise RuntimeError(
-                    "async_moe_ubatching with PCP does not support speculative "
-                    "decode metadata yet",
-                )
-            if bool(getattr(self.pcp_manager, "pcp_use_hybrid_attn", False)):
-                raise RuntimeError(
-                    "async_moe_ubatching with PCP does not support hybrid "
-                    "attention metadata yet",
-                )
-
-            full_num_scheduled_tokens = (
-                self.pcp_manager.query_lens_pcp_full.cpu[:num_reqs]
-                .to("cpu")
-                .numpy()
-                .copy()
-            )
-            original_num_scheduled_tokens = full_num_scheduled_tokens[
-                ubatch_slice.request_slice
-            ].copy()
-            original_token_start = int(
-                full_num_scheduled_tokens[: ubatch_slice.request_slice.start].sum(),
-            )
-            original_token_stop = int(
-                full_num_scheduled_tokens[: ubatch_slice.request_slice.stop].sum(),
-            )
-            original_common_summary = debug_pcp_common_metadata_summary(
-                common_attn_metadata,
-            )
-            stage_num_reqs = ubatch_slice.request_slice.stop - (
-                ubatch_slice.request_slice.start
-            )
-            manager_state = snapshot_pcp_manager_state(self.pcp_manager)
-            try:
-                self.pcp_manager.init_batch_info(
-                    original_num_scheduled_tokens,
-                    stage_num_reqs,
-                )
-                stage_pcp_tokens, _ = self.pcp_manager.update_tokens_for_pcp(
-                    original_num_scheduled_tokens,
-                    self.arange_np,
-                )
-                stage_query_lens = torch.from_numpy(stage_pcp_tokens).to(
-                    self.query_lens.device,
-                )
-                if debug_pcp_metadata_enabled():
-                    logger.warning(
-                        "AFD PCP stage split input; kv_cache_gid=%s attn_gid=%s "
-                        "ubid=%s request_slice=%s token_slice=%s "
-                        "stage_num_reqs=%s original_num_scheduled_tokens=%s "
-                        "stage_pcp_tokens=%s common=%s manager_before=%s",
-                        kv_cache_gid,
-                        attn_gid,
-                        ubid,
-                        debug_slice_summary(ubatch_slice.request_slice),
-                        debug_slice_summary(ubatch_slice.token_slice),
-                        stage_num_reqs,
-                        debug_value_summary(original_num_scheduled_tokens),
-                        debug_value_summary(stage_pcp_tokens),
-                        original_common_summary,
-                        debug_pcp_manager_summary(self.pcp_manager),
-                    )
-                pcp_metadata, block_table_tensor = (
-                    self.pcp_manager.generate_pcp_metadata(
-                        int(common_attn_metadata.num_actual_tokens),
-                        stage_query_lens,
-                        self.input_batch,
-                        stage_pcp_tokens,
-                        common_attn_metadata.block_table_tensor,
-                        stage_num_reqs,
-                        stage_num_reqs,
-                    )
-                )
-                if original_token_stop > original_token_start:
-                    raw_slot_mapping = self.input_batch.block_table[
-                        kv_cache_gid
-                    ].slot_mapping.gpu[original_token_start:original_token_stop]
-                    stage_num_tokens = int(stage_pcp_tokens.sum())
-                    common_attn_metadata.slot_mapping = (
-                        self.pcp_manager.get_padded_slot_mapping(
-                            stage_num_tokens,
-                            stage_num_tokens,
-                            raw_slot_mapping,
-                            kv_cache_gid,
-                        ).clone()
-                    )
-                common_attn_metadata.prefill_context_parallel_metadata = (
-                    clone_pcp_metadata(pcp_metadata)
-                )
-                common_attn_metadata.block_table_tensor = block_table_tensor
-                if debug_pcp_metadata_enabled():
-                    logger.warning(
-                        "AFD PCP stage split result; kv_cache_gid=%s attn_gid=%s "
-                        "ubid=%s request_slice=%s token_slice=%s "
-                        "pcp_metadata=%s block_table_tensor=%s common_after=%s "
-                        "manager_after=%s",
-                        kv_cache_gid,
-                        attn_gid,
-                        ubid,
-                        debug_slice_summary(ubatch_slice.request_slice),
-                        debug_slice_summary(ubatch_slice.token_slice),
-                        debug_pcp_metadata_summary(pcp_metadata),
-                        debug_value_summary(block_table_tensor),
-                        debug_pcp_common_metadata_summary(common_attn_metadata),
-                        debug_pcp_manager_summary(self.pcp_manager),
-                    )
-            finally:
-                restore_pcp_manager_state(self.pcp_manager, manager_state)
-
         def _get_block_table_and_slot_mapping(kv_cache_gid: int):
             assert num_reqs_padded is not None and num_tokens_padded is not None
             kv_cache_spec = kv_cache_groups[kv_cache_gid].kv_cache_spec
-            if self.pcp_size > 1:
-                total_num_pcp_pads = sum(self.pcp_manager.num_pcp_pads_cpu[:num_reqs])
-                if self.pcp_manager.pcp_use_hybrid_attn:
-                    num_scheduled_tokens_padded = (
-                        self.pcp_manager.num_scheduled_tokens_padded
-                    )
-                    assert num_scheduled_tokens_padded is not None
-                    maybe_pcp_full_tokens = (
-                        sum(num_scheduled_tokens_padded) * self.pcp_size
-                        - total_num_pcp_pads
-                    )
-                else:
-                    maybe_pcp_full_tokens = (
-                        num_tokens * self.pcp_size - total_num_pcp_pads
-                    )
-            else:
-                maybe_pcp_full_tokens = num_tokens_padded
             if isinstance(kv_cache_spec, EncoderOnlyAttentionSpec):
                 blk_table_tensor = torch.zeros(
                     (num_reqs_padded, 1),
@@ -491,31 +331,15 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 )
             else:
                 blk_table = self.input_batch.block_table[kv_cache_gid]
-                slot_mapping = blk_table.slot_mapping.gpu[:maybe_pcp_full_tokens]
-                maybe_num_reqs_padded = (
-                    num_reqs_padded * self.decode_token_per_req
-                    if self.use_cp
-                    else num_reqs_padded
-                )
-                blk_table_tensor = blk_table.get_device_tensor()[:maybe_num_reqs_padded]
-                if self.pcp_size == 1:
-                    slot_mapping[num_tokens:num_tokens_padded].fill_(-1)
-                    blk_table_tensor[num_reqs:num_reqs_padded].fill_(0)
-            if self.pcp_size > 1:
-                slot_mapping = self.pcp_manager.get_padded_slot_mapping(
-                    num_tokens,
-                    num_tokens_padded,
-                    slot_mapping,
-                    kv_cache_gid,
-                )
+                slot_mapping = blk_table.slot_mapping.gpu[:num_tokens_padded]
+                blk_table_tensor = blk_table.get_device_tensor()[:num_reqs_padded]
+                slot_mapping[num_tokens:num_tokens_padded].fill_(-1)
+                blk_table_tensor[num_reqs:num_reqs_padded].fill_(0)
             if self.model_config.enable_return_routed_experts and kv_cache_gid == 0:
                 self.cpu_slot_mapping = slot_mapping.cpu().numpy()
             return blk_table_tensor, slot_mapping
 
         block_table_gid_0, slot_mapping_gid_0 = _get_block_table_and_slot_mapping(0)
-        self.long_seq_metadata, block_table_gid_0 = _get_pcp_metadata(
-            block_table_gid_0,
-        )
         num_computed_tokens_cpu = self.input_batch.num_computed_tokens_cpu_tensor[
             :num_reqs_padded
         ]
@@ -543,7 +367,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             positions=self.positions,
             attn_state=self.attn_state,
             decode_token_per_req=self.decode_token_per_req,
-            prefill_context_parallel_metadata=self.long_seq_metadata,
         )
 
         if logits_indices is not None and self.cache_config.kv_sharing_fast_prefill:
@@ -647,13 +470,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                     num_tokens_padded,
                 )
                 for ubid, ubatch_cm in enumerate(ubatch_common_metadata):
-                    _build_stage_local_pcp_metadata(
-                        ubatch_cm,
-                        ubatch_slices[ubid],
-                        ubid,
-                        kv_cache_gid,
-                        attn_gid,
-                    )
                     _build_attn_group_metadata(kv_cache_gid, attn_gid, ubatch_cm, ubid)
 
         if self.is_mm_prefix_lm:
@@ -974,13 +790,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             force_has_lora=num_active_loras > 0,
             force_num_active_loras=num_active_loras,
         )
-        if self.use_cp:
-            self.pcp_manager.init_batch_info(num_scheduled_tokens, num_reqs)
-            if self.speculative_config:
-                self.pcp_manager.query_lens_pcp_full.cpu[:num_reqs] = torch.from_numpy(
-                    num_scheduled_tokens,
-                )
-                self.pcp_manager.query_lens_pcp_full.copy_to_gpu()
         if cudagraph_runtime_mode is None:
             cudagraph_runtime_mode = _cudagraph_mode
         else:

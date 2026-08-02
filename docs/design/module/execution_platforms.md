@@ -14,7 +14,6 @@ primary_code_paths:
   - "afd_plugin/v1/worker/dbo.py"
   - "afd_plugin/v1/worker/npu/forward_context.py"
   - "afd_plugin/v1/worker/npu/npu_ubatch_wrapper.py"
-  - "afd_plugin/v1/worker/npu/pcp_debug.py"
   - "afd_plugin/v1/worker/npu/ubatch_utils.py"
   - "afd_plugin/v1/worker/npu/ubatching.py"
   - "csrc/**"
