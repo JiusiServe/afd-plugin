@@ -405,6 +405,28 @@ def test_ffn_constructs_no_real_attention(
     assert not any(name.startswith("self_attn.") for name in _parameter_names(moe))
 
 
+def test_npu_ffn_refreshes_native_fused_moe_factory(
+    monkeypatch,
+    construction_env,
+):
+    stale_factory = object()
+    ascend_factory = object()
+    factories_seen_by_native_moe = []
+
+    class _FakeMoE(nn.Module):
+        def __init__(self, **_kwargs):
+            super().__init__()
+            factories_seen_by_native_moe.append(adapter.native.FusedMoE)
+
+    monkeypatch.setattr(adapter.native, "FusedMoE", stale_factory)
+    monkeypatch.setattr(adapter.fused_moe, "FusedMoE", ascend_factory)
+    monkeypatch.setattr(adapter.native, "DeepseekV2MoE", _FakeMoE)
+
+    _make_layer(monkeypatch, role="ffn", layer_idx=1)
+
+    assert factories_seen_by_native_moe == [ascend_factory]
+
+
 @pytest.mark.parametrize(
     ("aiter_enabled", "apply_routed_scale_to_output"),
     [(False, True), (True, False)],

@@ -17,6 +17,7 @@ from transformers import DeepseekV2Config, DeepseekV3Config, GlmMoeDsaConfig
 from vllm.config import ParallelConfig, VllmConfig
 from vllm.forward_context import get_forward_context
 from vllm.logger import init_logger
+from vllm.model_executor.layers import fused_moe
 from vllm.model_executor.layers.linear import ReplicatedLinear
 from vllm.model_executor.models import deepseek_v2 as native
 
@@ -430,6 +431,12 @@ class AFDDeepseekV2DecoderLayer(native.DeepseekV2DecoderLayer):
             if self.compute_gate_on_attention and not self.is_moe_layer:
                 self.mlp = native.PPMissingLayer()
             elif self.is_moe_layer:
+                # vLLM models bind FusedMoE at module import time. AFD can import
+                # native DeepSeek before vLLM-Ascend patches the package factory,
+                # so refresh that binding after platform initialization and before
+                # constructing the NPU FFN MoE.
+                if device_type == "npu":
+                    native.FusedMoE = fused_moe.FusedMoE
                 self.mlp = native.DeepseekV2MoE(
                     config=config,
                     parallel_config=parallel_config,

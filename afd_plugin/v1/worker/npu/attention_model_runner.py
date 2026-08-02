@@ -32,14 +32,12 @@ from vllm_ascend.ascend_forward_context import (
     set_ascend_forward_context,
 )
 from vllm_ascend.attention.attention_v1 import AscendAttentionState
-from vllm_ascend.attention.kvcomp_attn.attention_utils import build_kvcomp_metadata
 from vllm_ascend.attention.utils import (
     AscendCommonAttentionMetadata,
     using_paged_attention,
 )
 from vllm_ascend.compilation.acl_graph import ACLGraphWrapper
 from vllm_ascend.ops.rotary_embedding import update_cos_sin
-from vllm_ascend.patch.worker.patch_module import patch_torch_npu_argsort
 from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
 from vllm_ascend.spec_decode.draft_proposer import AscendDraftModelProposer
 from vllm_ascend.spec_decode.eagle_proposer import AscendEagleProposer
@@ -184,7 +182,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             self._update_full_graph_params_if_needed(
                 forward_context,
                 num_tokens_padded,
-                positions,
             )
             hidden_states = run_model()
         else:
@@ -192,7 +189,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             self._update_full_graph_params_if_needed(
                 forward_context,
                 num_tokens_padded,
-                positions,
             )
 
         if (
@@ -573,7 +569,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             extra_attn_metadata_args = {}
             if use_spec_decode and isinstance(builder, GDNAttentionMetadataBuilder):
                 assert ubid is None, "UBatching not supported with GDN yet"
-                patch_torch_npu_argsort()
                 extra_attn_metadata_args = dict(
                     num_accepted_tokens=self.num_accepted_tokens.gpu[:num_reqs_padded],
                     num_decode_draft_tokens_cpu=self.num_decode_draft_tokens.cpu[
@@ -645,8 +640,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                         spec_decode_common_attn_metadata = cm
                 else:
                     spec_decode_common_attn_metadata = cm
-            if self.enable_hamming_sparse is True:
-                build_kvcomp_metadata(self.kvcomp_meta_data, cm)
             for attn_gid in range(len(self.attn_groups[kv_cache_gid])):
                 ubatch_common_metadata = split_attn_metadata(
                     ubatch_slices,
@@ -1394,7 +1387,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             moe_comm_type = select_moe_comm_method(
                 num_tokens_padded,
                 self.vllm_config,
-                is_draft_model,
             )
             should_ubatch = check_enable_ubatch(
                 num_tokens_unpadded,
@@ -1414,7 +1406,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             moe_comm_type = select_moe_comm_method(
                 num_tokens_padded,
                 self.vllm_config,
-                is_draft_model,
             )
             should_ubatch = check_enable_ubatch(
                 num_tokens_unpadded,
@@ -1448,7 +1439,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             moe_comm_type = select_moe_comm_method(
                 num_tokens_padded,
                 self.vllm_config,
-                is_draft_model,
             )
             should_ubatch = check_enable_ubatch(
                 num_tokens_unpadded,
@@ -1478,7 +1468,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         moe_comm_type = select_moe_comm_method(
             max_tokens_across_dp,
             self.vllm_config,
-            is_draft_model,
         )
         should_ubatch = check_enable_ubatch(
             min_tokens_across_dp,

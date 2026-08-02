@@ -19,21 +19,25 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
-import vllm_ascend.envs as envs_ascend
 import vllm_ascend.ops.fused_moe.fused_moe as fused_moe_module
-from vllm.config import VllmConfig
-from vllm_ascend.ascend_forward_context import _EXTRA_CTX, MoECommType
-from vllm_ascend.flash_common3_context import get_flash_common3_context
+from vllm.config import CompilationMode, VllmConfig, get_current_vllm_config
+from vllm.logger import logger
+from vllm_ascend.ascend_config import get_ascend_config
+from vllm_ascend.ascend_forward_context import (
+    _EXTRA_CTX,
+    _MEGA_MOE_SUPPORTED,
+    MoECommType,
+)
+from vllm_ascend.distributed.parallel_state import get_mc2_group
 from vllm_ascend.ops.fused_moe.experts_selector import (
     select_experts,
     zero_experts_compute,
 )
-from vllm_ascend.ops.fused_moe.fused_moe import AscendFusedMoE
+from vllm_ascend.ops.fused_moe.moe_runtime_args import build_fused_experts_input
+from vllm_ascend.quantization.methods.base import get_moe_num_logical_experts
 from vllm_ascend.quantization.methods.w8a8_dynamic import (
     AscendW8A8DynamicFusedMoEMethod,
-    build_fused_experts_input,
 )
-from vllm_ascend.quantization.quant_type import QuantType
 
 _FORCE_LB_DETERMINISTIC_SEED = 1024
 
@@ -63,16 +67,6 @@ def _get_force_lb_max_tokens(vllm_config: VllmConfig) -> int:
     if not isinstance(max_tokens, int):
         max_tokens = 128
     return max(max_tokens, 1)
-
-
-def _get_force_lb_config(layer: object) -> ForceLoadBalanceConfig:
-    return ForceLoadBalanceConfig(
-        n_routed_experts=int(layer.n_routed_experts),
-        ep_size=int(layer.ep_size),
-        ep_rank=int(layer.ep_rank),
-        top_k=int(layer.top_k),
-        topn_per_rank=int(layer.force_load_balance_topn_per_rank),
-    )
 
 
 def _validate_force_lb_config(config: ForceLoadBalanceConfig) -> None:
@@ -143,16 +137,16 @@ def _build_topk_buffer(
 
 
 def _init_force_lb_buffer(
-    layer: object,
+    method: AscendW8A8DynamicFusedMoEMethod,
+    config: ForceLoadBalanceConfig,
     max_tokens: int,
     device: torch.device,
 ) -> None:
-    config = _get_force_lb_config(layer)
     _validate_force_lb_config(config)
     buffer = _build_topk_buffer(config, max_tokens, device)
 
-    layer.force_lb_fake_topk_buffer = buffer
-    layer.max_force_lb_tokens = max_tokens
+    method.force_lb_fake_topk_buffer = buffer
+    method.max_force_lb_tokens = max_tokens
 
     fused_moe_module.logger.info(
         "AFD force load balance buffer initialized: ep_size=%s top_k=%s"
@@ -166,11 +160,12 @@ def _init_force_lb_buffer(
 
 
 def _get_force_lb_topk_ids(
-    layer: object,
+    method: AscendW8A8DynamicFusedMoEMethod,
+    config: ForceLoadBalanceConfig,
     batch_tokens: int,
     device: torch.device,
 ) -> torch.Tensor:
-    buffer: torch.Tensor | None = getattr(layer, "force_lb_fake_topk_buffer", None)
+    buffer = method.force_lb_fake_topk_buffer
     if buffer is None:
         raise RuntimeError("force_lb_fake_topk_buffer is not initialized")
 
@@ -181,71 +176,48 @@ def _get_force_lb_topk_ids(
             buffer.size(0),
             new_max_tokens,
         )
-        _init_force_lb_buffer(layer, new_max_tokens, device)
-        buffer = layer.force_lb_fake_topk_buffer
+        _init_force_lb_buffer(method, config, new_max_tokens, device)
+        buffer = method.force_lb_fake_topk_buffer
+        assert buffer is not None
 
     if buffer.device != device:
         buffer = buffer.to(device, non_blocking=True)
-        layer.force_lb_fake_topk_buffer = buffer
+        method.force_lb_fake_topk_buffer = buffer
 
-    top_k = int(layer.top_k)
-    return buffer[:batch_tokens, :top_k]
+    return buffer[:batch_tokens, : config.top_k]
 
 
-# Patch reason: vllm-ascend's AscendFusedMoE does not initialize AFD profiling
-# knobs for deterministic force-load-balance routing.
-# Patch functionality: preserves the target upstream tag's AscendFusedMoE
-# initialization and replaces the force-load-balance buffer setup with AFD's
-# deterministic fake top-k buffer.
+# Patch reason: vllm-ascend's W8A8 method does not retain AFD's deterministic
+# force-load-balance settings after leaving the model-construction config context.
+# Patch functionality: preserves upstream initialization and captures the AFD
+# profiling switch, local-expert limit, and initial buffer capacity for apply.
 # Signature: matches upstream; no added parameters.
-def __init__(self, *args, **kwargs):
-    super(AscendFusedMoE, self).__init__(*args, **kwargs)
+def __init__(self):
+    vllm_config = get_current_vllm_config()
+    ascend_config = get_ascend_config()
+    self.use_aclgraph = (
+        vllm_config.compilation_config.mode == CompilationMode.VLLM_COMPILE
+        and not vllm_config.model_config.enforce_eager
+    )
+    self.dynamic_eplb = ascend_config.eplb_config.dynamic_eplb
+    self.in_dtype = vllm_config.model_config.dtype
+    self.supports_eplb = True
 
-    num_experts = kwargs["num_experts"]
-    intermediate_size = kwargs["intermediate_size"]
-    num_shared_experts = kwargs.get("n_shared_experts", 0)
-    self.n_routed_experts = num_experts
-
-    AscendFusedMoE.moe_counter += 1
-    self.moe_instance_id = AscendFusedMoE.moe_counter
-
-    self._expert_map = None
-    self.log2phy = None
-
-    if self.quant_config is None:
-        self.quant_method = fused_moe_module.AscendUnquantizedFusedMoEMethod(
-            self.moe_config
+    try:
+        device_group = get_mc2_group().device_group
+        # TODO: Try local_rank = ep_group.rank_in_group
+        local_rank = torch.distributed.get_rank(group=device_group)
+        backend = device_group._get_backend(torch.device("npu"))
+        self.moe_all_to_all_group_name = backend.get_hccl_comm_name(local_rank)
+    except AttributeError:
+        logger.warning_once(
+            "[vllm-ascend/W8A8_DYNAMIC] MC2 group metadata unavailable, "
+            "falling back to empty moe_all_to_all_group_name."
         )
-    else:
-        self.quant_method = self.quant_config.get_quant_method(self, self.layer_name)
+        self.moe_all_to_all_group_name = ""
 
-    assert self.quant_method is not None
-
-    self.moe_config.tp_group = fused_moe_module.get_tp_group()
-    self.moe_config.dp_group = fused_moe_module.get_dp_group()
-    self.moe_config.ep_group = fused_moe_module.get_ep_group()
-    self.moe_config.mc2_group = fused_moe_module.get_mc2_group()
-    self.moe_config.supports_eplb = self.quant_method.supports_eplb
-    ascend_config = fused_moe_module.get_ascend_config()
-    vllm_config = fused_moe_module.get_current_vllm_config()
-    additional_config = getattr(vllm_config, "additional_config", None)
-    if not isinstance(additional_config, dict):
-        additional_config = {}
-    # flashcommon3 gate stream
-    self.multistream_overlap_gate = ascend_config.multistream_overlap_gate
-    if self.multistream_overlap_gate and AscendFusedMoE.gate_stream is None:
-        AscendFusedMoE.gate_stream = torch.npu.Stream()
-    if (
-        self.custom_routing_function is None
-        and self.e_score_correction_bias is not None
-    ):
-        self.e_score_correction_bias.data = self.e_score_correction_bias.data.to(
-            dtype=vllm_config.model_config.dtype
-        )
-
-    # ### PATCH START: AFD force-load-balance layer initialization
-    # Read plugin-owned profiling knobs and prebuild deterministic fake routed
-    # expert ids for Ascend W8A8 MoE layers.
+    # ### PATCH START: capture AFD force-load-balance configuration
+    additional_config = vllm_config.additional_config or {}
     self.enable_force_load_balance = bool(
         additional_config.get("enable_force_load_balance", False)
     )
@@ -253,109 +225,14 @@ def __init__(self, *args, **kwargs):
         additional_config.get("force_load_balance_topn_per_rank", 0)
     )
     self.max_force_lb_tokens = _get_force_lb_max_tokens(vllm_config)
-    self.force_lb_fake_topk_buffer = None
-    # ### PATCH END: AFD force-load-balance layer initialization
-
-    # init moe
-    eplb_config = ascend_config.eplb_config
-    self.mix_placement = getattr(ascend_config, "mix_placement", False)
-    self.n_shared_experts = num_shared_experts
-    num_experts += num_shared_experts if self.mix_placement else 0
-    self.moe_config.num_experts = num_experts
-    (
-        self.global_expert_map,
-        self._expert_map,
-        self.log2phy,
-        self.global_redundant_expert_num,
-    ) = fused_moe_module.init_eplb_config(
-        eplb_config,
-        self.moe_instance_id,
-        self.moe_config,
-        self.mix_placement,
-        num_shared_experts,
-    )
-    self.global_num_experts = num_experts + self.global_redundant_expert_num
-    self.dynamic_eplb = eplb_config.dynamic_eplb and (self.log2phy is not None)
-    self.local_num_experts = self.global_num_experts // self.ep_size
-    if self._expert_map is not None:
-        fused_moe_module.logger.info_once(
-            "[EP Rank %s/%s] Expert parallelism is enabled. Local/global"
-            " number of experts: %s/%s. Experts local to global index map:"
-            " %s.",
-            self.ep_rank,
-            self.ep_size,
-            self.local_num_experts,
-            self.global_num_experts,
-            fused_moe_module.get_compressed_expert_map(self._expert_map),
-        )
-    if self.dynamic_eplb:
-        self.multi_stage = False
-        self.moe_load = torch.zeros(self.local_num_experts, dtype=torch.int64).npu()
-        if eplb_config.eplb_policy_type == 3:
-            self.multi_stage = True
-            self.load_counter = torch.tensor(0, dtype=torch.int32, device="npu")
-            self.num_iter = eplb_config.expert_heat_collection_interval
-            self.moe_load = torch.zeros(
-                (self.num_iter, self.local_num_experts),
-                dtype=torch.int32,
-                device="npu",
-            )
-
-    self.moe_config.num_experts = self.global_num_experts
-    self.moe_config.num_local_experts = self.local_num_experts
-    self.moe_config.global_redundant_expert_num = self.global_redundant_expert_num
-
-    moe_quant_params = {
-        "num_experts": self.local_num_experts,
-        "hidden_size": self.hidden_size,
-        "intermediate_size_per_partition": self.intermediate_size_per_partition,
-        "params_dtype": self.params_dtype,
-        "weight_loader": self.weight_loader,
-    }
-    # need full intermediate size pre-sharding for WNA16 act order
-    if self.quant_method.__class__.__name__ in (
-        "GPTQMarlinMoEMethod",
-        "CompressedTensorsWNA16MoEMethod",
-    ):
-        moe_quant_params["intermediate_size_full"] = intermediate_size
-    self.quant_method.create_weights(layer=self, **moe_quant_params)
-
-    self.enable_shared_expert_dp = ascend_config.enable_shared_expert_dp
-    self.enable_npugraph_ex_static_kernel = (
-        ascend_config.ascend_compilation_config.enable_static_kernel
-    )
-
-    fused_moe_module.setup_moe_comm_method(self.moe_config)
-    self.quant_type = self._get_quant_type()
-
-    # ### PATCH START: AFD force-load-balance layer initialization
-    # Initialize the deterministic fake top-k buffer after W8A8 weights exist.
-    if self.enable_force_load_balance and self.quant_type == QuantType.W8A8:
-        _init_force_lb_buffer(
-            self,
-            int(self.max_force_lb_tokens),
-            self.w13_weight.device,
-        )
-    # ### PATCH END: AFD force-load-balance layer initialization
-
-    is_legacy = fused_moe_module.vllm_version_is("0.19.1")
-    self.runner = fused_moe_module.AscendMoERunner(
-        self if is_legacy else self.layer_name,
-        self.moe_config,
-        self.router,
-        self._routed_input_transform,
-        self.gate if is_legacy else kwargs.pop("gate", None),
-        self.shared_experts if is_legacy else kwargs.pop("shared_experts", None),
-        self.quant_method,
-        self.reduce_results,
-        self.vllm_config.parallel_config.enable_dbo,
-    )
+    self.force_lb_fake_topk_buffer: torch.Tensor | None = None
+    # ### PATCH END: capture AFD force-load-balance configuration
 
 
 # Patch reason: vllm-ascend W8A8 MoE routes tokens with model-selected expert
 # ids, but AFD profiling needs deterministic balanced expert ids.
 # Patch functionality: preserves the target upstream tag's W8A8 apply path and
-# replaces only layer-owned force-load-balance top-k ids with AFD deterministic
+# replaces model-selected top-k ids with the method-owned AFD deterministic
 # ids.
 # Signature: matches upstream; no added parameters.
 def apply(
@@ -382,6 +259,7 @@ def apply(
     activation: str = "silu",
     apply_router_weight_on_input: bool = False,
     mc2_mask: torch.Tensor | None = None,
+    tid2eid: torch.Tensor | None = None,
 ) -> torch.Tensor:
     zero_expert_num = getattr(layer, "zero_expert_num", 0)
     zero_expert_type = getattr(layer, "zero_expert_type", None)
@@ -389,42 +267,47 @@ def apply(
     mix_placement = getattr(layer, "mix_placement", False)
     if n_shared_experts is None:
         n_shared_experts = 0
-    valid_global_expert_num = num_experts - n_shared_experts
+    num_logical_experts = get_moe_num_logical_experts(
+        layer,
+        num_experts,
+        global_redundant_expert_num=global_redundant_expert_num,
+        num_shared_experts=n_shared_experts,
+    )
     if zero_expert_num == 0 or zero_expert_type is None:
-        assert router_logits.shape[1] == valid_global_expert_num, (
-            "Number of global experts mismatch (excluding redundancy)"
+        assert router_logits.shape[1] == num_logical_experts, (
+            "[vllm-ascend/W8A8_DYNAMIC] Number of global experts mismatch "
+            "(excluding redundancy). "
+            f"router_experts={router_logits.shape[1]}, "
+            f"expected_experts={num_logical_experts}, "
+            f"zero_expert_num={zero_expert_num}, "
+            f"zero_expert_type={zero_expert_type}"
         )
 
-    if self.multistream_overlap_gate:
-        fc3_context = get_flash_common3_context()
-        assert fc3_context is not None
-        topk_weights = fc3_context.topk_weights
-        topk_ids = fc3_context.topk_ids
-    else:
-        topk_weights, topk_ids = select_experts(
-            hidden_states=x,
-            router_logits=router_logits,
-            top_k=top_k,
-            use_grouped_topk=use_grouped_topk,
-            renormalize=renormalize,
-            topk_group=topk_group,
-            num_expert_group=num_expert_group,
-            custom_routing_function=custom_routing_function,
-            scoring_func=scoring_func,
-            routed_scaling_factor=routed_scaling_factor,
-            e_score_correction_bias=e_score_correction_bias,
-            mix_placement=mix_placement,
-            num_logical_experts=router_logits.shape[1],
-            num_shared_experts=n_shared_experts,
-            num_experts=num_experts,
-        )
+    topk_weights, topk_ids = select_experts(
+        hidden_states=x,
+        router_logits=router_logits,
+        top_k=top_k,
+        use_grouped_topk=use_grouped_topk,
+        renormalize=renormalize,
+        topk_group=topk_group,
+        num_expert_group=num_expert_group,
+        custom_routing_function=custom_routing_function,
+        scoring_func=scoring_func,
+        routed_scaling_factor=routed_scaling_factor,
+        e_score_correction_bias=e_score_correction_bias,
+        mix_placement=mix_placement,
+        num_logical_experts=router_logits.shape[1],
+        num_shared_experts=n_shared_experts,
+        num_experts=num_logical_experts,
+        tid2eid=tid2eid,
+    )
     assert topk_ids is not None
     assert topk_weights is not None
     if zero_expert_num > 0 and zero_expert_type is not None:
         topk_ids, topk_weights, zero_expert_result = zero_experts_compute(
             expert_indices=topk_ids,
             expert_scales=topk_weights,
-            num_experts=num_experts,
+            num_experts=num_logical_experts,
             zero_expert_type=zero_expert_type,
             hidden_states=x,
         )
@@ -434,22 +317,38 @@ def apply(
     # currently it is only activated when doing profile runs.
     if enable_force_load_balance:
         random_matrix = torch.rand(
-            topk_ids.size(0), num_experts, device=topk_ids.device
+            topk_ids.size(0), num_logical_experts, device=topk_ids.device
         )
         topk_ids = torch.argsort(random_matrix, dim=1)[:, : topk_ids.size(1)].to(
             topk_ids.dtype
         )
 
     # ### PATCH START: AFD force-load-balance W8A8 routing override
-    # Replace layer-owned profiling topk ids with deterministic balanced ids.
-    elif getattr(layer, "enable_force_load_balance", False):
+    # Replace routed ids with a deterministic balanced cycle when explicitly
+    # requested by the plugin configuration captured during construction.
+    if not enable_force_load_balance and self.enable_force_load_balance:
+        force_lb_config = ForceLoadBalanceConfig(
+            n_routed_experts=num_logical_experts,
+            ep_size=int(layer.moe_config.ep_size),
+            ep_rank=int(layer.moe_config.ep_rank),
+            top_k=top_k,
+            topn_per_rank=self.force_load_balance_topn_per_rank,
+        )
+        if self.force_lb_fake_topk_buffer is None:
+            _init_force_lb_buffer(
+                self,
+                force_lb_config,
+                self.max_force_lb_tokens,
+                topk_ids.device,
+            )
         fake_routed_topk_ids = _get_force_lb_topk_ids(
-            layer,
-            batch_tokens=topk_ids.shape[0],
-            device=topk_ids.device,
+            self,
+            force_lb_config,
+            topk_ids.shape[0],
+            topk_ids.device,
         )
         fake_routed_topk_ids = fake_routed_topk_ids.to(topk_ids.dtype)
-        if getattr(layer, "mix_placement", False):
+        if mix_placement:
             shared_topk_ids = topk_ids[:, top_k:]
             topk_ids = torch.cat([fake_routed_topk_ids, shared_topk_ids], dim=1)
         else:
@@ -459,10 +358,12 @@ def apply(
     assert topk_weights is not None
     topk_weights = topk_weights.to(self.in_dtype)
 
+    act_name = getattr(activation, "value", activation)
     moe_comm_method = _EXTRA_CTX.moe_comm_method
     fused_scale_flag = (
         _EXTRA_CTX.moe_comm_type == MoECommType.FUSED_MC2
-        and envs_ascend.VLLM_ASCEND_ENABLE_FUSED_MC2 == 1
+        and get_ascend_config().enable_fused_mc2 == 1
+        and act_name != "swigluoai_uninterleave"
     )
     if self.dynamic_eplb:
         w1 = layer.w13_weight_list
@@ -477,6 +378,19 @@ def apply(
             if fused_scale_flag
             else layer.w2_weight_scale_list
         )
+        w1_scale_bias = (
+            [torch.tensor([], dtype=torch.float32)] if fused_scale_flag else None
+        )
+        w2_scale_bias = (
+            [torch.tensor([], dtype=torch.float32)] if fused_scale_flag else None
+        )
+    elif fused_scale_flag and _MEGA_MOE_SUPPORTED:
+        w1 = layer.cann_mega_moe_w13_weight_list
+        w1_scale = layer.cann_mega_moe_fused_w1_scale_list
+        w2 = layer.cann_mega_moe_w2_weight_list
+        w2_scale = layer.cann_mega_moe_fused_w2_scale_list
+        w1_scale_bias = None
+        w2_scale_bias = None
     else:
         w1 = [layer.w13_weight]
         w1_scale = (
@@ -487,6 +401,12 @@ def apply(
         w2 = [layer.w2_weight]
         w2_scale = (
             [layer.fused_w2_scale] if fused_scale_flag else [layer.w2_weight_scale]
+        )
+        w1_scale_bias = (
+            [torch.tensor([], dtype=torch.float32)] if fused_scale_flag else None
+        )
+        w2_scale_bias = (
+            [torch.tensor([], dtype=torch.float32)] if fused_scale_flag else None
         )
 
     final_hidden_states = moe_comm_method.fused_experts(
@@ -507,14 +427,18 @@ def apply(
             activation=activation,
             w1_scale=w1_scale,
             w2_scale=w2_scale,
+            w1_scale_bias=w1_scale_bias,
+            w2_scale_bias=w2_scale_bias,
+            swiglu_limit=layer.swiglu_limit,
+            swiglu_alpha=getattr(layer, "swiglu_alpha", 1.0),
+            swiglu_beta=getattr(layer, "swiglu_beta", 0.0),
         )
     )
     if zero_expert_num > 0 and zero_expert_type is not None:
         final_hidden_states += zero_expert_result
     return final_hidden_states
 
-
-AscendFusedMoE.__init__ = __init__
+AscendW8A8DynamicFusedMoEMethod.__init__ = __init__
 AscendW8A8DynamicFusedMoEMethod.apply = apply
 
 
