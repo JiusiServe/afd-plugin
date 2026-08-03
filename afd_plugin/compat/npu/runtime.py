@@ -29,8 +29,8 @@ def apply_afd_ascend_patches_if_needed() -> None:
         apply_afd_ascend_dbo_config_patch,
     )
 
-    apply_afd_ascend_dbo_config_patch()
-    _PATCHES_APPLIED = True
+    if apply_afd_ascend_dbo_config_patch():
+        _PATCHES_APPLIED = True
 
 
 __all__ = [
