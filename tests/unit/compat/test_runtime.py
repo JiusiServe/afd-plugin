@@ -6,6 +6,8 @@ import sys
 from contextlib import contextmanager
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 from afd_plugin.compat.npu import runtime as ascend_runtime
 from afd_plugin.compat.npu.runtime import fix_all2all_backend_for_afd
 
@@ -136,6 +138,7 @@ def test_npu_afd_config_patch_restores_dbo_for_afd(monkeypatch):
         def __init__(self, *, enable_dbo, ubatch_size):
             self.enable_dbo = enable_dbo
             self.ubatch_size = ubatch_size
+            self.all2all_backend = "deepep_low_latency"
 
         @property
         def use_ubatching(self):
@@ -147,7 +150,14 @@ def test_npu_afd_config_patch_restores_dbo_for_afd(monkeypatch):
             parallel_config = vllm_config.parallel_config
             parallel_config.enable_dbo = False
             parallel_config.ubatch_size = 0
-            return "fixed"
+
+        @classmethod
+        def check_and_update_config(cls, vllm_config):
+            cls._fix_incompatible_config(vllm_config)
+            parallel_config = vllm_config.parallel_config
+            parallel_config.all2all_backend = "flashinfer_all2allv"
+            if getattr(vllm_config, "fail_update", False):
+                raise RuntimeError("upstream config failure")
 
     def afd_vllm_config(*, active=True):
         config = _vllm_config()
@@ -162,6 +172,7 @@ def test_npu_afd_config_patch_restores_dbo_for_afd(monkeypatch):
             else {}
         )
         config.parallel_config = FakeParallelConfig(enable_dbo=True, ubatch_size=4)
+        config.fail_update = False
         return config
 
     fake_platform.NPUPlatform = NPUPlatform
@@ -172,12 +183,49 @@ def test_npu_afd_config_patch_restores_dbo_for_afd(monkeypatch):
     ascend_runtime.apply_afd_ascend_patches_if_needed()
 
     config = afd_vllm_config()
-    assert NPUPlatform._fix_incompatible_config(config) == "fixed"
+    assert NPUPlatform.check_and_update_config(config) is None
     assert config.parallel_config.enable_dbo is True
     assert config.parallel_config.use_ubatching is True
     assert config.parallel_config.ubatch_size == 4
+    assert config.parallel_config.all2all_backend == "deepep_low_latency"
+
+    failing_config = afd_vllm_config()
+    failing_config.fail_update = True
+    with pytest.raises(RuntimeError, match="upstream config failure"):
+        NPUPlatform.check_and_update_config(failing_config)
+    assert failing_config.parallel_config.enable_dbo is True
+    assert failing_config.parallel_config.ubatch_size == 4
+    assert failing_config.parallel_config.all2all_backend == "deepep_low_latency"
 
     inactive_config = afd_vllm_config(active=False)
-    assert NPUPlatform._fix_incompatible_config(inactive_config) == "fixed"
+    assert NPUPlatform.check_and_update_config(inactive_config) is None
     assert inactive_config.parallel_config.enable_dbo is False
     assert inactive_config.parallel_config.use_ubatching is False
+    assert inactive_config.parallel_config.all2all_backend == "flashinfer_all2allv"
+
+
+def test_npu_afd_config_patch_retries_after_initial_import_error(monkeypatch):
+    fake_package = ModuleType("vllm_ascend")
+    fake_package.__path__ = []
+    monkeypatch.setitem(sys.modules, "vllm_ascend", fake_package)
+    monkeypatch.setitem(sys.modules, "vllm_ascend.platform", None)
+    monkeypatch.setattr(ascend_runtime, "_PATCHES_APPLIED", False)
+
+    ascend_runtime.apply_afd_ascend_patches_if_needed()
+
+    assert ascend_runtime._PATCHES_APPLIED is False
+
+    fake_platform = ModuleType("vllm_ascend.platform")
+
+    class NPUPlatform:
+        @classmethod
+        def check_and_update_config(cls, vllm_config):
+            del cls, vllm_config
+
+    fake_platform.NPUPlatform = NPUPlatform
+    monkeypatch.setitem(sys.modules, "vllm_ascend.platform", fake_platform)
+
+    ascend_runtime.apply_afd_ascend_patches_if_needed()
+
+    assert ascend_runtime._PATCHES_APPLIED is True
+    assert hasattr(NPUPlatform, "_afd_plugin_ascend_platform_patch_state")
