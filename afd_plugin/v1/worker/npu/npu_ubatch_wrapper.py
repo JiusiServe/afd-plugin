@@ -20,16 +20,26 @@ from vllm.distributed import (
 )
 from vllm.forward_context import (
     DPMetadata,
+    ForwardContext,
     get_forward_context,
     override_forward_context,
 )
 from vllm.sequence import IntermediateTensors
 from vllm.v1.worker.gpu_ubatch_wrapper import UbatchMetadata, UBatchWrapper
-from vllm_ascend.compilation.acl_graph import ACLGraphWrapper
+from vllm_ascend.compilation.acl_graph import (
+    ACLGraphWrapper,
+    GraphParams,
+    get_graph_params,
+)
 from vllm_ascend.utils import enable_sp
 
 from afd_plugin.v1.worker.npu.forward_context import (
     create_ascend_forward_context,
+)
+from afd_plugin.v1.worker.npu.mla_graph import (
+    merge_mla_graph_params,
+    new_mla_graph_params,
+    override_mla_graph_params,
 )
 from afd_plugin.v1.worker.npu.ubatching import (
     AscendUBatchContext,
@@ -48,6 +58,20 @@ class AscendNPUGraphMetaData:
     aclgraph: torch.npu.NPUGraph
     ubatch_metadata: list[AscendUbatchMetadata]
     outputs: torch.Tensor | IntermediateTensors | None = None
+    mla_graph_params: tuple[GraphParams, GraphParams] | None = None
+
+
+@dataclass(frozen=True)
+class AscendNPUGraphKey:
+    stage_num_tokens: tuple[int, int]
+    has_lora: bool
+    num_active_loras: int
+
+
+FullGraphParamsUpdater = Callable[
+    [ForwardContext, int, torch.Tensor | None],
+    None,
+]
 
 
 class AscendUBatchWrapper(UBatchWrapper):
@@ -59,13 +83,18 @@ class AscendUBatchWrapper(UBatchWrapper):
         vllm_config: VllmConfig,
         runtime_mode: CUDAGraphMode,
         device: torch.device,
+        *,
+        mla_full_graph_enabled: bool = False,
+        full_graph_params_updater: FullGraphParamsUpdater | None = None,
+        enable_enpu: bool = False,
     ):
+        assert not enable_enpu, "AscendUBatchWrapper does not support ENPU"
         self.runnable = runnable
         self.vllm_config = vllm_config
         self.compilation_config = vllm_config.compilation_config
         self.comm_stream = torch.npu.Stream(device=device)
         self.ready_barrier = threading.Barrier(3)
-        self.cudagraphs: dict[int, AscendNPUGraphMetaData] = {}
+        self.cudagraphs: dict[AscendNPUGraphKey, AscendNPUGraphMetaData] = {}
         self.cudagraph_wrapper = None
         if runtime_mode is not CUDAGraphMode.NONE:
             self.cudagraph_wrapper = ACLGraphWrapper(
@@ -74,6 +103,8 @@ class AscendUBatchWrapper(UBatchWrapper):
                 runtime_mode=runtime_mode,
             )
         self.device = device
+        self.mla_full_graph_enabled = mla_full_graph_enabled
+        self.full_graph_params_updater = full_graph_params_updater
 
     @property
     def graph_pool(self):
@@ -96,6 +127,23 @@ class AscendUBatchWrapper(UBatchWrapper):
     def unwrap(self) -> Callable:
         return self.runnable
 
+    def owns_full_graph_update(
+        self,
+        forward_context: ForwardContext,
+    ) -> bool:
+        uses_mla_ubatch_full_graph = (
+            self.mla_full_graph_enabled
+            and forward_context.ubatch_slices is not None
+            and forward_context.cudagraph_runtime_mode is CUDAGraphMode.FULL
+        )
+        if not uses_mla_ubatch_full_graph:
+            return False
+        if forward_context.max_tokens_across_pcp not in (None, 0):
+            raise RuntimeError(
+                "MLA DBO FULL graph does not support PCP execution",
+            )
+        return True
+
     def __call__(self, *args, **kwargs):
         forward_context = get_forward_context()
         batch_descriptor = forward_context.batch_descriptor
@@ -103,17 +151,27 @@ class AscendUBatchWrapper(UBatchWrapper):
         cudagraph_runtime_mode = forward_context.cudagraph_runtime_mode
 
         if ubatch_slices is None:
-            if cudagraph_runtime_mode is CUDAGraphMode.FULL:
-                assert batch_descriptor is not None
-                if batch_descriptor.num_tokens in self.cudagraphs:
-                    cudagraph_runtime_mode = CUDAGraphMode.NONE
             if cudagraph_runtime_mode in (CUDAGraphMode.NONE, CUDAGraphMode.PIECEWISE):
                 return self.runnable(*args, **kwargs)
             assert self.cudagraph_wrapper is not None
             return self.cudagraph_wrapper(*args, **kwargs)
 
+        mla_full_graph_active = self.owns_full_graph_update(forward_context)
         attn_metadata = forward_context.attn_metadata
-        num_tokens = sum(ubatch_slice.num_tokens for ubatch_slice in ubatch_slices)
+        if len(ubatch_slices) != 2:
+            raise RuntimeError(
+                "Ascend FULL graph requires exactly two ubatches; "
+                f"got {len(ubatch_slices)}",
+            )
+        stage_num_tokens = (
+            ubatch_slices[0].num_tokens,
+            ubatch_slices[1].num_tokens,
+        )
+        graph_key = AscendNPUGraphKey(
+            stage_num_tokens,
+            batch_descriptor.has_lora,
+            batch_descriptor.num_active_loras,
+        )
         input_ids = kwargs["input_ids"]
         positions = kwargs["positions"]
         intermediate_tensors = kwargs["intermediate_tensors"]
@@ -140,9 +198,14 @@ class AscendUBatchWrapper(UBatchWrapper):
                 ubatch_dp_metadata.append(None)
 
         if (
-            num_tokens not in self.cudagraphs
+            graph_key not in self.cudagraphs
             and cudagraph_runtime_mode is CUDAGraphMode.FULL
         ):
+            mla_graph_params = (
+                self._new_mla_capture_params(stage_num_tokens)
+                if mla_full_graph_active
+                else None
+            )
             ubatch_metadata = self._make_ubatch_metadata(
                 ubatch_slices,
                 attn_metadata,
@@ -154,15 +217,30 @@ class AscendUBatchWrapper(UBatchWrapper):
                 ubatch_dp_metadata,
                 batch_descriptor,
                 CUDAGraphMode.NONE,
+                mla_graph_params=mla_graph_params,
             )
-            return self._capture_ubatches(ubatch_metadata, self.runnable)
+            return self._capture_ubatches(
+                ubatch_metadata,
+                self.runnable,
+                graph_key=graph_key,
+                mla_graph_params=mla_graph_params,
+            )
         if (
-            num_tokens in self.cudagraphs
+            graph_key in self.cudagraphs
             and cudagraph_runtime_mode is CUDAGraphMode.FULL
         ):
-            cudagraph_metadata = self.cudagraphs[num_tokens]
-            cudagraph_metadata.aclgraph.replay()
-            get_forward_context().dbo_enabled = True
+            cudagraph_metadata = self.cudagraphs[graph_key]
+            if mla_full_graph_active:
+                self._replay_mla_graph(
+                    cudagraph_metadata,
+                    forward_context,
+                    stage_num_tokens[0],
+                    positions,
+                )
+            else:
+                torch.npu.current_stream().synchronize()
+                cudagraph_metadata.aclgraph.replay()
+            forward_context.dbo_enabled = True
             return cudagraph_metadata.outputs
 
         ubatch_metadata = self._make_ubatch_metadata(
@@ -179,6 +257,71 @@ class AscendUBatchWrapper(UBatchWrapper):
         )
         return self._run_ubatches(ubatch_metadata, self.runnable)
 
+    def _new_mla_capture_params(
+        self,
+        stage_num_tokens: tuple[int, int],
+    ) -> tuple[GraphParams, GraphParams]:
+        if stage_num_tokens[0] != stage_num_tokens[1]:
+            raise RuntimeError(
+                "MLA DBO FULL graph requires equal padded token counts; "
+                f"got {stage_num_tokens}",
+            )
+
+        aggregate_num_tokens = sum(stage_num_tokens)
+        graph_params = get_graph_params()
+        if (
+            graph_params is None
+            or graph_params.workspaces.get(aggregate_num_tokens) is None
+        ):
+            raise RuntimeError(
+                "MLA DBO FULL graph requires the single-batch FIA workspace "
+                f"for {aggregate_num_tokens} tokens",
+            )
+        workspace = graph_params.workspaces[aggregate_num_tokens]
+        child_num_tokens = stage_num_tokens[0]
+        return (
+            new_mla_graph_params(child_num_tokens, workspace),
+            new_mla_graph_params(child_num_tokens, workspace),
+        )
+
+    def _replay_mla_graph(
+        self,
+        graph_metadata: AscendNPUGraphMetaData,
+        forward_context: ForwardContext,
+        num_tokens: int,
+        positions: torch.Tensor | None,
+    ) -> None:
+        if graph_metadata.mla_graph_params is None:
+            raise RuntimeError(
+                "MLA DBO FULL graph cache entry has no capture registry",
+            )
+        if self.full_graph_params_updater is None:
+            raise RuntimeError(
+                "MLA DBO FULL graph cache entry has no parameter updater",
+            )
+
+        merged_metadata, merged_params = merge_mla_graph_params(
+            forward_context.attn_metadata,
+            graph_metadata.mla_graph_params,
+            num_tokens,
+        )
+
+        def update_params() -> None:
+            with override_mla_graph_params(
+                forward_context,
+                merged_metadata,
+                merged_params,
+            ):
+                self.full_graph_params_updater(
+                    forward_context,
+                    num_tokens,
+                    positions,
+                )
+
+        torch.npu.current_stream().synchronize()
+        graph_metadata.aclgraph.replay()
+        update_params()
+
     def _make_ubatch_metadata(
         self,
         ubatch_slices,
@@ -191,6 +334,8 @@ class AscendUBatchWrapper(UBatchWrapper):
         dp_metadata,
         batch_descriptor,
         cudagraph_runtime_mode,
+        *,
+        mla_graph_params: tuple[GraphParams, GraphParams] | None = None,
     ) -> list[AscendUbatchMetadata]:
         cur_forward_context = get_forward_context()
         forward_contexts = []
@@ -208,6 +353,9 @@ class AscendUBatchWrapper(UBatchWrapper):
                     cudagraph_runtime_mode=cudagraph_runtime_mode,
                     ubatch_num=i,
                     skip_compiled=cur_forward_context.skip_compiled,
+                    mla_graph_params=(
+                        mla_graph_params[i] if mla_graph_params is not None else None
+                    ),
                 )
             )
 
@@ -354,10 +502,12 @@ class AscendUBatchWrapper(UBatchWrapper):
         self,
         ubatch_metadata: list[AscendUbatchMetadata],
         model,
+        *,
+        graph_key: AscendNPUGraphKey,
+        mla_graph_params: tuple[GraphParams, GraphParams] | None,
     ) -> torch.Tensor | IntermediateTensors:
         results: list[tuple[int, torch.Tensor | IntermediateTensors]] = []
         compute_stream = ubatch_metadata[0].context.compute_stream
-        num_tokens = sum(metadata.num_tokens for metadata in ubatch_metadata)
 
         with override_forward_context(None):
             ubatch_threads = []
@@ -373,6 +523,7 @@ class AscendUBatchWrapper(UBatchWrapper):
             cudagraph_metadata = AscendNPUGraphMetaData(
                 aclgraph=torch.npu.NPUGraph(),
                 ubatch_metadata=ubatch_metadata,
+                mla_graph_params=mla_graph_params,
             )
             with torch.npu.graph(
                 cudagraph_metadata.aclgraph,
@@ -387,12 +538,13 @@ class AscendUBatchWrapper(UBatchWrapper):
                     sorted_results,
                     ubatch_metadata,
                 )
-            self.cudagraphs[num_tokens] = cudagraph_metadata
+            self.cudagraphs[graph_key] = cudagraph_metadata
         get_forward_context().dbo_enabled = True
         return cudagraph_metadata.outputs
 
 
 __all__ = [
+    "AscendNPUGraphKey",
     "AscendNPUGraphMetaData",
     "AscendUBatchWrapper",
     "AscendUbatchMetadata",

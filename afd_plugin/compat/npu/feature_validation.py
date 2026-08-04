@@ -56,11 +56,31 @@ def fail_if_unsupported_npu_afd_features(
             )
         extra_info.validate_supported()
 
-    if bool(vllm_config.parallel_config.use_ubatching) and (
-        int(vllm_config.parallel_config.num_ubatches) != 2
-    ):
+    uses_ubatching = bool(vllm_config.parallel_config.use_ubatching)
+    if uses_ubatching and int(vllm_config.parallel_config.num_ubatches) != 2:
         raise RuntimeError(
             "AFD NPU runtime supports exactly two ubatches when DBO is enabled",
+        )
+    model_config = vllm_config.model_config
+    # Match the pinned NPUModelRunner's sparse-attention backend selection.
+    uses_sparse_mla = hasattr(
+        model_config.hf_text_config,
+        "index_topk",
+    )
+    cudagraph_mode = vllm_config.compilation_config.cudagraph_mode
+    uses_mla_dbo_full_graph = (
+        uses_ubatching
+        and model_config.use_mla
+        and not uses_sparse_mla
+        and cudagraph_mode.has_full_cudagraphs()
+    )
+    if uses_mla_dbo_full_graph and vllm_config.speculative_config is not None:
+        raise RuntimeError(
+            "AFD NPU MLA DBO FULL graph does not support speculative decoding",
+        )
+    if uses_mla_dbo_full_graph and cudagraph_mode.name != "FULL_DECODE_ONLY":
+        raise RuntimeError(
+            "AFD NPU MLA DBO graph execution requires FULL_DECODE_ONLY",
         )
 
 
