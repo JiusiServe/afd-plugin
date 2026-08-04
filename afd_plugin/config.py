@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import hashlib
-import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal
@@ -105,8 +104,6 @@ class AFDConfig:
 
 def _normalize_mapping(
     raw: Mapping[str, Any],
-    *,
-    warn_deprecated: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     normalized: dict[str, Any] = {}
     connector_extra_config: dict[str, Any] | None = None
@@ -118,27 +115,6 @@ def _normalize_mapping(
             if not isinstance(value, Mapping):
                 raise TypeError(f"{key} must be a mapping")
             connector_extra_config = dict(value)
-            continue
-        # TODO: Remove this zero-only compatibility path in the next release.
-        if normalized_key == "afd_role_rank":
-            deprecated_role_rank = _coerce_int(
-                value,
-                field_name="afd_role_rank",
-            )
-            if deprecated_role_rank != 0:
-                raise ValueError(
-                    "afd_role_rank is deprecated and non-zero values are no "
-                    "longer supported; remove the field and let AFD derive the "
-                    "role rank from the global DP/PCP/TP placement",
-                )
-            if warn_deprecated:
-                warnings.warn(
-                    "afd_role_rank is deprecated and will be removed in the next "
-                    "release; remove the field because AFD derives role ranks "
-                    "automatically",
-                    FutureWarning,
-                    stacklevel=3,
-                )
             continue
         if normalized_key not in valid_fields:
             raise ValueError(
@@ -202,10 +178,7 @@ def connector_extra_config_from_mapping(raw: Mapping[str, Any]) -> dict[str, Any
         raise TypeError(
             f"AFD config must be a mapping, got {type(raw).__name__}",
         )
-    _normalized, connector_extra_config = _normalize_mapping(
-        raw,
-        warn_deprecated=False,
-    )
+    _normalized, connector_extra_config = _normalize_mapping(raw)
     return connector_extra_config
 
 

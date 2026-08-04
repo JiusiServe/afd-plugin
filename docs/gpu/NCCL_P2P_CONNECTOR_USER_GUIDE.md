@@ -94,8 +94,7 @@ Compatibility aliases currently accepted are `afd_role`, `afd_connector`, `afd_h
 
 The connector factory derives each process's role rank from its global DP rank
 and local PCP/TP coordinates before connector construction. Do not configure a
-role rank. For one compatibility release, the deprecated `afd_role_rank: 0`
-key is accepted with a warning; non-zero values are rejected.
+role rank.
 
 ## Topology rules
 
