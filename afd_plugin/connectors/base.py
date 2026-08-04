@@ -77,6 +77,7 @@ class AFDConnectorBase(ABC):
         local_rank: int,
         vllm_config: VllmConfig,
         afd_config: AFDConfig,
+        role_rank: int,
     ) -> None:
         """Initialize common connector context.
 
@@ -93,11 +94,14 @@ class AFDConnectorBase(ABC):
                 graph/capture configuration.
             afd_config: Parsed AFD plugin configuration. This contains the AFD
                 role, connector name, topology sizes, and host/port.
+            role_rank: Runtime rank resolved from this worker's global
+                DP/PCP/TP placement within its AFD role group.
         """
         self.rank = rank
         self.local_rank = local_rank
         self.vllm_config = vllm_config
         self.afd_config = afd_config
+        self.role_rank = role_rank
         self.extra_info = self.parse_extra_config(
             connector_extra_config_from_source(vllm_config),
         )

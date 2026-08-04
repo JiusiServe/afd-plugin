@@ -45,6 +45,8 @@ def _vllm_config(
         parallel_config=SimpleNamespace(
             data_parallel_size=1,
             data_parallel_rank=0,
+            prefill_context_parallel_size=1,
+            tensor_parallel_size=1,
             num_ubatches=num_ubatches,
         ),
         scheduler_config=SimpleNamespace(max_num_seqs=8),
@@ -59,11 +61,10 @@ def _vllm_config(
     )
 
 
-def _afd_config(*, role: str, rank: int = 0):
+def _afd_config(*, role: str):
     return AFDConfig(
         connector="CAMP2pAFDConnector",
         role=role,
-        afd_role_rank=rank,
         num_attention_ranks=4,
         num_ffn_ranks=2,
     )
@@ -84,10 +85,10 @@ def test_camp2p_factory_creates_connector():
 
 
 def test_camp2p_topology_matches_original_rank_layout():
-    attn0 = build_camp2p_topology(_afd_config(role="attention", rank=0), 0)
-    attn1 = build_camp2p_topology(_afd_config(role="attention", rank=1), 1)
-    attn2 = build_camp2p_topology(_afd_config(role="attention", rank=2), 2)
-    ffn1 = build_camp2p_topology(_afd_config(role="ffn", rank=1), 1)
+    attn0 = build_camp2p_topology(_afd_config(role="attention"), 0)
+    attn1 = build_camp2p_topology(_afd_config(role="attention"), 1)
+    attn2 = build_camp2p_topology(_afd_config(role="attention"), 2)
+    ffn1 = build_camp2p_topology(_afd_config(role="ffn"), 1)
 
     assert (attn0.world_rank, attn0.p2p_rank, attn0.dp_metadata_destinations) == (
         2,
@@ -108,7 +109,8 @@ def _init_ffn_connector(rank, vllm_config):
         rank,
         rank,
         vllm_config,
-        _afd_config(role="ffn", rank=rank),
+        _afd_config(role="ffn"),
+        rank,
     )
     connector._initialized = True
     connector.hccl_comm_name = "hccl0"
@@ -225,7 +227,8 @@ def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
         0,
         0,
         _vllm_config(num_ubatches=2),
-        _afd_config(role="attention", rank=0),
+        _afd_config(role="attention"),
+        0,
     )
 
     connector.init_afd_connector()
@@ -261,7 +264,8 @@ def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
         0,
         0,
         _vllm_config(num_ubatches=2),
-        _afd_config(role="attention", rank=0),
+        _afd_config(role="attention"),
+        0,
     )
     connector._initialized = True
     connector.hccl_comm_name = "hccl0"
@@ -305,7 +309,8 @@ def test_camp2p_init_fails_cleanly_without_ascend_runtime(monkeypatch):
         0,
         0,
         _vllm_config(),
-        _afd_config(role="attention", rank=0),
+        _afd_config(role="attention"),
+        0,
     )
 
     def _raise_missing_ops():

@@ -35,6 +35,8 @@ def _fake_vllm_config(
         parallel_config=SimpleNamespace(
             data_parallel_size=data_parallel_size,
             data_parallel_rank=data_parallel_rank,
+            prefill_context_parallel_size=1,
+            tensor_parallel_size=1,
         ),
     )
 
@@ -72,33 +74,19 @@ def test_p2p_connector_can_be_constructed_without_runtime_initialization():
     assert connector.dst_list == [0]
 
 
-def test_p2p_connector_uses_config_role_rank_not_dp_rank():
-    # The runners fold dp/pcp/tp offsets into afd_role_rank before creating
-    # the connector; the connector must not re-derive it from the DP rank,
-    # otherwise TP peers within one DP group collapse onto the same role rank
-    # (e.g. dp2tp2: EP ranks 0..3 would become 0,0,1,1 and collide on the
-    # subgroup rendezvous port).
+def test_p2p_connector_uses_factory_resolved_role_rank():
     connector = AFDConnectorFactory.create_connector(
         3,
         3,
-        SimpleNamespace(
-            additional_config={},
-            model_config=SimpleNamespace(
-                dtype="bf16",
-                enforce_eager=True,
-                hf_config=SimpleNamespace(hidden_size=16, num_hidden_layers=2),
-            ),
-            parallel_config=SimpleNamespace(
-                data_parallel_size=2,
-                data_parallel_rank=1,
-            ),
+        _fake_vllm_config(
+            data_parallel_size=4,
+            data_parallel_rank=3,
         ),
         AFDConfig(
             role="attention",
             connector="P2pNcclAFDConnector",
             num_attention_ranks=4,
             num_ffn_ranks=4,
-            afd_role_rank=3,
         ),
     )
 
@@ -130,8 +118,8 @@ def test_p2p_topology_supports_equal_and_integer_multiple_attention_counts(
             connector="P2pNcclAFDConnector",
             num_attention_ranks=attention_size,
             num_ffn_ranks=ffn_size,
-            afd_role_rank=role_rank,
         ),
+        role_rank,
     )
 
     assert mapping.ratio == attention_size // ffn_size
@@ -164,13 +152,15 @@ def test_p2p_ffn_metadata_tracks_each_attention_peer_in_xayf(
     connector = AFDConnectorFactory.create_connector(
         ffn_rank,
         0,
-        _fake_vllm_config(),
+        _fake_vllm_config(
+            data_parallel_size=ffn_size,
+            data_parallel_rank=ffn_rank,
+        ),
         AFDConfig(
             role="ffn",
             connector="P2pNcclAFDConnector",
             num_attention_ranks=attention_size,
             num_ffn_ranks=ffn_size,
-            afd_role_rank=ffn_rank,
         ),
     )
 

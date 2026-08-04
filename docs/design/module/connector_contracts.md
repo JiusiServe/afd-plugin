@@ -67,10 +67,12 @@ depend on role worker implementations.
 `AFDConnectorFactory` stores lazy loaders, so importing the factory does not
 import CUDA or Ascend implementations. Built-in names are registered at module
 load time. `create_connector(rank, local_rank, vllm_config, afd_config=None)`
-parses configuration when needed and constructs the selected class. A loader
-must resolve to an `AFDConnectorBase` subclass; duplicate registration is
-rejected unless `replace=True`, and unknown names fail before resource
-initialization.
+parses configuration when needed, resolves the runtime role rank from the
+worker's global DP rank and local PCP/TP coordinates, and constructs the
+selected class. Every connector receives that resolved role rank and is only
+responsible for mapping it into its backend-specific world rank. A loader must
+resolve to an `AFDConnectorBase` subclass; duplicate registration is rejected
+unless `replace=True`, and unknown names fail before resource initialization.
 
 The registry method is a usable implementation hook, but the complete public
 extension contract is **draft**. Configuration still rejects names outside its

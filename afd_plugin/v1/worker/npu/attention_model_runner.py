@@ -75,7 +75,6 @@ from afd_plugin.v1.worker.attention_model_runner import (
     _forward_context_num_tokens,
     _full_cudagraph_padded_tokens,
     _resolve_world_ranks,
-    _with_dp_derived_afd_rank,
 )
 from afd_plugin.v1.worker.npu.npu_ubatch_wrapper import AscendUBatchWrapper
 from afd_plugin.v1.worker.npu.pcp_debug import (
@@ -115,7 +114,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             vllm_config,
             afd_config=afd_config,
         )
-        self.afd_config = _with_dp_derived_afd_rank(vllm_config, self.afd_config)
         rank, local_rank = _resolve_world_ranks()
         self.connector = AFDConnectorFactory.create_connector(
             rank,
