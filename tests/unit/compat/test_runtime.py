@@ -208,7 +208,7 @@ def test_npu_afd_config_patch_retries_after_initial_import_error(monkeypatch):
     fake_package = ModuleType("vllm_ascend")
     fake_package.__path__ = []
     monkeypatch.setitem(sys.modules, "vllm_ascend", fake_package)
-    monkeypatch.delitem(sys.modules, "vllm_ascend.platform", raising=False)
+    monkeypatch.setitem(sys.modules, "vllm_ascend.platform", None)
     monkeypatch.setattr(ascend_runtime, "_PATCHES_APPLIED", False)
 
     ascend_runtime.apply_afd_ascend_patches_if_needed()
