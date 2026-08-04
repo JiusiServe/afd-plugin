@@ -143,8 +143,7 @@ alias and untyped `extra_config` field are no longer accepted.
 
 Role rank is runtime state derived from the global DP rank and local PCP/TP
 coordinates. It is resolved once by the connector factory and is not an
-`AFDConfig` field. The deprecated input `afd_role_rank: 0` is accepted for one
-compatibility release with a warning; non-zero values are rejected.
+`AFDConfig` field.
 
 Connector construction parses `connector_extra_config` through the selected
 connector class. P2P accepts only an empty mapping; CAMP2P and CAM async each

@@ -147,10 +147,6 @@ are also accepted. New configurations should use the canonical names shown
 above, except `async`, which is retained as the documented compatibility
 spelling used by the recipes.
 
-For one compatibility release, the deprecated `afd_role_rank: 0` key is
-accepted with a warning. Non-zero values are rejected because role ranks are
-derived exclusively from the global DP rank and local PCP/TP coordinates.
-
 ### CAM async `connector_extra_config`
 
 | Field | Type | Default | Meaning and constraint |

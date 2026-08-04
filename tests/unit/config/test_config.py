@@ -41,20 +41,6 @@ def test_parse_canonical_additional_config_namespace():
     assert config.is_ffn_server
 
 
-@pytest.mark.parametrize("value", [0, "0"])
-def test_deprecated_zero_afd_role_rank_is_accepted(value):
-    with pytest.warns(FutureWarning, match="afd_role_rank is deprecated"):
-        config = afd_config_from_mapping({"afd_role_rank": value})
-
-    assert "afd_role_rank" not in vars(config)
-
-
-@pytest.mark.parametrize("value", [-1, 1, "1"])
-def test_deprecated_nonzero_afd_role_rank_is_rejected(value):
-    with pytest.raises(ValueError, match="non-zero values are no longer supported"):
-        afd_config_from_mapping({"afd_role_rank": value})
-
-
 def test_parse_vllm_like_config_object():
     vllm_config = SimpleNamespace(
         additional_config={
@@ -214,7 +200,7 @@ def test_common_config_rejects_float_int_values():
         ({"enabled": True}, "unknown AFD config field"),
         ({"role": "decode"}, "AFD role must be one of"),
         ({"connector": "tcp"}, "AFD connector must be one of"),
-        ({"afd_role_rank": 2}, "non-zero values are no longer supported"),
+        ({"afd_role_rank": 0}, "unknown AFD config field"),
         ({"num_attention_servers": 2}, "unknown AFD config field"),
         ({"num_ffn_servers": 2}, "unknown AFD config field"),
         ({"afd_server_rank": 0}, "unknown AFD config field"),
