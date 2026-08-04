@@ -59,7 +59,7 @@ for both sides.
 | `host` / `port` | Rendezvous address for the async CAM HCCL process group. Set `host` to the IP address of the node that owns attention rank 0; all attention and FFN workers must use the same `host` and `port`. |
 | `num_attention_ranks` | Total attention-side ranks in the AFD topology. In this recipe, `DP3PCP8` gives `3 * 8 = 24`. |
 | `num_ffn_ranks` | Total FFN-side ranks in the AFD topology. In this recipe, `EP8` gives `8`. |
-| `afd_role_rank` | Role-local starting rank for the process. For attention workers, this is the data-parallel starting rank multiplied by `attn_ranks_per_dp`. |
+| `afd_role_rank` | Base offset added to the role rank derived from the global DP rank and local PCP/TP coordinates. In standard vLLM DP deployments, omit it or set it to `0` on every process; `data_parallel_start_rank` is already included in the global DP rank. |
 | `compute_gate_on_attention` | Runs MoE routing/gating on the attention side before dispatching activations to FFN ranks. |
 
 `connector_extra_config` carries CAM async-specific knobs:
@@ -360,7 +360,7 @@ vllm serve /path/to/DeepSeek-V3.2 \
       "port": 1239,
       "num_attention_ranks": 24,
       "num_ffn_ranks": 8,
-      "afd_role_rank": 16,
+      "afd_role_rank": 0,
       "compute_gate_on_attention": true,
       "connector_extra_config": {
         "dynamicQuant": 1,

@@ -87,7 +87,7 @@ AFD configuration is supplied through vLLM's `--additional-config` under the `af
 | `port` | `int` | `1239` | Base rendezvous port, valid range `1..65535`. The connector also uses `port + subgroup_index + 1`, so those ports must be free and reachable. |
 | `num_attention_ranks` | `int` | `1` | Total number of AFD Attention ranks, including DP/TP-derived worker ranks. Must be positive. |
 | `num_ffn_ranks` | `int` | `1` | Total number of AFD FFN ranks, including DP/TP-derived worker ranks. Must be positive. |
-| `afd_role_rank` | `int` | `0` | Rank within the selected role group. Must satisfy `0 <= rank < num_<role>_ranks`. Runners normally derive it from DP/PCP/TP placement; users should not assign duplicate role ranks. |
+| `afd_role_rank` | `int` | `0` | Base offset added to the global DP/PCP/TP-derived role rank. Normally omit it or set it to `0` on every process; do not pre-apply `data_parallel_start_rank`. |
 | `compute_gate_on_attention` | `bool` | `false` | Must be `false`. Whether Attention computes MoE gate outputs before sending work to FFN. This is a general AFD field, not a PyNccl transport setting. |
 | `connector_extra_config` | `dict` | `{}` | Must remain empty; `P2pNcclAFDConnector` does not currently support connector-specific options. |
 | `async` / `async_dp` | `bool` | `false` | Must remain `false` for `P2pNcclAFDConnector`; AFD async mode requires `CAMAsyncAFDConnector`. |
