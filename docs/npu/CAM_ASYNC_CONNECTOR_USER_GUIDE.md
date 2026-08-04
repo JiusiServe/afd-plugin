@@ -66,12 +66,19 @@ For `A = num_attention_ranks` and `F = num_ffn_ranks`:
 - each role rank must be unique and within its role's configured rank count.
 
 Attention ranks are normally `DP x PCP`. `attn_ranks_per_dp` is the PCP width
-and is also passed to CAM as its Attention TP width. For an Attention process
-whose first data-parallel rank is `d`, use:
+and is also passed to CAM as its Attention TP width. Before connector
+initialization, the model runner resolves the effective role rank as:
 
 ```text
-afd_role_rank = d * attn_ranks_per_dp
+effective_role_rank = afd_role_rank +
+    ((global_dp_rank * pcp_size + pcp_rank) * tp_size + tp_rank)
 ```
+
+The configured `afd_role_rank` is therefore a base offset, not the first
+derived rank of the current process. vLLM's global DP rank already includes
+`data_parallel_start_rank`. In a standard vLLM DP deployment, omit
+`afd_role_rank` or set it to `0` on every process; do not apply the DP start
+offset a second time.
 
 The DeepSeek-V3.2 recipe uses `DP3PCP8 + EP8`:
 
@@ -80,9 +87,11 @@ num_attention_ranks = 3 * 8 = 24
 num_ffn_ranks = 8
 attn_ranks_per_dp = 8
 
-Attention node 0, DP start 0: afd_role_rank = 0 * 8 = 0
-Attention node 1, DP start 2: afd_role_rank = 2 * 8 = 16
-FFN EP8 process:              afd_role_rank = 0
+Configured afd_role_rank on every process: 0
+
+Attention node 0, global DP ranks 0..1: effective role ranks 0..15
+Attention node 1, global DP rank 2:     effective role ranks 16..23
+FFN EP8 process, global DP ranks 0..7:  effective role ranks 0..7
 
 CAM world ranks: A0..A23 = 0..23, F0..F7 = 24..31
 ```
@@ -134,7 +143,7 @@ There is no separate `--afd-config` option.
 | `port` | `int` | `1239` | HCCL rendezvous port in `1..65535`; it must be free and reachable. |
 | `num_attention_ranks` | `int` | `1` | Total Attention ranks, including all DP/PCP-derived ranks. |
 | `num_ffn_ranks` | `int` | `1` | Total FFN expert ranks. |
-| `afd_role_rank` | `int` | `0` | Role-local starting rank. Account for `attn_ranks_per_dp` on Attention. |
+| `afd_role_rank` | `int` | `0` | Base offset added to the global DP/PCP/TP-derived role rank. Normally omit it or set it to `0` on every process. Do not pre-apply `data_parallel_start_rank`. |
 | `compute_gate_on_attention` | `bool` | `false` | Must be `true`; CAM async runs MoE routing on Attention before dispatching to FFN ranks. |
 | `connector_extra_config` | `dict` | `{}` | Connector-specific settings. Unknown top-level AFD fields are rejected. |
 

@@ -132,7 +132,7 @@ must be placed under `connector_extra_config`.
 | `role` | `attention` | Process role: `attention` or `ffn`. |
 | `host`, `port` | `127.0.0.1`, `1239` | Connector rendezvous/control endpoint inputs. |
 | `num_attention_ranks`, `num_ffn_ranks` | `1`, `1` | AFD role-group sizes used by topology construction. |
-| `afd_role_rank` | `0` | Rank within the selected role group. |
+| `afd_role_rank` | `0` | Base offset added by model runners to the global DP/PCP/TP-derived role rank. Standard vLLM DP deployments should leave it at `0`. |
 | `compute_gate_on_attention` | `false` | Moves supported gate/MoE routing work to Attention; current implementation is NPU-only. |
 | `connector_extra_config` | `{}` | Envelope key parsed by the selected connector into a typed `ConnectorExtraInfo`; it is not stored on `AFDConfig`. |
 

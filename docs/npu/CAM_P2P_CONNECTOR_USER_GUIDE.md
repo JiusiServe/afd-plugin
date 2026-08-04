@@ -122,7 +122,7 @@ Pass AFD configuration through vLLM's `--additional-config` option under the
 | `port` | `int` | `1239` | AFD rendezvous port in `1..65535`. It is separate from the vLLM HTTP service ports. |
 | `num_attention_ranks` | `int` | `1` | Total number of Attention worker ranks. Must be positive. |
 | `num_ffn_ranks` | `int` | `1` | Total number of FFN worker ranks. Must be positive. |
-| `afd_role_rank` | `int` | `0` | Base rank within the selected role. The worker normally derives each local role rank from its DP/PCP/TP placement. |
+| `afd_role_rank` | `int` | `0` | Base offset added to the global DP/PCP/TP-derived role rank. Normally omit it or set it to `0` on every process; do not pre-apply `data_parallel_start_rank`. |
 | `compute_gate_on_attention` | `bool` | `false` | Controls whether the MoE gate is computed on the Attention side or the FFN side. Currently only `false` is supported. |
 | `connector_extra_config` | `dict` | `{}` | CAMP2P-specific settings such as role-specific core counts and `quant_mode`. Unknown fields are rejected. |
 | `async` / `async_dp` | `bool` | `false` | Must remain `false` for the current synchronous; Ascend async mode requires `CAMAsyncAFDConnector`. |
