@@ -179,16 +179,18 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             **model_kwargs,
         }
         run_model = partial(self.model, **model_inputs)
+        wrapper_owns_full_graph_update = isinstance(
+            self.model, AscendUBatchWrapper
+        ) and self.model.owns_full_graph_update(forward_context)
 
-        if self.enable_enpu:
+        if self.enable_enpu and not wrapper_owns_full_graph_update:
             self._update_full_graph_params_if_needed(
                 forward_context,
                 num_tokens_padded,
                 positions,
             )
-            hidden_states = run_model()
-        else:
-            hidden_states = run_model()
+        hidden_states = run_model()
+        if not self.enable_enpu and not wrapper_owns_full_graph_update:
             self._update_full_graph_params_if_needed(
                 forward_context,
                 num_tokens_padded,
@@ -1347,6 +1349,11 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             self.vllm_config,
             runtime_mode,
             self.device,
+            mla_full_graph_enabled=(
+                self.vllm_config.model_config.use_mla and not self.use_sparse
+            ),
+            full_graph_params_updater=self._update_full_graph_params_if_needed,
+            enable_enpu=self.enable_enpu,
         )
 
     def get_model(self) -> Any:
