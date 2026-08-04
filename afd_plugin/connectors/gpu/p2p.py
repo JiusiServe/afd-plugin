@@ -151,6 +151,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         local_rank: int,
         vllm_config: VllmConfig,
         afd_config: AFDConfig,
+        role_rank: int,
     ) -> None:
         """Derive the P2P rank mapping and prepare per-stage state caches.
 
@@ -165,19 +166,12 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             vllm_config: Upstream vLLM config; used for model hidden size,
                 dtype, layer count, and eager/graph mode.
             afd_config: Parsed AFD configuration carrying the role, topology
-                sizes, rendezvous host/port, and role rank. ``afd_role_rank``
-                must already include the DP/PCP/TP-derived offset.
+                sizes, and rendezvous host/port.
+            role_rank: Runtime rank within the configured AFD role group.
         """
-        super().__init__(rank, local_rank, vllm_config, afd_config)
+        super().__init__(rank, local_rank, vllm_config, afd_config, role_rank)
         self._initialized = False
-        # afd_role_rank already carries the dp/pcp/tp-derived offset (the
-        # runners apply _with_dp_derived_afd_rank before create_connector);
-        # re-deriving from data_parallel_rank here would collapse TP peers
-        # onto the same role rank.
-        self.mapping = build_rank_mapping(
-            afd_config,
-            role_rank=afd_config.afd_role_rank,
-        )
+        self.mapping = build_rank_mapping(afd_config, role_rank)
         self.world_rank = self.mapping.world_rank
         self.p2p_rank = self.mapping.p2p_rank
         self.attn_size = self.mapping.attention_size

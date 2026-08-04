@@ -14,6 +14,7 @@ from afd_plugin.config import (
     parse_afd_config,
 )
 from afd_plugin.connectors.base import AFDConnectorBase, ConnectorExtraInfo
+from afd_plugin.distributed import resolve_role_rank
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -57,7 +58,14 @@ class AFDConnectorFactory:
         if config.connector not in cls._registry:
             raise ValueError(f"unsupported AFD connector type: {config.connector}")
         connector_cls = cls._registry[config.connector]()
-        return connector_cls(rank, local_rank, vllm_config, config)
+        role_rank = resolve_role_rank(vllm_config, config)
+        return connector_cls(
+            rank,
+            local_rank,
+            vllm_config,
+            config,
+            role_rank,
+        )
 
     @classmethod
     def get_connector_class(cls, connector_name: str) -> type[AFDConnectorBase]:

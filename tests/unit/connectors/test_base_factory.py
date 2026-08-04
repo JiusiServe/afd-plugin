@@ -6,6 +6,7 @@ import pytest
 
 pytest.importorskip("torch")
 
+from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
     AFDA2FTransferPayload,
     AFDConnectorBase,
@@ -125,3 +126,34 @@ def test_connector_base_contract_can_be_implemented():
     assert connector.is_initialized is True
     payload = connector.recv_attn_output()
     assert payload.context.metadata.seq_lens == [1]
+
+
+def test_factory_resolves_role_rank_before_connector_construction(monkeypatch):
+    connector_name = "MinimalConnector"
+    monkeypatch.setitem(
+        AFDConnectorFactory._registry,
+        connector_name,
+        lambda: _MinimalConnector,
+    )
+    vllm_config = SimpleNamespace(
+        additional_config={},
+        parallel_config=SimpleNamespace(
+            data_parallel_size=2,
+            data_parallel_rank=1,
+            prefill_context_parallel_size=1,
+            tensor_parallel_size=1,
+        ),
+    )
+
+    connector = AFDConnectorFactory.create_connector(
+        1,
+        0,
+        vllm_config,
+        AFDConfig(
+            connector=connector_name,
+            role="attention",
+            num_attention_ranks=2,
+        ),
+    )
+
+    assert connector.role_rank == 1

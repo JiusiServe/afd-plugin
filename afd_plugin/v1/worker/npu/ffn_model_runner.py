@@ -34,7 +34,6 @@ from afd_plugin.connectors import (
 )
 from afd_plugin.v1.worker.attention_model_runner import (
     _resolve_world_ranks,
-    _with_dp_derived_afd_rank,
 )
 from afd_plugin.v1.worker.cuda_graph import (
     AFDGraphRunMode,
@@ -67,7 +66,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             vllm_config,
             afd_config=afd_config,
         )
-        self.afd_config = _with_dp_derived_afd_rank(vllm_config, self.afd_config)
         rank, local_rank = _resolve_world_ranks()
         self.connector = AFDConnectorFactory.create_connector(
             rank,

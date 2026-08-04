@@ -5,16 +5,12 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import replace
 from typing import Any
 
 import torch
 import vllm.v1.worker.gpu_model_runner as gpu_model_runner
 from vllm.config import CUDAGraphMode, VllmConfig
-from vllm.distributed.parallel_state import (
-    get_tensor_model_parallel_rank,
-    get_world_group,
-)
+from vllm.distributed.parallel_state import get_world_group
 from vllm.forward_context import BatchDescriptor, DPMetadata, get_forward_context
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.gpu_ubatch_wrapper import UBatchWrapper
@@ -55,10 +51,6 @@ class AFDAttentionModelRunner(GPUModelRunner):
         self.afd_cudagraph_policy = validate_cuda_graph_mode(
             self.vllm_config,
             role="attention",
-        )
-        self.afd_config = _with_dp_derived_afd_rank(
-            self.vllm_config,
-            self.afd_config,
         )
         rank, local_rank = _resolve_world_ranks()
         self.connector = AFDConnectorFactory.create_connector(
@@ -501,41 +493,6 @@ def _is_ubatch_child_afd_context(
     if int(getattr(afd_metadata, "num_stages", 1) or 1) <= 1:
         return False
     return len(getattr(afd_metadata, "tokens_lens", []) or []) == 1
-
-
-def _with_dp_derived_afd_rank(
-    vllm_config: VllmConfig,
-    afd_config: AFDConfig,
-) -> AFDConfig:
-    parallel_config = vllm_config.parallel_config
-    dp_size = int(parallel_config.data_parallel_size)
-    pcp_size = int(getattr(parallel_config, "prefill_context_parallel_size", 1))
-    tp_size = int(parallel_config.tensor_parallel_size)
-    if dp_size <= 1 and pcp_size <= 1 and tp_size <= 1:
-        return afd_config
-    dp_rank = int(parallel_config.data_parallel_rank) if dp_size > 1 else 0
-    if pcp_size > 1:
-        from vllm.distributed.parallel_state import get_pcp_group
-
-        pcp_rank = int(get_pcp_group().rank_in_group)
-    else:
-        pcp_rank = 0
-    tp_rank = get_tensor_model_parallel_rank() if tp_size > 1 else 0
-    role_size = (
-        afd_config.num_attention_ranks
-        if afd_config.role == "attention"
-        else afd_config.num_ffn_ranks
-    )
-    role_rank = afd_config.afd_role_rank + (
-        (dp_rank * pcp_size + pcp_rank) * tp_size + tp_rank
-    )
-    if role_rank >= role_size:
-        raise ValueError(
-            "AFD role rank derived from distributed ranks is out of range: "
-            f"base={afd_config.afd_role_rank}, dp_rank={dp_rank}, "
-            f"pcp_rank={pcp_rank}, tp_rank={tp_rank}, role_size={role_size}",
-        )
-    return replace(afd_config, afd_role_rank=role_rank)
 
 
 def _batch_execution_values(
