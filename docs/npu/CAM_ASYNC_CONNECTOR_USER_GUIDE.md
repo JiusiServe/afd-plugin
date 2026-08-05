@@ -212,12 +212,13 @@ current async MoE metadata path does not support it.
 The CAM async v0.26 path was verified with:
 
 - Ascend 910C;
+- Python 3.12;
 - CANN 9.0.1;
 - runtime image build `nightly-main-a3-openeuler-20260801230444_aarch64`;
 - vLLM v0.26.0 at commit `568afb3a1`;
 - vLLM-Ascend branch `releases/v0.26.0rc` at commit `80d8c194f`;
 - the included `CAM_ascend910_93_openEuler_aarch64.run` installer;
-- `umdk_cam_op_lib-208.1.0b1-cp311-cp311-linux_aarch64.whl`.
+- `umdk_cam_op_lib-209.0.0b1-cp312-cp312-linux_aarch64.whl`.
 
 The nightly image identifier records the validation environment; it is not a
 promise of a stable public pull tag. Some development package metadata in that
@@ -228,7 +229,7 @@ Install the CAM packages from the repository root inside the container:
 
 ```bash
 bash afd_plugin/connectors/npu/bin/CAM_ascend910_93_openEuler_aarch64.run
-pip install afd_plugin/connectors/npu/bin/umdk_cam_op_lib-208.1.0b1-cp311-cp311-linux_aarch64.whl
+pip install afd_plugin/connectors/npu/bin/umdk_cam_op_lib-209.0.0b1-cp312-cp312-linux_aarch64.whl
 ```
 
 Every CAM async process needs the CAM operator library on its loader path and
