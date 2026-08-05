@@ -9,7 +9,7 @@ import json
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import torch
 from vllm.forward_context import DPMetadata
@@ -145,15 +145,18 @@ class AFDControlPayload:
 class AFDTransferState:
     """Base class for backend-specific connector transfer state.
 
-    Backends subclass ``AFDTransferState`` to carry whatever per-transfer state
-    they read back themselves between the receive and send phases of a single
-    AFD Attention/FFN exchange: routed/shared MoE compute payloads, handles,
-    HCCL endpoint names, active-token masks, sizes, receive-side token counts,
-    and so on. The concrete subclass instance is held directly by
-    ``AFDTransferContext.states``. The hidden-state tensor is kept separately on
-    ``AFDA2FTransferPayload``. Backends that route no per-transfer payload (the
-    GPU P2P connector) leave ``AFDTransferContext.states`` as ``None``.
+    Backends subclass ``AFDTransferState`` to carry per-transfer state between
+    the receive and send phases of one AFD exchange. The concrete instance is
+    held by ``AFDTransferContext.states``. Transfers without additional state
+    leave the slot as ``None``.
     """
+
+
+class AFDExpertRoutingSpec(NamedTuple):
+    """Model-owned contract for receiving optional experts routing tensors."""
+
+    router_logits_width: int
+    router_logits_dtype: torch.dtype
 
 
 @dataclass(slots=True)
@@ -228,13 +231,9 @@ class AFDTransferContext:
     layer/stage/token layout to an optional ``AFDTransferState`` subclass
     carrying the backend's per-transfer payloads.
 
-    ``states`` is a pluggable slot: backends that route no per-transfer payload
-    through the context (the GPU P2P connector) leave it ``None``, while
-    backends that do (CAMP2P, async CAM) attach their own ``AFDTransferState``
-    subclass (``CAMP2PTransferState`` / ``AFDAsyncTransferState``) from the
-    connector method that produces the payload. Consumers that read ``states``
-    therefore only do so on the paths of the backend that populated it. Keeping
-    the default ``None`` — rather than a
+    ``states`` is a pluggable slot for backend-specific connectors. Ordinary
+    transfers leave it ``None``. Consumers read it only on paths that populate
+    it. Keeping the default ``None`` — rather than a
     ``field(default_factory=AFDTransferState)`` — also keeps the generated
     ``__init__`` traceable by ``torch.compile``/Dynamo, which fails on the
     factory call and is exercised where attention forwards build the context
@@ -242,8 +241,8 @@ class AFDTransferContext:
 
     Attributes:
         metadata: Metadata describing the layer/stage and token layout.
-        states: Optional backend-specific ``AFDTransferState`` subclass. ``None``
-            for backends that route no payload through the context.
+        states: Optional ``AFDTransferState`` subclass. ``None`` when the
+            transfer has no additional state.
     """
 
     metadata: AFDTransferMetadata
@@ -263,10 +262,12 @@ class AFDA2FTransferPayload:
         hidden_states: Hidden-state tensor received from the Attention side.
         context: Transfer context describing the received transfer, including
             transfer metadata and backend-produced transfer state.
+        router_logits: Optional Attention-side routing tensor.
     """
 
     hidden_states: torch.Tensor
     context: AFDTransferContext
+    router_logits: torch.Tensor | None = None
 
 
 @dataclass(slots=True)
@@ -403,6 +404,7 @@ def recv_control_payload(
 
 
 __all__ = [
+    "AFDExpertRoutingSpec",
     "AFDTransferState",
     "AFDTransferContext",
     "AFDTransferMetadata",

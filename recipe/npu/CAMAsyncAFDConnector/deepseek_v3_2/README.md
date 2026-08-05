@@ -1,5 +1,9 @@
 # CAMAsyncAFDConnector For DeepSeek-V3.2 Recipe
 
+> [!NOTE]
+> This recipe targets vLLM/vLLM-Ascend `v0.19.1rc1`. Use the AFD Plugin
+> branch `release/v0.19.1rc1` when running it.
+
 This recipe describes how to run DeepSeek-V3.2 with the AFD CAM async
 connector on Ascend NPU.
 
@@ -60,10 +64,6 @@ for both sides.
 | `num_attention_ranks` | Total attention-side ranks in the AFD topology. In this recipe, `DP3PCP8` gives `3 * 8 = 24`. |
 | `num_ffn_ranks` | Total FFN-side ranks in the AFD topology. In this recipe, `EP8` gives `8`. |
 | `compute_gate_on_attention` | Runs MoE routing/gating on the attention side before dispatching activations to FFN ranks. |
-
-AFD derives each process's role rank from its global DP rank and local PCP/TP
-coordinates. Do not add a role-rank field to these configurations;
-`data_parallel_start_rank` is already included in the global DP rank.
 
 `connector_extra_config` carries CAM async-specific knobs:
 

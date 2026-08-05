@@ -16,7 +16,6 @@ from afd_plugin.v1.worker.dbo import maybe_apply_dbo_yield
 def test_maybe_apply_dbo_yield_uses_custom_op(monkeypatch):
     calls = []
     tensor = object()
-    yielded = object()
 
     monkeypatch.setattr(
         dbo,
@@ -26,12 +25,40 @@ def test_maybe_apply_dbo_yield_uses_custom_op(monkeypatch):
     monkeypatch.setattr(
         dbo.torch.ops.vllm,
         "manual_dbo_yield",
-        lambda x: yielded if x is tensor else x,
+        lambda x: calls.append(("yield", x)),
         raising=False,
     )
 
-    assert maybe_apply_dbo_yield(tensor, role="attention") is yielded
-    assert calls == ["register"]
+    assert maybe_apply_dbo_yield(tensor, role="attention") is tensor
+    assert calls == ["register", ("yield", tensor)]
+
+
+def test_register_dbo_yield_custom_op_declares_input_mutation(monkeypatch):
+    registrations = []
+    yield_calls = []
+    tensor = object()
+
+    monkeypatch.setattr(dbo, "_AFD_DBO_YIELD_OP_REGISTERED", False)
+    monkeypatch.setattr(
+        dbo,
+        "direct_register_custom_op",
+        lambda **kwargs: registrations.append(kwargs),
+    )
+    monkeypatch.setattr(
+        dbo,
+        "_yield_if_dbo_enabled",
+        lambda: yield_calls.append("yield"),
+    )
+
+    dbo.register_dbo_yield_custom_op()
+
+    assert len(registrations) == 1
+    registration = registrations[0]
+    assert registration["op_name"] == "manual_dbo_yield"
+    assert registration["mutates_args"] == ["x"]
+    assert registration["op_func"](tensor) is None
+    assert yield_calls == ["yield"]
+    assert registration["fake_impl"](tensor) is None
 
 
 def test_maybe_apply_dbo_yield_does_not_probe_ascend(monkeypatch):

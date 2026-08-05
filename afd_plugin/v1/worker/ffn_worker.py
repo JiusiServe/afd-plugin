@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
+from vllm.config import VllmConfig
 from vllm.v1.worker.gpu_worker import Worker
+from vllm.v1.worker.worker_base import CompilationTimes
 
 from afd_plugin.model_executor.models.model_utils import get_afd_model_config
 from afd_plugin.v1.worker.attention_model_runner import fail_if_unsupported_ubatching
@@ -19,6 +21,7 @@ from afd_plugin.validation import assert_compatible_afd_stack
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
+    from vllm.v1.outputs import AsyncModelRunnerOutput, ModelRunnerOutput
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +36,26 @@ class AFDFFNWorker(Worker):
 
     afd_expected_role = "ffn"
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        vllm_config: VllmConfig,
+        local_rank: int,
+        rank: int,
+        distributed_init_method: str,
+        is_driver_worker: bool = False,
+    ):
+        super().__init__(
+            vllm_config,
+            local_rank,
+            rank,
+            distributed_init_method,
+            is_driver_worker,
+        )
         self._ffn_thread: threading.Thread | None = None
         self._ffn_shutdown_event: threading.Event | None = None
         self._ffn_loop_error: BaseException | None = None
 
-    def init_device(self) -> None:
+    def init_device(self):
         """Initialize the native GPU worker and swap in the FFN runner."""
 
         assert_compatible_afd_stack(
@@ -50,7 +66,7 @@ class AFDFFNWorker(Worker):
         if self.use_v2_model_runner:
             raise RuntimeError(
                 "AFD FFN runtime currently supports only the vLLM v1 "
-                "GPUModelRunner interface; unset VLLM_USE_V2_MODEL_RUNNER",
+                "GPUModelRunner interface; set VLLM_USE_V2_MODEL_RUNNER=0",
             )
 
         fail_if_unsupported_ubatching(self.vllm_config)
@@ -76,14 +92,17 @@ class AFDFFNWorker(Worker):
         self.model_runner.initialize_afd_connector()
         self.start_ffn_server_loop()
 
-    def compile_or_warm_up_model(self) -> float:
+    def compile_or_warm_up_model(self) -> CompilationTimes:
         """FFN workers perform no warmup/capture; model execution is driven
         entirely by connector metadata.
         """
 
-        return 0.0
+        return CompilationTimes(language_model=0.0, encoder=0.0)
 
-    def execute_model(self, scheduler_output: SchedulerOutput) -> None:
+    def execute_model(
+        self,
+        scheduler_output: SchedulerOutput,
+    ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:
         """Fail fast if the default scheduler tries to execute FFN work."""
 
         raise RuntimeError(

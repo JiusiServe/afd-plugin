@@ -105,6 +105,6 @@ def test_connectors_export_attn_output_without_recv_alias():
 
 
 def test_vllm_version_support_is_exact_target():
-    assert is_vllm_version_supported("0.19.1")
-    assert not is_vllm_version_supported("0.19.0")
-    assert not is_vllm_version_supported("0.19.2")
+    assert is_vllm_version_supported("0.26.0")
+    assert not is_vllm_version_supported("0.25.0")
+    assert not is_vllm_version_supported("0.26.1")

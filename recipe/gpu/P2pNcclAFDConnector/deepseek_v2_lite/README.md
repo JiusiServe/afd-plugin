@@ -1,7 +1,7 @@
 # DeepSeek-V2-Lite AFD Examples
 
 End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
-(Attention-FFN Disaggregation) plugin on vLLM `v0.19.1`.
+(Attention-FFN Disaggregation) plugin on vLLM `v0.26.0`.
 
 > [!NOTE]
 > `P2pNcclAFDConnector` is an example connector implementation. Contributions
@@ -12,7 +12,7 @@ End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
 
 - Install [NIXL](https://github.com/ai-dynamo/nixl).
 - At least 4 GPUs(A/H-class, tested against L20X).
-- vLLM `v0.19.1` and the `afd-plugin` package installed in the same
+- vLLM `v0.26.0` and the `afd-plugin` package installed in the same
   environment (see repository root `AGENTS.md`).
 - DeepSeek-V2-Lite weights on disk. All scripts default to
   `/path/model_weights/DeepSeek-V2-Lite`; override with
@@ -73,6 +73,7 @@ before sending traffic.
 ### prefill_decode_colocation
 ```bash
 export MODEL_PATH=/path/model_weights/DeepSeek-V2-Lite
+export VLLM_USE_V2_MODEL_RUNNER=0
 bash recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite/prefill_decode_colocation/2a2f_graph_dbo_dp1tp2.sh
 ```
 
@@ -80,6 +81,7 @@ bash recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite/prefill_decode_colocation/2
 
 ```bash
 export MODEL_PATH=/path/model_weights/DeepSeek-V2-Lite
+export VLLM_USE_V2_MODEL_RUNNER=0
 bash recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite/prefill_decode_disaggregation/2p1a1f_graph_dbo.sh
 ```
 

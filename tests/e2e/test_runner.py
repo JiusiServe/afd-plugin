@@ -8,6 +8,7 @@ import urllib.error
 import pytest
 
 from tests.e2e import runner
+from tests.e2e.models.deepseek_v2_lite import test_async_cam_npu as async_cam_e2e
 from tests.e2e.models.deepseek_v2_lite import test_e2e_npu as npu_e2e
 from tests.e2e.runner import build_vllm_command
 
@@ -162,6 +163,48 @@ def test_runner_drops_flashcomm_for_npu_role_without_tp(monkeypatch):
     env = runner.build_env("2,3", args, role="ffn")
 
     assert "VLLM_ASCEND_ENABLE_FLASHCOMM1" not in env
+
+
+def test_runner_forces_gpu_v1_model_runner(monkeypatch):
+    args = _args()
+    monkeypatch.setenv("VLLM_USE_V2_MODEL_RUNNER", "1")
+
+    env = runner.build_env("0,1", args, role="attention")
+
+    assert env["VLLM_USE_V2_MODEL_RUNNER"] == "0"
+
+
+def test_async_cam_env_registers_cam_vendor_before_existing_paths(monkeypatch):
+    existing_opp = "/opt/existing/opp/vendor"
+    existing_lib = "/opt/existing/lib"
+    monkeypatch.setenv(
+        "ASCEND_CUSTOM_OPP_PATH",
+        f"{existing_opp}:{async_cam_e2e.CAM_VENDOR_PATH}",
+    )
+    monkeypatch.setenv(
+        "LD_LIBRARY_PATH",
+        ":".join(
+            [
+                existing_lib,
+                str(async_cam_e2e.CAM_OP_API_LIB_PATH),
+                str(async_cam_e2e.CAM_OP_API_PATH),
+            ],
+        ),
+    )
+    monkeypatch.setenv("HCCL_BUFFSIZE", "8192")
+
+    env = async_cam_e2e._async_cam_env()
+
+    assert env["ASCEND_CUSTOM_OPP_PATH"].split(":") == [
+        str(async_cam_e2e.CAM_VENDOR_PATH),
+        existing_opp,
+    ]
+    assert env["LD_LIBRARY_PATH"].split(":") == [
+        str(async_cam_e2e.CAM_OP_API_PATH),
+        str(async_cam_e2e.CAM_OP_API_LIB_PATH),
+        existing_lib,
+    ]
+    assert env["HCCL_BUFFSIZE"] == async_cam_e2e.CAM_HCCL_BUFFSIZE
 
 
 def test_runner_fails_fast_when_server_exits_before_api_is_ready():

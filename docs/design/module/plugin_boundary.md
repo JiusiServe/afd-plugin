@@ -34,7 +34,7 @@ verified_platform_refs:
 related_issues:
   - "#89"
   - "#129"
-last_reviewed: 2026-07-20
+last_reviewed: 2026-08-03
 ---
 
 # Plugin boundary
@@ -132,7 +132,7 @@ must be placed under `connector_extra_config`.
 | `role` | `attention` | Process role: `attention` or `ffn`. |
 | `host`, `port` | `127.0.0.1`, `1239` | Connector rendezvous/control endpoint inputs. |
 | `num_attention_ranks`, `num_ffn_ranks` | `1`, `1` | AFD role-group sizes used by topology construction. |
-| `compute_gate_on_attention` | `false` | Moves supported gate/MoE routing work to Attention; current implementation is NPU-only. |
+| `compute_gate_on_attention` | `false` | Moves supported gate/MoE routing work to Attention. CUDA supports both gate placements at the remote-experts boundary; synchronous CAMP2P still requires `false`, while CAM async requires `true`. |
 | `connector_extra_config` | `{}` | Envelope key parsed by the selected connector into a typed `ConnectorExtraInfo`; it is not stored on `AFDConfig`. |
 
 The compatibility aliases `afd_connector`, `afd_role`, `afd_port`, `afd_host`,

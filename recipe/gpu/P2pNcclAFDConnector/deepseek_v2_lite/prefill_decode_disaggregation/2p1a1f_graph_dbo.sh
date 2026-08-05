@@ -1,4 +1,5 @@
 MODEL_PATH=${MODEL_PATH:-/home/models/hub/models--deepseek-ai--DeepSeek-V2-Lite/snapshots/604d5664dddd88a0433dbae533b7fe9472482de0}
+export VLLM_USE_V2_MODEL_RUNNER=0
 
 # Resolve this script's directory so the proxy is found regardless of the
 # caller's CWD.

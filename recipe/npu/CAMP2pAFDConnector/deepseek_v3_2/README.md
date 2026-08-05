@@ -1,5 +1,9 @@
 # DeepSeek-V3.2 Synchronous Decode with CAMP2pAFDConnector on Ascend NPU
 
+> [!NOTE]
+> This recipe targets vLLM/vLLM-Ascend `v0.19.1rc1`. Use the AFD Plugin
+> branch `release/v0.19.1rc1` when running it.
+
 This recipe compares a conventional EP64 deployment with synchronous
 Attention-FFN Disaggregation (AFD) deployments for DeepSeek-V3.2 decode
 inference on Ascend NPUs. The AFD deployments use

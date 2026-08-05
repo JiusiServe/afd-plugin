@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """Patch vLLM-Ascend platform config normalization for AFD-owned DBO.
 
-Upstream source: ``vllm_ascend/platform.py`` at tag ``v0.19.1rc1``.
+Upstream source: ``vllm_ascend/platform.py`` at commit ``80d8c194f``.
 """
 
 from __future__ import annotations
@@ -28,13 +28,14 @@ class _AFDDBOConfigSnapshot:
 def apply_afd_ascend_dbo_config_patch() -> bool:
     """Preserve AFD-owned DBO settings during vLLM-Ascend config normalization.
 
-    vLLM-Ascend's platform compatibility pass disables DBO/ubatching fields for
-    ordinary NPU runs. AFD owns its NPU ubatching path, so this patch snapshots
-    those fields for AFD-enabled configs, lets upstream normalization run, then
-    restores the AFD DBO values. The patch is a no-op when vLLM-Ascend is not
-    importable. Returns whether this process has installed the wrapper (or had
-    already installed it), so callers do not cache a failed early import during
-    plugin initialization.
+    vLLM-Ascend's platform compatibility pass disables DBO/ubatching fields and
+    can rewrite ``all2all_backend`` for ordinary NPU runs. AFD owns its NPU
+    ubatching path, so this patch snapshots those fields for AFD-enabled configs,
+    lets upstream normalization run, then restores the AFD DBO values and
+    backend. The patch is a no-op when vLLM-Ascend is not importable. Returns
+    whether this process has installed the wrapper (or had already installed
+    it), so callers do not cache a failed early import during plugin
+    initialization.
     """
 
     try:
@@ -47,10 +48,10 @@ def apply_afd_ascend_dbo_config_patch() -> bool:
 
     original_check_and_update_config = NPUPlatform.check_and_update_config
 
-    # Patch reason: vLLM-Ascend v0.19.1rc1 resets DBO fields in
-    # _fix_incompatible_config and later rewrites all2all_backend in
-    # check_and_update_config, while AFD owns the Ascend DBO/ubatching path and
-    # temporarily supplies a validation-safe backend.
+    # Patch reason: vLLM-Ascend resets DBO fields in _fix_incompatible_config and
+    # later rewrites all2all_backend in check_and_update_config, while AFD owns
+    # the Ascend DBO/ubatching path and temporarily supplies a validation-safe
+    # backend.
     # Patch functionality: preserves upstream normalization for non-AFD configs and
     # restores AFD DBO fields plus the temporary ubatching backend after upstream
     # normalization for AFD-enabled configs.

@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 from vllm.compilation.monitor import set_cudagraph_capturing_enabled
@@ -32,6 +32,10 @@ from afd_plugin.connectors import (
     AFDForwardContextMetadata,
     AFDTransferContext,
 )
+from afd_plugin.connectors.npu.async_cam import (
+    AFDAsyncTransferState,
+    CAMAsyncAFDConnector,
+)
 from afd_plugin.v1.worker.attention_model_runner import (
     _resolve_world_ranks,
 )
@@ -44,8 +48,9 @@ from afd_plugin.v1.worker.ffn_model_runner import _set_moe_layer_index
 
 if TYPE_CHECKING:
     from vllm.sequence import IntermediateTensors
-    from vllm.v1.core.sched.output import SchedulerOutput
+    from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
+    from vllm.v1.outputs import AsyncModelRunnerOutput, ModelRunnerOutput
 
     from afd_plugin.connectors import AFDConnectorBase
 
@@ -57,7 +62,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
     afd_expected_role = "ffn"
 
-    def __init__(self, vllm_config: VllmConfig, device: object) -> None:
+    def __init__(self, vllm_config: VllmConfig, device: torch.device) -> None:
         afd_config = self.parse_config(vllm_config)
         super().__init__(vllm_config, device)
 
@@ -66,7 +71,8 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             vllm_config,
             afd_config=afd_config,
         )
-        rank, local_rank = _resolve_world_ranks()
+        rank, _ = _resolve_world_ranks()
+        local_rank = int(device.index)
         self.connector = AFDConnectorFactory.create_connector(
             rank,
             local_rank,
@@ -80,6 +86,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             current_platform.get_global_graph_pool() if self.use_aclgraph else None
         )
         self.prof = create_afd_npu_profiler("ffn")
+        self._is_shutdown = False
 
     @staticmethod
     def parse_config(vllm_config: VllmConfig) -> AFDConfig:
@@ -213,34 +220,35 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             num_stages=num_stages,
         )
         stage_ids = sorted(int(stage_idx) for stage_idx in dp_metadata_list) or [0]
-        num_tokens_across_dp = _ffn_token_counts_across_ranks(
-            self.connector,
-            dp_metadata_list,
-            stage_ids[0],
-            fallback=self.max_num_tokens,
-        )
-        num_tokens = _ffn_token_count_for_rank(self.connector, num_tokens_across_dp)
         rank_ffn_output = None
 
-        # Build DP-level token counts for vLLM's forward context.
-        # num_tokens_across_dp has ffn_size entries (AFD-level, one per
-        # role_rank = dp_rank * tp_size + tp_rank), but vLLM's DPMetadata
-        # expects dp_size entries where [dp_rank] equals batchsize.
-        dp_num_tokens_across_dp = _to_dp_level_token_counts(
-            num_tokens_across_dp,
-            dp_size=int(self.vllm_config.parallel_config.data_parallel_size),
-        )
-
-        with ascend_forward_context(
-            vllm_config=self.vllm_config,
-            afd_metadata=afd_metadata,
-            model_instance=self.model,
-            num_tokens=num_tokens,
-            num_tokens_across_dp=dp_num_tokens_across_dp,
-            aclgraph_runtime_mode=aclgraph_runtime_mode,
-        ) as forward_context:
-            for layer_idx in _ffn_layer_indices(self):
-                for stage_idx in stage_ids:
+        for layer_idx in _ffn_layer_indices(self):
+            for stage_idx in stage_ids:
+                num_tokens_across_dp = _ffn_token_counts_across_ranks(
+                    self.connector,
+                    dp_metadata_list,
+                    stage_idx,
+                    fallback=self.max_num_tokens,
+                )
+                num_tokens = _ffn_token_count_for_rank(
+                    self.connector,
+                    num_tokens_across_dp,
+                )
+                # DBO stages can have different token counts. Build a fresh
+                # Ascend context for each stage so its MC2 padding mask matches
+                # the hidden states received for that stage.
+                dp_num_tokens_across_dp = _to_dp_level_token_counts(
+                    num_tokens_across_dp,
+                    dp_size=int(self.vllm_config.parallel_config.data_parallel_size),
+                )
+                with ascend_forward_context(
+                    vllm_config=self.vllm_config,
+                    afd_metadata=afd_metadata,
+                    model_instance=self.model,
+                    num_tokens=num_tokens,
+                    num_tokens_across_dp=dp_num_tokens_across_dp,
+                    aclgraph_runtime_mode=aclgraph_runtime_mode,
+                ) as forward_context:
                     payload = self.connector.recv_attn_output(
                         ubatch_idx=stage_idx,
                         layer_idx=layer_idx,
@@ -269,28 +277,25 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     )
         return rank_ffn_output
 
-    def _ffn_forward_connector_driven(self) -> Any:
+    def _ffn_forward_connector_driven(
+        self,
+    ) -> torch.Tensor | AFDF2ATransferPayload | None:
         stage_idx = 0
         rank_ffn_output = None
-        recv_work_item = getattr(self.connector, "recv_ffn_work_item", None)
-        send_work_item_output = getattr(
-            self.connector,
-            "send_ffn_work_item_output",
-            None,
-        )
-        if not callable(recv_work_item) or not callable(send_work_item_output):
-            raise RuntimeError(
-                "connector-driven NPU FFN requires async connector work item APIs",
-            )
+        connector = cast(CAMAsyncAFDConnector, self.connector)
 
         for _ in _ffn_layer_indices(self):
-            work_item = recv_work_item(
+            work_item = connector.recv_ffn_work_item(
                 stage_idx=stage_idx,
                 max_num_tokens=self.max_num_tokens,
             )
             hidden_states = work_item.hidden_states
             metadata = work_item.context.metadata
             states = work_item.context.states
+            if not isinstance(states, AFDAsyncTransferState):
+                raise RuntimeError(
+                    "CAM async FFN work item requires AFDAsyncTransferState",
+                )
             layer_idx = work_item.layer_idx
             num_tokens = work_item.num_tokens
             afd_metadata = AFDForwardContextMetadata(
@@ -321,7 +326,10 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     expand_x_shared=states.expand_x_shared,
                     dynamic_scales_shared=states.dynamic_scales_shared,
                 )
-                rank_ffn_output = send_work_item_output(work_item, rank_ffn_output)
+                rank_ffn_output = connector.send_ffn_work_item_output(
+                    work_item,
+                    rank_ffn_output,
+                )
         return rank_ffn_output
 
     def capture_model(
@@ -415,16 +423,20 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         }
         logger.debug("AFD NPU FFN captured ACL graph for key=%s", graph_key)
 
-    def sample_tokens(self, grammar_output: Any = None) -> Any:
+    def sample_tokens(
+        self,
+        grammar_output: GrammarOutput | None,
+    ) -> ModelRunnerOutput | AsyncModelRunnerOutput | IntermediateTensors:
         raise RuntimeError("AFD NPU FFN runners do not sample tokens")
 
     def shutdown(self) -> None:
+        if self._is_shutdown:
+            return
         stop_afd_npu_profiler(self.prof)
-        self.connector.close()
-        try:
-            super().shutdown()
-        except AttributeError:
-            logger.debug("AFD NPU FFN parent model runner has no shutdown()")
+        if self.connector.is_initialized:
+            self.connector.close()
+        super().shutdown()
+        self._is_shutdown = True
 
 
 def _send_ffn_output(
@@ -454,8 +466,7 @@ def _send_ffn_output(
 
 def _ffn_layer_indices(runner: AFDNPUFFNModelRunner) -> range | list[int]:
     num_layers = max(int(runner.num_layers or 0), 1)
-    afd_config = getattr(runner, "afd_config", None)
-    if afd_config is None or not bool(afd_config.compute_gate_on_attention):
+    if not runner.afd_config.compute_gate_on_attention:
         return range(num_layers)
     hf_config = runner.model_config.hf_config
     return [

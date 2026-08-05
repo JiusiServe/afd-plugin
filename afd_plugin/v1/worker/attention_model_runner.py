@@ -4,17 +4,23 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from typing import Any
+from contextlib import AbstractContextManager, contextmanager, nullcontext
+from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import torch
 import vllm.v1.worker.gpu_model_runner as gpu_model_runner
+from vllm.compilation.cuda_graph import CUDAGraphStat
 from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.distributed.parallel_state import get_world_group
 from vllm.forward_context import BatchDescriptor, DPMetadata, get_forward_context
-from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+from vllm.sequence import IntermediateTensors
+from vllm.v1.attention.backend import CommonAttentionMetadata
+from vllm.v1.outputs import AsyncModelRunnerOutput, ModelRunnerOutput
+from vllm.v1.worker.gpu_model_runner import GPUModelRunner, PerLayerAttnMetadata
 from vllm.v1.worker.gpu_ubatch_wrapper import UBatchWrapper
 from vllm.v1.worker.ubatch_utils import (
+    UBatchSlices,
     check_ubatch_thresholds,
     is_last_ubatch_empty,
 )
@@ -38,14 +44,21 @@ from afd_plugin.v1.worker.ubatch_wrapper import (
     build_ubatch_dp_metadata_list,
 )
 
+if TYPE_CHECKING:
+    from vllm.v1.core.sched.output import SchedulerOutput
+
 
 class AFDAttentionModelRunner(GPUModelRunner):
     """Attention model runner that injects AFD metadata into forward context."""
 
     afd_expected_role = "attention"
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        vllm_config: VllmConfig,
+        device: torch.device,
+    ):
+        super().__init__(vllm_config, device)
         self.afd_config = self.parse_config(self.vllm_config)
         fail_if_unsupported_ubatching(self.vllm_config)
         self.afd_cudagraph_policy = validate_cuda_graph_mode(
@@ -133,13 +146,12 @@ class AFDAttentionModelRunner(GPUModelRunner):
         self.connector.control_plane.update_state_from_dp_metadata(payload)
         self.connector.control_plane.send_dp_metadata_list(payload)
 
-    def load_model(self, *args: Any, **kwargs: Any) -> Any:
+    def load_model(self, load_dummy_weights: bool = False) -> None:
         use_ubatching = bool(self.vllm_config.parallel_config.use_ubatching)
         with _use_afd_ubatch_wrapper_during_load(use_ubatching):
-            result = super().load_model(*args, **kwargs)
+            super().load_model(load_dummy_weights)
         if use_ubatching:
             self._install_afd_ubatch_wrapper()
-        return result
 
     def _install_afd_ubatch_wrapper(self) -> None:
         if isinstance(self.model, AFDUBatchWrapper):
@@ -237,23 +249,94 @@ class AFDAttentionModelRunner(GPUModelRunner):
             dp_metadata = self._build_capture_dp_metadata(padded_graph_tokens)
         self._send_dp_metadata(dp_metadata, ubatch_slices)
 
-    def _build_attention_metadata(self, *args: Any, **kwargs: Any) -> Any:
-        num_tokens = kwargs.get("num_tokens", 0)
-        ubatch_slices = kwargs.get("ubatch_slices")
+    def _build_attention_metadata(
+        self,
+        num_tokens: int,
+        num_reqs: int,
+        max_query_len: int,
+        num_tokens_padded: int | None = None,
+        num_reqs_padded: int | None = None,
+        ubatch_slices: UBatchSlices | None = None,
+        logits_indices: torch.Tensor | None = None,
+        use_spec_decode: bool = False,
+        for_cudagraph_capture: bool = False,
+        num_scheduled_tokens: dict[str, int] | None = None,
+        cascade_attn_prefix_lens: list[list[int]] | None = None,
+        slot_mappings: dict[int, torch.Tensor] | None = None,
+    ) -> tuple[PerLayerAttnMetadata, CommonAttentionMetadata | None]:
         self._afd_pending_metadata = self._build_afd_metadata(
             ubatch_slices,
             int(num_tokens),
         )
-        return super()._build_attention_metadata(*args, **kwargs)
+        return super()._build_attention_metadata(
+            num_tokens,
+            num_reqs,
+            max_query_len,
+            num_tokens_padded,
+            num_reqs_padded,
+            ubatch_slices,
+            logits_indices,
+            use_spec_decode,
+            for_cudagraph_capture,
+            num_scheduled_tokens,
+            cascade_attn_prefix_lens,
+            slot_mappings,
+        )
 
-    def _determine_batch_execution_and_padding(self, *args: Any, **kwargs: Any) -> Any:
+    def _determine_batch_execution_and_padding(
+        self,
+        num_tokens: int,
+        num_reqs: int,
+        num_scheduled_tokens_np: np.ndarray,
+        max_num_scheduled_tokens: int,
+        use_cascade_attn: bool,
+        allow_microbatching: bool = True,
+        force_eager: bool = False,
+        force_uniform_decode: bool | None = None,
+        force_has_lora: bool | None = None,
+        force_num_active_loras: int | None = None,
+        num_encoder_reqs: int = 0,
+    ) -> tuple[
+        CUDAGraphMode,
+        BatchDescriptor,
+        bool,
+        torch.Tensor | None,
+        CUDAGraphStat | None,
+    ]:
         (
             cudagraph_mode,
             batch_descriptor,
             should_ubatch,
             num_tokens_across_dp,
             cudagraph_stats,
-        ) = super()._determine_batch_execution_and_padding(*args, **kwargs)
+        ) = super()._determine_batch_execution_and_padding(
+            num_tokens,
+            num_reqs,
+            num_scheduled_tokens_np,
+            max_num_scheduled_tokens,
+            use_cascade_attn,
+            allow_microbatching,
+            force_eager,
+            force_uniform_decode,
+            force_has_lora,
+            force_num_active_loras,
+            num_encoder_reqs,
+        )
+
+        args = (
+            num_tokens,
+            num_reqs,
+            num_scheduled_tokens_np,
+            max_num_scheduled_tokens,
+            use_cascade_attn,
+            allow_microbatching,
+            force_eager,
+            force_uniform_decode,
+            force_has_lora,
+            force_num_active_loras,
+            num_encoder_reqs,
+        )
+        kwargs: dict[str, Any] = {}
 
         # determin if ubatch should be activated.
         # 1. For dp = 1, vLLM hardcodes `should_ubatch=False`.
@@ -328,16 +411,47 @@ class AFDAttentionModelRunner(GPUModelRunner):
         padded_tokens = batch_descriptor.num_tokens
         return not is_last_ubatch_empty(num_tokens, padded_tokens, num_ubatches)
 
-    def _model_forward(self, *args: Any, **kwargs: Any) -> Any:
+    def _model_forward(
+        self,
+        input_ids: torch.Tensor | None = None,
+        positions: torch.Tensor | None = None,
+        intermediate_tensors: IntermediateTensors | None = None,
+        inputs_embeds: torch.Tensor | None = None,
+        **model_kwargs: dict[str, Any],
+    ) -> Any:
         forward_context = get_forward_context()
         self._install_afd_metadata_on_forward_context(forward_context)
-        return super()._model_forward(*args, **kwargs)
+        return super()._model_forward(
+            input_ids=input_ids,
+            positions=positions,
+            intermediate_tensors=intermediate_tensors,
+            inputs_embeds=inputs_embeds,
+            **model_kwargs,
+        )
 
-    def execute_model(self, *args: Any, **kwargs: Any) -> Any:
+    def execute_model(
+        self,
+        scheduler_output: SchedulerOutput,
+        intermediate_tensors: IntermediateTensors | None = None,
+    ) -> ModelRunnerOutput | AsyncModelRunnerOutput | IntermediateTensors | None:
         step_afd_gpu_profiler(self.prof)
-        return super().execute_model(*args, **kwargs)
+        return super().execute_model(scheduler_output, intermediate_tensors)
 
-    def _dummy_run(self, *args: Any, **kwargs: Any) -> Any:
+    def _dummy_run(
+        self,
+        num_tokens: int,
+        cudagraph_runtime_mode: CUDAGraphMode | None = None,
+        force_attention: bool = False,
+        uniform_decode: bool = False,
+        allow_microbatching: bool = True,
+        skip_eplb: bool = False,
+        is_profile: bool = False,
+        create_mixed_batch: bool = False,
+        remove_lora: bool = True,
+        is_graph_capturing: bool = False,
+        num_active_loras: int = 0,
+        profile_seq_lens: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run vLLM's DP dummy batch through the AFD model path.
 
         vLLM uses ``execute_dummy_batch`` on idle DP ranks while another DP rank
@@ -354,17 +468,42 @@ class AFDAttentionModelRunner(GPUModelRunner):
             "_afd_is_graph_capturing",
             False,
         )
-        self._afd_is_graph_capturing = bool(
-            kwargs.get("is_graph_capturing", False),
-        )
+        self._afd_is_graph_capturing = is_graph_capturing
         try:
             with use_afd_metadata_provider(self):
-                return super()._dummy_run(*args, **kwargs)
+                return super()._dummy_run(
+                    num_tokens,
+                    cudagraph_runtime_mode,
+                    force_attention,
+                    uniform_decode,
+                    allow_microbatching,
+                    skip_eplb,
+                    is_profile,
+                    create_mixed_batch,
+                    remove_lora,
+                    is_graph_capturing,
+                    num_active_loras,
+                    profile_seq_lens,
+                )
         finally:
             self._afd_is_graph_capturing = previous_is_graph_capturing
             self._afd_pending_metadata = previous_metadata
 
-    def _warmup_and_capture(self, *args: Any, **kwargs: Any) -> Any:
+    # Patch reason: native capture does not publish AFD warmup/capture metadata.
+    # Patch functionality: preserve the upstream warmup/capture flow while
+    # publishing replayable connector state before formal graph capture.
+    # Signature: matches upstream; no added parameters.
+    # Upstream: vLLM v0.26.0, vllm/v1/worker/gpu_model_runner.py
+    # Commit: 568afb3a13806beb53bb2e6bd518269357b237c0
+    def _warmup_and_capture(
+        self,
+        desc: BatchDescriptor,
+        cudagraph_runtime_mode: CUDAGraphMode,
+        profile_seq_lens: int | None = None,
+        allow_microbatching: bool = False,
+        num_warmups: int | None = None,
+        profiler: AbstractContextManager[Any] | None = None,
+    ):
         """Mirror vLLM warmup/capture while marking AFD warmup metadata.
 
         The native implementation calls ``self._dummy_run`` for warmups and
@@ -373,27 +512,13 @@ class AFDAttentionModelRunner(GPUModelRunner):
         from graph-capture metadata.
         """
 
-        names = [
-            "desc",
-            "cudagraph_runtime_mode",
-            "profile_seq_lens",
-            "allow_microbatching",
-            "num_warmups",
-        ]
-        values = dict(zip(names, args, strict=False))
-        values.update(kwargs)
-        desc = values.get("desc")
-        cudagraph_runtime_mode = values.get("cudagraph_runtime_mode")
-        if desc is None or cudagraph_runtime_mode is None:
-            return super()._warmup_and_capture(*args, **kwargs)
-
-        num_warmups = values.get("num_warmups")
+        if profiler is None:
+            profiler = nullcontext()
         if num_warmups is None:
             num_warmups = self.compilation_config.cudagraph_num_of_warmups
-        allow_microbatching = bool(values.get("allow_microbatching", False))
-        profile_seq_lens = values.get("profile_seq_lens")
         force_attention = cudagraph_runtime_mode == CUDAGraphMode.FULL
 
+        # ### PATCH START: expose warmup state to the AFD control plane.
         previous_is_warmup = bool(self._is_warmup)
         try:
             self._is_warmup = True
@@ -407,10 +532,13 @@ class AFDAttentionModelRunner(GPUModelRunner):
                     skip_eplb=True,
                     remove_lora=False,
                     num_active_loras=desc.num_active_loras,
+                    profile_seq_lens=profile_seq_lens,
                 )
         finally:
             self._is_warmup = previous_is_warmup
+        # ### PATCH END: expose warmup state to the AFD control plane.
 
+        # ### PATCH START: publish static AFD state before graph capture.
         previous_metadata = self._afd_pending_metadata
         previous_suppress_send = self._afd_suppress_metadata_send
         previous_is_graph_capturing = self._afd_is_graph_capturing
@@ -436,25 +564,43 @@ class AFDAttentionModelRunner(GPUModelRunner):
                     None,
                 )
                 self._afd_suppress_metadata_send = True
-            self._dummy_run(
-                desc.num_tokens,
-                cudagraph_runtime_mode=cudagraph_runtime_mode,
-                uniform_decode=desc.uniform,
-                allow_microbatching=allow_microbatching,
-                skip_eplb=True,
-                remove_lora=False,
-                num_active_loras=desc.num_active_loras,
-                is_graph_capturing=True,
-                profile_seq_lens=profile_seq_lens,
-            )
+            with (
+                profiler,
+                torch.profiler.record_function(
+                    f"capture_{desc.num_tokens}_{cudagraph_runtime_mode.name}"
+                ),
+            ):
+                self._dummy_run(
+                    desc.num_tokens,
+                    cudagraph_runtime_mode=cudagraph_runtime_mode,
+                    uniform_decode=desc.uniform,
+                    allow_microbatching=allow_microbatching,
+                    skip_eplb=True,
+                    remove_lora=False,
+                    num_active_loras=desc.num_active_loras,
+                    is_graph_capturing=True,
+                    profile_seq_lens=profile_seq_lens,
+                )
         finally:
             self._afd_is_graph_capturing = previous_is_graph_capturing
             self._afd_suppress_metadata_send = previous_suppress_send
             self._afd_pending_metadata = previous_metadata
+        # ### PATCH END: publish static AFD state before graph capture.
 
+    # Patch reason: AFD owns an additional profiler and connector lifecycle.
+    # Patch functionality: preserve native GPUModelRunner cleanup, then close
+    # AFD-owned resources even when native cleanup raises.
+    # Signature: matches upstream; no added parameters.
+    # Upstream: vLLM v0.26.0, vllm/v1/worker/gpu_model_runner.py
+    # Commit: 568afb3a13806beb53bb2e6bd518269357b237c0
     def shutdown(self) -> None:
+        # ### PATCH START: extend native shutdown with AFD resource cleanup.
         stop_afd_gpu_profiler(self.prof)
-        self.connector.close()
+        try:
+            super().shutdown()
+        finally:
+            self.connector.close()
+        # ### PATCH END: extend native shutdown with AFD resource cleanup.
 
     def _next_afd_transaction_id(self) -> str:
         counter = self._afd_transaction_counter
@@ -508,6 +654,9 @@ def _batch_execution_values(
         "allow_microbatching",
         "force_eager",
         "force_uniform_decode",
+        "force_has_lora",
+        "force_num_active_loras",
+        "num_encoder_reqs",
     ]
     values = dict(zip(names, args, strict=False))
     values.update(kwargs)

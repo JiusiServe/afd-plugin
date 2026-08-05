@@ -20,7 +20,8 @@ def maybe_apply_dbo_yield(
     except ImportError:
         return tensor
 
-    return torch.ops.vllm.manual_dbo_yield(tensor)
+    torch.ops.vllm.manual_dbo_yield(tensor)
+    return tensor
 
 
 def register_dbo_yield_custom_op() -> None:
@@ -29,19 +30,18 @@ def register_dbo_yield_custom_op() -> None:
     if _AFD_DBO_YIELD_OP_REGISTERED:
         return
 
-    def afd_manual_dbo_yield_op(x: torch.Tensor) -> torch.Tensor:
+    def afd_manual_dbo_yield_op(x: torch.Tensor) -> None:
         _yield_if_dbo_enabled()
-        return x
 
-    def afd_manual_dbo_yield_fake(x: torch.Tensor) -> torch.Tensor:
-        return x
+    def afd_manual_dbo_yield_fake(x: torch.Tensor) -> None:
+        return None
 
     try:
         direct_register_custom_op(
             op_name="manual_dbo_yield",
             op_func=afd_manual_dbo_yield_op,
             fake_impl=afd_manual_dbo_yield_fake,
-            mutates_args=[],
+            mutates_args=["x"],
         )
     except RuntimeError as exc:
         if "already" not in str(exc).lower():

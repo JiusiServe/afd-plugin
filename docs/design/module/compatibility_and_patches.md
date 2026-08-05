@@ -36,7 +36,7 @@ verified_platform_refs:
 related_issues:
   - "#86"
   - "#129"
-last_reviewed: 2026-07-20
+last_reviewed: 2026-08-03
 ---
 
 # Compatibility and patches
@@ -56,17 +56,17 @@ patch modules must not become a general home for AFD-owned functionality.
 
 ## Supported upstream boundary
 
-The package extra pins the supported vLLM release, and
+The package extra pins vLLM `0.26.0`, and
 [`compat/vllm.py`](../../../afd_plugin/compat/vllm.py) enforces the same target.
 Direct strict calls raise for a missing or different vLLM; plugin registration
 calls the check with `strict=False`, so it warns and continues. This warning
 policy does not make another vLLM release supported.
 
-The Ascend patch sources name current vLLM-Ascend modules and are validated by
-the recorded Ascend environment, but the repository does not declare an exact
-vLLM-Ascend package dependency in `pyproject.toml`. Before this document can be
-normative, maintainers must record the source tag/commit used to refresh every
-copied Ascend function, not only the container image that exercised it.
+The NPU v0.26 refresh is based on vLLM-Ascend commit
+[`80d8c194f`](https://github.com/vllm-project/vllm-ascend/commit/80d8c194f7584b17fe08065ea99a130916f6b0e7).
+The repository does not declare a vLLM-Ascend package dependency in
+`pyproject.toml`, so this source commit and the recorded NPU validation are the
+compatibility evidence rather than a released package or container tag.
 
 ## Implementation evidence
 
@@ -108,8 +108,8 @@ not the package dependency policy.
 | [`async_dp_forward_context.py`](../../../afd_plugin/compat/patches/async_dp_forward_context.py): `vllm.forward_context.set_forward_context` plus already-imported worker aliases | Skips native `DPMetadata` construction/coordination only for AFD async-DP; otherwise uses the copied upstream flow. | Imported by `register_afd`; same target/dev/unknown guard. Rebinds known already-imported aliases so callers do not retain the old function. | [`test_async_dp_forward_context.py`](../../../tests/unit/compat/patches/test_async_dp_forward_context.py) covers async skip and non-async coordination. | Remove when vLLM supports a per-engine-role opt-out from native MoE DP metadata coordination. |
 | [`config_validation.py`](../../../afd_plugin/compat/patches/config_validation.py): `EngineArgs.create_engine_config`, `VllmConfig.__post_init__` | For AFD-owned ubatching with a non-DeepEP backend, temporarily presents `deepep_low_latency` during upstream validation and restores the configured backend. After upstream platform normalization, maps an initial `worker_cls="auto"` to the role-specific CUDA or standard Ascend AFD worker. | Imported by `register_afd`; accepts the target version, development versions, or missing version metadata. Saves originals on upstream modules under AFD-specific attributes before installing wrappers. Explicit worker paths and non-AFD configs are not remapped. | [`test_config_validation.py`](../../../tests/unit/compat/patches/test_config_validation.py) covers backend relaxation, four role/platform mappings, explicit and non-AFD preservation, repeated validation, unsupported platforms, and dev versions. | Remove the backend branch when upstream validation distinguishes plugin-owned ubatching; remove worker mapping when vLLM offers plugin-owned role-aware worker selection. |
 | [`engine_core.py`](../../../afd_plugin/compat/patches/engine_core.py): `EngineCore.__init__`, `_initialize_kv_caches`, `shutdown`; `EngineCoreProc.run_busy_loop`; `DPEngineCoreProc.run_busy_loop` | AFD FFN becomes a connector daemon: construct executor, skip scheduler/KV setup, return an empty KV-shaped result on late paths, start/monitor/stop the FFN worker loop, and use FFN-safe shutdown. Non-FFN branches copy pinned upstream behavior. | Imported by `register_afd`; **no patch-local version guard and no saved-original sentinel**. Direct class assignment means the package pin and review discipline are the compatibility guard. | [`test_engine_core.py`](../../../tests/unit/compat/patches/test_engine_core.py) covers FFN initialization, non-FFN behavior, and daemon start/stop; role runtime tests cover error propagation. | Remove when vLLM offers a headless connector-daemon engine lifecycle or an executor mode that does not require scheduler/KV ownership. |
-| [`npu/ascend_platform.py`](../../../afd_plugin/compat/patches/npu/ascend_platform.py): `NPUPlatform._fix_incompatible_config` | Snapshots AFD DBO state, runs upstream normalization, and restores configured `enable_dbo`/`ubatch_size` when AFD needs them; non-AFD behavior is unchanged. | Called through `apply_afd_ascend_patches_if_needed`; no version guard. Saves the original on the class and uses both a class sentinel and runtime-facade sentinel. Missing vLLM-Ascend is a no-op. | [`test_runtime.py`](../../../tests/unit/compat/test_runtime.py) and [`test_npu_runtime.py`](../../../tests/unit/v1/worker/test_npu_runtime.py). | Remove when vLLM-Ascend recognizes plugin-owned DBO workers or no longer clears these fields. |
-| [`npu/force_load_balance.py`](../../../afd_plugin/compat/patches/npu/force_load_balance.py): `AscendFusedMoE.__init__`, `AscendW8A8DynamicFusedMoEMethod.apply` | Adds AFD profiling configuration and replaces routed expert IDs with a deterministic balanced buffer only when the layer-owned switch is enabled; normal model-selected routing remains unchanged. This switch changes outputs and is not a correctness feature. | Imported only when vLLM-Ascend is discoverable; **no patch-local version guard or explicit reload sentinel**. Functions copy the current upstream bodies with marked AFD deltas. | [`test_force_load_balance.py`](../../../tests/unit/compat/patches/test_force_load_balance.py) covers buffer bounds, determinism, growth, override, and pass-through. | Upstream a deterministic expert-routing profiling hook in vLLM-Ascend, then delete both copied functions. |
+| [`npu/ascend_platform.py`](../../../afd_plugin/compat/patches/npu/ascend_platform.py): `NPUPlatform.check_and_update_config` | Snapshots AFD DBO state, runs upstream normalization, and restores configured `enable_dbo`, `ubatch_size`, and `all2all_backend` in `finally`; non-AFD behavior is unchanged. | Called through `apply_afd_ascend_patches_if_needed`; no version guard. Saves the original on the class and uses a class sentinel. The runtime facade caches success only after the wrapper is installed, so an early missing vLLM-Ascend import remains retryable. | [`test_runtime.py`](../../../tests/unit/compat/test_runtime.py) and [`test_npu_runtime.py`](../../../tests/unit/v1/worker/test_npu_runtime.py). | Remove when vLLM-Ascend recognizes plugin-owned DBO workers or no longer clears these fields. |
+| [`npu/force_load_balance.py`](../../../afd_plugin/compat/patches/npu/force_load_balance.py): `AscendW8A8DynamicFusedMoEMethod.__init__`, `AscendW8A8DynamicFusedMoEMethod.apply` | Captures AFD profiling configuration as method-owned state and replaces routed expert IDs with a deterministic balanced buffer only when the method-owned switch is enabled; normal model-selected routing remains unchanged. This switch changes outputs and is not a correctness feature. | Imported only when vLLM-Ascend is discoverable; **no patch-local version guard or explicit reload sentinel**. Functions copy the current upstream bodies with marked AFD deltas. | [`test_force_load_balance.py`](../../../tests/unit/compat/patches/test_force_load_balance.py) covers buffer bounds, determinism, growth, override, and pass-through. | Upstream a deterministic expert-routing profiling hook in vLLM-Ascend, then delete both copied functions. |
 
 ## Non-patch compatibility adapters
 
@@ -197,7 +197,7 @@ The inventory covers current production patch files, but the document remains
 - `engine_core` and force-load-balance lack patch-local version/idempotence
   guards;
 - best-effort grouped imports can produce a partially applied patch set;
-- the exact vLLM-Ascend source tag/commit is not recorded in package metadata;
+- the exact vLLM-Ascend source commit is documented but not pinned as package metadata;
 - owners have not approved the candidate invariants as normative contracts.
 
 Runtime refactor decisions in

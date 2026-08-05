@@ -113,17 +113,8 @@ def register_afd() -> None:
             exc_info=True,
         )
 
-    try:
-        from afd_plugin.compat.npu import apply_afd_ascend_patches_if_needed
-
-        apply_afd_ascend_patches_if_needed()
-        if importlib.util.find_spec("vllm_ascend") is not None:
-            import afd_plugin.compat.patches.npu.force_load_balance  # noqa: F401
-    except Exception:
-        _logger.debug(
-            "AFD plugin: Ascend compatibility patches could not be applied",
-            exc_info=True,
-        )
+    # NPU compatibility patches are applied during AFD config construction and
+    # worker startup, after vLLM-Ascend completes its platform initialization.
 
     from vllm.model_executor.models import ModelRegistry
 

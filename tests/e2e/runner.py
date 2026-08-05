@@ -103,7 +103,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         required=True,
-        help="DeepSeekV2-Lite model path or Hugging Face model id.",
+        help="Model path or Hugging Face model id.",
     )
     parser.add_argument(
         "--vllm-bin",
@@ -476,6 +476,7 @@ def build_env(
         env["ASCEND_RT_VISIBLE_DEVICES"] = visible_devices
     else:
         env["CUDA_VISIBLE_DEVICES"] = visible_devices
+        env["VLLM_USE_V2_MODEL_RUNNER"] = "0"
     env["VLLM_PLUGINS"] = "ascend,afd" if args.device_backend == "npu" else "afd"
     env["PYTHONUNBUFFERED"] = "1"
     if (

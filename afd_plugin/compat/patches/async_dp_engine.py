@@ -9,7 +9,7 @@ This module patches:
 4. ``vllm.v1.engine.core_client.DPAsyncMPClient.add_request_async``
 
 Why:
-    vLLM 0.19.1's native MoE DP path uses ``DPEngineCoreProc`` and DP wave
+    vLLM 0.26.0's native MoE DP path uses ``DPEngineCoreProc`` and DP wave
     notifications. AFD async-DP Attention ranks are connector-driven and must
     step independently while keeping the original DP/EP topology for expert
     placement and weight loading.
@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING
 
 import vllm.v1.engine.core as engine_core_module
 import vllm.v1.engine.core_client as core_client_module
@@ -55,13 +55,6 @@ if TYPE_CHECKING:
     )
     from vllm.v1.executor import Executor
 
-    EngineLaunchResult: TypeAlias = tuple[
-        CoreEngineProcManager | CoreEngineActorManager | None,
-        DPCoordinator | None,
-        EngineZmqAddresses,
-        Queue | None,
-    ]
-
 
 # Patch reason: vLLM's MoE DP engine process uses DPEngineCoreProc, but AFD
 # async Attention ranks are connector-driven and must not run DP wave logic.
@@ -69,10 +62,10 @@ if TYPE_CHECKING:
 # for AFD async Attention configs.
 # Signature: matches upstream; no added parameters.
 def run_engine_core(
-    *args: Any,
+    *args,
     dp_rank: int = 0,
     local_dp_rank: int = 0,
-    **kwargs: Any,
+    **kwargs,
 ):
     """Replace MoE DP proc selection for AFD async Attention engines."""
 
@@ -96,10 +89,12 @@ def run_engine_core(
             process_title,
         )
         engine_core_module.decorate_logs()
+        if parallel_config.numa_bind:
+            engine_core_module.numa_utils.log_current_affinity_state(process_title)
 
         if data_parallel and vllm_config.kv_transfer_config is not None:
             vllm_config.kv_transfer_config.engine_id = (
-                f"{vllm_config.kv_transfer_config.engine_id}_dp{local_dp_rank}"
+                f"{vllm_config.kv_transfer_config.engine_id}_dp{dp_rank}"
             )
             engine_core_module.logger.debug(
                 "Setting kv_transfer_config.engine_id to %s",
@@ -124,13 +119,22 @@ def run_engine_core(
             parallel_config.data_parallel_rank = 0
             engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
 
+        assert engine_core is not None
+
         def wakeup_engine() -> None:
+            # Wakes up idle engine via input_queue when shutdown is requested
+            # Not safe in a signal handler - we may interrupt the main thread
+            # while it is holding the non-reentrant input_queue.mutex
             engine_core.input_queue.put_nowait((EngineCoreRequestType.WAKEUP, None))
 
         signal_callback = engine_core_module.SignalCallback(wakeup_engine)
 
-        def signal_handler(signum: int, frame: object) -> None:
-            del signum, frame
+        def signal_handler(signum, frame):
+            signal_name = engine_core_module.signal.Signals(signum).name
+            engine_core_module.logger.info(
+                "[shutdown] EngineCore: trigger received signal=%s",
+                signal_name,
+            )
             engine_core.shutdown_state = (
                 engine_core_module.EngineShutdownState.REQUESTED
             )
@@ -148,7 +152,7 @@ def run_engine_core(
         engine_core.run_busy_loop()
 
     except SystemExit:
-        engine_core_module.logger.debug("EngineCore exiting.")
+        engine_core_module.logger.info_once("[shutdown] EngineCore: exiting busy loop")
         raise
     except Exception as exc:
         if engine_core is None:
@@ -184,7 +188,14 @@ def launch_core_engines(
     log_stats: bool,
     addresses: EngineZmqAddresses,
     num_api_servers: int = 1,
-) -> Iterator[EngineLaunchResult]:
+) -> Iterator[
+    tuple[
+        CoreEngineProcManager | CoreEngineActorManager | None,
+        DPCoordinator | None,
+        EngineZmqAddresses,
+        Queue | None,
+    ]
+]:
     """Disable coordinator wave mode while launching AFD async-DP engines."""
 
     parallel_config = vllm_config.parallel_config
@@ -197,7 +208,7 @@ def launch_core_engines(
 
     offline_mode = local_start_index is not None
 
-    tensor_queue = None
+    tensor_queue: Queue | None = None
     multimodal_config = vllm_config.model_config.multimodal_config
     if multimodal_config is not None and multimodal_config.mm_tensor_ipc == "torch_shm":
         tensor_queue = engine_utils_module.get_mp_context().Queue()
@@ -269,10 +280,13 @@ def launch_core_engines(
     if parallel_config.enable_elastic_ep:
         handshake_local_only = False
 
+    rpc_port = (
+        parallel_config.data_parallel_rpc_port or engine_utils_module.get_open_port()
+    )
     handshake_address = engine_utils_module.get_engine_client_zmq_addr(
         handshake_local_only,
         host,
-        parallel_config.data_parallel_rpc_port,
+        rpc_port,
     )
 
     if local_engines_only and dp_rank > 0:
@@ -329,28 +343,6 @@ async def add_request_async(
 ) -> None:
     """Skip the DP wave ``FIRST_REQ`` notification for AFD async-DP."""
 
-    if not is_afd_async_dp(self.vllm_config):
-        self._ensure_stats_update_task()
-
-        request.current_wave = self.current_wave
-        request.client_index = self.client_index
-
-        chosen_engine = self.get_core_engine_for_request(request)
-        to_await = self._send_input(EngineCoreRequestType.ADD, request, chosen_engine)
-        if not self.engines_running:
-            req_msg = core_client_module.msgspec.msgpack.encode(
-                ("FIRST_REQ", chosen_engine),
-            )
-            await self.first_req_send_socket.send(req_msg)
-
-        await to_await
-
-        self._ensure_output_queue_task()
-        return None
-
-    # ### PATCH START: AFD async-DP request wakeup
-    # Async-DP engines step independently, so skip the coordinator FIRST_REQ
-    # wakeup while preserving normal routing.
     self._ensure_stats_update_task()
 
     request.current_wave = self.current_wave
@@ -358,10 +350,21 @@ async def add_request_async(
 
     chosen_engine = self.get_core_engine_for_request(request)
     to_await = self._send_input(EngineCoreRequestType.ADD, request, chosen_engine)
+    # ### PATCH START: AFD async-DP request wakeup
+    # Async-DP engines step independently, so skip the coordinator FIRST_REQ
+    # wakeup while preserving normal routing.
+    if not self.engines_running and not is_afd_async_dp(self.vllm_config):
+        req_msg = core_client_module.msgspec.msgpack.encode(
+            ("FIRST_REQ", chosen_engine),
+        )
+        await self.first_req_send_socket.send(req_msg)
+    # ### PATCH END: AFD async-DP request wakeup
+
     await to_await
 
+    # The output queue task delivers completed responses and is independent of
+    # the DP-wave FIRST_REQ coordination skipped above.
     self._ensure_output_queue_task()
-    # ### PATCH END: AFD async-DP request wakeup
 
 
 def _is_afd_async_attention_config(vllm_config: VllmConfig) -> bool:
