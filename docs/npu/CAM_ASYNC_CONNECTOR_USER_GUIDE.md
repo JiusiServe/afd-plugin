@@ -66,13 +66,17 @@ For `A = num_attention_ranks` and `F = num_ffn_ranks`:
 - each role rank must be unique and within its role's configured rank count.
 
 Attention ranks are normally `DP x PCP`. `attn_ranks_per_dp` is the PCP width
-and is also passed to CAM as its Attention TP width. For an Attention process
-whose first data-parallel rank is `d`, use:
+and is also passed to CAM as its Attention TP width. Before connector
+initialization, the connector factory resolves the effective role rank as:
 
 ```text
-afd_role_rank = d * attn_ranks_per_dp
+role_rank =
+    (global_dp_rank * pcp_size + pcp_rank) * tp_size + tp_rank
 ```
 
+The role rank is runtime state, not public configuration. vLLM's global DP
+rank already includes `data_parallel_start_rank`, and the connector factory
+uses one shared resolver before constructing any connector.
 The DeepSeek-V3.2 recipe uses `DP3PCP8 + EP8`:
 
 ```text
@@ -80,9 +84,11 @@ num_attention_ranks = 3 * 8 = 24
 num_ffn_ranks = 8
 attn_ranks_per_dp = 8
 
-Attention node 0, DP start 0: afd_role_rank = 0 * 8 = 0
-Attention node 1, DP start 2: afd_role_rank = 2 * 8 = 16
-FFN EP8 process:              afd_role_rank = 0
+No role-rank field is configured.
+
+Attention node 0, global DP ranks 0..1: effective role ranks 0..15
+Attention node 1, global DP rank 2:     effective role ranks 16..23
+FFN EP8 process, global DP ranks 0..7:  effective role ranks 0..7
 
 CAM world ranks: A0..A23 = 0..23, F0..F7 = 24..31
 ```
@@ -110,7 +116,6 @@ There is no separate `--afd-config` option.
     "port": 6239,
     "num_attention_ranks": 24,
     "num_ffn_ranks": 8,
-    "afd_role_rank": 0,
     "compute_gate_on_attention": true,
     "connector_extra_config": {
       "dynamicQuant": 1,
@@ -134,7 +139,6 @@ There is no separate `--afd-config` option.
 | `port` | `int` | `1239` | HCCL rendezvous port in `1..65535`; it must be free and reachable. |
 | `num_attention_ranks` | `int` | `1` | Total Attention ranks, including all DP/PCP-derived ranks. |
 | `num_ffn_ranks` | `int` | `1` | Total FFN expert ranks. |
-| `afd_role_rank` | `int` | `0` | Role-local starting rank. Account for `attn_ranks_per_dp` on Attention. |
 | `compute_gate_on_attention` | `bool` | `false` | Must be `true`; CAM async runs MoE routing on Attention before dispatching to FFN ranks. |
 | `connector_extra_config` | `dict` | `{}` | Connector-specific settings. Unknown top-level AFD fields are rejected. |
 
@@ -148,7 +152,7 @@ spelling used by the recipes.
 | Field | Type | Default | Meaning and constraint |
 | --- | --- | --- | --- |
 | `dynamicQuant` | `int` | `0` | Enables CAM dispatch/combine dynamic-quant metadata. Only `0` and `1` are accepted. With `1`, FFN receives quantized routed activations plus scale tensors and must return output compatible with combine-send. |
-| `attn_ranks_per_dp` | `int` | `1` | Positive Attention rank count per DP replica, normally the PCP width. It affects Attention role-rank derivation and CAM TP size. |
+| `attn_ranks_per_dp` | `int` | `1` | Positive Attention rank count per DP replica, normally the PCP width, passed to CAM as its Attention TP size. Runtime role-rank derivation uses vLLM's DP/PCP/TP placement directly. |
 | `async_moe_ubatching` | `bool` | `false` | Enables AFD-managed asynchronous MoE-only ubatching. |
 | `async_moe_num_ubatches` | `int` | `2` | Number of asynchronous MoE stages. Only `2` is supported. |
 | `async_moe_split` | `str` | `"request"` | Stage split policy. The current async connector supports request-boundary splitting only. |

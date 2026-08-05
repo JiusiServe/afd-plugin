@@ -239,6 +239,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         local_rank: int,
         vllm_config: VllmConfig,
         afd_config: AFDConfig,
+        role_rank: int,
     ) -> None:
         """Read the configuration and prepare this connector's local state.
 
@@ -251,11 +252,11 @@ class CAMP2pAFDConnector(AFDConnectorBase):
             local_rank: NPU device number used by this worker.
             vllm_config: Model, scheduler, and parallel configuration from vLLM.
             afd_config: AFD role, host, port, rank counts, and extra settings.
+            role_rank: Runtime rank within the configured AFD role group.
         """
-        super().__init__(rank, local_rank, vllm_config, afd_config)
+        super().__init__(rank, local_rank, vllm_config, afd_config, role_rank)
         self._initialized = False
-        self._role_rank = afd_config.afd_role_rank
-        self.topology = build_camp2p_topology(afd_config, self._role_rank)
+        self.topology = build_camp2p_topology(afd_config, role_rank)
         self.world_rank = self.topology.world_rank
         self.p2p_rank = self.topology.p2p_rank
         self.attn_size = self.topology.attention_size
@@ -521,7 +522,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         batch_size = _num_tokens_for_ffn_rank(
             self.dp_metadata_list,
             ubatch_idx,
-            ffn_rank=self._role_rank,
+            ffn_rank=self.role_rank,
             attention_size=self.attn_size,
             ffn_size=self.ffn_size,
             fallback=max_num_tokens,
@@ -671,7 +672,7 @@ class CAMP2pAFDControlPlane(AFDControlPlane):
 
 def build_camp2p_topology(
     afd_config: AFDConfig,
-    role_rank: int | None = None,
+    role_rank: int,
 ) -> _CAMP2PTopology:
     """Calculate the communication rank numbers for one process.
 
@@ -681,8 +682,7 @@ def build_camp2p_topology(
 
     Args:
         afd_config: Process role and total Attention/FFN rank counts.
-        role_rank: This process's number within its own role. If omitted, the
-            value comes from ``afd_config``.
+        role_rank: This process's runtime number within its own role.
 
     Returns:
         This process's rank numbers and metadata destinations.
@@ -691,7 +691,6 @@ def build_camp2p_topology(
         ValueError: If the rank counts or this process's role rank are invalid.
     """
     attention_size, ffn_size = topology_from_config(afd_config)
-    role_rank = afd_config.afd_role_rank if role_rank is None else role_rank
     if attention_size <= 0 or ffn_size <= 0:
         raise ValueError("CAMP2P topology sizes must be positive")
     if attention_size < ffn_size:

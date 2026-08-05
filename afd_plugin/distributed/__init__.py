@@ -5,6 +5,7 @@
 from afd_plugin.distributed.topology import (
     AFDRankMapping,
     build_rank_mapping,
+    resolve_role_rank,
     topology_from_config,
     validate_p2p_topology,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "DefaultProcessGroupSwitcher",
     "build_rank_mapping",
     "init_afd_process_group",
+    "resolve_role_rank",
     "topology_from_config",
     "validate_p2p_topology",
 ]

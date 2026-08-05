@@ -41,7 +41,8 @@ class AFDConfig:
 
     The plugin uses shorter keys inside ``additional_config["afd"]`` while
     preserving read-only compatibility aliases for legacy ``afd_*`` field
-    names.
+    names. Per-process role ranks are runtime state resolved from vLLM's
+    parallel placement and are intentionally not stored in this configuration.
     """
 
     # Connector implementation name used to create the backend data path.
@@ -58,8 +59,6 @@ class AFDConfig:
     num_attention_ranks: int = 1
     # Number of AFD FFN ranks participating in this topology.
     num_ffn_ranks: int = 1
-    # Rank of this process within its AFD role group.
-    afd_role_rank: int = 0
     # Whether Attention computes MoE gate outputs before sending to FFN.
     compute_gate_on_attention: bool = False
 
@@ -103,7 +102,9 @@ class AFDConfig:
         validate_afd_config(self, expected_role=expected_role)
 
 
-def _normalize_mapping(raw: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _normalize_mapping(
+    raw: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     normalized: dict[str, Any] = {}
     connector_extra_config: dict[str, Any] | None = None
     valid_fields = set(AFDConfig.__dataclass_fields__)  # type: ignore[attr-defined]
@@ -138,7 +139,6 @@ def _normalize_mapping(raw: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str
         "port",
         "num_attention_ranks",
         "num_ffn_ranks",
-        "afd_role_rank",
     ):
         if field_name in normalized:
             normalized[field_name] = _coerce_int(
@@ -311,15 +311,10 @@ def validate_afd_config(
         raise ValueError(
             "AFD async mode requires connector='CAMAsyncAFDConnector'",
         )
-    p2p_sizes: tuple[int, int] | None = None
     if config.connector == "P2pNcclAFDConnector":
-        from afd_plugin.distributed import (
-            topology_from_config,
-            validate_p2p_topology,
-        )
+        from afd_plugin.distributed import validate_p2p_topology
 
         validate_p2p_topology(config)
-        p2p_sizes = topology_from_config(config)
     if not config.host:
         raise ValueError("AFD host must be non-empty")
     if not 0 < config.port < 65536:
@@ -331,16 +326,6 @@ def validate_afd_config(
     if config.num_ffn_ranks <= 0:
         raise ValueError(
             f"num_ffn_ranks must be positive, got {config.num_ffn_ranks}",
-        )
-
-    if config.role == "attention":
-        rank_count = p2p_sizes[0] if p2p_sizes else config.num_attention_ranks
-    else:
-        rank_count = p2p_sizes[1] if p2p_sizes else config.num_ffn_ranks
-    if not 0 <= config.afd_role_rank < rank_count:
-        raise ValueError(
-            "afd_role_rank must be within this role's rank count "
-            f"(rank={config.afd_role_rank}, count={rank_count})",
         )
 
 

@@ -136,11 +136,10 @@ def _vllm_config(*, tp_size: int = 1, pcp_size: int = 1, extra_config=None):
     )
 
 
-def _afd_config(*, role: str, rank: int = 0):
+def _afd_config(*, role: str):
     return AFDConfig(
         connector="CAMAsyncAFDConnector",
         role=role,
-        afd_role_rank=rank,
         num_attention_ranks=4,
         num_ffn_ranks=2,
     )
@@ -211,6 +210,7 @@ def test_async_connector_uses_attn_ranks_per_dp_for_cam_tp_size():
             extra_config={"attn_ranks_per_dp": "3"},
         ),
         _afd_config(role="attention"),
+        0,
     )
 
     assert connector.tp_size == 3
@@ -224,6 +224,7 @@ def test_async_connector_rejects_invalid_attn_ranks_per_dp(value):
             0,
             _vllm_config(extra_config={"attn_ranks_per_dp": value}),
             _afd_config(role="attention"),
+            0,
         )
 
 
@@ -234,13 +235,14 @@ def test_async_connector_rejects_nonpositive_attn_ranks_per_dp():
             0,
             _vllm_config(extra_config={"attn_ranks_per_dp": 0}),
             _afd_config(role="attention"),
+            0,
         )
 
 
 def test_async_topology_uses_cam_attention_first_rank_layout():
-    attn = build_async_topology(_afd_config(role="attention", rank=3), 3)
+    attn = build_async_topology(_afd_config(role="attention"), 3)
     ffn = build_async_topology(
-        _afd_config(role="ffn", rank=1),
+        _afd_config(role="ffn"),
         1,
         num_routed_experts=8,
     )
@@ -280,7 +282,8 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
         0,
         0,
         _vllm_config(),
-        _afd_config(role="ffn", rank=1),
+        _afd_config(role="ffn"),
+        1,
     )
 
     connector.init_afd_connector()
@@ -303,7 +306,13 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
 
 
 def test_async_connector_disables_dp_metadata_control_plane():
-    connector = CAMAsyncAFDConnector(0, 0, _vllm_config(), _afd_config(role="ffn"))
+    connector = CAMAsyncAFDConnector(
+        0,
+        0,
+        _vllm_config(),
+        _afd_config(role="ffn"),
+        0,
+    )
 
     assert connector.control_plane is None
 
@@ -319,6 +328,7 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
             extra_config={"attn_ranks_per_dp": 3},
         ),
         _afd_config(role="attention"),
+        0,
     )
     connector._initialized = True
     connector.comm_args = _FakeTensor((1,), dtype="fp16")
@@ -365,6 +375,7 @@ def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
             extra_config={"attn_ranks_per_dp": 2},
         ),
         _afd_config(role="ffn"),
+        0,
     )
     connector._initialized = True
     connector.comm_args = _FakeTensor((1,), dtype="fp16")
@@ -398,6 +409,7 @@ def test_async_combine_send_requires_dispatch_recv_token_metadata(monkeypatch):
         0,
         _vllm_config(),
         _afd_config(role="ffn"),
+        0,
     )
     connector._initialized = True
     metadata = AFDTransferMetadata.create_ffn_metadata(
@@ -425,6 +437,7 @@ def test_async_ffn_work_item_uses_cam_layer_and_token_metadata(monkeypatch):
         0,
         _vllm_config(),
         _afd_config(role="ffn"),
+        0,
     )
     connector.ffn_size = 2
 
@@ -480,6 +493,7 @@ def test_async_ffn_work_item_uses_expert_counts_for_routed_tokens(monkeypatch):
         0,
         _vllm_config(),
         _afd_config(role="ffn"),
+        0,
     )
 
     import torch
@@ -544,6 +558,7 @@ def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
         0,
         _vllm_config(),
         _afd_config(role="ffn"),
+        0,
     )
     sent_outputs = []
 
@@ -633,6 +648,7 @@ def test_async_select_experts_maps_legacy_global_num_experts(monkeypatch):
         0,
         _vllm_config(),
         _afd_config(role="attention"),
+        0,
     )
 
     result = connector.select_experts(router_logits="logits", global_num_experts=8)

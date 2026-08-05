@@ -132,7 +132,6 @@ must be placed under `connector_extra_config`.
 | `role` | `attention` | Process role: `attention` or `ffn`. |
 | `host`, `port` | `127.0.0.1`, `1239` | Connector rendezvous/control endpoint inputs. |
 | `num_attention_ranks`, `num_ffn_ranks` | `1`, `1` | AFD role-group sizes used by topology construction. |
-| `afd_role_rank` | `0` | Rank within the selected role group. |
 | `compute_gate_on_attention` | `false` | Moves supported gate/MoE routing work to Attention; current implementation is NPU-only. |
 | `connector_extra_config` | `{}` | Envelope key parsed by the selected connector into a typed `ConnectorExtraInfo`; it is not stored on `AFDConfig`. |
 
@@ -141,6 +140,10 @@ and `async` normalize to canonical fields. Supplying an alias and its canonical
 field together is rejected. Boolean-like strings and integer-like values are
 normalized; invalid types fail during parsing. The former `afd_extra_config`
 alias and untyped `extra_config` field are no longer accepted.
+
+Role rank is runtime state derived from the global DP rank and local PCP/TP
+coordinates. It is resolved once by the connector factory and is not an
+`AFDConfig` field.
 
 Connector construction parses `connector_extra_config` through the selected
 connector class. P2P accepts only an empty mapping; CAMP2P and CAM async each

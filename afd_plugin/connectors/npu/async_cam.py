@@ -228,18 +228,18 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         local_rank: int,
         vllm_config: VllmConfig,
         afd_config: AFDConfig,
+        role_rank: int,
     ) -> None:
         """Derive CAM topology, tensor dimensions, and connector state.
 
         Communication resources are created collectively by
-        ``init_afd_connector``. ``afd_role_rank`` must already contain the
-        process's role-local DP/PCP-derived offset; ``attn_ranks_per_dp`` is
-        used as the CAM Attention TP width.
+        ``init_afd_connector``. ``role_rank`` is resolved before connector
+        construction; ``attn_ranks_per_dp`` is used as the CAM Attention TP
+        width.
         """
-        super().__init__(rank, local_rank, vllm_config, afd_config)
+        super().__init__(rank, local_rank, vllm_config, afd_config, role_rank)
         self._initialized = False
         hf_config = vllm_config.model_config.hf_config
-        self._role_rank = afd_config.afd_role_rank
         self.hidden_size = hf_config.hidden_size
         self.topk = hf_config.num_experts_per_tok
         self.num_routed_experts = hf_config.n_routed_experts
@@ -251,7 +251,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self.cam_pg: ProcessGroup | None = None
         self.topology = build_async_topology(
             afd_config,
-            self._role_rank,
+            role_rank,
             num_routed_experts=self.num_routed_experts,
         )
         self.world_rank = self.topology.world_rank
@@ -847,7 +847,7 @@ def _log_cam_op_values(op_name: str, label: str, **kwargs: object) -> None:
 
 def build_async_topology(
     afd_config: AFDConfig,
-    role_rank: int | None = None,
+    role_rank: int,
     *,
     num_routed_experts: int | None = None,
 ) -> AFDAsyncTopology:
@@ -861,7 +861,6 @@ def build_async_topology(
     """
     attn_size = afd_config.num_attention_ranks
     ffn_size = afd_config.num_ffn_ranks
-    role_rank = afd_config.afd_role_rank if role_rank is None else role_rank
     if attn_size <= 0 or ffn_size <= 0:
         raise ValueError("AFD async topology sizes must be positive")
     if role_rank < 0:
