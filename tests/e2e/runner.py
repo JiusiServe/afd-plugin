@@ -471,6 +471,7 @@ def build_env(
     role: str | None = None,
 ) -> dict[str, str]:
     env = os.environ.copy()
+    env.setdefault("VLLM_ENGINE_READY_TIMEOUT_S", "18000")
     if args.device_backend == "npu":
         env["ASCEND_RT_VISIBLE_DEVICES"] = visible_devices
     else:
