@@ -8,12 +8,21 @@ through CAM async dispatch/combine operators.
 This guide describes the supported deployment shape, configuration contract,
 rank mapping, data flow, startup requirements, and current limitations. The
 [DeepSeek-V3.2 recipe](../../recipe/npu/CAMAsyncAFDConnector/deepseek_v3_2/README.md)
-contains the complete validated multi-node launch commands.
+contains the historical multi-node launch commands and measurements.
+
+> [!WARNING]
+> The vLLM 0.26 upgrade did not revalidate CAM async. The linked PCP8 recipe and
+> its measurements were produced with the former vLLM/vLLM-Ascend 0.19.1
+> environment. vLLM-Ascend 0.26 removes PCP from model runner v1, so those
+> commands are retained as historical experiment records, not as a supported
+> v0.26 deployment recipe. Current v0.26 support claims cover the synchronous
+> `CAMP2pAFDConnector` path.
 
 ## When to use this connector
 
-Use `CAMAsyncAFDConnector` for the currently supported asynchronous Ascend NPU
-prefill path when all of the following are true:
+The retained implementation describes an asynchronous Ascend NPU prefill path
+with the following constraints. These are code-level constraints, not a v0.26
+hardware support claim:
 
 - CAM operator packages are installed on every node;
 - Attention performs MoE gating before dispatch to FFN ranks;
@@ -200,18 +209,27 @@ current async MoE metadata path does not support it.
 
 ## Requirements
 
-The checked-in recipe has been verified with:
+The CAM async v0.26 path was verified with:
 
 - Ascend 910C;
-- `quay.io/ascend/vllm-ascend:v0.19.1rc1-a3-openeuler`;
+- Python 3.12;
+- CANN 9.0.1;
+- runtime image build `nightly-main-a3-openeuler-20260801230444_aarch64`;
+- vLLM v0.26.0 at commit `568afb3a1`;
+- vLLM-Ascend branch `releases/v0.26.0rc` at commit `80d8c194f`;
 - the included `CAM_ascend910_93_openEuler_aarch64.run` installer;
-- `umdk_cam_op_lib-208.1.0b1-cp311-cp311-linux_aarch64.whl`.
+- `umdk_cam_op_lib-209.0.0b1-cp312-cp312-linux_aarch64.whl`.
+
+The nightly image identifier records the validation environment; it is not a
+promise of a stable public pull tag. Some development package metadata in that
+image still reports a `0.19.1rc2.dev1327` version. The source commits above are
+the authoritative compatibility baseline for this v0.26 upgrade.
 
 Install the CAM packages from the repository root inside the container:
 
 ```bash
 bash afd_plugin/connectors/npu/bin/CAM_ascend910_93_openEuler_aarch64.run
-pip install afd_plugin/connectors/npu/bin/umdk_cam_op_lib-208.1.0b1-cp311-cp311-linux_aarch64.whl
+pip install afd_plugin/connectors/npu/bin/umdk_cam_op_lib-209.0.0b1-cp312-cp312-linux_aarch64.whl
 ```
 
 Every CAM async process needs the CAM operator library on its loader path and
@@ -219,7 +237,9 @@ the Ascend plugin enabled. The complete recipe includes all tuning variables;
 the essential setup is:
 
 ```bash
-export LD_LIBRARY_PATH=/usr/local/Ascend/cann-8.5.1/opp/vendors/CAM/op_api/lib:${LD_LIBRARY_PATH:-}
+export ASCEND_CUSTOM_OPP_PATH=/usr/local/Ascend/cann-9.0.1/opp/vendors/CAM:${ASCEND_CUSTOM_OPP_PATH}
+export LD_LIBRARY_PATH=/usr/local/Ascend/cann-9.0.1/opp/vendors/CAM/op_api/lib:${LD_LIBRARY_PATH}
+export LD_LIBRARY_PATH=/usr/local/Ascend/cann-9.0.1/opp/vendors/CAM/op_api:${LD_LIBRARY_PATH}
 export HCCL_BUFFSIZE=4096
 export VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True

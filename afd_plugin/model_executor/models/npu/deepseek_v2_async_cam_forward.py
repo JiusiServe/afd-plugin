@@ -10,7 +10,9 @@ from itertools import islice
 from typing import TYPE_CHECKING
 
 import torch
+from vllm.distributed import get_pp_group
 from vllm.forward_context import get_forward_context
+from vllm.sequence import IntermediateTensors
 from vllm.v1.worker.ubatch_utils import UBatchSlices
 
 from afd_plugin.connectors import (
@@ -18,7 +20,11 @@ from afd_plugin.connectors import (
     AFDTransferContext,
     AFDTransferMetadata,
 )
-from afd_plugin.model_executor.models import AsyncMoeUbatchMetadata
+from afd_plugin.model_executor.models import (
+    AsyncMoeUbatchMetadata,
+    get_afd_metadata_from_forward_context,
+    get_async_moe_ubatch_metadata_from_forward_context,
+)
 from afd_plugin.v1.worker.dbo import maybe_apply_dbo_yield
 
 if TYPE_CHECKING:
@@ -26,6 +32,71 @@ if TYPE_CHECKING:
         AFDDeepseekV2DecoderLayer,
         AFDDeepseekV2Model,
     )
+
+
+def run_model_forward(
+    model: AFDDeepseekV2Model,
+    input_ids: torch.Tensor | None,
+    positions: torch.Tensor,
+    intermediate_tensors: IntermediateTensors | None,
+    inputs_embeds: torch.Tensor | None = None,
+) -> torch.Tensor | IntermediateTensors:
+    """Run the pinned Model fragment around the AFD-owned async schedule."""
+
+    if get_pp_group().is_first_rank:
+        if inputs_embeds is not None:
+            hidden_states = inputs_embeds
+        else:
+            if input_ids is None:
+                raise ValueError(
+                    "Either input_ids or inputs_embeds must be provided "
+                    "to AFDDeepseekV2Model.forward",
+                )
+            hidden_states = model.embed_input_ids(input_ids)
+        residual = None
+    else:
+        assert intermediate_tensors is not None
+        hidden_states = intermediate_tensors["hidden_states"]
+        residual = intermediate_tensors["residual"]
+
+    if model.aux_hidden_state_layers:
+        raise RuntimeError(
+            "AFD DeepSeekV2 async CAM does not support aux hidden state capture",
+        )
+    forward_context = get_forward_context()
+    afd_metadata = get_afd_metadata_from_forward_context(forward_context)
+    if afd_metadata is None:
+        raise RuntimeError("async CAM requires AFD forward metadata")
+    llama_4_scaling = model._get_llama_4_scaling(positions)
+    async_moe_ubatch_metadata = get_async_moe_ubatch_metadata_from_forward_context(
+        forward_context
+    )
+    if async_moe_ubatch_metadata is None:
+        hidden_states, residual = run_attention_gate_afd_forward(
+            model,
+            hidden_states,
+            residual,
+            positions,
+            afd_metadata,
+            llama_4_scaling,
+        )
+    else:
+        hidden_states, residual = run_async_moe_ubatch_afd_forward(
+            model,
+            hidden_states,
+            residual,
+            positions,
+            afd_metadata,
+            async_moe_ubatch_metadata,
+            llama_4_scaling,
+        )
+
+    if not get_pp_group().is_last_rank:
+        return IntermediateTensors(
+            {"hidden_states": hidden_states, "residual": residual},
+        )
+    hidden_states, _ = model.norm(hidden_states, residual)
+    return hidden_states
 
 
 def run_attention_gate_afd_forward(
@@ -80,6 +151,13 @@ def run_attention_gate_afd_forward(
             residual,
             llama_4_scaling,
         )
+
+        # vLLM v0.26 profiles Attention with a local dummy forward and does not
+        # start the connector-driven FFN loop for a matching profile request.
+        # Launching CAM collectives here would therefore block on unmatched
+        # synthetic routing metadata; only the local Attention profile is run.
+        if forward_context.in_profile_run:
+            continue
 
         metadata = AFDTransferMetadata.create_attention_metadata(
             layer_idx=layer.layer_idx,
@@ -436,4 +514,5 @@ def _restore_forward_context_attr(
 __all__ = [
     "run_async_moe_ubatch_afd_forward",
     "run_attention_gate_afd_forward",
+    "run_model_forward",
 ]

@@ -86,6 +86,7 @@ def _install_fake_vllm_forward_context(monkeypatch: pytest.MonkeyPatch):
         slot_mapping,
         additional_kwargs,
         skip_compiled,
+        is_padding=None,
     ):
         return SimpleNamespace(
             attn_metadata=attn_metadata,
@@ -97,6 +98,7 @@ def _install_fake_vllm_forward_context(monkeypatch: pytest.MonkeyPatch):
             slot_mapping=slot_mapping,
             additional_kwargs=additional_kwargs,
             skip_compiled=skip_compiled,
+            is_padding=is_padding,
         )
 
     forward_module.DPMetadata = DPMetadata

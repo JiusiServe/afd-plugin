@@ -24,7 +24,7 @@ from afd_plugin.validation import (
 
 def _install_fake_vllm_config(monkeypatch):
     vllm_module = types.ModuleType("vllm")
-    vllm_module.__version__ = "0.19.1"
+    vllm_module.__version__ = "0.26.0"
     config_package = types.ModuleType("vllm.config")
     config_module = types.ModuleType("vllm.config.vllm")
     engine_package = types.ModuleType("vllm.engine")
@@ -248,19 +248,27 @@ def test_config_validation_patch_allows_vllm_dev_checkout(monkeypatch):
     assert cfg.parallel_config.all2all_backend == "allgather_reducescatter"
 
 
-def test_config_validation_patch_relaxes_repeated_vllm_post_init(monkeypatch):
+def test_config_validation_patch_selects_worker_after_upstream_post_init(monkeypatch):
     arg_utils_module, _config_module = _install_fake_vllm_config(monkeypatch)
     _load_patch_module()
     args = _engine_args(active=True)
 
     cfg = arg_utils_module.EngineArgs.create_engine_config(args)
-    cfg.additional_config = args.additional_config
-    cfg.parallel_config.use_ubatching = True
+    assert cfg.post_init_backend == "deepep_low_latency"
+    assert cfg.parallel_config.all2all_backend == "allgather_reducescatter"
+    assert cfg.parallel_config.worker_cls == ATTENTION_WORKER_FQCN
+
+
+def test_config_validation_patch_relaxes_explicit_post_init_revalidation(monkeypatch):
+    arg_utils_module, _config_module = _install_fake_vllm_config(monkeypatch)
+    _load_patch_module()
+    args = _engine_args(active=True)
+
+    cfg = arg_utils_module.EngineArgs.create_engine_config(args)
     cfg.__post_init__()
 
     assert cfg.post_init_backend == "deepep_low_latency"
     assert cfg.parallel_config.all2all_backend == "allgather_reducescatter"
-    assert cfg.parallel_config.worker_cls == ATTENTION_WORKER_FQCN
 
 
 @pytest.mark.parametrize(
@@ -439,7 +447,7 @@ def test_config_validation_patch_auto_selects_afd_worker(
     arg_utils_module, config_module = _install_fake_vllm_config(monkeypatch)
     monkeypatch.setattr(
         npu_compat,
-        "apply_afd_ascend_patches_if_needed",
+        "apply_afd_ascend_config_patch_if_needed",
         lambda: None,
     )
     config_module.VllmConfig.platform_worker_cls = platform_worker_cls
@@ -485,7 +493,7 @@ def test_config_validation_installs_ascend_patch_only_on_npu(monkeypatch):
     calls = []
     monkeypatch.setattr(
         npu_compat,
-        "apply_afd_ascend_patches_if_needed",
+        "apply_afd_ascend_config_patch_if_needed",
         lambda: calls.append("npu"),
     )
     patch_module = _load_patch_module()
@@ -532,7 +540,7 @@ def test_config_validation_patch_rejects_unsupported_auto_platform(
     arg_utils_module, config_module = _install_fake_vllm_config(monkeypatch)
     monkeypatch.setattr(
         npu_compat,
-        "apply_afd_ascend_patches_if_needed",
+        "apply_afd_ascend_config_patch_if_needed",
         lambda: None,
     )
     config_module.VllmConfig.platform_worker_cls = platform_worker_cls

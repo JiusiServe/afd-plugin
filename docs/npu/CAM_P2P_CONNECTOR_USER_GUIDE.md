@@ -16,8 +16,8 @@ is limited to `FULL_DECODE_ONLY`.
 
 ## Prerequisites
 
-- An Ascend PyTorch, vLLM, and vLLM Ascend environment compatible with the
-  versions pinned by this repository.
+- vLLM `0.26.0` and an Ascend PyTorch/vLLM-Ascend environment based on source
+  commit [`80d8c194f`](https://github.com/vllm-project/vllm-ascend/commit/80d8c194f7584b17fe08065ea99a130916f6b0e7).
 - The AFD Ascend custom operators must be built and available at runtime.
 - HCCL connectivity for the data path and Gloo connectivity for DP metadata.
 - Identical model hidden size, model dtype, AFD topology, rendezvous address,

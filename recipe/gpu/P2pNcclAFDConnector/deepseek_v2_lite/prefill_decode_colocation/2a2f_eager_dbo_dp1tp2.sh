@@ -1,4 +1,5 @@
 MODEL_PATH=${MODEL_PATH:-/path/model_weights/DeepSeek-V2-Lite}
+export VLLM_USE_V2_MODEL_RUNNER=0
 
 CUDA_VISIBLE_DEVICES=0,1 uv run vllm serve "$MODEL_PATH" \
     --data-parallel-size 1 \

@@ -9,6 +9,7 @@ implementation plugin-owned.
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 
 import torch
 import torch_npu  # noqa: F401
@@ -46,6 +47,69 @@ from afd_plugin.v1.worker.npu.ubatching import (
     make_ubatch_contexts,
 )
 
+AFD_NPU_NUM_UBATCHES = 2
+_READY_BARRIER_PARTIES = AFD_NPU_NUM_UBATCHES + 1
+AscendLastRankOutput = torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]
+AscendModelOutput = AscendLastRankOutput | IntermediateTensors
+
+
+def _cat_ubatch_outputs(
+    sorted_results: list[AscendLastRankOutput],
+) -> AscendLastRankOutput:
+    """Preserve the current Ascend model-output structure across ubatches.
+
+    Upstream source: vLLM v0.26.0 commit 568afb3a1,
+    ``gpu_ubatch_wrapper._cat_ubatch_outputs``. Ascend auxiliary hidden states
+    use ``tuple[Tensor, list[Tensor]]`` rather than upstream's tuple of tensors,
+    so this plugin-owned wrapper concatenates that concrete nested contract.
+    """
+    assert sorted_results
+    first_result = sorted_results[0]
+    # ### PATCH START: Ascend auxiliary hidden-state output
+    if isinstance(first_result, tuple):
+        tuple_results = cast(
+            list[tuple[torch.Tensor, list[torch.Tensor]]],
+            sorted_results,
+        )
+        num_aux_outputs = len(first_result[1])
+        assert all(len(result[1]) == num_aux_outputs for result in tuple_results)
+        return (
+            torch.cat([result[0] for result in tuple_results], dim=0),
+            [
+                torch.cat(
+                    [result[1][index] for result in tuple_results],
+                    dim=0,
+                )
+                for index in range(num_aux_outputs)
+            ],
+        )
+    # ### PATCH END: Ascend auxiliary hidden-state output
+    return torch.cat(cast(list[torch.Tensor], sorted_results), dim=0)
+
+
+def _all_gather_ubatch_output(
+    output: AscendLastRankOutput,
+    pad_size: int,
+) -> AscendLastRankOutput:
+    if isinstance(output, tuple):
+        hidden_states, aux_hidden_states = output
+        gathered_hidden_states = _all_gather_ubatch_output(hidden_states, pad_size)
+        assert isinstance(gathered_hidden_states, torch.Tensor)
+        gathered_aux_hidden_states = [
+            _all_gather_ubatch_output(aux_hidden_state, pad_size)
+            for aux_hidden_state in aux_hidden_states
+        ]
+        assert all(
+            isinstance(aux_hidden_state, torch.Tensor)
+            for aux_hidden_state in gathered_aux_hidden_states
+        )
+        return gathered_hidden_states, cast(
+            list[torch.Tensor],
+            gathered_aux_hidden_states,
+        )
+    output = tensor_model_parallel_all_gather(output, 0)
+    return output[:-pad_size, :] if pad_size > 0 else output
+
 
 @dataclass
 class AscendUbatchMetadata(UbatchMetadata):
@@ -57,7 +121,7 @@ class AscendUbatchMetadata(UbatchMetadata):
 class AscendNPUGraphMetaData:
     aclgraph: torch.npu.NPUGraph
     ubatch_metadata: list[AscendUbatchMetadata]
-    outputs: torch.Tensor | IntermediateTensors | None = None
+    outputs: AscendModelOutput | None = None
     mla_graph_params: tuple[GraphParams, GraphParams] | None = None
 
 
@@ -93,7 +157,8 @@ class AscendUBatchWrapper(UBatchWrapper):
         self.vllm_config = vllm_config
         self.compilation_config = vllm_config.compilation_config
         self.comm_stream = torch.npu.Stream(device=device)
-        self.ready_barrier = threading.Barrier(3)
+        assert self.vllm_config.parallel_config.num_ubatches == AFD_NPU_NUM_UBATCHES
+        self.ready_barrier = threading.Barrier(_READY_BARRIER_PARTIES)
         self.cudagraphs: dict[AscendNPUGraphKey, AscendNPUGraphMetaData] = {}
         self.cudagraph_wrapper = None
         if runtime_mode is not CUDAGraphMode.NONE:
@@ -158,7 +223,7 @@ class AscendUBatchWrapper(UBatchWrapper):
 
         mla_full_graph_active = self.owns_full_graph_update(forward_context)
         attn_metadata = forward_context.attn_metadata
-        if len(ubatch_slices) != 2:
+        if len(ubatch_slices) != AFD_NPU_NUM_UBATCHES:
             raise RuntimeError(
                 "Ascend FULL graph requires exactly two ubatches; "
                 f"got {len(ubatch_slices)}",
@@ -241,6 +306,7 @@ class AscendUBatchWrapper(UBatchWrapper):
                 torch.npu.current_stream().synchronize()
                 cudagraph_metadata.aclgraph.replay()
             forward_context.dbo_enabled = True
+            assert cudagraph_metadata.outputs is not None
             return cudagraph_metadata.outputs
 
         ubatch_metadata = self._make_ubatch_metadata(
@@ -448,20 +514,21 @@ class AscendUBatchWrapper(UBatchWrapper):
 
     def _merge_outputs(
         self,
-        sorted_results: list[torch.Tensor | IntermediateTensors],
+        sorted_results: list[AscendModelOutput],
         ubatch_metadata: list[AscendUbatchMetadata],
-    ) -> torch.Tensor | IntermediateTensors:
+    ) -> AscendModelOutput:
         if not get_pp_group().is_last_rank:
-            return self._merge_intermediate_tensors(sorted_results)
+            return self._merge_intermediate_tensors(
+                cast(list[IntermediateTensors], sorted_results),
+            )
 
+        last_rank_results = cast(list[AscendLastRankOutput], sorted_results)
         ubatch_forward_context = ubatch_metadata[0].context.forward_context
         if ubatch_forward_context.flash_comm_v1_enabled:
-            for i, result in enumerate(sorted_results):
-                sorted_results[i] = tensor_model_parallel_all_gather(result, 0)
+            for i, result in enumerate(last_rank_results):
                 pad_size = ubatch_metadata[i].context.forward_context.pad_size
-                if pad_size > 0:
-                    sorted_results[i] = sorted_results[i][:-pad_size, :]
-        return torch.cat(sorted_results, dim=0)
+                last_rank_results[i] = _all_gather_ubatch_output(result, pad_size)
+        return _cat_ubatch_outputs(last_rank_results)
 
     @torch.inference_mode()
     def _run_ubatch_thread(self, results, model, ubatch_metadata):
@@ -478,8 +545,8 @@ class AscendUBatchWrapper(UBatchWrapper):
         self,
         ubatch_metadata: list[AscendUbatchMetadata],
         model,
-    ) -> torch.Tensor | IntermediateTensors:
-        results: list[tuple[int, torch.Tensor | IntermediateTensors]] = []
+    ) -> AscendModelOutput:
+        results: list[tuple[int, AscendModelOutput]] = []
         with override_forward_context(None):
             ubatch_threads = []
             for metadata in ubatch_metadata:
@@ -505,8 +572,8 @@ class AscendUBatchWrapper(UBatchWrapper):
         *,
         graph_key: AscendNPUGraphKey,
         mla_graph_params: tuple[GraphParams, GraphParams] | None,
-    ) -> torch.Tensor | IntermediateTensors:
-        results: list[tuple[int, torch.Tensor | IntermediateTensors]] = []
+    ) -> AscendModelOutput:
+        results: list[tuple[int, AscendModelOutput]] = []
         compute_stream = ubatch_metadata[0].context.compute_stream
 
         with override_forward_context(None):
@@ -540,12 +607,14 @@ class AscendUBatchWrapper(UBatchWrapper):
                 )
             self.cudagraphs[graph_key] = cudagraph_metadata
         get_forward_context().dbo_enabled = True
+        assert cudagraph_metadata.outputs is not None
         return cudagraph_metadata.outputs
 
 
 __all__ = [
     "AscendNPUGraphKey",
     "AscendNPUGraphMetaData",
+    "AscendModelOutput",
     "AscendUBatchWrapper",
     "AscendUbatchMetadata",
 ]

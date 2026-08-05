@@ -4,7 +4,11 @@ P2pNcclAFDConnector (implemented with vLLM's PyNcclCommunicator) is a GPU-backed
 
 ## When to use `P2pNcclAFDConnector`
 
-Use this connector for CUDA deployments that disaggregate Attention and FFN workers and exchange hidden states synchronously through NCCL point-to-point communication.
+Use this connector for CUDA deployments that disaggregate Attention and FFN
+workers and exchange hidden states synchronously through NCCL point-to-point
+communication. On vLLM 0.26, DeepSeek MoE layers keep the native MoE forward
+contract and replace only the local experts with an AFD remote-experts proxy.
+The MoE gate may run on Attention or FFN.
 
 It supports both prefill and decode which all support eager mode. CUDA graph support is currently limited to `FULL_DECODE_ONLY`, which is mainly used in decode instance. The checked-in DeepSeek V2 Lite recipes cover colocated and prefill/decode-disaggregated deployments.
 
@@ -86,7 +90,7 @@ AFD configuration is supplied through vLLM's `--additional-config` under the `af
 | `port` | `int` | `1239` | Base rendezvous port, valid range `1..65535`. The connector also uses `port + subgroup_index + 1`, so those ports must be free and reachable. |
 | `num_attention_ranks` | `int` | `1` | Total number of AFD Attention ranks, including DP/TP-derived worker ranks. Must be positive. |
 | `num_ffn_ranks` | `int` | `1` | Total number of AFD FFN ranks, including DP/TP-derived worker ranks. Must be positive. |
-| `compute_gate_on_attention` | `bool` | `false` | Must be `false`. Whether Attention computes MoE gate outputs before sending work to FFN. This is a general AFD field, not a PyNccl transport setting. |
+| `compute_gate_on_attention` | `bool` | `false` | When `false`, FFN owns the native gate and experts. When `true`, Attention owns the native gate and transfers router logits to the FFN external-router expert path. |
 | `connector_extra_config` | `dict` | `{}` | Must remain empty; `P2pNcclAFDConnector` does not currently support connector-specific options. |
 | `async` / `async_dp` | `bool` | `false` | Must remain `false` for `P2pNcclAFDConnector`; AFD async mode requires `CAMAsyncAFDConnector`. |
 
@@ -118,6 +122,12 @@ Examples:
 | `3A2F` | No | Attention rank count is not divisible by FFN rank count. |
 
 ## Minimal launch shape
+
+Select the supported vLLM model runner before starting either GPU role:
+
+```bash
+export VLLM_USE_V2_MODEL_RUNNER=0
+```
 
 Attention side:
 
@@ -163,6 +173,7 @@ For complete `1A1F`, `2A2F`, `4A4F`, eager, DBO, and CUDA graph examples, see `r
 - The rendezvous base port and derived subgroup ports must be free and reachable.
 - Initialization is collective: missing ranks, mismatched counts, or duplicate role ranks can cause initialization failure or timeout.
 - Current GPU CUDA graph support is `FULL_DECODE_ONLY`; GPU DBO plus CUDA graph is limited to exactly two ubatches.
+- CUDA remote experts do not currently support EPLB on the Attention role.
 - To enable DBO, set `--enable-dbo`, and configure the threshold with `--dbo-decode-token-threshold` and `--dbo-prefill-token-threshold`. See `recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite` for examples.
 - The repository recipes currently validate specific GPU layouts (including DeepSeek V2 Lite and tested A/H-class hardware). Cross-node use depends on NCCL/network configuration and is not established by the current recipes; document it as unverified rather than promising transparent fallback.
 - There is no automatic fallback from this connector to another transport. Select an NPU connector explicitly on Ascend.

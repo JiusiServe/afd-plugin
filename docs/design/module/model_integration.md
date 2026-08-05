@@ -31,7 +31,7 @@ related_issues:
   - "#88"
   - "#105"
   - "#129"
-last_reviewed: 2026-07-20
+last_reviewed: 2026-08-03
 ---
 
 # Model integration
@@ -54,6 +54,7 @@ make a backend-specific worker class the shared model API.
 | --- | --- | --- |
 | Registration map | [`afd_plugin/__init__.py`](../../../afd_plugin/__init__.py) | [`test_package.py`](../../../tests/unit/package/test_package.py) |
 | Role-aware model and weight loading | [`deepseek_v2.py`](../../../afd_plugin/model_executor/models/deepseek_v2.py) | [`test_forward_context.py`](../../../tests/unit/model_executor/models/test_forward_context.py), model and accuracy E2E suites |
+| CUDA remote-experts boundary | [`deepseek_v2.py`](../../../afd_plugin/model_executor/models/deepseek_v2.py), [`gpu/p2p.py`](../../../afd_plugin/connectors/gpu/p2p.py) | [`test_p2p_experts_contract.py`](../../../tests/unit/connectors/test_p2p_experts_contract.py), [`test_deepseek_v2_proxy.py`](../../../tests/unit/model_executor/models/test_deepseek_v2_proxy.py) |
 | Forward-context adapter | [`forward_context.py`](../../../afd_plugin/model_executor/models/forward_context.py) | [`test_forward_context.py`](../../../tests/unit/model_executor/models/test_forward_context.py) |
 | Ascend Attention-side gate | [`npu/deepseek_v2_attention_gate.py`](../../../afd_plugin/model_executor/models/npu/deepseek_v2_attention_gate.py) | Attention-gate unit cases in [`test_forward_context.py`](../../../tests/unit/model_executor/models/test_forward_context.py) |
 | Ascend CAM orchestration | [`npu/deepseek_v2_async_cam_forward.py`](../../../afd_plugin/model_executor/models/npu/deepseek_v2_async_cam_forward.py) | Async/ubatch unit cases and [`test_async_cam_npu.py`](../../../tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py) |
@@ -89,14 +90,19 @@ needed by the split execution.
 | Layer/component | Attention role | FFN role |
 | --- | --- | --- |
 | Attention module and KV-facing computation | Constructed and executed. | Not constructed. |
-| MoE or dense MLP, normal mode | Not constructed; output is sent after post-Attention normalization. | Constructed and executed from connector input. |
-| MoE gate with `compute_gate_on_attention=true` | Constructed; produces router logits and top-k payloads before send. | Expert MLP is constructed; it consumes routed payloads without rerunning the gate. |
+| MoE with `compute_gate_on_attention=false` | CUDA constructs the native MoE shell with a parameter-free internal-router experts proxy; NPU sends after post-Attention normalization. | Native gate and experts are constructed and executed from connector input. |
+| MoE with `compute_gate_on_attention=true` | CUDA keeps the native gate and uses an external-router experts proxy; NPU uses its Attention-side gate helper. | Expert MLP is constructed and consumes transferred router logits or routed payloads without rerunning the gate. |
+| Dense MLP, normal mode | Not constructed; output is sent after post-Attention normalization. | Constructed and executed from connector input. |
 | Dense MLP with `compute_gate_on_attention=true` | Constructed and executed locally because there is no routed MoE handoff. | Not constructed and a dense-layer FFN compute request is rejected. |
 | Embedding, final norm, pipeline placeholders | Created according to the pinned pipeline-rank rules. | Same wrapper lifecycle rules; only role-required parameters are loaded. |
 
-`compute_gate_on_attention` is rejected outside NPU before the split layer is
-constructed. The current gate helper supports unquantized and Ascend W8A8 MoE
-expert computation; unsupported quantization fails explicitly.
+CUDA MoE always splits at the remote-experts boundary while preserving native
+`DeepseekV2MoE.forward`. With gate-on-FFN, the proxy asks FFN to run its native
+internal-router MoE. With gate-on-Attention, Attention runs the native gate and
+FFN executes its external-router experts path. CUDA Attention-side remote
+experts currently reject EPLB. The NPU gate helper supports unquantized and
+Ascend W8A8 MoE expert computation; unsupported devices or quantization fail
+explicitly.
 
 The full AFD model remains decorated with vLLM's compile support. Backend-only
 helpers are imported inside the NPU path so CUDA model import does not require
@@ -184,9 +190,9 @@ renaming, shared-expert placement, and redundant experts. AFD adds role
 filtering:
 
 - Attention loads Attention/common parameters and skips FFN expert parameters.
-  When gate-on-Attention is enabled, MoE gate weights are remapped from the
-  checkpoint MLP gate into the Attention-owned gate, and dense MLP parameters
-  remain loadable for locally executed dense layers.
+  When gate-on-Attention is enabled, MoE gate weights retain the native
+  `.mlp.gate` path and are also loadable on Attention, while dense MLP
+  parameters remain loadable for locally executed dense layers.
 - FFN loads the MLP/expert and required common parameters and skips unrelated
   Attention parameters. In gate-on-Attention mode it also skips dense MLP
   parameters because those layers execute on Attention.
@@ -199,13 +205,12 @@ the other role can be omitted from model/accuracy E2E coverage.
 
 ## Failure and resource ownership
 
-- Missing `afd_metadata` selects the ordinary upstream-style local forward
-  path; it is not an implicit connector lookup.
+- Missing `afd_metadata` on an AFD path fails explicitly; an AFD model alias is
+  not an implicit local-forward fallback.
 - AFD paths that require a connector, top-k payload, group list, or async stage
   metadata fail when that input is missing.
-- Unsupported aux-hidden-state capture, non-NPU gate placement, unsupported
-  gate quantization, and inconsistent shared-expert dimensions fail
-  explicitly.
+- Unsupported aux-hidden-state capture, unsupported device gate placement or
+  gate quantization, and inconsistent shared-expert dimensions fail explicitly.
 - The model owns modules, parameters, local intermediates, and layer
   computation. The runner owns forward-context installation and step
   lifecycle. The connector owns communication resources and transfer state.

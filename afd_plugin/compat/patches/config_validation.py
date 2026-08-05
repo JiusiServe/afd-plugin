@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """Config normalization shim for AFD-owned runtime behavior.
 
-vLLM 0.19.1 validates native microbatching by requiring a DeepEP all2all
+vLLM 0.26.0 validates native microbatching by requiring a supported all2all
 backend. AFD ubatching uses plugin connectors instead, so this patch only
 relaxes that assertion for configs with active ``additional_config["afd"]``.
 It also replaces the platform's default worker with the role-specific AFD
@@ -42,7 +42,7 @@ _original_vllm_config_post_init: Callable[..., Any] | None = None
 # validation bypass.
 # Signature: matches upstream; no added parameters.
 def create_engine_config(
-    self: EngineArgs,
+    self,
     usage_context: UsageContext | None = None,
     headless: bool = False,
 ) -> VllmConfig:
@@ -57,9 +57,11 @@ def create_engine_config(
         from vllm.platforms import current_platform
 
         if current_platform.device_type == "npu":
-            from afd_plugin.compat.npu import apply_afd_ascend_patches_if_needed
+            from afd_plugin.compat.npu import (
+                apply_afd_ascend_config_patch_if_needed,
+            )
 
-            apply_afd_ascend_patches_if_needed()
+            apply_afd_ascend_config_patch_if_needed()
     # ### PATCH END: AFD Ascend config patch ordering
     if not _should_relax_engine_args_backend(self):
         config = _original_create_engine_config(
@@ -101,7 +103,7 @@ def create_engine_config(
 # pipeline; keep narrow original-function delegation so this patch only owns
 # the AFD backend validation bypass.
 # Signature: matches upstream; no added parameters.
-def __post_init__(self: VllmConfig):
+def __post_init__(self):
     """Verify configs are valid & consistent with each other."""
 
     assert _original_vllm_config_post_init is not None
@@ -148,55 +150,44 @@ def _select_afd_worker_for_auto(vllm_config: VllmConfig) -> None:
 def _should_relax_engine_args_backend(engine_args: EngineArgs) -> bool:
     if not _is_target_vllm_compatible():
         return False
-    try:
-        afd_config = parse_optional_afd_config(
-            getattr(engine_args, "additional_config", None),
-        )
-    except Exception:
-        return False
+    afd_config = parse_optional_afd_config(engine_args.additional_config)
     if afd_config is None:
         return False
-    if (
-        not bool(getattr(engine_args, "enable_dbo", False))
-        and int(
-            getattr(engine_args, "ubatch_size", 1),
-        )
-        <= 1
-    ):
+    if not engine_args.enable_dbo and engine_args.ubatch_size <= 1:
         return False
 
-    backend = getattr(engine_args, "all2all_backend", None)
-    return backend not in {"deepep_low_latency", "deepep_high_throughput"}
+    backend = engine_args.all2all_backend
+    return backend not in {
+        "deepep_low_latency",
+        "deepep_high_throughput",
+        "nixl_ep",
+    }
 
 
 def _should_relax_vllm_config_backend(vllm_config: VllmConfig) -> bool:
     if not _is_target_vllm_compatible():
         return False
-    try:
-        afd_config = parse_optional_afd_config(vllm_config)
-    except Exception:
-        return False
-    if afd_config is None:
+    if parse_optional_afd_config(vllm_config) is None:
         return False
 
-    parallel_config = getattr(vllm_config, "parallel_config", None)
-    if parallel_config is None:
-        return False
-    if not bool(getattr(parallel_config, "use_ubatching", False)):
+    parallel_config = vllm_config.parallel_config
+    if not parallel_config.use_ubatching:
         return False
 
-    backend = getattr(parallel_config, "all2all_backend", None)
-    return backend not in {"deepep_low_latency", "deepep_high_throughput"}
+    backend = parallel_config.all2all_backend
+    return backend not in {
+        "deepep_low_latency",
+        "deepep_high_throughput",
+        "nixl_ep",
+    }
 
 
 def _is_target_vllm_compatible() -> bool:
     try:
         import vllm
 
-        version_value = getattr(vllm, "__version__", None)
-    except Exception:
-        version_value = None
-    if version_value is None:
+        version_value = vllm.__version__
+    except (AttributeError, ImportError):
         return True
     version_text = str(version_value)
     if "dev" in version_text:

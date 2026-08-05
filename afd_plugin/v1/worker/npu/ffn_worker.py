@@ -9,6 +9,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 import torch
+from vllm.v1.worker.worker_base import CompilationTimes
 from vllm.v1.worker.workspace import init_workspace_manager
 from vllm_ascend.worker.worker import NPUWorker
 
@@ -25,8 +26,11 @@ from afd_plugin.validation import NPU_FFN_WORKER_FQCN, assert_compatible_afd_sta
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
+    from vllm.v1.outputs import AsyncModelRunnerOutput, ModelRunnerOutput
 
 logger = logging.getLogger(__name__)
+
+FFN_SHUTDOWN_TIMEOUT_SECONDS = 5
 
 
 class AFDNPUFFNWorker(NPUWorker):
@@ -35,6 +39,11 @@ class AFDNPUFFNWorker(NPUWorker):
     afd_expected_role = "ffn"
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        # Import after vLLM-Ascend completes platform initialization. Importing
+        # its MoE modules from the general-plugin hook can race Ascend's own
+        # ops package initialization and leave DeviceOperator partially loaded.
+        import afd_plugin.compat.patches.npu.force_load_balance  # noqa: F401
+
         apply_afd_ascend_patches_if_needed()
         super().__init__(*args, **kwargs)
         self._ffn_thread: threading.Thread | None = None
@@ -72,10 +81,13 @@ class AFDNPUFFNWorker(NPUWorker):
         self.model_runner.initialize_afd_connector()
         self.start_ffn_server_loop()
 
-    def compile_or_warm_up_model(self) -> float:
-        return 0.0
+    def compile_or_warm_up_model(self) -> CompilationTimes:
+        return CompilationTimes(language_model=0.0, encoder=0.0)
 
-    def execute_model(self, scheduler_output: SchedulerOutput) -> None:
+    def execute_model(
+        self,
+        scheduler_output: SchedulerOutput,
+    ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:
         raise RuntimeError(
             "AFD NPU FFN workers are connector-driven; scheduler-driven "
             "execute_model() is not supported.",
@@ -98,6 +110,13 @@ class AFDNPUFFNWorker(NPUWorker):
             try:
                 self._run_ffn_server_loop()
             except Exception as exc:
+                shutdown_event = self._ffn_shutdown_event
+                if shutdown_event is not None and shutdown_event.is_set():
+                    logger.debug(
+                        "AFD NPU FFN receive loop stopped during shutdown",
+                        exc_info=True,
+                    )
+                    return
                 self._ffn_loop_error = exc
                 logger.exception("AFD NPU FFN worker loop failed")
 
@@ -142,17 +161,25 @@ class AFDNPUFFNWorker(NPUWorker):
         event = self._ffn_shutdown_event
         if event is not None:
             event.set()
-        try:
-            self.model_runner.shutdown()
-        finally:
-            thread = self._ffn_thread
-            if thread is not None:
-                thread.join(timeout=5)
-            self._ffn_thread = None
-            self._ffn_shutdown_event = None
+
+        # CAM recv blocks in the connector operator. Release the communicator
+        # first so the daemon can observe the shutdown event, then wait for it
+        # before the parent runner releases model tensors.
+        self.model_runner.connector.close()
+        thread = self._ffn_thread
+        if thread is not None:
+            thread.join(timeout=FFN_SHUTDOWN_TIMEOUT_SECONDS)
+            if thread.is_alive():
+                raise RuntimeError(
+                    "AFD NPU FFN worker loop did not stop after connector close",
+                )
+        self._ffn_thread = None
+        self._ffn_shutdown_event = None
         self.raise_ffn_loop_error_if_any()
 
     def shutdown(self) -> None:
+        # Stop the connector-driven daemon before NPUWorker releases the model
+        # runner and its tensors.
         self.stop_ffn_server_loop()
         super().shutdown()
 

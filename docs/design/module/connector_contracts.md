@@ -34,7 +34,7 @@ related_issues:
   - "#105"
   - "#107"
   - "#129"
-last_reviewed: 2026-07-20
+last_reviewed: 2026-08-03
 ---
 
 # Connector contracts
@@ -96,8 +96,10 @@ than an `AFDConfig` field. Unknown fields fail in the selected connector parser.
 | `CAMAsyncAFDConnector` | `dynamicQuant`, `attn_ranks_per_dp`, `async_moe_ubatching`, `async_moe_num_ubatches`, and `async_moe_split`. Runtime validation further limits dynamic quantization and the optional request-boundary pipeline. |
 
 The common `compute_gate_on_attention` field remains on `AFDConfig` and is the
-model-routing selector. CAMP2P also parses a connector-local field with that
-name for its operator contract; both paths currently reject enabling it.
+model-routing selector. CUDA P2P supports both values. CAMP2P also parses a
+connector-local field with that name for its operator contract, but the current
+synchronous NPU runtime requires both common and connector-local values to be
+`false`. CAM async requires the common field to be `true`.
 
 ## Current connector modes
 

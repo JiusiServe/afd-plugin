@@ -10,6 +10,8 @@ from afd_plugin.config import AFDConfig, afd_config_from_mapping
 pytest.importorskip("torch")
 pytest.importorskip("torch_npu")
 
+import torch  # noqa: E402
+
 from afd_plugin.connectors import (  # noqa: E402
     AFDA2FTransferPayload,
     AFDConnectorFactory,
@@ -459,7 +461,7 @@ def test_async_ffn_work_item_uses_cam_layer_and_token_metadata(monkeypatch):
                 _FakeScalar(11),
             ],
             expert_token_nums_shared=[_FakeScalar(2)],
-            group_list="groups",
+            group_list=torch.tensor([2, 3], dtype=torch.int64),
             dynamic_scales=_FakeTensorLike("scales"),
             expand_x_shared=_FakeTensorLike("shared-hidden"),
             dynamic_scales_shared=_FakeTensorLike("shared-scales"),
@@ -498,9 +500,8 @@ def test_async_ffn_work_item_uses_expert_counts_for_routed_tokens(monkeypatch):
 
     import torch
 
-    # The routed token count comes from summing the per-expert group_list, which
-    # the connector only does when it is a real tensor (a list falls back to
-    # total - shared). The counts below sum to 6.
+    # The routed token count comes from summing the per-expert group_list.
+    # The counts below sum to 6.
     group_list = torch.tensor(
         [1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0],
         dtype=torch.int64,
@@ -523,7 +524,7 @@ def test_async_ffn_work_item_uses_expert_counts_for_routed_tokens(monkeypatch):
                 _FakeScalar(0),
                 _FakeScalar(23),
             ],
-            expert_token_nums_shared=[_FakeScalar(1)],
+            expert_token_nums_shared=[_FakeScalar(0)],
             group_list=group_list,
             expand_x_shared=_FakeTensorLike("shared-hidden"),
             dynamic_scales_shared=_FakeTensorLike("shared-scales"),
@@ -540,12 +541,12 @@ def test_async_ffn_work_item_uses_expert_counts_for_routed_tokens(monkeypatch):
     states = work_item.context.states
     assert work_item.layer_idx == 23
     assert work_item.total_num_tokens == 6
-    assert work_item.shared_num_tokens == 1
+    assert work_item.shared_num_tokens == 0
     assert work_item.num_tokens == 6
     assert work_item.hidden_states == "hidden[:6]"
     assert work_item.context.metadata.seq_lens == [6]
-    assert states.expand_x_shared == "shared-hidden[:1]"
-    assert states.dynamic_scales_shared == "shared-scales[:1]"
+    assert states.expand_x_shared == "shared-hidden[:0]"
+    assert states.dynamic_scales_shared == "shared-scales[:0]"
 
 
 def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
@@ -584,6 +585,7 @@ def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
                 _FakeScalar(7),
             ],
             expert_token_nums_shared=[_FakeScalar(5)],
+            group_list=torch.zeros(8, dtype=torch.int64),
             expand_x_shared=_FakeTensorLike("shared-hidden"),
             dynamic_scales_shared=_FakeTensorLike("shared-scales"),
         )
@@ -623,7 +625,7 @@ def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
     ]
 
 
-def test_async_select_experts_maps_legacy_global_num_experts(monkeypatch):
+def test_async_select_experts_uses_v026_num_experts_contract(monkeypatch):
     calls = []
     fake_package = ModuleType("vllm_ascend")
     fake_ops = ModuleType("vllm_ascend.ops")
@@ -651,7 +653,7 @@ def test_async_select_experts_maps_legacy_global_num_experts(monkeypatch):
         0,
     )
 
-    result = connector.select_experts(router_logits="logits", global_num_experts=8)
+    result = connector.select_experts(router_logits="logits", num_experts=8)
 
     assert result == ("weights", "ids")
     assert calls == [(8, {"router_logits": "logits"})]

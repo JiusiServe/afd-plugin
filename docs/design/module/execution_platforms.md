@@ -14,7 +14,6 @@ primary_code_paths:
   - "afd_plugin/v1/worker/dbo.py"
   - "afd_plugin/v1/worker/npu/forward_context.py"
   - "afd_plugin/v1/worker/npu/npu_ubatch_wrapper.py"
-  - "afd_plugin/v1/worker/npu/pcp_debug.py"
   - "afd_plugin/v1/worker/npu/ubatch_utils.py"
   - "afd_plugin/v1/worker/npu/ubatching.py"
   - "csrc/**"
@@ -50,7 +49,7 @@ verified_platform_refs:
 related_issues:
   - "#86"
   - "#129"
-last_reviewed: 2026-07-20
+last_reviewed: 2026-08-03
 ---
 
 # Execution platforms
@@ -288,17 +287,17 @@ an expansion of the supported runtime contract.
 
 | Platform/path | Execution | Ubatching | Routing/quantization limits | Evidence |
 | --- | --- | --- | --- | --- |
-| CUDA + `P2pNcclAFDConnector` | Eager or `FULL_DECODE_ONLY` CUDA Graph | Native DBO, exactly two ubatches | Role-aware DeepSeek path; P2P topology validated by connector/config tests | GPU serving, graph, TP, profiler, model, and accuracy E2E tests |
+| CUDA + `P2pNcclAFDConnector` | Eager or `FULL_DECODE_ONLY` CUDA Graph | Native DBO, exactly two ubatches | DeepSeek remote-experts boundary; Attention-side or FFN-side gate; EPLB rejected on the Attention remote-experts role | GPU serving, graph, TP/EP, DP/EP, DBO, profiler, model, and accuracy E2E tests |
 | Ascend + `CAMP2pAFDConnector` | Eager or current ACL Graph path | Native DBO, exactly two ubatches | Common and connector-local `compute_gate_on_attention=false`; `connector_extra_config.quant_mode=0`; plugin CANN ops required | NPU serving, graph, TP, ops, profiler, model, and accuracy E2E tests |
-| Ascend + `CAMAsyncAFDConnector` | Eager only | Native DBO rejected; optional async MoE ubatching uses exactly two request-boundary stages | `async=true`; documented path uses common `compute_gate_on_attention=true`; decode context parallel unsupported for async MoE ubatching; `connector_extra_config.dynamicQuant` is 0 or 1; external CAM ops required | Async CAM connector unit tests and `test_async_cam_npu.py` |
+| Ascend + `CAMAsyncAFDConnector` | Eager only | Native DBO rejected; optional async MoE ubatching uses exactly two request-boundary stages | Experimental code path; the former PCP8 recipe is incompatible with v0.26 model runner v1 and was not revalidated in this upgrade | Unit coverage only for the retained connector/model adapters; no v0.26 hardware support claim |
 
-All paths use the supported vLLM release and model runner v1. GPU/NPU rank
-topology and connector resource rules remain owned by
+The validated CUDA and synchronous Ascend paths use vLLM 0.26.0 and model
+runner v1. GPU/NPU rank topology and connector resource rules remain owned by
 [connector contracts](connector_contracts.md).
 
-The repository does not record a canonical CUDA container. Current Ascend
-guides record the tested container; this is test evidence, not an authoritative
-vLLM-Ascend package or tag pin.
+The repository does not record a canonical CUDA container or a released
+vLLM-Ascend v0.26 container. The NPU implementation records source commit
+`80d8c194f`; environment evidence is not an authoritative package tag.
 
 ## Failure and cleanup boundaries
 
@@ -323,14 +322,15 @@ both platforms.
 ## Upstream relationship and validation requirements
 
 CUDA behavior is developed against the pinned vLLM release. The recorded
-Ascend container is test evidence, not an authoritative package/tag pin. Build,
+Ascend source snapshot and environment are compatibility evidence, not a
+released package/tag pin. Build,
 graph, profiler, and native-op changes require the matching unit and hardware
 E2E paths listed above.
 
 ## Limitations and open issues
 
-The official vLLM-Ascend tag/container and canonical CUDA/Ascend versus GPU/NPU
-terminology are unresolved. This document uses CUDA/Ascend for backend
+The official vLLM-Ascend v0.26 tag/container and canonical CUDA/Ascend versus
+GPU/NPU terminology are unresolved. This document uses CUDA/Ascend for backend
 mechanisms and preserves GPU/NPU where it appears in public names, environment
 variables, or test markers. See
 [#129](https://github.com/JiusiServe/afd-plugin/issues/129).

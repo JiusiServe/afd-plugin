@@ -25,7 +25,6 @@ rank derivation, launch guidance, and the full limitations.
 
 from __future__ import annotations
 
-import inspect
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -166,7 +165,7 @@ class AFDAsyncTransferState(AFDTransferState):
     layer_idx: int = 0
     token_nums_rankid_layeridx: Tensor | None = None
     expert_token_nums_shared: Tensor | None = None
-    group_list: object = None
+    group_list: Tensor | None = None
     dynamic_scales: Tensor | None = None
     expand_x_shared: Tensor | None = None
     dynamic_scales_shared: Tensor | None = None
@@ -313,16 +312,9 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self._initialized = False
 
     def select_experts(self, **kwargs: Any) -> tuple[Tensor, Tensor]:
-        """Run the vLLM Ascend expert selector on the Attention side."""
+        """Run the pinned vLLM-Ascend expert selector on Attention."""
         from vllm_ascend.ops.fused_moe.experts_selector import select_experts
 
-        if "global_num_experts" in kwargs:
-            signature = inspect.signature(select_experts)
-            if (
-                "global_num_experts" not in signature.parameters
-                and "num_experts" in signature.parameters
-            ):
-                kwargs["num_experts"] = kwargs.pop("global_num_experts")
         return select_experts(**kwargs)
 
     def recv_ffn_work_item(
@@ -344,13 +336,8 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         )
         context = recv_output.context
         metadata = context.metadata
-        states = context.states
-
-        token_nums_rankid_layeridx = (
-            getattr(states, "token_nums_rankid_layeridx", None)
-            if states is not None
-            else None
-        )
+        states = _require_async_transfer_state(context)
+        token_nums_rankid_layeridx = states.token_nums_rankid_layeridx
         if token_nums_rankid_layeridx is None:
             raise RuntimeError(
                 "AFD async CAM FFN work item requires "
@@ -359,36 +346,37 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         total_num_tokens = max(1, int(token_nums_rankid_layeridx[0].item()))
         layer_idx = int(token_nums_rankid_layeridx[2].item())
 
-        expert_token_nums_shared = (
-            getattr(states, "expert_token_nums_shared", None)
-            if states is not None
-            else None
-        )
+        expert_token_nums_shared = states.expert_token_nums_shared
         if expert_token_nums_shared is None:
-            shared_num_tokens = max(1, total_num_tokens)
-        else:
-            shared_num_tokens = max(1, int(expert_token_nums_shared[0].item()))
+            raise RuntimeError(
+                "AFD async CAM FFN work item requires "
+                "expert_token_nums_shared from async_dispatch_recv",
+            )
+        shared_num_tokens = max(0, int(expert_token_nums_shared[0].item()))
 
         expert_token_nums = states.group_list
-        if isinstance(expert_token_nums, Tensor):
-            num_tokens = max(0, int(expert_token_nums.to(torch.int64).sum().item()))
-        else:
-            num_tokens = max(0, total_num_tokens - shared_num_tokens)
+        if expert_token_nums is None:
+            raise RuntimeError(
+                "AFD async CAM FFN work item requires expert_token_nums "
+                "from async_dispatch_recv",
+            )
+        num_tokens = max(
+            0,
+            int(expert_token_nums.to(torch.int64).sum().item()),
+        )
 
         metadata.layer_idx = layer_idx
         metadata.stage_idx = stage_idx
         metadata.seq_lens = [num_tokens]
 
-        shared_slice_tokens = shared_num_tokens if shared_num_tokens > 0 else 100
-        assert states, "payload should not have a None states"
         hidden_states = recv_output.hidden_states[:num_tokens]
         if states.expand_x_shared is not None:
-            states.expand_x_shared = states.expand_x_shared[:shared_slice_tokens]
+            states.expand_x_shared = states.expand_x_shared[:shared_num_tokens]
         if states.dynamic_scales is not None:
             states.dynamic_scales = states.dynamic_scales[:num_tokens]
         if states.dynamic_scales_shared is not None:
             states.dynamic_scales_shared = states.dynamic_scales_shared[
-                :shared_slice_tokens
+                :shared_num_tokens
             ]
 
         return AFDAsyncFFNWorkItem(
@@ -608,7 +596,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             if topk_weights is None:
                 topk_weights = pending_topk_weights
 
-        states = context.states
+        states = _require_async_transfer_state(context)
         _validate_topk_payload(
             topk_ids,
             topk_weights,
@@ -761,7 +749,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         mandatory because CAM uses it to return results to Attention ranks.
         """
         self._require_initialized()
-        states = context.states
+        states = _require_async_transfer_state(context)
         expand_x_shared = kwargs.get("expand_x_shared")
         if expand_x_shared is None:
             expand_x_shared = ffn_output
@@ -813,6 +801,18 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
     def _require_initialized(self) -> None:
         if not self._initialized:
             raise RuntimeError("CAMAsyncAFDConnector is not initialized")
+
+
+def _require_async_transfer_state(
+    context: AFDTransferContext,
+) -> AFDAsyncTransferState:
+    states = context.states
+    if not isinstance(states, AFDAsyncTransferState):
+        raise RuntimeError(
+            "CAMAsyncAFDConnector requires AFDAsyncTransferState in the "
+            "transfer context",
+        )
+    return states
 
 
 _CAM_LOG_SKIPPED_ARGS = frozenset({"comm_args", "comm_id", "group_name"})

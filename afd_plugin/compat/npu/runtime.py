@@ -18,24 +18,31 @@ from afd_plugin.compat.npu.runtime_config import (
 _PATCHES_APPLIED = False
 
 
-def apply_afd_ascend_patches_if_needed() -> None:
-    """Apply plugin-owned, AFD-scoped Ascend patches."""
-
-    global _PATCHES_APPLIED
-    if _PATCHES_APPLIED:
-        return
+def apply_afd_ascend_config_patch_if_needed() -> None:
+    """Apply patches required while vLLM builds an AFD NPU config."""
 
     from afd_plugin.compat.patches.npu.ascend_platform import (
         apply_afd_ascend_dbo_config_patch,
-    )
-    from afd_plugin.compat.patches.npu.mla_graph import (
-        apply_afd_mla_graph_patch,
     )
 
     if not apply_afd_ascend_dbo_config_patch():
         raise RuntimeError(
             "AFD NPU DBO config patch requires vLLM-Ascend NPUPlatform",
         )
+
+
+def apply_afd_ascend_patches_if_needed() -> None:
+    """Apply plugin-owned runtime patches after Ascend initialization."""
+
+    global _PATCHES_APPLIED
+    if _PATCHES_APPLIED:
+        return
+
+    from afd_plugin.compat.patches.npu.mla_graph import (
+        apply_afd_mla_graph_patch,
+    )
+
+    apply_afd_ascend_config_patch_if_needed()
     if not apply_afd_mla_graph_patch():
         raise RuntimeError(
             "AFD NPU MLA graph patch requires the vLLM-Ascend MLA resolver",
@@ -44,6 +51,7 @@ def apply_afd_ascend_patches_if_needed() -> None:
 
 
 __all__ = [
+    "apply_afd_ascend_config_patch_if_needed",
     "apply_afd_ascend_patches_if_needed",
     "ascend_forward_context",
     "fail_if_unsupported_npu_afd_features",
