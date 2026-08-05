@@ -7,7 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from afd_plugin.compat import npu as npu_compat
 from afd_plugin.compat.npu import runtime as ascend_runtime
+from afd_plugin.compat.patches.npu import mla_graph
 from afd_plugin.validation import (
     ATTENTION_WORKER_FQCN,
     FFN_WORKER_FQCN,
@@ -205,6 +207,7 @@ def _install_fake_npu_config(monkeypatch):
     monkeypatch.setitem(sys.modules, "vllm_ascend", fake_package)
     monkeypatch.setitem(sys.modules, "vllm_ascend.platform", fake_platform)
     sys.modules["vllm.platforms"].current_platform = NPUPlatform
+    monkeypatch.setattr(mla_graph, "apply_afd_mla_graph_patch", lambda: True)
     monkeypatch.setattr(ascend_runtime, "_PATCHES_APPLIED", False)
     return arg_utils_module, NPUPlatform, events
 
@@ -434,6 +437,11 @@ def test_config_validation_patch_auto_selects_afd_worker(
     expected_worker_cls,
 ):
     arg_utils_module, config_module = _install_fake_vllm_config(monkeypatch)
+    monkeypatch.setattr(
+        npu_compat,
+        "apply_afd_ascend_patches_if_needed",
+        lambda: None,
+    )
     config_module.VllmConfig.platform_worker_cls = platform_worker_cls
     _set_fake_platform(is_cuda=is_cuda, device_type=device_type)
     _load_patch_module()
@@ -473,7 +481,6 @@ def test_config_validation_patch_auto_selects_without_ubatching(monkeypatch):
 
 def test_config_validation_installs_ascend_patch_only_on_npu(monkeypatch):
     arg_utils_module, config_module = _install_fake_vllm_config(monkeypatch)
-    import afd_plugin.compat.npu as npu_compat
 
     calls = []
     monkeypatch.setattr(
@@ -523,6 +530,11 @@ def test_config_validation_patch_rejects_unsupported_auto_platform(
     device_type,
 ):
     arg_utils_module, config_module = _install_fake_vllm_config(monkeypatch)
+    monkeypatch.setattr(
+        npu_compat,
+        "apply_afd_ascend_patches_if_needed",
+        lambda: None,
+    )
     config_module.VllmConfig.platform_worker_cls = platform_worker_cls
     _set_fake_platform(is_cuda=is_cuda, device_type=device_type)
     _load_patch_module()

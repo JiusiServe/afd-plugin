@@ -28,9 +28,19 @@ def apply_afd_ascend_patches_if_needed() -> None:
     from afd_plugin.compat.patches.npu.ascend_platform import (
         apply_afd_ascend_dbo_config_patch,
     )
+    from afd_plugin.compat.patches.npu.mla_graph import (
+        apply_afd_mla_graph_patch,
+    )
 
-    if apply_afd_ascend_dbo_config_patch():
-        _PATCHES_APPLIED = True
+    if not apply_afd_ascend_dbo_config_patch():
+        raise RuntimeError(
+            "AFD NPU DBO config patch requires vLLM-Ascend NPUPlatform",
+        )
+    if not apply_afd_mla_graph_patch():
+        raise RuntimeError(
+            "AFD NPU MLA graph patch requires the vLLM-Ascend MLA resolver",
+        )
+    _PATCHES_APPLIED = True
 
 
 __all__ = [

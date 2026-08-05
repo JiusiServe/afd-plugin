@@ -2,7 +2,10 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """Forward-context helpers for plugin-owned Ascend ubatching."""
 
+from __future__ import annotations
+
 import math
+from typing import TYPE_CHECKING
 
 import torch
 from vllm.config import CUDAGraphMode, VllmConfig
@@ -11,10 +14,16 @@ from vllm.forward_context import BatchDescriptor, DPMetadata, ForwardContext
 from vllm.v1.worker.ubatch_utils import UBatchSlices
 from vllm_ascend.ops.fused_moe.moe_comm_method import get_moe_comm_method
 
+from afd_plugin.compat.patches.npu.mla_graph import (
+    AFD_MLA_GRAPH_PARAMS_KEY,
+)
 from afd_plugin.v1.worker.ubatch_wrapper import (
     build_ubatch_additional_kwargs,
     build_ubatch_afd_metadata,
 )
+
+if TYPE_CHECKING:
+    from vllm_ascend.compilation.acl_graph import GraphParams
 
 
 def create_ascend_forward_context(
@@ -27,6 +36,7 @@ def create_ascend_forward_context(
     cudagraph_runtime_mode: CUDAGraphMode | None = None,
     batch_descriptor: BatchDescriptor | None = None,
     skip_compiled: bool = False,
+    mla_graph_params: GraphParams | None = None,
 ) -> ForwardContext:
     if cudagraph_runtime_mode is None:
         cudagraph_runtime_mode = CUDAGraphMode.NONE
@@ -38,6 +48,8 @@ def create_ascend_forward_context(
             parent_kwargs,
             build_ubatch_afd_metadata(afd_metadata, ubatch_slices, ubatch_num),
         )
+    if mla_graph_params is not None:
+        parent_kwargs[AFD_MLA_GRAPH_PARAMS_KEY] = mla_graph_params
 
     new_forward_context = ForwardContext(
         no_compile_layers=vllm_config.compilation_config.static_forward_context,
@@ -62,7 +74,9 @@ def create_ascend_forward_context(
         new_forward_context.moe_comm_type
     )
     new_forward_context.in_profile_run = cur_forward_context.in_profile_run
-    new_forward_context.capturing = cur_forward_context.capturing
+    new_forward_context.capturing = (
+        mla_graph_params is not None or cur_forward_context.capturing
+    )
     new_forward_context.mmrs_fusion = cur_forward_context.mmrs_fusion
     new_forward_context.num_tokens = num_tokens
     new_forward_context.ubatch_idx = int(ubatch_num)

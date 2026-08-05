@@ -8,6 +8,7 @@ import urllib.error
 import pytest
 
 from tests.e2e import runner
+from tests.e2e.models.deepseek_v2_lite import test_e2e_npu as npu_e2e
 from tests.e2e.runner import build_vllm_command
 
 
@@ -97,6 +98,16 @@ def test_runner_uses_plugin_decode_bench_connector():
     )
 
 
+@pytest.mark.parametrize("role", ["attention", "ffn"])
+def test_runner_uses_auto_worker_selection_for_npu(role):
+    args = _args()
+    args.device_backend = "npu"
+
+    command = build_vllm_command(args, role=role)
+
+    assert "--worker-cls" not in command
+
+
 def test_runner_builds_npu_async_cam_role_specific_topology():
     args = _args()
     args.device_backend = "npu"
@@ -122,8 +133,6 @@ def test_runner_builds_npu_async_cam_role_specific_topology():
     assert _arg_value(attention_command, "--tensor-parallel-size") == "2"
     assert _arg_value(ffn_command, "--data-parallel-size") == "2"
     assert _arg_value(ffn_command, "--tensor-parallel-size") == "1"
-    assert "--worker-cls" not in attention_command
-    assert "--worker-cls" not in ffn_command
 
     additional_config = json.loads(_arg_value(attention_command, "--additional-config"))
     afd_config = additional_config["afd"]
@@ -180,6 +189,27 @@ def test_runner_sends_one_concurrent_request_per_attention_dp_rank(monkeypatch):
 
     assert len(calls) == 2
     assert len(responses) == 2
+
+
+def test_npu_eager_dbo_sends_enough_requests_for_two_ubatches(monkeypatch):
+    captured = {}
+
+    def fake_run(command, **_kwargs):
+        captured["command"] = command
+
+    monkeypatch.setattr(npu_e2e, "_model_path", lambda: "/models/DeepSeek-V2-Lite")
+    monkeypatch.setattr(npu_e2e.subprocess, "run", fake_run)
+
+    npu_e2e._run_e2e(
+        npus=["0", "1", "2", "3"],
+        api_port_base=18400,
+        afd_port=6279,
+        dbo=True,
+    )
+
+    command = captured["command"]
+    assert _arg_value(command, "--num-requests") == "4"
+    assert _arg_value(command, "--request-concurrency") == "4"
 
 
 def test_request_completion_includes_http_error_body(monkeypatch):
