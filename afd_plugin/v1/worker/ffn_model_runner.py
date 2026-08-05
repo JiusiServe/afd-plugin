@@ -29,7 +29,6 @@ from afd_plugin.connectors import (
     AFDDPMetadata,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
-    _with_dp_derived_afd_rank,
     fail_if_unsupported_ubatching,
 )
 from afd_plugin.v1.worker.cuda_graph import (
@@ -68,8 +67,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             vllm_config,
             role="ffn",
         )
-        self.afd_config = _with_dp_derived_afd_rank(vllm_config, self.afd_config)
-
         rank, local_rank = _resolve_world_ranks()
         self.connector = AFDConnectorFactory.create_connector(
             rank,
