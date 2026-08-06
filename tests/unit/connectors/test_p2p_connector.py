@@ -317,8 +317,8 @@ def test_p2p_custom_ops_register_send_recv_with_fake_impls(monkeypatch):
         "afd_p2p_send",
         "afd_p2p_recv",
     ]
-    assert calls[0]["mutates_args"] == ["ordering_token"]
-    assert calls[1]["mutates_args"] == ["out", "ordering_token"]
+    assert calls[0]["mutates_args"] == ["tensor"]
+    assert calls[1]["mutates_args"] == ["out"]
     assert callable(calls[0]["fake_impl"])
     assert callable(calls[1]["fake_impl"])
 
@@ -337,15 +337,13 @@ def test_p2p_hidden_state_send_uses_registered_custom_op(monkeypatch):
         ),
     )
     connector.a2e_comm_id = 17
-    ordering_token = object()
-    connector._p2p_ordering_token = ordering_token
 
     calls = []
     torch_module = types.ModuleType("torch")
     torch_module.ops = SimpleNamespace(
         vllm=SimpleNamespace(
-            afd_p2p_send=lambda tensor, token, dst, comm_id: (
-                calls.append((tensor, token, dst, comm_id)) or None
+            afd_p2p_send=lambda tensor, dst, comm_id: (
+                calls.append((tensor, dst, comm_id)) or None
             ),
         ),
     )
@@ -364,7 +362,7 @@ def test_p2p_hidden_state_send_uses_registered_custom_op(monkeypatch):
         connector.a2e_comm_id,
     )
 
-    assert calls == [(hidden_states, ordering_token, 1, 17)]
+    assert calls == [(hidden_states, 1, 17)]
     assert output is None
 
 
@@ -382,15 +380,13 @@ def test_p2p_recv_preserves_dynamic_ref_tensor_first_dim(monkeypatch):
         ),
     )
     connector.e2a_comm_id = 23
-    ordering_token = object()
-    connector._p2p_ordering_token = ordering_token
 
     calls = []
     torch_module = types.ModuleType("torch")
     torch_module.ops = SimpleNamespace(
         vllm=SimpleNamespace(
-            afd_p2p_recv=lambda tensor, token, src, comm_id: (
-                calls.append((tensor, token, src, comm_id)) or None
+            afd_p2p_recv=lambda tensor, src, comm_id: (
+                calls.append((tensor, src, comm_id)) or None
             ),
         ),
     )
@@ -420,7 +416,7 @@ def test_p2p_recv_preserves_dynamic_ref_tensor_first_dim(monkeypatch):
     )
 
     assert output is ref_tensor
-    assert calls == [(ref_tensor, ordering_token, 0, 23)]
+    assert calls == [(ref_tensor, 0, 23)]
 
 
 def test_p2p_recv_single_rank_requires_ref_tensor():
