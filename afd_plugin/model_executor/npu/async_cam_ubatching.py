@@ -37,7 +37,10 @@ def plan_async_moe_stages(
     use_sequence_parallel: bool,
     tensor_parallel_size: int,
 ) -> tuple[AsyncMoeStage, ...] | None:
-    """Plan two ordered CAM stages without importing a device runtime."""
+    """Plan two ordered CAM stages without importing a device runtime.
+
+    Returns ``None`` when the selected policy cannot form two non-empty stages.
+    """
 
     scheduled_tokens = tuple(int(token_count) for token_count in num_scheduled_tokens)
     if not scheduled_tokens or any(

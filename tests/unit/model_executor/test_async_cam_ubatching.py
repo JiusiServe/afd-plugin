@@ -43,6 +43,7 @@ from afd_plugin.model_executor.npu.async_cam_ubatching import (
             ),
             id="uneven-minimal-stages",
         ),
+        pytest.param([1], True, 2, None, id="single-token"),
     ],
 )
 def test_token_stage_plan(scheduled_tokens, use_sp, tp_size, expected):
@@ -52,6 +53,10 @@ def test_token_stage_plan(scheduled_tokens, use_sp, tp_size, expected):
         use_sequence_parallel=use_sp,
         tensor_parallel_size=tp_size,
     )
+
+    if expected is None:
+        assert stages is None
+        return
 
     assert stages is not None
     assert (
