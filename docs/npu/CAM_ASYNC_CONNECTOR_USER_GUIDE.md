@@ -223,6 +223,24 @@ pytest -svv \
   tests/e2e/accuracy/test_gsm8k_npu_async_cam.py::test_gsm8k_lm_eval_async_cam_dp3tp2_ep2
 ```
 
+The reviewer-requested full DeepSeek-V3.2 accuracy deployment uses two
+16-NPU nodes: Attention DP2TP8 on one node and FFN EP16 on the other. It runs
+token-balanced ubatching with Attention FlashComm1/SP enabled and forced expert
+load balancing disabled. Because pytest does not own a cross-node process
+manager, launch both roles through the cluster job system with the checked-in
+[v0.26 accuracy recipe](../../recipe/npu/CAMAsyncAFDConnector/deepseek_v3_2/v0_26_accuracy/README.md),
+then run:
+
+```bash
+AFD_NPU_E2E_MODEL=/path/to/DeepSeek-V3.2-W8A8 \
+AFD_NPU_ASYNC_CAM_RUN_V3_2_DP2TP8_EP16=1 \
+python -m pytest -svv \
+  tests/e2e/accuracy/test_gsm8k_npu_async_cam.py::test_gsm8k_lm_eval_async_cam_v3_2_dp2tp8_ep16
+```
+
+The test rejects reduced checkpoints by requiring all 61 transformer layers.
+Leave `AFD_GSM8K_LIMIT` unset for the full accuracy run.
+
 When `async_moe_ubatching=true`, all roles must set:
 
 ```json
@@ -256,8 +274,8 @@ The nightly image identifier records the intended validation environment; it
 is not a promise of a stable public pull tag. Some development package metadata
 in that image still reports a `0.19.1rc2.dev1327` version. The source commits
 above are the compatibility baseline for this port. The DP3TP2 NPU E2E matrix
-must pass on this baseline before the v0.26 path is described as hardware
-validated.
+and the full-model DeepSeek-V3.2 DP2TP8+EP16 accuracy test must pass on this
+baseline before the v0.26 path is described as hardware validated.
 
 Install the CAM packages from the repository root inside the container:
 
