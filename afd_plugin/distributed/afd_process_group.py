@@ -39,6 +39,25 @@ class DefaultProcessGroupSwitcher:
         _update_default_pg(self.default_group)
 
 
+def create_hccl_process_group_options(
+    hccl_buffer_size_mb: int | None,
+) -> Any | None:
+    """Create fresh HCCL options for one plugin-owned process group.
+
+    Returning ``None`` preserves torch-npu's environment-variable and built-in
+    fallback. A fresh options object keeps a configured MB value local to one
+    connector-owned HCCL process group.
+    """
+    if hccl_buffer_size_mb is None:
+        return None
+
+    import torch_npu
+
+    options = torch_npu._C._distributed_c10d.ProcessGroupHCCL.Options()
+    options.hccl_config = {"hccl_buffer_size": hccl_buffer_size_mb}
+    return options
+
+
 def init_afd_process_group(
     *,
     backend: str,
@@ -99,5 +118,6 @@ def init_afd_process_group(
 
 __all__ = [
     "DefaultProcessGroupSwitcher",
+    "create_hccl_process_group_options",
     "init_afd_process_group",
 ]

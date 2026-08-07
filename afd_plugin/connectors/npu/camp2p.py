@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import torch
 import torch.distributed as dist
@@ -50,7 +50,11 @@ from afd_plugin.connectors.metadata import (
     recv_control_payload,
     send_control_payload,
 )
-from afd_plugin.distributed import init_afd_process_group, topology_from_config
+from afd_plugin.distributed import (
+    create_hccl_process_group_options,
+    init_afd_process_group,
+    topology_from_config,
+)
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -64,6 +68,7 @@ _CAMP2P_EXTRA_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
         "attn_core_num",
         "ffn_core_num",
         "compute_gate_on_attention",
+        "hccl_buffer_size",
         "quant_mode",
     },
 )
@@ -78,6 +83,7 @@ class CAMP2PExtraInfo(ConnectorExtraInfo):
         attn_core_num: Optional Attention-role override for ``core_num``.
         ffn_core_num: Optional FFN-role override for ``core_num``.
         compute_gate_on_attention: Whether Attention computes MoE gate outputs.
+        hccl_buffer_size: Optional buffer size in MB for CAMP2P HCCL domains.
         quant_mode: CAM quantization mode; the current runtime supports only 0.
     """
 
@@ -85,6 +91,7 @@ class CAMP2PExtraInfo(ConnectorExtraInfo):
     attn_core_num: int | None = None
     ffn_core_num: int | None = None
     compute_gate_on_attention: bool = False
+    hccl_buffer_size: int | None = None
     quant_mode: int = 0
 
     @classmethod
@@ -121,6 +128,10 @@ class CAMP2PExtraInfo(ConnectorExtraInfo):
                 raw.get("compute_gate_on_attention", False),
                 field_name="compute_gate_on_attention",
             ),
+            hccl_buffer_size=coerce_optional_extra_positive_int(
+                raw.get("hccl_buffer_size"),
+                field_name="hccl_buffer_size",
+            ),
             quant_mode=coerce_extra_int(
                 raw.get("quant_mode", 0),
                 field_name="quant_mode",
@@ -152,6 +163,8 @@ class CAMP2PExtraInfo(ConnectorExtraInfo):
             result["attn_core_num"] = self.attn_core_num
         if self.ffn_core_num is not None:
             result["ffn_core_num"] = self.ffn_core_num
+        if self.hccl_buffer_size is not None:
+            result["hccl_buffer_size"] = self.hccl_buffer_size
         return result
 
 
@@ -278,7 +291,9 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         self.hccl_comm_name3 = ""
         self.hccl_comm_name1 = ""
         self.hccl_comm_name_list: list[str] = []
-        self.aiv_num = self.extra_info.aiv_num_for_role(afd_config.role)
+        extra_info = cast(CAMP2PExtraInfo, self.extra_info)
+        self.aiv_num = extra_info.aiv_num_for_role(afd_config.role)
+        self.hccl_buffer_size_mb = extra_info.hccl_buffer_size
         hf_config = vllm_config.model_config.hf_config
         self.hidden_size = hf_config.hidden_size
         self.num_experts_per_tok = hf_config.num_experts_per_tok
@@ -325,6 +340,9 @@ class CAMP2pAFDConnector(AFDConnectorBase):
                 rank=self.world_rank,
                 group_name=group_name,
                 timeout=timedelta(minutes=30),
+                pg_options=create_hccl_process_group_options(
+                    self.hccl_buffer_size_mb,
+                ),
             )
             self.afd_pg_list.append(afd_pg)
             backend = afd_pg._get_backend(torch.device("npu"))
@@ -346,6 +364,9 @@ class CAMP2pAFDConnector(AFDConnectorBase):
                 rank=self.world_rank,
                 group_name="afd_moe",
                 timeout=timedelta(minutes=30),
+                pg_options=create_hccl_process_group_options(
+                    self.hccl_buffer_size_mb,
+                ),
             )
             backend = self.ffn_pg._get_backend(torch.device("npu"))
             self.hccl_comm_name1 = str(
@@ -592,7 +613,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         """
         if not self._initialized:
             raise RuntimeError("CAMP2P connector is not initialized")
-        states = context.states
+        states = cast(CAMP2PTransferState, context.states)
         if states.atten_batch_size is None:
             raise RuntimeError("CAMP2P FFN side is missing A2E atten_batch_size")
         ubatch_idx = int(kwargs.get("ubatch_idx", context.metadata.stage_idx))

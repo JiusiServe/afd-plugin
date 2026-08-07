@@ -1,6 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -275,6 +279,7 @@ def test_async_topology_uses_cam_attention_first_rank_layout():
 
 def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
     calls = []
+    pg_options = object()
     fake_torch = _FakeTorch()
     monkeypatch.setattr(async_cam_module, "torch", fake_torch)
     monkeypatch.setattr(
@@ -298,10 +303,15 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
         "init_afd_process_group",
         fake_init_afd_process_group,
     )
+    monkeypatch.setattr(
+        async_cam_module,
+        "create_hccl_process_group_options",
+        lambda hccl_buffer_size_mb: pg_options if hccl_buffer_size_mb == 6144 else None,
+    )
     connector = CAMAsyncAFDConnector(
         0,
         0,
-        _vllm_config(),
+        _vllm_config(extra_config={"hccl_buffer_size": 6144}),
         _afd_config(role="ffn"),
         1,
     )
@@ -316,6 +326,7 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
             "rank": 5,
             "group_name": AFD_ASYNC_CAM_GROUP_NAME,
             "timeout": calls[0]["timeout"],
+            "pg_options": pg_options,
         },
     ]
     assert connector.cam_pg is not None
@@ -648,7 +659,11 @@ def test_async_select_experts_uses_v026_num_experts_contract(monkeypatch):
     fake_package = ModuleType("vllm_ascend")
     fake_ops = ModuleType("vllm_ascend.ops")
     fake_fused_moe = ModuleType("vllm_ascend.ops.fused_moe")
-    fake_selector = ModuleType("vllm_ascend.ops.fused_moe.experts_selector")
+
+    class FakeSelectorModule(ModuleType):
+        select_experts: Callable[..., tuple[str, str]]
+
+    fake_selector = FakeSelectorModule("vllm_ascend.ops.fused_moe.experts_selector")
 
     def select_experts(*, num_experts=-1, **kwargs):
         calls.append((num_experts, kwargs))
