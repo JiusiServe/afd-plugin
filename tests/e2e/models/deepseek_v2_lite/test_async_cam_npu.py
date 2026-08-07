@@ -24,7 +24,7 @@ from tests.e2e.runner import (
 CAM_VENDOR_PATH = Path("/usr/local/Ascend/cann-9.0.1/opp/vendors/CAM")
 CAM_OP_API_PATH = CAM_VENDOR_PATH / "op_api"
 CAM_OP_API_LIB_PATH = CAM_OP_API_PATH / "lib"
-CAM_HCCL_BUFFER_SIZE = "4096"
+CAM_HCCL_BUFFER_SIZE_MB = 4096
 CAM_MAX_NUM_SEQUENCES = "8"
 CAM_MAX_BATCHED_TOKENS = "8000"
 CAM_MEMORY_UTILIZATION = "0.75"
@@ -55,8 +55,8 @@ def _prepend_env_paths(env: dict[str, str], name: str, *paths: Path) -> None:
 
 def _async_cam_env() -> dict[str, str]:
     env = os.environ.copy()
+    env.pop("HCCL_BUFFSIZE", None)
     env.setdefault("VLLM_USE_V1", "1")
-    env["HCCL_BUFFSIZE"] = CAM_HCCL_BUFFER_SIZE
     env.setdefault("PYTORCH_NPU_ALLOC_CONF", "expandable_segments:True")
     env.setdefault("ASCEND_LAUNCH_BLOCKING", "1")
     env.setdefault("VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL", "1")
@@ -78,7 +78,13 @@ def _connector_extra_config(model: str) -> str:
             "1" if (Path(model) / "quant_model_description.json").is_file() else "0",
         ),
     )
-    return json.dumps({"dynamicQuant": dynamic_quant}, separators=(",", ":"))
+    return json.dumps(
+        {
+            "dynamicQuant": dynamic_quant,
+            "hccl_buffer_size": CAM_HCCL_BUFFER_SIZE_MB,
+        },
+        separators=(",", ":"),
+    )
 
 
 def build_runner_command() -> list[str]:
@@ -176,6 +182,11 @@ def build_ubatch_runner_command(gsm8k_output_path: Path) -> list[str]:
         ASYNC_UBATCH_SCENARIO,
         "--served-model-name-prefix",
         "cam-async-ubatch",
+        "--afd-connector-extra-config",
+        json.dumps(
+            {"hccl_buffer_size": CAM_HCCL_BUFFER_SIZE_MB},
+            separators=(",", ":"),
+        ),
         "--api-port-base",
         os.environ.get("AFD_NPU_ASYNC_UBATCH_E2E_API_PORT", "19180"),
         "--afd-port",
