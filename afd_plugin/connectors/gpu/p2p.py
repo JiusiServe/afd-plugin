@@ -352,6 +352,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                 self.a2e_group,
                 self.a2e_comm_id,
             )
+        self.extension.send_attn_output(self, context, **kwargs)
 
     def recv_ffn_output(
         self,
@@ -479,6 +480,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             stage_idx=ubatch_idx,
             seq_lens=[tensor.shape[0] for tensor in hidden_states_list],
         )
+        metadata.extension = self.extension.recv_attn_output(self, ubatch_idx)
         return AFDA2FTransferPayload(
             hidden_states=hidden_states,
             context=AFDTransferContext(
@@ -751,6 +753,10 @@ class P2pNcclAFDControlPlane(AFDControlPlane):
                     dtype=tensor_metadata.dtype,
                     device=tensor_metadata.device,
                 )
+        connector.extension.update_state_from_control_payload(
+            connector,
+            payload.extension,
+        )
 
     def send_dp_metadata_list(
         self,
@@ -767,6 +773,7 @@ class P2pNcclAFDControlPlane(AFDControlPlane):
                 connector loop.
         """
         connector = self.connector
+        payload.extension = connector.extension.control_payload()
         if connector.p2p_pg is None:
             return
         if not (
@@ -946,4 +953,7 @@ def _register_p2p_custom_ops() -> None:
     _AFD_CUSTOM_OPS_REGISTERED = True
 
 
-__all__ = ["P2pNcclAFDConnector", "P2pNcclAFDControlPlane"]
+__all__ = [
+    "P2pNcclAFDConnector",
+    "P2pNcclAFDControlPlane",
+]
