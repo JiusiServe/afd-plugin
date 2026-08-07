@@ -450,7 +450,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
             transfer_state.aiv_num,
             0,
         )
-        self.extension.send_attn_output(self, context, **kwargs)
+        self.extension.send_attn_extention(self, context, **kwargs)
         return None
 
     def recv_ffn_output(
@@ -567,7 +567,7 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         custom_states.atten_batch_size = outputs[3]
         custom_states.x_active_mask = outputs[4]
         custom_states.cam_p2p_ep_name = self.hccl_comm_name1
-        metadata.extension = self.extension.recv_attn_output(self, ubatch_idx)
+        metadata.extension = self.extension.recv_attn_extention(self, ubatch_idx)
         return AFDA2FTransferPayload(
             hidden_states=outputs[0],
             context=context,

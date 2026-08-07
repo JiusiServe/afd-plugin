@@ -338,7 +338,7 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
     connector.comm_args = _FakeTensor((1,), dtype="fp16")
     connector._placeholder = _FakeTensor((8, 16))
     extension_calls = []
-    connector.extension.send_attn_output = (
+    connector.extension.send_attn_extention = (
         lambda bound_connector, bound_context, **kwargs: extension_calls.append(
             (bound_connector, bound_context),
         )
@@ -391,7 +391,7 @@ def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):
     connector._initialized = True
     connector.comm_args = _FakeTensor((1,), dtype="fp16")
     connector._placeholder = _FakeTensor((8, 16))
-    connector.extension.recv_attn_output = lambda bound_connector, ubatch_idx: (
+    connector.extension.recv_attn_extention = lambda bound_connector, ubatch_idx: (
         "async-extension"
     )
 

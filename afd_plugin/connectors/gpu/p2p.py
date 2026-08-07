@@ -352,7 +352,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                 self.a2e_group,
                 self.a2e_comm_id,
             )
-        self.extension.send_attn_output(self, context, **kwargs)
+        self.extension.send_attn_extention(self, context, **kwargs)
 
     def recv_ffn_output(
         self,
@@ -480,7 +480,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             stage_idx=ubatch_idx,
             seq_lens=[tensor.shape[0] for tensor in hidden_states_list],
         )
-        metadata.extension = self.extension.recv_attn_output(self, ubatch_idx)
+        metadata.extension = self.extension.recv_attn_extention(self, ubatch_idx)
         return AFDA2FTransferPayload(
             hidden_states=hidden_states,
             context=AFDTransferContext(

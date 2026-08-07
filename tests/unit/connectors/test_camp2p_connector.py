@@ -158,7 +158,9 @@ def test_camp2p_recv_attn_output_uses_original_contiguous_af_grouping(monkeypatc
     rank1 = _init_ffn_connector(1, _vllm_config())
     rank0.dp_metadata_list = dp_metadata_list
     rank1.dp_metadata_list = dp_metadata_list
-    rank0.extension.recv_attn_output = lambda connector, ubatch_idx: "rank0-extension"
+    rank0.extension.recv_attn_extention = lambda connector, ubatch_idx: (
+        "rank0-extension"
+    )
 
     context0 = rank0.recv_attn_output(ubatch_idx=0, layer_idx=3).context
     context1 = rank1.recv_attn_output(ubatch_idx=0, layer_idx=3).context
@@ -306,7 +308,7 @@ def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):
     )
     context = AFDTransferContext(metadata=metadata)
     extension_calls = []
-    connector.extension.send_attn_output = (
+    connector.extension.send_attn_extention = (
         lambda bound_connector, bound_context, **kwargs: extension_calls.append(
             (bound_connector, bound_context),
         )

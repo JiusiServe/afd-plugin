@@ -51,7 +51,7 @@ class AFDConnectorExtension:
     ) -> None:
         pass
 
-    def send_attn_output(
+    def send_attn_extention(
         self,
         connector: AFDConnectorBase,
         context: AFDTransferContext,
@@ -59,7 +59,7 @@ class AFDConnectorExtension:
     ) -> None:
         pass
 
-    def recv_attn_output(
+    def recv_attn_extention(
         self,
         connector: AFDConnectorBase,
         ubatch_idx: int,

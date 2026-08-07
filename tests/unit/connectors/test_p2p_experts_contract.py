@@ -100,10 +100,10 @@ def test_model_extension_owns_control_and_data_plane_payloads(monkeypatch):
         def update_state_from_control_payload(self, connector, payload):
             self.control = payload
 
-        def send_attn_output(self, connector, context, **kwargs):
+        def send_attn_extention(self, connector, context, **kwargs):
             self.sent = kwargs["input_ids"]
 
-        def recv_attn_output(self, connector, ubatch_idx):
+        def recv_attn_extention(self, connector, ubatch_idx):
             return "received-input-ids"
 
     extension = Extension()
