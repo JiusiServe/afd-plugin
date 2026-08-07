@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import inspect
+import subprocess
+import sys
 
 import pytest
 
@@ -26,12 +28,42 @@ GPU_RUNTIME_CLASS_PATHS = [
     "afd_plugin.v1.worker:AFDAttentionWorker",
 ]
 
-NPU_RUNTIME_CLASS_PATHS = [
+NPU_WORKER_CLASS_PATHS = [
     NPU_ATTENTION_WORKER_FQCN,
-    NPU_ATTENTION_MODEL_RUNNER_FQCN,
     NPU_FFN_WORKER_FQCN,
+]
+
+NPU_MODEL_RUNNER_CLASS_PATHS = [
+    NPU_ATTENTION_MODEL_RUNNER_FQCN,
     NPU_FFN_MODEL_RUNNER_FQCN,
 ]
+
+# vLLM resolves the platform and worker before the worker imports its model
+# runner. Keep that production order explicit: a standalone vLLM-Ascend model
+# runner import can enter device_op before the ops package finishes loading.
+NPU_RUNTIME_CLASS_PATHS = NPU_WORKER_CLASS_PATHS + NPU_MODEL_RUNNER_CLASS_PATHS
+
+_NPU_RUNTIME_RESOLUTION_SCRIPT = """
+import sys
+
+from vllm.platforms import current_platform
+
+assert current_platform.device_type == "npu"
+
+import afd_plugin
+
+afd_plugin.register_afd()
+force_load_balance_module = "afd_plugin.compat.patches.npu.force_load_balance"
+assert force_load_balance_module not in sys.modules
+
+from afd_plugin.validation import resolve_class_from_qualname
+
+for qualname in sys.argv[1:]:
+    cls = resolve_class_from_qualname(qualname)
+    assert cls.__module__.startswith("afd_plugin.v1.worker.npu")
+
+assert force_load_balance_module not in sys.modules
+"""
 
 V026_OVERRIDE_CONTRACTS = [
     ("attention_worker", "AFDAttentionWorker", "Worker", "__init__"),
@@ -172,13 +204,25 @@ def test_gpu_v1_overrides_match_native_call_contract(
 
 
 @pytest.mark.vllm_runtime
-@pytest.mark.parametrize("qualname", NPU_RUNTIME_CLASS_PATHS)
-def test_npu_runtime_class_paths_resolve_when_vllm_ascend_is_available(qualname):
+def test_npu_runtime_class_paths_resolve_when_vllm_ascend_is_available():
     pytest.importorskip("torch")
     pytest.importorskip("vllm")
     pytest.importorskip("vllm_ascend")
 
-    cls = resolve_class_from_qualname(qualname)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _NPU_RUNTIME_RESOLUTION_SCRIPT,
+            *NPU_RUNTIME_CLASS_PATHS,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
-    assert isinstance(cls, type)
-    assert cls.__module__.startswith("afd_plugin.v1.worker.npu")
+    assert result.returncode == 0, (
+        "NPU runtime class resolution failed in an isolated process:\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
