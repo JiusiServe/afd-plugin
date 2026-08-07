@@ -117,7 +117,8 @@ There is no separate `--afd-config` option.
       "attn_ranks_per_dp": 8,
       "async_moe_ubatching": true,
       "async_moe_num_ubatches": 2,
-      "async_moe_split": "request"
+      "async_moe_split": "request",
+      "hccl_buffer_size": 4096
     }
   }
 }
@@ -152,6 +153,7 @@ spelling used by the recipes.
 | `async_moe_ubatching` | `bool` | `false` | Enables AFD-managed asynchronous MoE-only ubatching. |
 | `async_moe_num_ubatches` | `int` | `2` | Number of asynchronous MoE stages. Only `2` is supported. |
 | `async_moe_split` | `str` | `"request"` | Stage split policy. The current async connector supports request-boundary splitting only. |
+| `hccl_buffer_size` | `int` | unset | Positive CAM HCCL buffer size in MB. The override applies only to the `afd_async_cam` communication domain. When unset, HCCL uses `HCCL_BUFFSIZE`, then its built-in default. Configure the same value on every Attention and FFN rank in the domain. |
 
 ## Native DBO and async MoE ubatching are different
 
@@ -215,10 +217,14 @@ the essential setup is:
 
 ```bash
 export LD_LIBRARY_PATH=/usr/local/Ascend/cann-8.5.1/opp/vendors/CAM/op_api/lib:${LD_LIBRARY_PATH:-}
-export HCCL_BUFFSIZE=4096
 export VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 ```
+
+Set `connector_extra_config.hccl_buffer_size` when the CAM domain needs a
+larger buffer than unrelated TP, DP, or EP process groups. `HCCL_BUFFSIZE`
+remains a process-wide fallback and should be used only when all HCCL domains
+in the process should share the same size.
 
 At initialization, the runtime verifies that `torch`, `torch_npu`,
 `umdk_cam_op_lib`, and the four real `torch.ops.umdk_cam_op_lib` operators are

@@ -107,7 +107,10 @@ Pass AFD configuration through vLLM's `--additional-config` option under the
     "num_attention_ranks": 4,
     "num_ffn_ranks": 2,
     "afd_role_rank": 0,
-    "compute_gate_on_attention": false
+    "compute_gate_on_attention": false,
+    "connector_extra_config": {
+      "hccl_buffer_size": 2048
+    }
   }
 }
 ```
@@ -129,6 +132,18 @@ Pass AFD configuration through vLLM's `--additional-config` option under the
 
 Compatibility aliases are accepted for `afd_role`, `afd_connector`,
 `afd_host`, `afd_port`.
+
+### CAMP2P `connector_extra_config`
+
+| Field | Type | Default | Meaning and constraints |
+| --- | --- | --- | --- |
+| `core_num` | `int` | `8` | Positive default AIV core count for both roles. |
+| `attn_core_num` / `ffn_core_num` | `int` | unset | Positive role-specific override for `core_num`. |
+| `quant_mode` | `int` | `0` | CAM quantization mode. The current runtime supports only `0`. |
+| `hccl_buffer_size` | `int` | unset | Positive CAMP2P HCCL buffer size in MB. The override applies to every connector-owned `afd*` communication domain and the FFN-side `afd_moe` domain; the Gloo control group is unaffected. When unset, HCCL uses `HCCL_BUFFSIZE`, then its built-in default. Use the same value on all members of each HCCL domain. |
+
+The per-domain setting avoids increasing buffers for unrelated TP, DP, or EP
+process groups. `HCCL_BUFFSIZE` remains a process-wide fallback.
 
 ## Single-node `4A2F` example
 
@@ -168,6 +183,7 @@ vllm serve /path/to/model \
       "compute_gate_on_attention": false,
       "connector_extra_config": {
         "ffn_core_num": 8,
+        "hccl_buffer_size": 2048,
         "quant_mode": 0
       }
     }
@@ -205,6 +221,7 @@ vllm serve /path/to/model \
       "compute_gate_on_attention": false,
       "connector_extra_config": {
         "attn_core_num": 8,
+        "hccl_buffer_size": 2048,
         "quant_mode": 0
       }
     }

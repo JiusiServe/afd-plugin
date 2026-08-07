@@ -25,7 +25,7 @@ RUNNER = REPO_ROOT / "tests" / "e2e" / "runner.py"
 ASYNC_CAM_EXTRA_CONFIG = (
     '{"dynamicQuant":0,"async_moe_ubatching":false,'
     '"async_moe_num_ubatches":2,"async_moe_split":"request",'
-    '"attn_ranks_per_dp":2}'
+    '"attn_ranks_per_dp":2,"hccl_buffer_size":6144}'
 )
 DSV2_ACCOUNTING_PROMPT = "\n".join(
     [
@@ -74,7 +74,6 @@ def _model_path() -> str:
 def _async_cam_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("VLLM_USE_V1", "1")
-    env.setdefault("HCCL_BUFFSIZE", "6144")
     env.setdefault("ASCEND_LAUNCH_BLOCKING", "1")
     env.setdefault("VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL", "1")
     env.setdefault("VLLM_ASCEND_ENABLE_FLASHCOMM1", "1")

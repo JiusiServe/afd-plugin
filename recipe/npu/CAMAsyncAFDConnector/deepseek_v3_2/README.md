@@ -71,6 +71,7 @@ for both sides.
 | `async_moe_num_ubatches` | Number of async MoE stages. The current CAM async setup uses `2`. |
 | `async_moe_split` | Split policy for async MoE ubatches. This recipe uses request-level splitting. |
 | `attn_ranks_per_dp` | Number of attention ranks per DP replica. With `PCP8`, this value is `8`. |
+| `hccl_buffer_size` | Buffer size in MB for the CAM-owned HCCL domain. This recipe uses `4096` without increasing unrelated HCCL process-group buffers. |
 
 Do not add `--enable-dbo`, `--dbo-decode-token-threshold`, or
 `--dbo-prefill-token-threshold` to these commands. Those flags enable vLLM
@@ -259,7 +260,6 @@ export VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1
 export HCCL_OP_EXPANSION_MODE=AIV
 
 export LD_LIBRARY_PATH=/usr/local/Ascend/cann-8.5.1/opp/vendors/CAM/op_api/lib:${LD_LIBRARY_PATH:-}
-export HCCL_BUFFSIZE=4096
 export VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 export AFD_FORCE_BALANCED_TOPK_IDS=1
@@ -301,7 +301,8 @@ vllm serve /path/to/DeepSeek-V3.2 \
         "async_moe_ubatching": true,
         "async_moe_num_ubatches": 2,
         "async_moe_split": "request",
-        "attn_ranks_per_dp": 8
+        "attn_ranks_per_dp": 8,
+        "hccl_buffer_size": 4096
       }
     }
   }'
@@ -324,7 +325,6 @@ export VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1
 export HCCL_OP_EXPANSION_MODE=AIV
 
 export LD_LIBRARY_PATH=/usr/local/Ascend/cann-8.5.1/opp/vendors/CAM/op_api/lib:${LD_LIBRARY_PATH:-}
-export HCCL_BUFFSIZE=4096
 export VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 export AFD_FORCE_BALANCED_TOPK_IDS=1
@@ -367,7 +367,8 @@ vllm serve /path/to/DeepSeek-V3.2 \
         "async_moe_ubatching": true,
         "async_moe_num_ubatches": 2,
         "async_moe_split": "request",
-        "attn_ranks_per_dp": 8
+        "attn_ranks_per_dp": 8,
+        "hccl_buffer_size": 4096
       }
     }
   }'
@@ -390,7 +391,6 @@ export VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1
 export HCCL_OP_EXPANSION_MODE=AIV
 
 export LD_LIBRARY_PATH=/usr/local/Ascend/cann-8.5.1/opp/vendors/CAM/op_api/lib:${LD_LIBRARY_PATH:-}
-export HCCL_BUFFSIZE=4096
 export VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 export AFD_FORCE_BALANCED_TOPK_IDS=1
@@ -422,7 +422,8 @@ vllm serve /path/to/DeepSeek-V3.2 \
         "async_moe_ubatching": true,
         "async_moe_num_ubatches": 2,
         "async_moe_split": "request",
-        "attn_ranks_per_dp": 8
+        "attn_ranks_per_dp": 8,
+        "hccl_buffer_size": 4096
       }
     }
   }'

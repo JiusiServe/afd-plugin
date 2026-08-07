@@ -27,6 +27,9 @@ from afd_plugin.connectors.npu.async_cam import (  # noqa: E402
     CAMAsyncAFDConnector,
     build_async_topology,
 )
+from afd_plugin.distributed.afd_process_group import (  # noqa: E402
+    create_hccl_process_group_options,
+)
 
 
 class _FakeScalar:
@@ -169,6 +172,8 @@ def test_async_extra_info_rejects_unknown_and_invalid_fields():
         AFDAsyncExtraInfo.from_mapping({"core_num": 8})
     with pytest.raises(ValueError, match="attn_ranks_per_dp must be positive"):
         AFDAsyncExtraInfo.from_mapping({"attn_ranks_per_dp": 0})
+    with pytest.raises(ValueError, match="hccl_buffer_size must be positive"):
+        AFDAsyncExtraInfo.from_mapping({"hccl_buffer_size": 0})
 
 
 def test_async_extra_info_parses_async_moe_fields():
@@ -177,12 +182,35 @@ def test_async_extra_info_parses_async_moe_fields():
             "async_moe_ubatching": "true",
             "async_moe_num_ubatches": "2",
             "async_moe_split": "Request",
+            "hccl_buffer_size": "4096",
         },
     )
 
     assert extra_info.async_moe_ubatching is True
     assert extra_info.async_moe_num_ubatches == 2
     assert extra_info.async_moe_split == "request"
+    assert extra_info.hccl_buffer_size == 4096
+    assert extra_info.to_mapping()["hccl_buffer_size"] == 4096
+
+
+def test_create_hccl_process_group_options_sets_per_group_buffer(monkeypatch):
+    class FakeOptions:
+        hccl_config = None
+
+    fake_torch_npu = ModuleType("torch_npu")
+    fake_torch_npu._C = SimpleNamespace(
+        _distributed_c10d=SimpleNamespace(
+            ProcessGroupHCCL=SimpleNamespace(Options=FakeOptions),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch_npu", fake_torch_npu)
+
+    assert create_hccl_process_group_options(None) is None
+    options = create_hccl_process_group_options(4096)
+    other_options = create_hccl_process_group_options(4096)
+
+    assert options.hccl_config == {"hccl_buffer_size": 4096}
+    assert options is not other_options
 
 
 def test_async_connector_factory_creates_import_safe_connector():
@@ -253,6 +281,7 @@ def test_async_topology_uses_cam_attention_first_rank_layout():
 
 def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
     calls = []
+    pg_options = object()
     fake_torch = _FakeTorch()
     monkeypatch.setattr(async_cam_module, "torch", fake_torch)
     monkeypatch.setattr(
@@ -276,10 +305,15 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
         "init_afd_process_group",
         fake_init_afd_process_group,
     )
+    monkeypatch.setattr(
+        async_cam_module,
+        "create_hccl_process_group_options",
+        lambda hccl_buffer_size: pg_options if hccl_buffer_size == 6144 else None,
+    )
     connector = CAMAsyncAFDConnector(
         0,
         0,
-        _vllm_config(),
+        _vllm_config(extra_config={"hccl_buffer_size": 6144}),
         _afd_config(role="ffn", rank=1),
     )
 
@@ -293,6 +327,7 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
             "rank": 5,
             "group_name": AFD_ASYNC_CAM_GROUP_NAME,
             "timeout": calls[0]["timeout"],
+            "pg_options": pg_options,
         },
     ]
     assert connector.cam_pg is not None
