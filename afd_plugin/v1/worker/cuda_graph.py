@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from afd_plugin.v1.worker.ffn_metadata import aggregate_ffn_token_counts
+
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
 
@@ -123,7 +125,7 @@ def make_ffn_graph_key(
         else:
             values_tuple = _metadata_values_tuple(values)
             if _use_ffn_aggregated_key(attention_size, ffn_size):
-                values_tuple = _aggregate_ffn_values_tuple(
+                values_tuple = aggregate_ffn_token_counts(
                     values_tuple,
                     attention_size=int(attention_size),
                     ffn_size=int(ffn_size),
@@ -170,31 +172,6 @@ def _use_ffn_aggregated_key(
         and ffn_size is not None
         and int(attention_size) >= int(ffn_size)
         and int(attention_size) % int(ffn_size) == 0
-    )
-
-
-def _aggregate_ffn_values_tuple(
-    values: tuple[int, ...],
-    *,
-    attention_size: int,
-    ffn_size: int,
-    fallback: int,
-) -> tuple[int, ...]:
-    # Expand DP-level values to AFD-level when TP > 1.
-    # With TP > 1, attention_size = num_attention_ranks includes TP workers
-    # but values only has dp_size entries (from num_tokens_across_dp_cpu).
-    # Each DP rank's count is replicated tp_size times because all TP workers
-    # within the same DP rank process the same tokens.
-    expanded = values
-    if len(values) < attention_size and attention_size % len(values) == 0:
-        tp_size = attention_size // len(values)
-        expanded = tuple(values[i // tp_size] for i in range(attention_size))
-    if len(expanded) < attention_size:
-        return tuple(max(1, int(fallback)) for _ in range(ffn_size))
-    group_size = attention_size // ffn_size
-    return tuple(
-        max(1, sum(expanded[idx * group_size : (idx + 1) * group_size]))
-        for idx in range(ffn_size)
     )
 
 

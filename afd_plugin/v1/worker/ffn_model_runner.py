@@ -39,6 +39,10 @@ from afd_plugin.v1.worker.cuda_graph import (
     make_ffn_graph_key,
     validate_cuda_graph_mode,
 )
+from afd_plugin.v1.worker.ffn_metadata import (
+    aggregate_ffn_token_counts,
+    project_ffn_token_counts_to_dp,
+)
 
 if TYPE_CHECKING:
     from vllm.sequence import IntermediateTensors
@@ -139,7 +143,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         step_afd_gpu_profiler(self.prof)
         if dp_metadata_list is None:
             raise RuntimeError("GPUFFNModelRunner requires dp_metadata_list")
-        graph_key = make_ffn_graph_key(dp_metadata_list)
+        graph_key = self._make_graph_key(dp_metadata_list)
         cuda_graph_info = self._cuda_graphs.get(graph_key)
         run_mode = graph_run_mode(
             is_warmup=is_warmup,
@@ -186,6 +190,10 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             else tuple(range(num_layers))
         )
         stage_ids = sorted(int(stage_idx) for stage_idx in dp_metadata_list) or [0]
+        ffn_dp_metadata_list = {
+            stage_idx: self._make_ffn_dp_metadata(dp_metadata_list[stage_idx])
+            for stage_idx in stage_ids
+        }
         with _ffn_forward_context(self.vllm_config) as forward_context:
             for layer_idx in layer_indices:
                 uses_remote_experts = layer_idx in experts_layer_indices
@@ -205,9 +213,9 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                     metadata.layer_idx = layer_idx
                     metadata.stage_idx = stage_idx
                     if forward_context is not None:
-                        forward_context.dp_metadata = dp_metadata_list.get(
-                            metadata.stage_idx,
-                        )  # type: ignore
+                        forward_context.dp_metadata = ffn_dp_metadata_list[
+                            metadata.stage_idx
+                        ]
                         forward_context.additional_kwargs["afd_metadata"] = metadata
                         _set_moe_layer_index(forward_context, layer_idx)
                     if (
@@ -236,6 +244,34 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
     ) -> torch.Tensor:
         return self.model.compute_ffn_output(hidden_states, layer_idx)
 
+    def _make_graph_key(
+        self,
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
+    ) -> tuple:
+        return make_ffn_graph_key(
+            dp_metadata_list,
+            attention_size=int(self.connector.attn_size),
+            ffn_size=int(self.connector.ffn_size),
+        )
+
+    def _make_ffn_dp_metadata(
+        self,
+        dp_metadata: DPMetadata | AFDDPMetadata,
+    ) -> AFDDPMetadata:
+        attention_counts = _metadata_values_tuple(
+            dp_metadata.num_tokens_across_dp_cpu,
+        )
+        ffn_counts = aggregate_ffn_token_counts(
+            attention_counts,
+            attention_size=int(self.connector.attn_size),
+            ffn_size=int(self.connector.ffn_size),
+        )
+        dp_counts = project_ffn_token_counts_to_dp(
+            ffn_counts,
+            dp_size=int(self.vllm_config.parallel_config.data_parallel_size),
+        )
+        return AFDDPMetadata(num_tokens_across_dp_cpu=dp_counts)
+
     def update_config(self, overrides: dict[str, Any]) -> None:
         for config_name, config_overrides in overrides.items():
             config = getattr(self, config_name)
@@ -260,7 +296,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         if mode_name == "FULL":
             if self._graph_memory_pool is None:
                 self._graph_memory_pool = torch.cuda.graph_pool_handle()
-            graph_key = make_ffn_graph_key(dp_metadata_list)
+            graph_key = self._make_graph_key(dp_metadata_list)
             cudagraph = torch.cuda.CUDAGraph()
             # DP metadata receive/update is a control-plane side effect and must
             # complete before CUDA graph capture starts.
@@ -403,6 +439,14 @@ def _set_moe_layer_index(forward_context: object, layer_idx: int) -> None:
         if target in f".{layer_name}.":
             forward_context.moe_layer_index = idx
             return
+
+
+def _metadata_values_tuple(
+    values: torch.Tensor | list[int] | tuple[int, ...],
+) -> tuple[int, ...]:
+    if isinstance(values, torch.Tensor):
+        values = values.tolist()
+    return tuple(int(value) for value in values)
 
 
 def _make_dp_metadata_payload(
