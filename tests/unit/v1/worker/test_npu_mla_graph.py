@@ -265,6 +265,7 @@ def _parent_forward_context():
         mmrs_fusion=False,
         flash_comm_v1_enabled=False,
         flashcomm_v2_enabled=False,
+        is_padding=None,
         is_first_layer=True,
         layer_idx=0,
         prefetch_mlp_gate_up_proj=False,
@@ -274,6 +275,9 @@ def _parent_forward_context():
         is_draft_model_prefill=False,
         draft_attn_metadatas=None,
         max_tokens_across_pcp=None,
+        sinks=None,
+        input_ids=None,
+        eplb_heat_collection_status=None,
         mc2_mask=None,
     )
 
