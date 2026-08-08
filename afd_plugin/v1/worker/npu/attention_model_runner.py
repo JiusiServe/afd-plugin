@@ -1390,11 +1390,34 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
     ) -> None:
         if self._afd_async_moe_ubatch_metadata is None:
             return
+        metadata = self._afd_async_moe_ubatch_metadata
+        runtime_sequence_parallel = bool(forward_context.flash_comm_v1_enabled)
+        if runtime_sequence_parallel and not metadata.use_sequence_parallel:
+            raise RuntimeError(
+                "Async CAM runtime enabled FlashComm1 for a stage plan that "
+                "was not TP-aligned",
+            )
+        if not runtime_sequence_parallel and metadata.use_sequence_parallel:
+            # vLLM-Ascend decides whether FlashComm1 is active for each model
+            # forward. When it disables FlashComm1, Attention keeps a
+            # replicated token dimension and stage-local TP padding must not
+            # leak into the non-SP model inputs or attention metadata.
+            metadata = AsyncMoeUbatchMetadata(
+                attn_metadata=metadata.attn_metadata,
+                stages=tuple(
+                    AsyncMoeStage(
+                        request_slice=stage.request_slice,
+                        token_slice=stage.token_slice,
+                        input_tokens=stage.actual_tokens,
+                    )
+                    for stage in metadata.stages
+                ),
+                parent_input_tokens=metadata.parent_input_tokens,
+                use_sequence_parallel=False,
+            )
         if forward_context.additional_kwargs is None:
             forward_context.additional_kwargs = {}
-        forward_context.additional_kwargs[ASYNC_MOE_UBATCH_METADATA_KEY] = (
-            self._afd_async_moe_ubatch_metadata
-        )
+        forward_context.additional_kwargs[ASYNC_MOE_UBATCH_METADATA_KEY] = metadata
 
     def _send_dp_metadata(
         self,

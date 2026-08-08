@@ -570,6 +570,30 @@ def _log_cam_layout(
     )
 
 
+def log_async_moe_stage_attention(
+    stage_idx: int,
+    stage: AsyncMoeStage,
+    local_tokens: int,
+    forward_context: ForwardContext,
+) -> None:
+    """Log the real, physical, and rank-local stage token extents."""
+
+    if os.environ.get(ASYNC_MOE_LAYOUT_LOG_ENV, "").lower() not in _TRUE_ENV_VALUES:
+        return
+    logger.warning(
+        "AFD Async CAM stage attention; stage=%s actual_tokens=%s "
+        "input_tokens=%s local_tokens=%s sequence_parallel=%s "
+        "context_num_tokens=%s context_pad_size=%s",
+        stage_idx,
+        stage.actual_tokens,
+        int(stage.input_tokens),
+        local_tokens,
+        bool(forward_context.flash_comm_v1_enabled),
+        int(forward_context.num_tokens),
+        int(forward_context.pad_size),
+    )
+
+
 def _trim_real_stage_outputs(
     stage_outputs: list[torch.Tensor],
     metadata: AsyncMoeUbatchMetadata,
@@ -706,6 +730,7 @@ __all__ = [
     "CAMDispatchPayload",
     "build_async_moe_stage_inputs",
     "get_async_moe_ubatch_metadata_from_forward_context",
+    "log_async_moe_stage_attention",
     "prepare_cam_dispatch_payload",
     "restore_cam_dispatch_output",
     "restore_async_moe_stage_outputs",

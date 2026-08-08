@@ -9,7 +9,10 @@ from itertools import islice
 from typing import TYPE_CHECKING
 
 import torch
-from vllm.distributed import get_pp_group
+from vllm.distributed import (
+    get_pp_group,
+    get_tensor_model_parallel_world_size,
+)
 from vllm.forward_context import (
     get_forward_context,
     override_forward_context,
@@ -27,6 +30,7 @@ from afd_plugin.model_executor.models.npu.async_cam_layout import (
     CAMDispatchLayout,
     build_async_moe_stage_inputs,
     get_async_moe_ubatch_metadata_from_forward_context,
+    log_async_moe_stage_attention,
     prepare_cam_dispatch_payload,
     restore_async_moe_stage_outputs,
     restore_cam_dispatch_output,
@@ -223,6 +227,15 @@ def run_async_moe_ubatch_afd_forward(
     """Run the two-stage async MoE ubatch pipeline used by async CAM."""
 
     forward_context = get_forward_context()
+    runtime_sequence_parallel = bool(forward_context.flash_comm_v1_enabled)
+    if runtime_sequence_parallel != async_moe_ubatch_metadata.use_sequence_parallel:
+        raise RuntimeError(
+            "Async CAM stage layout does not match the current FlashComm1 "
+            "mode: "
+            f"layout_sequence_parallel="
+            f"{async_moe_ubatch_metadata.use_sequence_parallel}, "
+            f"flash_comm_v1_enabled={runtime_sequence_parallel}",
+        )
     afd_connector = afd_metadata.connector
     model_layers = list(islice(model.layers, model.start_layer, model.end_layer))
     first_moe_offset = next(
@@ -272,6 +285,30 @@ def run_async_moe_ubatch_afd_forward(
         stage_idx: int,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         stage = async_moe_ubatch_metadata.stages[stage_idx]
+        tp_size = get_tensor_model_parallel_world_size()
+        if (
+            async_moe_ubatch_metadata.use_sequence_parallel
+            and int(stage.input_tokens) % tp_size != 0
+        ):
+            raise RuntimeError(
+                "Async CAM sequence-parallel stage is not TP divisible: "
+                f"stage={stage_idx}, input_tokens={int(stage.input_tokens)}, "
+                f"tp_size={tp_size}",
+            )
+        expected_local_tokens = int(stage.input_tokens) // tp_size
+        if not async_moe_ubatch_metadata.use_sequence_parallel:
+            expected_local_tokens = int(stage.input_tokens)
+        actual_local_tokens = int(stage_hidden_states[stage_idx].shape[0])
+        if actual_local_tokens != expected_local_tokens:
+            raise RuntimeError(
+                "Async CAM stage input does not match its physical layout: "
+                f"stage={stage_idx}, actual_tokens={stage.actual_tokens}, "
+                f"input_tokens={int(stage.input_tokens)}, "
+                f"expected_local_tokens={expected_local_tokens}, "
+                f"actual_local_tokens={actual_local_tokens}, "
+                f"sequence_parallel="
+                f"{async_moe_ubatch_metadata.use_sequence_parallel}",
+            )
         stage_forward_context = copy(forward_context)
         stage_forward_context.attn_metadata = async_moe_ubatch_metadata.attn_metadata[
             stage_idx
@@ -296,6 +333,12 @@ def run_async_moe_ubatch_afd_forward(
             stage_forward_context.num_tokens = int(stage.input_tokens)
             stage_forward_context.pad_size = 0
         expected_tokens = int(stage_hidden_states[stage_idx].shape[0])
+        log_async_moe_stage_attention(
+            stage_idx,
+            stage,
+            expected_tokens,
+            stage_forward_context,
+        )
         with override_forward_context(stage_forward_context):
             (
                 stage_hidden_states[stage_idx],

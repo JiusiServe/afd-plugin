@@ -367,6 +367,7 @@ def test_async_moe_pipeline_preserves_stage_order(monkeypatch):
         num_ubatches=1,
         num_tokens=4,
         pad_size=0,
+        flash_comm_v1_enabled=True,
     )
 
     def send_attn_output(_hidden_states, context, **_kwargs):
@@ -402,7 +403,7 @@ def test_async_moe_pipeline_preserves_stage_order(monkeypatch):
         parent_input_tokens=4,
         use_sequence_parallel=True,
     )
-    stage_hidden_states = [torch.zeros((2, 8)), torch.ones((2, 8))]
+    stage_hidden_states = [torch.zeros((1, 8)), torch.ones((2, 8))]
 
     def compute_attn_output(
         _positions,
@@ -427,6 +428,11 @@ def test_async_moe_pipeline_preserves_stage_order(monkeypatch):
         deepseek_v2_async_cam_forward,
         "get_forward_context",
         lambda: forward_context,
+    )
+    monkeypatch.setattr(
+        deepseek_v2_async_cam_forward,
+        "get_tensor_model_parallel_world_size",
+        lambda: 2,
     )
     monkeypatch.setattr(
         deepseek_v2_async_cam_forward,

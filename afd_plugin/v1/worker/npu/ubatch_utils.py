@@ -372,13 +372,15 @@ def split_async_moe_attn_metadata(
     common_attn_metadata: AscendCommonAttentionMetadata,
     max_num_tokens: int = 0,
 ) -> list[AscendCommonAttentionMetadata]:
-    """Build stage metadata while keeping native DBO slicing unchanged.
+    """Build real-token stage metadata without exposing layout padding.
 
     Async CAM may add minimum stage-local TP padding after each real-token
     range. The native Ascend helper must see only real tokens so request
     offsets, sequence lengths, positions, and KV slots are rebuilt correctly.
-    ``num_input_tokens`` is then restored to the physical stage extent used by
-    the model-side TP/SP layout.
+    The physical extent remains in ``AsyncMoeStage.input_tokens`` and the
+    stage forward context. In particular, ``num_input_tokens`` must remain the
+    real-token count: SFA/MLAPO uses it to allocate its query tensors after
+    FlashComm has removed the stage-local padding.
     """
 
     stage_metadata = []
@@ -392,7 +394,6 @@ def split_async_moe_attn_metadata(
             common_attn_metadata,
             max_num_tokens,
         )
-        metadata.num_input_tokens = stage.input_tokens
         stage_metadata.append(metadata)
     return stage_metadata
 

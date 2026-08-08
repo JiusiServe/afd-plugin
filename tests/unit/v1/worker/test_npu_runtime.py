@@ -882,15 +882,19 @@ def test_npu_async_moe_metadata_tracks_stage_padding_separately(monkeypatch):
     )
 
     first, second = stages
-    assert (first.num_actual_tokens, first.num_input_tokens) == (535, 536)
+    assert (first.num_actual_tokens, first.num_input_tokens) == (535, 535)
     assert first.query_start_loc_cpu.tolist() == [0, 1, 535]
     assert first.seq_lens.tolist() == [10, 534]
     assert first.slot_mapping[[0, -1]].tolist() == [0, 534]
     assert first.positions[[0, -1]].tolist() == [0, 534]
+    assert first.num_input_tokens == first.slot_mapping.numel()
+    assert first.num_input_tokens == first.positions.shape[0]
     assert (second.num_actual_tokens, second.num_input_tokens) == (534, 534)
     assert second.query_start_loc_cpu.tolist() == [0, 534]
     assert second.seq_lens.tolist() == [1068]
     assert second.slot_mapping[[0, -1]].tolist() == [535, 1068]
+    assert second.num_input_tokens == second.slot_mapping.numel()
+    assert second.num_input_tokens == second.positions.shape[0]
 
 
 def test_npu_attention_runner_builds_stage_metadata(monkeypatch):
@@ -991,6 +995,52 @@ def test_npu_attention_runner_builds_stage_metadata(monkeypatch):
     assert len(stage_build_calls) == 1
     assert stage_build_calls[0][1]["metadata_builder_offset"] == 1
     assert stage_build_calls[0][1]["async_moe_stages"] == metadata.stages
+
+
+def test_npu_attention_runner_uses_runtime_flashcomm_stage_layout():
+    _require_npu_runtime()
+
+    from afd_plugin.model_executor.models.npu.async_cam_layout import (
+        ASYNC_MOE_UBATCH_METADATA_KEY,
+        AsyncMoeUbatchMetadata,
+    )
+    from afd_plugin.model_executor.npu.async_cam_ubatching import AsyncMoeStage
+
+    runner = _new_attention_runner()
+    planned_metadata = AsyncMoeUbatchMetadata(
+        attn_metadata=[{"layer": "stage-0"}, {"layer": "stage-1"}],
+        stages=(
+            AsyncMoeStage(slice(0, 1), slice(0, 2), input_tokens=8),
+            AsyncMoeStage(slice(0, 1), slice(2, 8), input_tokens=8),
+        ),
+        parent_input_tokens=8,
+        use_sequence_parallel=True,
+    )
+    runner._afd_async_moe_ubatch_metadata = planned_metadata
+
+    sp_context = SimpleNamespace(
+        flash_comm_v1_enabled=True,
+        additional_kwargs={},
+    )
+    runner._install_async_moe_ubatch_metadata_on_forward_context(sp_context)
+    assert (
+        sp_context.additional_kwargs[ASYNC_MOE_UBATCH_METADATA_KEY] is planned_metadata
+    )
+
+    replicated_context = SimpleNamespace(
+        flash_comm_v1_enabled=False,
+        additional_kwargs={},
+    )
+    runner._install_async_moe_ubatch_metadata_on_forward_context(
+        replicated_context,
+    )
+    runtime_metadata = replicated_context.additional_kwargs[
+        ASYNC_MOE_UBATCH_METADATA_KEY
+    ]
+    assert runtime_metadata.use_sequence_parallel is False
+    assert tuple(stage.actual_tokens for stage in runtime_metadata.stages) == (2, 6)
+    assert tuple(stage.input_tokens for stage in runtime_metadata.stages) == (2, 6)
+    assert runtime_metadata.attn_metadata is planned_metadata.attn_metadata
 
 
 def test_npu_attention_runner_async_moe_allocates_three_metadata_builders(
