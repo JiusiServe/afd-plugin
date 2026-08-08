@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -529,6 +530,133 @@ def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():
     assert "_compute_w8a8_shared_experts_from_int8(" in compute_moe
     assert "shared_input.dtype == torch.int8" in compute_moe
     assert "fusion=False" not in compute_moe
+
+
+@pytest.mark.parametrize(
+    ("num_routed_tokens", "num_shared_tokens"),
+    [(2, 2), (2, 0), (0, 2), (0, 0)],
+)
+def test_deepseek_afd_ffn_skips_empty_rank_local_moe_work(
+    monkeypatch,
+    num_routed_tokens,
+    num_shared_tokens,
+):
+    from afd_plugin.model_executor.models.npu import deepseek_v2_attention_gate
+
+    class FakeQuantType:
+        NONE = "none"
+        W8A8 = "w8a8"
+
+    class KeywordArguments:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    routed_calls = []
+
+    def fake_unified_apply_mlp(*, mlp_compute_input):
+        routed_calls.append(mlp_compute_input.hidden_states)
+        return (
+            torch.zeros_like(
+                mlp_compute_input.hidden_states,
+                dtype=torch.bfloat16,
+            ),
+            None,
+        )
+
+    fake_moe_mlp = ModuleType("vllm_ascend.ops.fused_moe.moe_mlp")
+    fake_moe_mlp.unified_apply_mlp = fake_unified_apply_mlp
+    fake_stage_contracts = ModuleType(
+        "vllm_ascend.ops.fused_moe.moe_stage_contracts",
+    )
+    fake_stage_contracts.MoEMlpComputeInput = KeywordArguments
+    fake_stage_contracts.MoEWeights = KeywordArguments
+    fake_stage_params = ModuleType(
+        "vllm_ascend.ops.fused_moe.moe_stage_params",
+    )
+    fake_stage_params.MoEQuantParams = KeywordArguments
+    fake_quant_type = ModuleType("vllm_ascend.quantization.quant_type")
+    fake_quant_type.QuantType = FakeQuantType
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_ascend.ops.fused_moe.moe_mlp",
+        fake_moe_mlp,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_ascend.ops.fused_moe.moe_stage_contracts",
+        fake_stage_contracts,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_ascend.ops.fused_moe.moe_stage_params",
+        fake_stage_params,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_ascend.quantization.quant_type",
+        fake_quant_type,
+    )
+
+    shared_calls = []
+
+    def fake_compute_shared(
+        shared_experts,
+        hidden_states,
+        dynamic_scales,
+        *,
+        output_dtype,
+    ):
+        shared_calls.append((shared_experts, hidden_states, dynamic_scales))
+        return torch.zeros_like(hidden_states, dtype=output_dtype)
+
+    monkeypatch.setattr(
+        deepseek_v2_attention_gate,
+        "_compute_w8a8_shared_experts_from_int8",
+        fake_compute_shared,
+    )
+    monkeypatch.setattr(
+        deepseek_v2_attention_gate,
+        "_gmmswigluquant_fusion_enabled",
+        lambda: False,
+    )
+
+    shared_experts = object()
+    experts = SimpleNamespace(
+        quant_type=FakeQuantType.W8A8,
+        dynamic_eplb=False,
+        get_eplb_parameter=lambda name: name,
+        activation="silu",
+        _shared_experts=shared_experts,
+    )
+    layer = SimpleNamespace(
+        mlp=SimpleNamespace(
+            experts=experts,
+            routed_scaling_factor=1.0,
+        ),
+    )
+    hidden_states = torch.zeros((num_routed_tokens, 4), dtype=torch.int8)
+    expand_x_shared = torch.zeros((num_shared_tokens, 4), dtype=torch.int8)
+
+    output = deepseek_v2_attention_gate.compute_attention_gate_moe_ffn(
+        layer,
+        hidden_states=hidden_states,
+        group_list=torch.zeros(2, dtype=torch.int64),
+        dynamic_scales=torch.ones(num_routed_tokens),
+        expand_x_shared=expand_x_shared,
+        dynamic_scales_shared=torch.ones(num_shared_tokens),
+        topk_scales=None,
+        group_list_type=1,
+    )
+
+    assert len(routed_calls) == int(num_routed_tokens > 0)
+    assert output.routed_output.shape == hidden_states.shape
+    assert output.routed_output.dtype == torch.bfloat16
+    assert len(shared_calls) == int(num_shared_tokens > 0)
+    if num_shared_tokens > 0:
+        assert output.shared_output is not None
+        assert output.shared_output.shape == expand_x_shared.shape
+    else:
+        assert output.shared_output is None
 
 
 def test_deepseek_afd_ffn_compute_omits_stub_io_diagnostics():
