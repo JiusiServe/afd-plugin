@@ -1,0 +1,9 @@
+# L2 ready — Simple Test only. Uploaded by cuda/bootstrap-upload-steps.yml.
+steps:
+  - group: ":card_index_dividers: Simple Test"
+    depends_on: upload-ready-pipeline
+    steps:
+      - label: "Simple · Unit Test"
+        commands:
+          - 'timeout 20m pytest -sv tests/unit -m "not gpu and not vllm_runtime"'
+        mirror_hardwares: l4_1

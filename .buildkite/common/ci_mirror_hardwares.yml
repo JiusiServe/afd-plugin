@@ -1,0 +1,22 @@
+# Uploader-only hardware presets for CUDA test YAML.
+# Referenced as ``mirror_hardwares: l4_1`` on a step; ``upload_pipeline.py`` expands to
+# ``agents`` + ``plugins``, then strips ``mirror_hardwares`` before Buildkite upload.
+#
+# CUDA naming: {chip}_{count}
+#   l4_1
+
+mirror_hardwares:
+  l4_1:
+    agents:
+      queue: gpu_1_queue
+    plugins:
+      - docker#v5.2.0:
+          image: public.ecr.aws/q9t5s3a7/afd-plugin-ci-test-repo:$BUILDKITE_COMMIT
+          always-pull: true
+          propagate-environment: true
+          shm-size: "8gb"
+          environment:
+            - HF_HOME=/fsx/hf_cache
+            - HF_TOKEN
+          volumes:
+            - /fsx/hf_cache:/fsx/hf_cache
