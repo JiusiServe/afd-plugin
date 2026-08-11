@@ -79,7 +79,7 @@ def _validate_supported_config(
 ) -> None:
     """Reject Qwen3 MoE modes not covered by the initial CUDA contract."""
     parallel_config = vllm_config.parallel_config
-    if current_platform.device_type != "cuda":
+    if not current_platform.is_cuda():
         raise RuntimeError("AFD Qwen3 MoE currently supports CUDA only")
     if afd_config.compute_gate_on_attention:
         raise RuntimeError(
@@ -182,7 +182,6 @@ class AFDQwen3MoeDecoderLayer(native.Qwen3MoeDecoderLayer):
         return self.mlp(hidden_states)
 
 
-@native.support_torch_compile
 class AFDQwen3MoeModel(native.Qwen3MoeModel):
     """Native Qwen3 MoE model using role-aware decoder layers."""
 

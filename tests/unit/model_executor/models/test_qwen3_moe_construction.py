@@ -12,6 +12,7 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("vllm")
 nn = torch.nn
 
+from vllm.compilation.wrapper import TorchCompileWithNoGuardsWrapper  # noqa: E402
 from vllm.config import CompilationMode  # noqa: E402
 
 from afd_plugin.config import AFDConfig  # noqa: E402
@@ -104,6 +105,10 @@ def _model_config(
         quant_config=None,
         speculative_config=None,
     )
+
+
+def _platform(*, is_cuda: bool, device_type: str = "cuda") -> SimpleNamespace:
+    return SimpleNamespace(device_type=device_type, is_cuda=lambda: is_cuda)
 
 
 def _make_layer(
@@ -206,7 +211,7 @@ def test_model_injects_role_aware_decoder_through_native_hook(
     monkeypatch.setattr(
         adapter,
         "current_platform",
-        SimpleNamespace(device_type="cuda"),
+        _platform(is_cuda=True),
     )
     monkeypatch.setattr(
         adapter,
@@ -223,6 +228,11 @@ def test_model_injects_role_aware_decoder_through_native_hook(
 
     assert captured["decoder_layer_type"] is adapter.AFDQwen3MoeDecoderLayer
     assert model.afd_role == "attention"
+
+
+def test_model_inherits_native_compile_support_once() -> None:
+    assert TorchCompileWithNoGuardsWrapper in adapter.native.Qwen3MoeModel.__bases__
+    assert adapter.AFDQwen3MoeModel.__bases__ == (adapter.native.Qwen3MoeModel,)
 
 
 def test_attention_causal_lm_reports_no_local_moe_modules(
@@ -277,8 +287,10 @@ def test_adapter_signatures_match_native_contract() -> None:
     assert inspect.signature(adapter.AFDQwen3MoeDecoderLayer.__init__) == (
         inspect.signature(adapter.native.Qwen3MoeDecoderLayer.__init__)
     )
-    assert inspect.signature(adapter.AFDQwen3MoeModel.__init__) == inspect.signature(
-        adapter.native.Qwen3MoeModel.__init__
+    assert tuple(inspect.signature(adapter.AFDQwen3MoeModel.__init__).parameters) == (
+        "self",
+        "vllm_config",
+        "prefix",
     )
     assert inspect.signature(adapter.AFDQwen3MoeForCausalLM.__init__) == (
         inspect.signature(adapter.native.Qwen3MoeForCausalLM.__init__)
@@ -289,24 +301,24 @@ def test_adapter_signatures_match_native_contract() -> None:
 
 
 @pytest.mark.parametrize(
-    ("device_type", "afd_config", "parallel_overrides", "message"),
+    ("is_cuda", "afd_config", "parallel_overrides", "message"),
     [
-        ("cpu", AFDConfig(), {}, "CUDA only"),
+        (False, AFDConfig(), {}, "CUDA only"),
         (
-            "cuda",
+            True,
             AFDConfig(compute_gate_on_attention=True),
             {},
             "compute_gate_on_attention=false",
         ),
         (
-            "cuda",
+            True,
             AFDConfig(),
             {"use_sequence_parallel_moe": True},
             "sequence-parallel MoE",
         ),
-        ("cuda", AFDConfig(), {"enable_eplb": True}, "EPLB"),
+        (True, AFDConfig(), {"enable_eplb": True}, "EPLB"),
         (
-            "cuda",
+            True,
             AFDConfig(),
             {"pipeline_parallel_size": 2},
             "pipeline parallelism",
@@ -315,7 +327,7 @@ def test_adapter_signatures_match_native_contract() -> None:
 )
 def test_unsupported_modes_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
-    device_type: str,
+    is_cuda: bool,
     afd_config: AFDConfig,
     parallel_overrides: dict[str, int | bool],
     message: str,
@@ -326,11 +338,22 @@ def test_unsupported_modes_fail_closed(
     monkeypatch.setattr(
         adapter,
         "current_platform",
-        SimpleNamespace(device_type=device_type),
+        _platform(is_cuda=is_cuda),
     )
 
     with pytest.raises(RuntimeError, match=message):
         adapter._validate_supported_config(vllm_config, afd_config)
+
+
+def test_rocm_platform_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        adapter,
+        "current_platform",
+        _platform(is_cuda=False, device_type="cuda"),
+    )
+
+    with pytest.raises(RuntimeError, match="CUDA only"):
+        adapter._validate_supported_config(_model_config(), AFDConfig())
 
 
 @pytest.mark.parametrize(
@@ -350,7 +373,7 @@ def test_unsupported_model_features_fail_closed(
     monkeypatch.setattr(
         adapter,
         "current_platform",
-        SimpleNamespace(device_type="cuda"),
+        _platform(is_cuda=True),
     )
 
     with pytest.raises(RuntimeError, match=message):
