@@ -1,4 +1,5 @@
 # L2 ready — Simple Test only. Uploaded by cuda/bootstrap-upload-steps.yml.
+# debug for test
 steps:
   - group: ":card_index_dividers: Simple Test"
     depends_on: upload-ready-pipeline
