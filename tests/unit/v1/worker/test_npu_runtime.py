@@ -900,6 +900,7 @@ def test_npu_async_moe_metadata_tracks_stage_padding_separately(monkeypatch):
 def test_npu_attention_runner_builds_stage_metadata(monkeypatch):
     _require_npu_runtime()
     import numpy as np
+    import torch
     from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
 
     from afd_plugin.connectors.npu.async_cam import AFDAsyncExtraInfo
@@ -932,7 +933,8 @@ def test_npu_attention_runner_builds_stage_metadata(monkeypatch):
         async_moe_split="token",
     )
 
-    full_metadata = SimpleNamespace(name="full")
+    full_attn_metadata = {"layer": SimpleNamespace(name="full")}
+    full_metadata = (full_attn_metadata, None)
     stage_attn_metadata = [{"layer": "stage-0"}, {"layer": "stage-1"}]
     monkeypatch.setattr(
         NPUModelRunner,
@@ -950,6 +952,14 @@ def test_npu_attention_runner_builds_stage_metadata(monkeypatch):
         "_build_attention_metadata_with_ubatches",
         build_stage_metadata,
     )
+    materialized_full_metadata = []
+    monkeypatch.setattr(
+        attention_model_runner,
+        "materialize_deepseek_attention_metadata_by_layer",
+        lambda metadata, positions: materialized_full_metadata.append(
+            (metadata, positions),
+        ),
+    )
     monkeypatch.setattr(
         attention_model_runner,
         "enable_sp",
@@ -960,6 +970,7 @@ def test_npu_attention_runner_builds_stage_metadata(monkeypatch):
         "get_tensor_model_parallel_world_size",
         lambda: 2,
     )
+    runner.positions = torch.arange(1100)
 
     result = runner._build_attention_metadata_with_async_moe_ubatches(
         num_tokens=1099,
@@ -995,6 +1006,133 @@ def test_npu_attention_runner_builds_stage_metadata(monkeypatch):
     assert len(stage_build_calls) == 1
     assert stage_build_calls[0][1]["metadata_builder_offset"] == 1
     assert stage_build_calls[0][1]["async_moe_stages"] == metadata.stages
+    assert materialized_full_metadata == [(full_attn_metadata, runner.positions)]
+
+
+def test_npu_async_moe_materializes_deepseek_rope_metadata(monkeypatch):
+    _require_npu_runtime()
+    torch = pytest.importorskip("torch")
+    from vllm_ascend.attention.dsa_v1 import AscendDSAMetadata
+    from vllm_ascend.attention.mla_v1 import AscendMLAMetadata
+    from vllm_ascend.attention.sfa_v1 import AscendSFAMetadata
+
+    from afd_plugin.model_executor.models.npu import deepseek_attention_metadata
+
+    sfa_cos_source = torch.arange(8, dtype=torch.float32)
+    sfa_sin_source = sfa_cos_source + 10
+    sfa_metadata = object.__new__(AscendSFAMetadata)
+    sfa_metadata.cos = sfa_cos_source[:4]
+    sfa_metadata.sin = sfa_sin_source[:4]
+    deepseek_attention_metadata.materialize_deepseek_attention_metadata(
+        sfa_metadata,
+        torch.arange(4),
+    )
+
+    mla_cos_source = torch.arange(8, dtype=torch.float32)
+    mla_sin_source = mla_cos_source + 20
+    mla_metadata = object.__new__(AscendMLAMetadata)
+    mla_metadata.prefill = SimpleNamespace(
+        cos=mla_cos_source[:5],
+        sin=mla_sin_source[:5],
+    )
+    mla_metadata.decode = SimpleNamespace(
+        cos=mla_cos_source[5:],
+        sin=mla_sin_source[5:],
+    )
+    deepseek_attention_metadata.materialize_deepseek_attention_metadata(
+        mla_metadata,
+        torch.arange(8),
+    )
+
+    sfa_cos_source.fill_(-1)
+    sfa_sin_source.fill_(-1)
+    mla_cos_source.fill_(-1)
+    mla_sin_source.fill_(-1)
+    assert sfa_metadata.cos.tolist() == [0, 1, 2, 3]
+    assert sfa_metadata.sin.tolist() == [10, 11, 12, 13]
+    assert mla_metadata.prefill.cos.tolist() == [0, 1, 2, 3, 4]
+    assert mla_metadata.prefill.sin.tolist() == [20, 21, 22, 23, 24]
+    assert mla_metadata.decode.cos.tolist() == [5, 6, 7]
+    assert mla_metadata.decode.sin.tolist() == [25, 26, 27]
+
+    dsa_calls = []
+
+    def get_dsa_rope(positions, use_cache=False):
+        positions = positions.clone()
+        dsa_calls.append((positions, use_cache))
+        return positions + 100, positions + 200
+
+    monkeypatch.setattr(
+        deepseek_attention_metadata,
+        "get_cos_and_sin_dsa",
+        get_dsa_rope,
+    )
+    dsa_metadata = object.__new__(AscendDSAMetadata)
+    dsa_metadata.num_input_tokens = 4
+    dsa_metadata.cos = object()
+    dsa_metadata.sin = object()
+    dsa_metadata.prefill = SimpleNamespace(
+        input_positions=torch.tensor([2, 3]),
+        cos=object(),
+        sin=object(),
+    )
+    dsa_metadata.decode = SimpleNamespace(
+        input_positions=torch.tensor([7]),
+        cos=object(),
+        sin=object(),
+    )
+    deepseek_attention_metadata.materialize_deepseek_attention_metadata(
+        dsa_metadata,
+        torch.arange(6),
+    )
+
+    assert [(positions.tolist(), use_cache) for positions, use_cache in dsa_calls] == [
+        ([0, 1, 2, 3], False),
+        ([2, 3], False),
+        ([7], False),
+    ]
+    assert dsa_metadata.cos.tolist() == [100, 101, 102, 103]
+    assert dsa_metadata.prefill.sin.tolist() == [202, 203]
+    assert dsa_metadata.decode.cos.tolist() == [107]
+
+
+def test_npu_async_moe_isolates_mutable_deepseek_builder_inputs():
+    _require_npu_runtime()
+    torch = pytest.importorskip("torch")
+    from vllm_ascend.attention.dsa_v1 import AscendDSAMetadataBuilder
+    from vllm_ascend.attention.sfa_v1 import AscendSFAMetadataBuilder
+
+    from afd_plugin.model_executor.models.npu.deepseek_attention_metadata import (
+        isolate_deepseek_attention_builder_inputs,
+    )
+
+    group_len = torch.tensor([1, 2], dtype=torch.int32)
+    group_key_idx = torch.tensor([3, 4], dtype=torch.int32)
+    group_key_cache_idx = torch.tensor([5, 6], dtype=torch.int32)
+    sfa_common_metadata = SimpleNamespace(
+        group_len=group_len,
+        group_key_idx=group_key_idx,
+        group_key_cache_idx=group_key_cache_idx,
+    )
+    isolate_deepseek_attention_builder_inputs(
+        object.__new__(AscendSFAMetadataBuilder),
+        sfa_common_metadata,
+    )
+    sfa_common_metadata.group_len.fill_(9)
+    sfa_common_metadata.group_key_idx.fill_(9)
+    sfa_common_metadata.group_key_cache_idx.fill_(9)
+    assert group_len.tolist() == [1, 2]
+    assert group_key_idx.tolist() == [3, 4]
+    assert group_key_cache_idx.tolist() == [5, 6]
+
+    block_table = torch.arange(6, dtype=torch.int32).reshape(2, 3)
+    dsa_common_metadata = SimpleNamespace(block_table_tensor=block_table)
+    isolate_deepseek_attention_builder_inputs(
+        object.__new__(AscendDSAMetadataBuilder),
+        dsa_common_metadata,
+    )
+    dsa_common_metadata.block_table_tensor.fill_(0)
+    assert block_table.tolist() == [[0, 1, 2], [3, 4, 5]]
 
 
 def test_npu_attention_runner_isolates_dsa_caches_per_stage(monkeypatch):
@@ -1004,6 +1142,8 @@ def test_npu_attention_runner_isolates_dsa_caches_per_stage(monkeypatch):
     from afd_plugin.v1.worker.npu import attention_model_runner
 
     cache_observations = []
+    isolated_builder_inputs = []
+    materialized_stage_metadata = []
 
     class FakeDSABuilder:
         def __init__(self, group_id, stage_id):
@@ -1065,6 +1205,20 @@ def test_npu_attention_runner_isolates_dsa_caches_per_stage(monkeypatch):
                 seq_lens=(105,),
             ),
         ],
+    )
+    monkeypatch.setattr(
+        attention_model_runner,
+        "isolate_deepseek_attention_builder_inputs",
+        lambda builder, metadata: isolated_builder_inputs.append(
+            (builder, metadata),
+        ),
+    )
+    monkeypatch.setattr(
+        attention_model_runner,
+        "materialize_deepseek_attention_metadata",
+        lambda metadata, positions: materialized_stage_metadata.append(
+            (metadata, positions),
+        ),
     )
 
     def make_attn_group(group_id):
@@ -1156,6 +1310,8 @@ def test_npu_attention_runner_isolates_dsa_caches_per_stage(monkeypatch):
     assert len(stage_0_cache_ids) == 1
     assert len(stage_1_cache_ids) == 1
     assert stage_0_cache_ids.isdisjoint(stage_1_cache_ids)
+    assert len(isolated_builder_inputs) == 4
+    assert len(materialized_stage_metadata) == 4
 
 
 def test_npu_attention_runner_uses_runtime_flashcomm_stage_layout():

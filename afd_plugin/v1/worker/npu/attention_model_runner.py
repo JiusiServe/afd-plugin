@@ -89,6 +89,11 @@ from afd_plugin.model_executor.models.npu.async_cam_layout import (
     ASYNC_MOE_UBATCH_METADATA_KEY,
     AsyncMoeUbatchMetadata,
 )
+from afd_plugin.model_executor.models.npu.deepseek_attention_metadata import (
+    isolate_deepseek_attention_builder_inputs,
+    materialize_deepseek_attention_metadata,
+    materialize_deepseek_attention_metadata_by_layer,
+)
 from afd_plugin.model_executor.npu.async_cam_ubatching import (
     AsyncMoeStage,
     plan_async_moe_stages,
@@ -369,6 +374,16 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         )
         if stages is None:
             return full_metadata
+        full_attn_metadata = full_metadata[0]
+        if not isinstance(full_attn_metadata, dict):
+            raise RuntimeError(
+                "Async CAM stage planning requires unsplit full-batch "
+                "attention metadata; received native ubatch metadata instead",
+            )
+        materialize_deepseek_attention_metadata_by_layer(
+            full_attn_metadata,
+            self.positions,
+        )
         stage_slices = [
             UBatchSlice(stage.request_slice, stage.token_slice) for stage in stages
         ]
@@ -417,12 +432,15 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
     # NPUModelRunner._build_attention_metadata.
     # Patch reason: upstream builds one metadata object even when AFD schedules
     # NPU execution stages, while CAMAsync also distinguishes real tokens from
-    # stage-local physical padding.
+    # stage-local physical padding and keeps several metadata objects live at
+    # once. Some DeepSeek Ascend builders mutate common inputs or return
+    # reusable runtime buffers, so each live stage needs explicit ownership.
     # Patch functionality: copy the pinned upstream builders, reserve isolated
-    # builder indices and DSA metadata caches for CAMAsync, pass each stage's
-    # actual request count, and select the CAMAsync padding-aware split only
-    # when ``async_moe_stages`` is supplied. Native DBO keeps the original
-    # builder indices, shared caches, request count, and metadata splitter.
+    # builder indices and DSA metadata caches for CAMAsync, isolate mutable
+    # DeepSeek builder inputs and outputs, pass each stage's actual request
+    # count, and select the CAMAsync padding-aware split only when
+    # ``async_moe_stages`` is supplied. Native DBO keeps the original builder
+    # indices, shared caches, request count, and metadata splitter.
     # Signature: adds plugin-owned ``metadata_builder_offset`` and
     # ``async_moe_stages`` parameters to the copied upstream signature.
     def _build_attention_metadata_with_ubatches(
@@ -637,6 +655,13 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                     common_attn_metadata,
                 )
             else:
+                # ### PATCH START: Isolate Async CAM builder inputs
+                if async_moe_stages is not None:
+                    isolate_deepseek_attention_builder_inputs(
+                        builder,
+                        common_attn_metadata,
+                    )
+                # ### PATCH END: Isolate Async CAM builder inputs
                 attn_metadata_i = builder.build(
                     common_prefix_len=cascade_attn_prefix_len,
                     common_attn_metadata=common_attn_metadata,
@@ -653,6 +678,13 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                     attn_metadata_i.spec_state_indices_tensor[
                         attn_metadata_i.num_spec_decodes :
                     ].fill_(0)
+            # ### PATCH START: Materialize Async CAM backend metadata
+            if async_moe_stages is not None:
+                materialize_deepseek_attention_metadata(
+                    attn_metadata_i,
+                    common_attn_metadata.positions,
+                )
+            # ### PATCH END: Materialize Async CAM backend metadata
             if isinstance(builder, AscendDSAMetadataBuilder):
                 prefill_ratio_to_sas_metadata = builder.prefill_ratio_to_sas_metadata
                 decode_ratio_to_sas_metadata = builder.decode_ratio_to_sas_metadata

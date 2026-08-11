@@ -20,19 +20,20 @@ contains the historical multi-node launch commands and measurements.
 
 ## When to use this connector
 
-The retained implementation describes an asynchronous Ascend NPU prefill path
+The retained implementation describes an asynchronous Ascend NPU inference path
 with the following constraints. These are code-level constraints, not a v0.26
 hardware support claim:
 
 - CAM operator packages are installed on every node;
 - Attention performs MoE gating before dispatch to FFN ranks;
 - execution is eager and AFD async-DP is enabled; **`async=true` is required**;
-- the service is the prefill stage of a prefill/decode-disaggregated deployment;
+- regular prefill and autoregressive decode steps use the same CAM path;
 - optional MoE ubatching is managed by AFD as two stages: request boundaries
   or token-balanced DP+TP/SP stages.
 
-CAM async currently does not support decode, ACL graph execution, or vLLM
-native DBO.
+CAM async currently does not support ACL graph execution or vLLM native DBO.
+When a decode batch cannot form two non-empty AFD stages, it runs through the
+normal unsplit attention path.
 
 ## CAM async data flow
 
@@ -308,7 +309,8 @@ available: `async_dispatch_send`, `async_dispatch_recv`,
 ## Current limitations
 
 - Eager execution only; ACL graph mode is unsupported.
-- Prefill stage only in a prefill/decode-disaggregated deployment.
+- Regular prefill and autoregressive decode steps are supported; context
+  parallel execution remains outside the supported Async CAM topology.
 - vLLM native DBO/ubatching is unsupported.
 - AFD-managed MoE ubatching supports exactly two request-boundary or
   token-balanced DP+TP/SP stages.

@@ -2,11 +2,11 @@
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """Ascend CAM asynchronous connector for Attention/FFN disaggregation.
 
-``CAMAsyncAFDConnector`` is the eager-only Ascend prefill data path. Attention
-ranks run MoE routing, submit activations with CAM async dispatch-send, and
-receive combined expert output with combine-recv. FFN ranks receive routed and
-shared-expert activations with dispatch-recv, execute their local experts, and
-return the results with combine-send.
+``CAMAsyncAFDConnector`` is the eager-only Ascend inference data path.
+Attention ranks run MoE routing, submit activations with CAM async
+dispatch-send, and receive combined expert output with combine-recv. FFN ranks
+receive routed and shared-expert activations with dispatch-recv, execute their
+local experts, and return the results with combine-send.
 
 The connector creates one HCCL world ordered as
 ``[A0, A1, ..., F0, F1, ...]``. Attention world ranks therefore equal their
@@ -16,8 +16,9 @@ the CAM operator payload and does not create a separate Gloo DP-metadata
 control plane.
 
 The supported deployment requires ``async=true``, eager execution, Ascend CAM
-operator packages, and matching topology/configuration on every rank. vLLM
-native DBO, ACL graph execution, and decode are not supported.
+operator packages, and matching topology/configuration on every rank. Regular
+prefill and autoregressive decode steps use the same connector; vLLM native DBO
+and ACL graph execution are not supported.
 Optional AFD-managed MoE ubatching is a separate two-stage pipeline using
 request boundaries or token-balanced stages for DP+TP/SP. See
 ``docs/npu/CAM_ASYNC_CONNECTOR_USER_GUIDE.md`` for configuration, rank
