@@ -143,7 +143,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         step_afd_gpu_profiler(self.prof)
         if dp_metadata_list is None:
             raise RuntimeError("GPUFFNModelRunner requires dp_metadata_list")
-        graph_key = self._make_graph_key(dp_metadata_list)
+        graph_key = make_ffn_graph_key(dp_metadata_list)
         cuda_graph_info = self._cuda_graphs.get(graph_key)
         run_mode = graph_run_mode(
             is_warmup=is_warmup,
@@ -244,18 +244,12 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
     ) -> torch.Tensor:
         return self.model.compute_ffn_output(hidden_states, layer_idx)
 
-    def _make_graph_key(
-        self,
-        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
-    ) -> tuple:
-        return make_ffn_graph_key(dp_metadata_list)
-
     def _make_ffn_dp_metadata(
         self,
         dp_metadata: DPMetadata | AFDDPMetadata,
     ) -> AFDDPMetadata:
-        attention_counts = _metadata_values_tuple(
-            dp_metadata.num_tokens_across_dp_cpu,
+        attention_counts = tuple(
+            int(count) for count in dp_metadata.num_tokens_across_dp_cpu
         )
         ffn_counts = aggregate_ffn_token_counts(
             attention_counts,
@@ -292,7 +286,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         if mode_name == "FULL":
             if self._graph_memory_pool is None:
                 self._graph_memory_pool = torch.cuda.graph_pool_handle()
-            graph_key = self._make_graph_key(dp_metadata_list)
+            graph_key = make_ffn_graph_key(dp_metadata_list)
             cudagraph = torch.cuda.CUDAGraph()
             # DP metadata receive/update is a control-plane side effect and must
             # complete before CUDA graph capture starts.
@@ -435,14 +429,6 @@ def _set_moe_layer_index(forward_context: object, layer_idx: int) -> None:
         if target in f".{layer_name}.":
             forward_context.moe_layer_index = idx
             return
-
-
-def _metadata_values_tuple(
-    values: torch.Tensor | list[int] | tuple[int, ...],
-) -> tuple[int, ...]:
-    if isinstance(values, torch.Tensor):
-        values = values.tolist()
-    return tuple(int(value) for value in values)
 
 
 def _make_dp_metadata_payload(
