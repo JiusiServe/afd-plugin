@@ -24,6 +24,16 @@ from afd_plugin.model_executor.npu.async_cam_ubatching import (
             id="single-request-with-padding",
         ),
         pytest.param(
+            [105],
+            True,
+            8,
+            (
+                (slice(0, 1), slice(0, 53), 56),
+                (slice(0, 1), slice(53, 105), 56),
+            ),
+            id="odd-single-request-tp8",
+        ),
+        pytest.param(
             [1, 1, 100, 2],
             False,
             2,

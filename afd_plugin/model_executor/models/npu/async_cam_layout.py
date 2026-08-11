@@ -582,10 +582,12 @@ def log_async_moe_stage_attention(
         return
     logger.warning(
         "AFD Async CAM stage attention; stage=%s actual_tokens=%s "
-        "input_tokens=%s local_tokens=%s sequence_parallel=%s "
+        "token_slice=(%s,%s) input_tokens=%s local_tokens=%s sequence_parallel=%s "
         "context_num_tokens=%s context_pad_size=%s",
         stage_idx,
         stage.actual_tokens,
+        stage.token_slice.start,
+        stage.token_slice.stop,
         int(stage.input_tokens),
         local_tokens,
         bool(forward_context.flash_comm_v1_enabled),

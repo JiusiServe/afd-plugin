@@ -997,6 +997,167 @@ def test_npu_attention_runner_builds_stage_metadata(monkeypatch):
     assert stage_build_calls[0][1]["async_moe_stages"] == metadata.stages
 
 
+def test_npu_attention_runner_isolates_dsa_caches_per_stage(monkeypatch):
+    _require_npu_runtime()
+    torch = pytest.importorskip("torch")
+
+    from afd_plugin.v1.worker.npu import attention_model_runner
+
+    cache_observations = []
+
+    class FakeDSABuilder:
+        def __init__(self, group_id, stage_id):
+            self.group_id = group_id
+            self.stage_id = stage_id
+
+        def build(self, *, common_attn_metadata, **kwargs):
+            prefill_cache = kwargs["prefill_ratio_to_sas_metadata"]
+            decode_cache = kwargs["decode_ratio_to_sas_metadata"]
+            common_cache = kwargs["common_ratio_to_sas_metadata"]
+            token_layout = (
+                tuple(common_attn_metadata.positions),
+                tuple(common_attn_metadata.query_start_loc_cpu),
+                tuple(common_attn_metadata.seq_lens),
+            )
+            cached_layout = common_cache.setdefault("token_layout", token_layout)
+            assert cached_layout == token_layout
+            prefill_cache.setdefault("token_layout", token_layout)
+            cache_observations.append(
+                (
+                    self.group_id,
+                    self.stage_id,
+                    id(prefill_cache),
+                    id(decode_cache),
+                    id(common_cache),
+                    kwargs["num_reqs_actual"],
+                ),
+            )
+            self.prefill_ratio_to_sas_metadata = prefill_cache
+            self.decode_ratio_to_sas_metadata = decode_cache
+            self.common_ratio_to_sas_metadata = common_cache
+            return SimpleNamespace(token_layout=cached_layout)
+
+    class FakeDSACPBuilder:
+        pass
+
+    monkeypatch.setattr(
+        attention_model_runner,
+        "AscendDSAMetadataBuilder",
+        FakeDSABuilder,
+    )
+    monkeypatch.setattr(
+        attention_model_runner,
+        "AscendDSACPMetadataBuilder",
+        FakeDSACPBuilder,
+    )
+    monkeypatch.setattr(
+        attention_model_runner,
+        "split_async_moe_attn_metadata",
+        lambda *_args, **_kwargs: [
+            SimpleNamespace(
+                positions=range(0, 53),
+                query_start_loc_cpu=(0, 53),
+                seq_lens=(53,),
+            ),
+            SimpleNamespace(
+                positions=range(53, 105),
+                query_start_loc_cpu=(0, 52),
+                seq_lens=(105,),
+            ),
+        ],
+    )
+
+    def make_attn_group(group_id):
+        builders = {
+            1: FakeDSABuilder(group_id, 0),
+            2: FakeDSABuilder(group_id, 1),
+        }
+        return SimpleNamespace(
+            get_metadata_builder=builders.__getitem__,
+            kv_cache_spec=SimpleNamespace(block_size=128),
+            layer_names=[f"layer-{group_id}"],
+        )
+
+    runner = _new_attention_runner()
+    slot_mapping = torch.arange(105, dtype=torch.int64)
+    block_table = SimpleNamespace(
+        slot_mapping=SimpleNamespace(gpu=slot_mapping),
+        get_device_tensor=lambda: torch.zeros((1, 1), dtype=torch.int32),
+    )
+    runner.kv_cache_config = SimpleNamespace(
+        kv_cache_groups=[SimpleNamespace(kv_cache_spec=SimpleNamespace())],
+    )
+    runner.attn_groups = [[make_attn_group(0), make_attn_group(1)]]
+    runner.max_model_len = 105
+    runner.optimistic_seq_lens_cpu = torch.tensor([105], dtype=torch.int32)
+    runner.use_dcp = False
+    runner.use_async_spec_decode = False
+    runner.input_batch = SimpleNamespace(
+        block_table=[block_table],
+        num_computed_tokens_cpu_tensor=torch.zeros(1, dtype=torch.int32),
+        num_prompt_tokens_cpu_tensor=torch.tensor([105], dtype=torch.int32),
+        req_ids=[],
+    )
+    query_start_loc = torch.tensor([0, 105], dtype=torch.int32)
+    runner.query_start_loc = SimpleNamespace(
+        gpu=query_start_loc,
+        cpu=query_start_loc,
+    )
+    runner.seq_lens = torch.tensor([105], dtype=torch.int32)
+    runner.positions = torch.arange(105, dtype=torch.int64)
+    runner.actual_seq_lengths_q = []
+    runner.use_compress = False
+    runner.attn_state = object()
+    runner.decode_token_per_req = 1
+    runner.group_len = SimpleNamespace(gpu=torch.zeros(1, dtype=torch.int32))
+    runner.group_key_idx = SimpleNamespace(gpu=torch.zeros(1, dtype=torch.int32))
+    runner.group_key_cache_idx = SimpleNamespace(
+        gpu=torch.zeros(1, dtype=torch.int32),
+    )
+    runner.cache_config = SimpleNamespace(kv_sharing_fast_prefill=False)
+    runner.model_config = SimpleNamespace(enable_return_routed_experts=False)
+    runner.speculative_config = None
+    runner._has_gdn = False
+    runner.is_mm_prefix_lm = False
+    runner.device = torch.device("cpu")
+    runner.vllm_config = SimpleNamespace(
+        compilation_config=SimpleNamespace(
+            cudagraph_mode=SimpleNamespace(has_full_cudagraphs=lambda: False),
+        ),
+    )
+    runner._get_encoder_seq_lens = lambda *_args, **_kwargs: (None, None)
+
+    ubatch_slices = [
+        SimpleNamespace(request_slice=slice(0, 1)),
+        SimpleNamespace(request_slice=slice(0, 1)),
+    ]
+    metadata, _ = runner._build_attention_metadata_with_ubatches(
+        num_tokens=105,
+        num_reqs=1,
+        max_query_len=105,
+        num_tokens_padded=112,
+        num_reqs_padded=1,
+        ubatch_slices=ubatch_slices,
+        metadata_builder_offset=1,
+        async_moe_stages=(object(), object()),
+    )
+
+    assert [stage["layer-0"].token_layout for stage in metadata] == [
+        (tuple(range(0, 53)), (0, 53), (53,)),
+        (tuple(range(53, 105)), (0, 52), (105,)),
+    ]
+    assert [observation[5] for observation in cache_observations] == [1, 1, 1, 1]
+    stage_0_cache_ids = {
+        observation[2:5] for observation in cache_observations if observation[1] == 0
+    }
+    stage_1_cache_ids = {
+        observation[2:5] for observation in cache_observations if observation[1] == 1
+    }
+    assert len(stage_0_cache_ids) == 1
+    assert len(stage_1_cache_ids) == 1
+    assert stage_0_cache_ids.isdisjoint(stage_1_cache_ids)
+
+
 def test_npu_attention_runner_uses_runtime_flashcomm_stage_layout():
     _require_npu_runtime()
 

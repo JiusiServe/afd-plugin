@@ -419,9 +419,10 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
     # NPU execution stages, while CAMAsync also distinguishes real tokens from
     # stage-local physical padding.
     # Patch functionality: copy the pinned upstream builders, reserve isolated
-    # builder indices for CAMAsync, and select the CAMAsync padding-aware split
-    # only when ``async_moe_stages`` is supplied. Native DBO keeps the original
-    # builder indices and metadata splitter.
+    # builder indices and DSA metadata caches for CAMAsync, pass each stage's
+    # actual request count, and select the CAMAsync padding-aware split only
+    # when ``async_moe_stages`` is supplied. Native DBO keeps the original
+    # builder indices, shared caches, request count, and metadata splitter.
     # Signature: adds plugin-owned ``metadata_builder_offset`` and
     # ``async_moe_stages`` parameters to the copied upstream signature.
     def _build_attention_metadata_with_ubatches(
@@ -578,6 +579,9 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             kv_cache_gid: int,
             attn_gid: int,
             common_attn_metadata: CommonAttentionMetadata,
+            # ### PATCH START: AFD stage-local actual request count
+            num_reqs_actual: int,
+            # ### PATCH END: AFD stage-local actual request count
             prefill_ratio_to_sas_metadata: dict[Any, Any],
             decode_ratio_to_sas_metadata: dict[Any, Any],
             common_ratio_to_sas_metadata: dict[Any, Any],
@@ -614,7 +618,9 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                     decode_ratio_to_sas_metadata = {}
                     common_ratio_to_sas_metadata = {}
                 extra_attn_metadata_args = dict(
-                    num_reqs_actual=num_reqs,
+                    # ### PATCH START: AFD stage-local actual request count
+                    num_reqs_actual=num_reqs_actual,
+                    # ### PATCH END: AFD stage-local actual request count
                     prefill_ratio_to_sas_metadata=prefill_ratio_to_sas_metadata,
                     decode_ratio_to_sas_metadata=decode_ratio_to_sas_metadata,
                     common_ratio_to_sas_metadata=common_ratio_to_sas_metadata,
@@ -659,9 +665,27 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 attn_metadata_dict[layer_name] = attn_metadata_i
             # ### PATCH END: AFD per-ubatch metadata assignment
 
-        prefill_ratio_to_sas_metadata: dict[Any, Any] = {}
-        decode_ratio_to_sas_metadata: dict[Any, Any] = {}
-        common_ratio_to_sas_metadata: dict[Any, Any] = {}
+        # ### PATCH START: Isolate Async CAM DSA metadata caches by stage
+        # DSA builders reuse these dictionaries across attention groups with
+        # the same token layout. Async CAM stages have different positions,
+        # sequence lengths, and sparse-attention metadata, so sharing one set
+        # makes later stages reuse the first stage's metadata. Preserve the
+        # pinned upstream cache and request-count behavior for native DBO.
+        if async_moe_stages is None:
+            shared_dsa_metadata_caches = ({}, {}, {})
+            dsa_metadata_caches = [shared_dsa_metadata_caches for _ in ubatch_slices]
+            num_actual_reqs_per_ubatch = [num_reqs for _ in ubatch_slices]
+        else:
+            dsa_metadata_caches = [({}, {}, {}) for _ in ubatch_slices]
+            num_actual_reqs_per_ubatch = [
+                max(
+                    0,
+                    min(ubatch_slice.request_slice.stop, num_reqs)
+                    - ubatch_slice.request_slice.start,
+                )
+                for ubatch_slice in ubatch_slices
+            ]
+        # ### PATCH END: Isolate Async CAM DSA metadata caches by stage
         spec_decode_common_attn_metadata = None
         for kv_cache_gid, kv_cache_group in enumerate(
             self.kv_cache_config.kv_cache_groups,
@@ -728,10 +752,16 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                         num_tokens_padded,
                     )
                 for ubid, ubatch_cm in enumerate(ubatch_common_metadata):
+                    (
+                        prefill_ratio_to_sas_metadata,
+                        decode_ratio_to_sas_metadata,
+                        common_ratio_to_sas_metadata,
+                    ) = dsa_metadata_caches[ubid]
                     _build_attn_group_metadata(
                         kv_cache_gid,
                         attn_gid,
                         ubatch_cm,
+                        num_actual_reqs_per_ubatch[ubid],
                         prefill_ratio_to_sas_metadata,
                         decode_ratio_to_sas_metadata,
                         common_ratio_to_sas_metadata,
