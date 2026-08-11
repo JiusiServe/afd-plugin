@@ -248,11 +248,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         self,
         dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
     ) -> tuple:
-        return make_ffn_graph_key(
-            dp_metadata_list,
-            attention_size=int(self.connector.attn_size),
-            ffn_size=int(self.connector.ffn_size),
-        )
+        return make_ffn_graph_key(dp_metadata_list)
 
     def _make_ffn_dp_metadata(
         self,

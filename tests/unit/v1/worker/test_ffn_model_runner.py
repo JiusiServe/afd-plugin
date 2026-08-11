@@ -256,12 +256,23 @@ def test_ffn_runner_aggregates_each_ubatch_metadata_for_ffn_ranks():
 
     assert model.dp_counts == [[21, 25], [3, 7]]
     assert runner._make_graph_key(dp_metadata_list) == (
-        (0, (21, 25)),
-        (1, (3, 7)),
+        (0, (10, 11, 12, 13)),
+        (1, (1, 2, 3, 4)),
     )
     control_metadata = runner.connector.dp_metadata_updates[0][0]
     assert _tokens(control_metadata[0]) == [10, 11, 12, 13]
     assert _tokens(control_metadata[1]) == [1, 2, 3, 4]
+
+
+def test_ffn_runner_clamps_each_idle_attention_peer_before_aggregation():
+    runner = _runner_with_connector_and_model(_FakeModel())
+    runner.connector.attn_size = 4
+    runner.connector.ffn_size = 2
+    runner.vllm_config.parallel_config.data_parallel_size = 2
+
+    metadata = runner._make_ffn_dp_metadata(_FakeDPMetadata([0, 4, 5, 6]))
+
+    assert _tokens(metadata) == [5, 11]
 
 
 def test_ffn_runner_projects_tensor_parallel_counts_to_dp_metadata():
@@ -510,6 +521,19 @@ def test_ffn_runner_makes_original_style_graph_key():
     )
 
     assert key == ((0, (2, 3)), (1, (5, 7)))
+
+
+def test_ffn_runner_graph_key_preserves_attention_peer_shapes():
+    runner = _runner_with_connector_and_model(_FakeModel())
+    runner.connector.attn_size = 4
+    runner.connector.ffn_size = 2
+
+    first_key = runner._make_graph_key({0: _FakeDPMetadata([1, 3, 5, 7])})
+    second_key = runner._make_graph_key({0: _FakeDPMetadata([2, 2, 6, 6])})
+
+    assert first_key == ((0, (1, 3, 5, 7)),)
+    assert second_key == ((0, (2, 2, 6, 6)),)
+    assert first_key != second_key
 
 
 def test_ffn_runner_replays_cuda_graph_when_key_exists():

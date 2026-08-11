@@ -37,9 +37,9 @@ def aggregate_ffn_token_counts(
 
     group_size = attention_size // ffn_size
     return tuple(
-        max(
-            1,
-            sum(expanded_counts[rank * group_size : (rank + 1) * group_size]),
+        sum(
+            max(1, int(count))
+            for count in expanded_counts[rank * group_size : (rank + 1) * group_size]
         )
         for rank in range(ffn_size)
     )
