@@ -38,7 +38,7 @@ def test_remote_v4_ffn_sends_only_ffn_tensor_spec_and_token_ids(monkeypatch):
     monkeypatch.setattr(
         adapter,
         "get_forward_context",
-        lambda: SimpleNamespace(ubatch_idx=2),
+        lambda: SimpleNamespace(ubatch_idx=2, slot_mapping={}),
     )
 
     def record_yield(hidden_states, *, role):
@@ -78,6 +78,43 @@ def test_remote_v4_ffn_sends_only_ffn_tensor_spec_and_token_ids(monkeypatch):
     assert events[2][2] == 2
     assert afd_metadata.stage_idx == 2
     assert torch.equal(output, hidden_states * 0.25)
+
+
+def test_remote_v4_ffn_zeroes_padding_ids_from_slot_mapping(monkeypatch):
+    events = []
+    connector = _FakeConnector(events)
+    afd_metadata = SimpleNamespace(connector=connector, stage_idx=0)
+    monkeypatch.setattr(
+        adapter,
+        "get_afd_metadata_from_forward_context",
+        lambda: afd_metadata,
+    )
+    monkeypatch.setattr(
+        adapter,
+        "get_forward_context",
+        lambda: SimpleNamespace(
+            ubatch_idx=0,
+            slot_mapping={"model.layers.0.attn": torch.tensor([5, 6, -1, -1])},
+        ),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "maybe_apply_dbo_yield",
+        lambda hidden_states, *, role: hidden_states,
+    )
+    proxy = adapter.RemoteDeepseekV4FFN(
+        layer_idx=0,
+        transport_spec=AFDA2FTransportSpec(),
+    )
+    hidden_states = torch.ones((4, 4), dtype=torch.float16)
+    input_ids = torch.tensor([11, 13, 17, 19], dtype=torch.int32)
+
+    proxy(hidden_states, input_ids)
+
+    sent_input_ids = events[0][3]["input_ids"]
+    assert sent_input_ids.dtype is torch.int64
+    assert sent_input_ids.tolist() == [11, 13, 0, 0]
+    assert input_ids.tolist() == [11, 13, 17, 19]
 
 
 @pytest.mark.parametrize("layer_idx", [-1, 4])

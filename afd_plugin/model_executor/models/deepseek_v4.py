@@ -115,12 +115,19 @@ class RemoteDeepseekV4FFN(nn.Module):
             stage_idx=stage_idx,
             seq_len=int(hidden_states.shape[0]),
         )
+        input_ids = input_ids.to(dtype=torch.int64)
+        if forward_context.slot_mapping:
+            # The mapping is refreshed before every replay, so its captured mask
+            # removes stale IDs from CUDA graph padding slots.
+            slot_mapping = next(iter(forward_context.slot_mapping.values()))
+            input_ids.masked_fill_(slot_mapping == -1, 0)
+
         context = AFDTransferContext(metadata=metadata)
         afd_metadata.connector.send_attn_output(
             hidden_states,
             context,
             transport_spec=self.transport_spec,
-            input_ids=input_ids.to(dtype=torch.int64),
+            input_ids=input_ids,
         )
         hidden_states = maybe_apply_dbo_yield(
             hidden_states,
