@@ -10,6 +10,8 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
+from vllm.forward_context import get_forward_context  # noqa: E402
+
 import afd_plugin.v1.worker.ffn_model_runner as ffn_model_runner_module  # noqa: E402
 from afd_plugin.connectors import (  # noqa: E402
     AFDA2FTransferPayload,
@@ -33,6 +35,8 @@ class _FakeConnector:
         self.expert_routing_specs = []
         self.dp_metadata_updates = []
         self.closed = False
+        self.attn_size = 1
+        self.ffn_size = 1
         # The runners reach the control plane through connector.control_plane;
         # the fake serves as both.
         self.control_plane = self
@@ -220,6 +224,72 @@ def test_ffn_runner_processes_each_ubatch_for_each_layer():
         ("ffn(hidden-0-l1, layer=1)", metadata_0_layer_1),
         ("ffn(hidden-1-l1, layer=1)", metadata_1_layer_1),
     ]
+
+
+def test_ffn_runner_aggregates_each_ubatch_metadata_for_ffn_ranks():
+    class _MetadataModel(_FakeModel):
+        def __init__(self):
+            self.dp_counts = []
+
+        def compute_ffn_output(self, hidden_states, layer_idx):
+            metadata = get_forward_context().dp_metadata
+            self.dp_counts.append(metadata.num_tokens_across_dp_cpu.tolist())
+            return hidden_states
+
+    model = _MetadataModel()
+    runner = _runner_with_connector_and_model(model)
+    runner.connector.attn_size = 4
+    runner.connector.ffn_size = 2
+    runner.vllm_config.parallel_config.data_parallel_size = 2
+    runner.connector.attn_outputs.extend(
+        [
+            _payload("hidden-0", _metadata_for_stage(0)),
+            _payload("hidden-1", _metadata_for_stage(1)),
+        ],
+    )
+    dp_metadata_list = {
+        0: _FakeDPMetadata([10, 11, 12, 13]),
+        1: _FakeDPMetadata([1, 2, 3, 4]),
+    }
+
+    runner.execute_model(dp_metadata_list=dp_metadata_list)
+
+    assert model.dp_counts == [[21, 25], [3, 7]]
+    control_metadata = runner.connector.dp_metadata_updates[0][0]
+    assert _tokens(control_metadata[0]) == [10, 11, 12, 13]
+    assert _tokens(control_metadata[1]) == [1, 2, 3, 4]
+
+
+@pytest.mark.parametrize(
+    ("attention_counts", "expected_ffn_counts"),
+    [
+        ([0, 4, 5, 6], [5, 11]),
+        ([], [2, 2]),
+        ([3, 4, 5], [7, 6]),
+    ],
+)
+def test_ffn_runner_matches_p2p_token_count_aggregation(
+    attention_counts,
+    expected_ffn_counts,
+):
+    runner = _runner_with_connector_and_model(_FakeModel())
+    runner.connector.attn_size = 4
+    runner.connector.ffn_size = 2
+    runner.vllm_config.parallel_config.data_parallel_size = 2
+
+    metadata = runner._make_ffn_dp_metadata(_FakeDPMetadata(attention_counts))
+
+    assert _tokens(metadata) == expected_ffn_counts
+
+
+def test_ffn_runner_projects_tensor_parallel_counts_to_dp_metadata():
+    runner = _runner_with_connector_and_model(_FakeModel())
+    runner.connector.attn_size = 2
+    runner.connector.ffn_size = 2
+
+    metadata = runner._make_ffn_dp_metadata(_FakeDPMetadata([8]))
+
+    assert _tokens(metadata) == [8]
 
 
 def test_ffn_side_gate_mixes_dense_and_experts_protocols():
@@ -458,6 +528,15 @@ def test_ffn_runner_makes_original_style_graph_key():
     )
 
     assert key == ((0, (2, 3)), (1, (5, 7)))
+
+
+def test_ffn_runner_graph_key_preserves_attention_peer_shapes():
+    first_key = make_ffn_graph_key({0: _FakeDPMetadata([1, 3, 5, 7])})
+    second_key = make_ffn_graph_key({0: _FakeDPMetadata([2, 2, 6, 6])})
+
+    assert first_key == ((0, (1, 3, 5, 7)),)
+    assert second_key == ((0, (2, 2, 6, 6)),)
+    assert first_key != second_key
 
 
 def test_ffn_runner_replays_cuda_graph_when_key_exists():
