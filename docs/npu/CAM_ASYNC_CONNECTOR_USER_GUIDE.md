@@ -11,12 +11,11 @@ rank mapping, data flow, startup requirements, and current limitations. The
 contains the historical multi-node launch commands and measurements.
 
 > [!WARNING]
-> The vLLM 0.26 upgrade did not revalidate CAM async. The linked PCP8 recipe and
-> its measurements were produced with the former vLLM/vLLM-Ascend 0.19.1
-> environment. vLLM-Ascend 0.26 removes PCP from model runner v1, so those
-> commands are retained as historical experiment records, not as a supported
-> v0.26 deployment recipe. Current v0.26 support claims cover the synchronous
-> `CAMP2pAFDConnector` path.
+> The vLLM 0.26 CAM async port remains experimental. The linked PCP8 recipe and
+> its measurements belong to the former vLLM/vLLM-Ascend 0.19.1 environment;
+> v0.26 model runner v1 uses the DP+TP/SP topology documented below. The
+> DP3TP2/EP2 matrix passed before the latest metadata-ownership fix, but that
+> matrix and the full DeepSeek-V3.2 accuracy run still need a post-fix rerun.
 
 ## When to use this connector
 
@@ -224,23 +223,12 @@ pytest -svv \
   tests/e2e/accuracy/test_gsm8k_npu_async_cam.py::test_gsm8k_lm_eval_async_cam_dp3tp2_ep2
 ```
 
-The reviewer-requested full DeepSeek-V3.2 accuracy deployment uses two
-16-NPU nodes: Attention DP2TP8 on one node and FFN EP16 on the other. It runs
-token-balanced ubatching with Attention FlashComm1/SP enabled and forced expert
-load balancing disabled. Because pytest does not own a cross-node process
-manager, launch both roles through the cluster job system with the checked-in
+The reviewer-requested full DeepSeek-V3.2 deployment uses two 16-NPU nodes:
+Attention DP2TP8 with FlashComm1/SP and FFN EP16 without FlashComm1. Launch it
+through the checked-in
 [v0.26 accuracy recipe](../../recipe/npu/CAMAsyncAFDConnector/deepseek_v3_2/v0_26_accuracy/README.md),
-then run:
-
-```bash
-AFD_NPU_E2E_MODEL=/path/to/DeepSeek-V3.2-W8A8 \
-AFD_NPU_ASYNC_CAM_RUN_V3_2_DP2TP8_EP16=1 \
-python -m pytest -svv \
-  tests/e2e/accuracy/test_gsm8k_npu_async_cam.py::test_gsm8k_lm_eval_async_cam_v3_2_dp2tp8_ep16
-```
-
-The test rejects reduced checkpoints by requiring all 61 transformer layers.
-Leave `AFD_GSM8K_LIMIT` unset for the full accuracy run.
+which also documents the external-service accuracy command and rejects reduced
+checkpoints by requiring all 61 transformer layers.
 
 When `async_moe_ubatching=true`, all roles must set:
 
@@ -318,6 +306,7 @@ available: `async_dispatch_send`, `async_dispatch_recv`,
 - Prefill and decode context parallelism are unsupported with async MoE
   ubatching.
 - Routed experts should divide evenly across FFN ranks.
-- Other Ascend hardware, full unmodified DeepSeek-V3.2, different model
-  families, CAM/CANN/container versions, cross-version combinations, and
-  topologies other than the recipe should be treated as unverified.
+- Full DeepSeek-V3.2 accuracy remains unvalidated after the metadata-ownership
+  fix. Other Ascend hardware, model families, CAM/CANN/container versions,
+  cross-version combinations, and topologies outside the documented matrices
+  should be treated as unverified.

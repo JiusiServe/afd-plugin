@@ -11,19 +11,10 @@ from afd_plugin.model_executor.npu.async_cam_ubatching import (
 
 
 @pytest.mark.parametrize(
-    ("scheduled_tokens", "use_sp", "tp_size", "expected"),
+    ("split", "scheduled_tokens", "use_sp", "tp_size", "expected"),
     [
         pytest.param(
-            [1099],
-            True,
-            2,
-            (
-                (slice(0, 1), slice(0, 550), 550),
-                (slice(0, 1), slice(550, 1099), 550),
-            ),
-            id="single-request-with-padding",
-        ),
-        pytest.param(
+            "token",
             [105],
             True,
             8,
@@ -34,6 +25,7 @@ from afd_plugin.model_executor.npu.async_cam_ubatching import (
             id="odd-single-request-tp8",
         ),
         pytest.param(
+            "token",
             [1, 1, 100, 2],
             False,
             2,
@@ -44,22 +36,24 @@ from afd_plugin.model_executor.npu.async_cam_ubatching import (
             id="split-inside-request",
         ),
         pytest.param(
-            [5],
+            "request",
+            [5, 6, 7],
             True,
             2,
             (
-                (slice(0, 1), slice(0, 3), 4),
-                (slice(0, 1), slice(3, 5), 2),
+                (slice(0, 2), slice(0, 11), 12),
+                (slice(2, 3), slice(11, 18), 8),
             ),
-            id="uneven-minimal-stages",
+            id="request-boundary-with-padding",
         ),
-        pytest.param([1], True, 2, None, id="single-token"),
+        pytest.param("token", [1], True, 2, None, id="single-token"),
+        pytest.param("request", [18], True, 2, None, id="single-request"),
     ],
 )
-def test_token_stage_plan(scheduled_tokens, use_sp, tp_size, expected):
+def test_stage_plan(split, scheduled_tokens, use_sp, tp_size, expected):
     stages = plan_async_moe_stages(
         scheduled_tokens,
-        split="token",
+        split=split,
         use_sequence_parallel=use_sp,
         tensor_parallel_size=tp_size,
     )
@@ -77,44 +71,8 @@ def test_token_stage_plan(scheduled_tokens, use_sp, tp_size, expected):
         == expected
     )
     assert sum(stage.actual_tokens for stage in stages) == sum(scheduled_tokens)
-    assert abs(stages[0].actual_tokens - stages[1].actual_tokens) <= 1
-
-
-@pytest.mark.parametrize(
-    ("scheduled_tokens", "use_sp", "tp_size", "expected"),
-    [
-        pytest.param(
-            [5, 6, 7],
-            True,
-            2,
-            (
-                (slice(0, 2), slice(0, 11), 12),
-                (slice(2, 3), slice(11, 18), 8),
-            ),
-            id="request-boundary-with-padding",
-        ),
-        pytest.param([18], True, 2, None, id="single-request"),
-    ],
-)
-def test_request_stage_plan(scheduled_tokens, use_sp, tp_size, expected):
-    stages = plan_async_moe_stages(
-        scheduled_tokens,
-        split="request",
-        use_sequence_parallel=use_sp,
-        tensor_parallel_size=tp_size,
-    )
-
-    if expected is None:
-        assert stages is None
-    else:
-        assert stages is not None
-        assert (
-            tuple(
-                (stage.request_slice, stage.token_slice, stage.input_tokens)
-                for stage in stages
-            )
-            == expected
-        )
+    if split == "token":
+        assert abs(stages[0].actual_tokens - stages[1].actual_tokens) <= 1
 
 
 @pytest.mark.parametrize("scheduled_tokens", ([], [4, 0]))

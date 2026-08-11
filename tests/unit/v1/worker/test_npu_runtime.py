@@ -824,79 +824,6 @@ def test_npu_request_boundary_ubatch_slices_balance_tokens(monkeypatch):
         )
 
 
-def test_npu_async_moe_metadata_tracks_stage_padding_separately(monkeypatch):
-    _require_npu_runtime()
-    torch = pytest.importorskip("torch")
-
-    from afd_plugin.model_executor.npu.async_cam_ubatching import AsyncMoeStage
-    from afd_plugin.v1.worker.npu import ubatch_utils
-
-    monkeypatch.setattr(
-        ubatch_utils,
-        "AscendCommonAttentionMetadata",
-        lambda **kwargs: SimpleNamespace(**kwargs),
-    )
-    parent = SimpleNamespace(
-        query_start_loc=torch.tensor([0, 1, 1069], dtype=torch.int32),
-        query_start_loc_cpu=torch.tensor([0, 1, 1069], dtype=torch.int32),
-        seq_lens=torch.tensor([10, 1068], dtype=torch.int32),
-        seq_lens_cpu=torch.tensor([10, 1068], dtype=torch.int32),
-        num_computed_tokens_cpu=torch.tensor([9, 0], dtype=torch.int32),
-        num_reqs=2,
-        num_actual_tokens=1069,
-        max_query_len=1068,
-        max_seq_len=1068,
-        block_table_tensor=torch.zeros((2, 1), dtype=torch.int32),
-        slot_mapping=torch.arange(1069),
-        causal=True,
-        num_input_tokens=1069,
-        actual_seq_lengths_q=list(range(1, 1070)),
-        positions=torch.arange(1069),
-        attn_state=object(),
-        graph_pad_size=0,
-        decode_token_per_req=1,
-        kvcomp_metadata=None,
-        positions_cpu=None,
-        dcp_local_seq_lens=None,
-        dcp_local_seq_lens_cpu=None,
-        is_prefilling=None,
-        seq_lens_cpu_upper_bound=None,
-        mm_req_doc_ranges=None,
-        rswa_prefix_lens=None,
-        context_parallel_metadata=None,
-        group_len=None,
-        group_key_idx=None,
-        group_key_cache_idx=None,
-        encoder_seq_lens=None,
-        encoder_seq_lens_cpu=None,
-        logits_indices_padded=None,
-        num_logits_indices=0,
-    )
-
-    stages = ubatch_utils.split_async_moe_attn_metadata(
-        (
-            AsyncMoeStage(slice(0, 2), slice(0, 535), input_tokens=536),
-            AsyncMoeStage(slice(1, 2), slice(535, 1069), input_tokens=534),
-        ),
-        parent,
-    )
-
-    first, second = stages
-    assert (first.num_actual_tokens, first.num_input_tokens) == (535, 535)
-    assert first.query_start_loc_cpu.tolist() == [0, 1, 535]
-    assert first.seq_lens.tolist() == [10, 534]
-    assert first.slot_mapping[[0, -1]].tolist() == [0, 534]
-    assert first.positions[[0, -1]].tolist() == [0, 534]
-    assert first.num_input_tokens == first.slot_mapping.numel()
-    assert first.num_input_tokens == first.positions.shape[0]
-    assert (second.num_actual_tokens, second.num_input_tokens) == (534, 534)
-    assert second.query_start_loc_cpu.tolist() == [0, 534]
-    assert second.seq_lens.tolist() == [1068]
-    assert second.slot_mapping[[0, -1]].tolist() == [535, 1068]
-    assert second.num_input_tokens == second.slot_mapping.numel()
-    assert second.num_input_tokens == second.positions.shape[0]
-
-
 def test_npu_attention_runner_builds_stage_metadata(monkeypatch):
     _require_npu_runtime()
     import numpy as np
@@ -1004,135 +931,17 @@ def test_npu_attention_runner_builds_stage_metadata(monkeypatch):
         slice(550, 1099),
     ]
     assert len(stage_build_calls) == 1
-    assert stage_build_calls[0][1]["metadata_builder_offset"] == 1
-    assert stage_build_calls[0][1]["async_moe_stages"] == metadata.stages
-    assert materialized_full_metadata == [(full_attn_metadata, runner.positions)]
-
-
-def test_npu_async_moe_materializes_deepseek_rope_metadata(monkeypatch):
-    _require_npu_runtime()
-    torch = pytest.importorskip("torch")
-    from vllm_ascend.attention.dsa_v1 import AscendDSAMetadata
-    from vllm_ascend.attention.mla_v1 import AscendMLAMetadata
-    from vllm_ascend.attention.sfa_v1 import AscendSFAMetadata
-
-    from afd_plugin.model_executor.models.npu import deepseek_attention_metadata
-
-    sfa_cos_source = torch.arange(8, dtype=torch.float32)
-    sfa_sin_source = sfa_cos_source + 10
-    sfa_metadata = object.__new__(AscendSFAMetadata)
-    sfa_metadata.cos = sfa_cos_source[:4]
-    sfa_metadata.sin = sfa_sin_source[:4]
-    deepseek_attention_metadata.materialize_deepseek_attention_metadata(
-        sfa_metadata,
-        torch.arange(4),
-    )
-
-    mla_cos_source = torch.arange(8, dtype=torch.float32)
-    mla_sin_source = mla_cos_source + 20
-    mla_metadata = object.__new__(AscendMLAMetadata)
-    mla_metadata.prefill = SimpleNamespace(
-        cos=mla_cos_source[:5],
-        sin=mla_sin_source[:5],
-    )
-    mla_metadata.decode = SimpleNamespace(
-        cos=mla_cos_source[5:],
-        sin=mla_sin_source[5:],
-    )
-    deepseek_attention_metadata.materialize_deepseek_attention_metadata(
-        mla_metadata,
-        torch.arange(8),
-    )
-
-    sfa_cos_source.fill_(-1)
-    sfa_sin_source.fill_(-1)
-    mla_cos_source.fill_(-1)
-    mla_sin_source.fill_(-1)
-    assert sfa_metadata.cos.tolist() == [0, 1, 2, 3]
-    assert sfa_metadata.sin.tolist() == [10, 11, 12, 13]
-    assert mla_metadata.prefill.cos.tolist() == [0, 1, 2, 3, 4]
-    assert mla_metadata.prefill.sin.tolist() == [20, 21, 22, 23, 24]
-    assert mla_metadata.decode.cos.tolist() == [5, 6, 7]
-    assert mla_metadata.decode.sin.tolist() == [25, 26, 27]
-
-    dsa_calls = []
-
-    def get_dsa_rope(positions, use_cache=False):
-        positions = positions.clone()
-        dsa_calls.append((positions, use_cache))
-        return positions + 100, positions + 200
-
-    monkeypatch.setattr(
-        deepseek_attention_metadata,
-        "get_cos_and_sin_dsa",
-        get_dsa_rope,
-    )
-    dsa_metadata = object.__new__(AscendDSAMetadata)
-    dsa_metadata.num_input_tokens = 4
-    dsa_metadata.cos = object()
-    dsa_metadata.sin = object()
-    dsa_metadata.prefill = SimpleNamespace(
-        input_positions=torch.tensor([2, 3]),
-        cos=object(),
-        sin=object(),
-    )
-    dsa_metadata.decode = SimpleNamespace(
-        input_positions=torch.tensor([7]),
-        cos=object(),
-        sin=object(),
-    )
-    deepseek_attention_metadata.materialize_deepseek_attention_metadata(
-        dsa_metadata,
-        torch.arange(6),
-    )
-
-    assert [(positions.tolist(), use_cache) for positions, use_cache in dsa_calls] == [
-        ([0, 1, 2, 3], False),
-        ([2, 3], False),
-        ([7], False),
+    assert stage_build_calls[0][1]["is_async_moe_stage_build"] is True
+    stage_slices = stage_build_calls[0][1]["ubatch_slices"]
+    assert [stage_slice.request_slice for stage_slice in stage_slices] == [
+        slice(0, 1),
+        slice(0, 1),
     ]
-    assert dsa_metadata.cos.tolist() == [100, 101, 102, 103]
-    assert dsa_metadata.prefill.sin.tolist() == [202, 203]
-    assert dsa_metadata.decode.cos.tolist() == [107]
-
-
-def test_npu_async_moe_isolates_mutable_deepseek_builder_inputs():
-    _require_npu_runtime()
-    torch = pytest.importorskip("torch")
-    from vllm_ascend.attention.dsa_v1 import AscendDSAMetadataBuilder
-    from vllm_ascend.attention.sfa_v1 import AscendSFAMetadataBuilder
-
-    from afd_plugin.model_executor.models.npu.deepseek_attention_metadata import (
-        isolate_deepseek_attention_builder_inputs,
-    )
-
-    group_len = torch.tensor([1, 2], dtype=torch.int32)
-    group_key_idx = torch.tensor([3, 4], dtype=torch.int32)
-    group_key_cache_idx = torch.tensor([5, 6], dtype=torch.int32)
-    sfa_common_metadata = SimpleNamespace(
-        group_len=group_len,
-        group_key_idx=group_key_idx,
-        group_key_cache_idx=group_key_cache_idx,
-    )
-    isolate_deepseek_attention_builder_inputs(
-        object.__new__(AscendSFAMetadataBuilder),
-        sfa_common_metadata,
-    )
-    sfa_common_metadata.group_len.fill_(9)
-    sfa_common_metadata.group_key_idx.fill_(9)
-    sfa_common_metadata.group_key_cache_idx.fill_(9)
-    assert group_len.tolist() == [1, 2]
-    assert group_key_idx.tolist() == [3, 4]
-    assert group_key_cache_idx.tolist() == [5, 6]
-
-    block_table = torch.arange(6, dtype=torch.int32).reshape(2, 3)
-    dsa_common_metadata = SimpleNamespace(block_table_tensor=block_table)
-    isolate_deepseek_attention_builder_inputs(
-        object.__new__(AscendDSAMetadataBuilder),
-        dsa_common_metadata,
-    )
-    dsa_common_metadata.block_table_tensor.fill_(0)
-    assert block_table.tolist() == [[0, 1, 2], [3, 4, 5]]
+    assert [stage_slice.token_slice for stage_slice in stage_slices] == [
+        slice(0, 550),
+        slice(550, 1099),
+    ]
+    assert materialized_full_metadata == [(full_attn_metadata, runner.positions)]
 
 
 def test_npu_attention_runner_isolates_dsa_caches_per_stage(monkeypatch):
@@ -1192,7 +1001,7 @@ def test_npu_attention_runner_isolates_dsa_caches_per_stage(monkeypatch):
     )
     monkeypatch.setattr(
         attention_model_runner,
-        "split_async_moe_attn_metadata",
+        "split_attn_metadata",
         lambda *_args, **_kwargs: [
             SimpleNamespace(
                 positions=range(0, 53),
@@ -1292,8 +1101,7 @@ def test_npu_attention_runner_isolates_dsa_caches_per_stage(monkeypatch):
         num_tokens_padded=112,
         num_reqs_padded=1,
         ubatch_slices=ubatch_slices,
-        metadata_builder_offset=1,
-        async_moe_stages=(object(), object()),
+        is_async_moe_stage_build=True,
     )
 
     assert [stage["layer-0"].token_layout for stage in metadata] == [
