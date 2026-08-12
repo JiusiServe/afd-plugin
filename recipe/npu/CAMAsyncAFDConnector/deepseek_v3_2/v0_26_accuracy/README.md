@@ -61,7 +61,6 @@ bash recipe/npu/CAMAsyncAFDConnector/deepseek_v3_2/v0_26_accuracy/attention_dp2t
 
 Wait for `http://127.0.0.1:8000/v1/models` on the Attention node before sending
 inference or evaluation requests. A post-metadata-isolation run using the
-complete 61-layer model, token split, and the fixed first 200 GSM8K samples
-reported `0.975` exact match (`195/200`). This is a fixed-prefix regression
-result, not a full-dataset accuracy claim. E2E automation is maintained
-separately from this deployment recipe.
+complete 61-layer model and token split reported `0.9522` strict match on the
+complete GSM8K evaluation. E2E automation is maintained separately from this
+deployment recipe.

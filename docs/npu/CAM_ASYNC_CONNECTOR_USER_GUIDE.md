@@ -17,8 +17,7 @@ multi-node commands and measurements for provenance.
 > v0.26 model runner v1 uses the DP+TP/SP topology documented below. The
 > DP3TP2/EP2 matrix passed before the metadata-ownership fix. After that fix,
 > the full 61-layer DeepSeek-V3.2 DP2TP8+EP16 token-split deployment scored
-> 97.5% (`195/200`) on the fixed first 200 GSM8K samples. This limited-prefix
-> result is not a full-dataset accuracy claim.
+> `0.9522` strict match on the complete GSM8K evaluation.
 
 ## When to use this connector
 
@@ -219,10 +218,10 @@ Current hardware evidence is deliberately recorded at two scopes:
 
 - the six-case DP3TP2/EP2 matrix passed before the metadata-ownership fix;
 - after the fix, the full 61-layer DP2TP8+EP16 token-split deployment reached
-  `0.975` GSM8K exact match (`195/200`) on the fixed first 200 samples.
+  `0.9522` strict match on the complete GSM8K evaluation.
 
 The second result validates the corrected metadata path on the target full
-model, but its limited sample count does not replace a full-dataset run.
+model and full evaluation dataset.
 
 When `async_moe_ubatching=true`, all roles must set:
 
@@ -300,7 +299,7 @@ available: `async_dispatch_send`, `async_dispatch_recv`,
 - Prefill and decode context parallelism are unsupported with async MoE
   ubatching.
 - Routed experts should divide evenly across FFN ranks.
-- Post-fix full-model accuracy is currently recorded only for the first 200
-  GSM8K samples. Other Ascend hardware, model families, CAM/CANN/container
-  versions, cross-version combinations, and topologies outside the documented
-  matrices should be treated as unverified.
+- Post-fix full-model token-split accuracy reached `0.9522` strict match on the
+  complete GSM8K evaluation. Other Ascend hardware, model families,
+  CAM/CANN/container versions, cross-version combinations, and topologies
+  outside the documented matrices should be treated as unverified.
