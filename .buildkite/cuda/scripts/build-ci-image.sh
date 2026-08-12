@@ -25,7 +25,8 @@ aws ecr-public get-login-password --region "$REGION" \
     | docker login --username AWS --password-stdin "$ECR_NAMESPACE"
 
 # Compute the cache tag for the dependencies image as the hash of the contents.
-DEP_FILES="pyproject.toml uv.lock docker/Dockerfile.ci"
+# Dockerfile is included so base-image / vLLM tag changes invalidate the cache.
+DEP_FILES="pyproject.toml setup.py uv.lock docker/Dockerfile.ci"
 CACHE_KEY=$(cat ${DEP_FILES} | sha256sum | cut -c1-16)
 CACHE_TAG="deps-cache-${CACHE_KEY}"
 echo "Cache key: ${CACHE_TAG}"

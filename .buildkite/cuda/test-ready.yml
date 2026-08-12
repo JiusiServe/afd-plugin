@@ -1,5 +1,4 @@
 # L2 ready — Simple Test + E2E. Uploaded by cuda/bootstrap-upload-steps.yml.
-# debug for test
 steps:
   - group: ":card_index_dividers: Simple Test"
     depends_on: upload-ready-pipeline
@@ -11,13 +10,13 @@ steps:
         mirror_hardwares: l4_1
 
   - group: ":card_index_dividers: E2E Test"
-    depends_on: upload-merge-pipeline
+    depends_on: upload-ready-pipeline
     steps:
       - label: "E2E · DeepSeekV2-Lite"
         timeout_in_minutes: 40
         commands:
-          - "export AFD_GSM8K_LIMIT=all"
-          - "export AFD_E2E_DEVICES=0,1,2"
+          - "pip install 'lm_eval==0.4.12'"
           - "export AFD_E2E_BACKEND=gpu"
+          - "export AFD_E2E_DEVICES=0,1,2"
           - "pytest -sv tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py"
         mirror_hardwares: l4_4
