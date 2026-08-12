@@ -24,10 +24,14 @@ AFD:
   dirty paths:
 
 Runtime revisions:
+  vllm_source_directory: path, HEAD, branch, dirty status
+  vllm_ascend_source_directory: path, HEAD, branch, dirty status
   current_vllm: input/ref, resolved SHA, evidence
   current_vllm_ascend: input/ref, resolved SHA, evidence
   target_vllm: input/ref, resolved SHA, evidence
   target_vllm_ascend: input/ref, resolved SHA, evidence
+  target_vllm_worktree: reused source directory or detached worktree path
+  target_vllm_ascend_worktree: reused source directory or detached worktree path
 
 Target stack:
   Python:
@@ -46,10 +50,16 @@ Dockerfile, compatibility matrix, installed package, adjacent checkout.
 
 ## Source resolution and diff commands
 
-Use placeholders literally; do not check out refs in user-owned upstream trees.
+Use placeholders literally; do not check out refs in user-provided source
+directories. Resolve the provided checkout identity first. Reuse it only when
+its HEAD matches the required target SHA; otherwise create a separate detached
+target worktree from that repository.
 
 ```bash
 git -C <repo> rev-parse --verify '<ref>^{commit}'
+git -C <repo> rev-parse HEAD
+git -C <repo> status --short --branch
+git -C <repo> worktree add --detach <target-worktree-path> <target-sha>
 git -C <repo> show '<ref>:<path>'
 git -C <repo> diff --find-renames --name-status <old-sha>..<new-sha>
 git -C <repo> diff --find-renames --stat <old-sha>..<new-sha>

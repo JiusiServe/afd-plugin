@@ -22,11 +22,17 @@ rank/device mapping, or when choosing commit boundaries.
 - Treat the current and target runtime as four immutable revisions: current
   vLLM, current vLLM-Ascend, target vLLM, and target vLLM-Ascend. Resolve every
   tag or branch to a full commit SHA before diffing or editing.
-- Require the user to provide both target refs. Infer missing current refs from
-  repository evidence. If either target ref is absent, ask for it and stop.
-- Do not modify or check out another revision in the user's vLLM or
-  vLLM-Ascend source trees. Use `git show`, an existing exact checkout, or a
-  temporary clone/worktree for read-only comparison.
+- Require the user to provide both target refs and the local source repository
+  directories for vLLM and vLLM-Ascend. Infer missing current refs from
+  repository evidence. If either target ref or source directory is absent, ask
+  for it and stop.
+- Do not modify, switch, or check out another revision in either user-provided
+  source directory. Resolve its HEAD before comparison. If it is already at the
+  target SHA, use it as the target source tree. Otherwise create a separate
+  detached worktree from that repository at the target SHA. Preserve a provided
+  checkout at the current SHA as the current source tree; if its HEAD is neither
+  the current nor target SHA, leave it untouched and read the current revision
+  with `git show` while using the new worktree for the target revision.
 - Do not edit AFD code until the architecture gate passes. If a major
   architecture change is found, stop this upgrade and report it; do not silently
   remove a supported feature or invent a large compatibility layer.
@@ -76,7 +82,10 @@ FREEZE_IDENTITY
 ## Phase 0 — Freeze identity
 
 Record the AFD checkout, branch, HEAD, dirty status, Python environment, and
-available NPU hardware. Then build the four-revision ledger.
+available NPU hardware. Validate the user-provided vLLM and vLLM-Ascend source
+directories as Git repositories; record their paths, HEADs, branches, and dirty
+status. Then build the four-revision ledger and create any required detached
+target worktrees without changing the provided checkouts.
 
 For a missing current ref, use evidence in this order:
 
