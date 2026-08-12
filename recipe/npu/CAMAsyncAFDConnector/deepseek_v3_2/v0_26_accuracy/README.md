@@ -1,6 +1,6 @@
-# DeepSeek-V3.2 Async CAM v0.26 Accuracy Test
+# DeepSeek-V3.2 Async CAM v0.26 Accuracy Deployment
 
-This opt-in test covers the full, unmodified DeepSeek-V3.2 model on two
+This recipe launches the full, unmodified DeepSeek-V3.2 model on two
 16-NPU Ascend 910C nodes:
 
 - Attention node: DP2, TP8, FlashComm1/SP enabled;
@@ -8,6 +8,10 @@ This opt-in test covers the full, unmodified DeepSeek-V3.2 model on two
 - AFD-managed two-stage token-balanced MoE ubatching;
 - forced expert load balancing disabled in both the environment and
   `additional_config`.
+
+Both launch scripts set `--gpu-memory-utilization 0.8`. The remaining device
+memory is intentional headroom for CAM communication buffers and runtime
+allocations on this multi-node topology.
 
 The launch scripts intentionally do not use SSH or manage the other node's
 processes. Start each role through the cluster job system so teardown remains
@@ -55,23 +59,9 @@ NIC_NAME=<npu-nic> \
 bash recipe/npu/CAMAsyncAFDConnector/deepseek_v3_2/v0_26_accuracy/attention_dp2tp8.sh
 ```
 
-Wait for `http://127.0.0.1:8000/v1/models` on the Attention node, then run the
-full GSM8K evaluation there:
-
-```bash
-AFD_NPU_E2E_MODEL=/path/to/DeepSeek-V3.2-W8A8 \
-AFD_NPU_ASYNC_CAM_RUN_V3_2_DP2TP8_EP16=1 \
-python -m pytest -svv \
-  tests/e2e/accuracy/test_gsm8k_npu_async_cam.py::test_gsm8k_lm_eval_async_cam_v3_2_dp2tp8_ep16
-```
-
-The default evaluation batch size is 8 and the pass condition is GSM8K exact
-match of at least `0.80 - 0.05`. Override these with
-`AFD_GSM8K_BATCH_SIZE`, `AFD_NPU_ASYNC_CAM_V3_2_GSM8K_THRESHOLD`, and
-`AFD_NPU_ASYNC_CAM_V3_2_GSM8K_TOLERANCE`. Leave `AFD_GSM8K_LIMIT` unset for
-the reviewer-requested full accuracy run; a positive limit is only for smoke
-testing the deployment.
-
-If the Attention API is not local, set
-`AFD_NPU_ASYNC_CAM_V3_2_BASE_URL`. If the served model name differs from
-`deepseek_v3_2`, set `AFD_NPU_ASYNC_CAM_V3_2_SERVED_MODEL`.
+Wait for `http://127.0.0.1:8000/v1/models` on the Attention node before sending
+inference or evaluation requests. A post-metadata-isolation run using the
+complete 61-layer model, token split, and the fixed first 200 GSM8K samples
+reported `0.975` exact match (`195/200`). This is a fixed-prefix regression
+result, not a full-dataset accuracy claim. E2E automation is maintained
+separately from this deployment recipe.

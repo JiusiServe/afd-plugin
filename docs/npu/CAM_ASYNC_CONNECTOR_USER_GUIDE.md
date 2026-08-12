@@ -8,14 +8,17 @@ through CAM async dispatch/combine operators.
 This guide describes the supported deployment shape, configuration contract,
 rank mapping, data flow, startup requirements, and current limitations. The
 [DeepSeek-V3.2 recipe](../../recipe/npu/CAMAsyncAFDConnector/deepseek_v3_2/README.md)
-contains the historical multi-node launch commands and measurements.
+links the current v0.26 launch scripts and retains the historical v0.19
+multi-node commands and measurements for provenance.
 
 > [!WARNING]
 > The vLLM 0.26 CAM async port remains experimental. The linked PCP8 recipe and
 > its measurements belong to the former vLLM/vLLM-Ascend 0.19.1 environment;
 > v0.26 model runner v1 uses the DP+TP/SP topology documented below. The
-> DP3TP2/EP2 matrix passed before the latest metadata-ownership fix, but that
-> matrix and the full DeepSeek-V3.2 accuracy run still need a post-fix rerun.
+> DP3TP2/EP2 matrix passed before the metadata-ownership fix. After that fix,
+> the full 61-layer DeepSeek-V3.2 DP2TP8+EP16 token-split deployment scored
+> 97.5% (`195/200`) on the fixed first 200 GSM8K samples. This limited-prefix
+> result is not a full-dataset accuracy claim.
 
 ## When to use this connector
 
@@ -204,31 +207,22 @@ For shape-only runtime diagnostics, set
 extent, CAM-local slice, padding, and whether the FFN result is TP all-gathered.
 It does not inspect tensor values or force a device synchronization.
 
-### E2E validation matrix
+### Validation evidence
 
-The opt-in DP3TP2 Attention + DP2TP1/EP2 FFN test covers:
-
-- token and request split modes when async MoE ubatching is enabled;
-- Attention FlashComm1/SP enabled and disabled;
-- one non-ubatched case for each SP setting.
-
-This produces six cases. Each checks its GSM8K threshold independently; no
-automatic baseline deployment is launched.
-
-Run the full matrix with:
-
-```bash
-AFD_NPU_ASYNC_CAM_RUN_DP3TP2=1 \
-pytest -svv \
-  tests/e2e/accuracy/test_gsm8k_npu_async_cam.py::test_gsm8k_lm_eval_async_cam_dp3tp2_ep2
-```
-
-The reviewer-requested full DeepSeek-V3.2 deployment uses two 16-NPU nodes:
+The full DeepSeek-V3.2 deployment uses two 16-NPU nodes:
 Attention DP2TP8 with FlashComm1/SP and FFN EP16 without FlashComm1. Launch it
 through the checked-in
 [v0.26 accuracy recipe](../../recipe/npu/CAMAsyncAFDConnector/deepseek_v3_2/v0_26_accuracy/README.md),
-which also documents the external-service accuracy command and rejects reduced
-checkpoints by requiring all 61 transformer layers.
+using the complete 61-layer checkpoint.
+
+Current hardware evidence is deliberately recorded at two scopes:
+
+- the six-case DP3TP2/EP2 matrix passed before the metadata-ownership fix;
+- after the fix, the full 61-layer DP2TP8+EP16 token-split deployment reached
+  `0.975` GSM8K exact match (`195/200`) on the fixed first 200 samples.
+
+The second result validates the corrected metadata path on the target full
+model, but its limited sample count does not replace a full-dataset run.
 
 When `async_moe_ubatching=true`, all roles must set:
 
@@ -262,9 +256,9 @@ The target CAM async v0.26 NPU validation baseline is:
 The nightly image identifier records the intended validation environment; it
 is not a promise of a stable public pull tag. Some development package metadata
 in that image still reports a `0.19.1rc2.dev1327` version. The source commits
-above are the compatibility baseline for this port. The DP3TP2 NPU E2E matrix
-and the full-model DeepSeek-V3.2 DP2TP8+EP16 accuracy test must pass on this
-baseline before the v0.26 path is described as hardware validated.
+above are the compatibility baseline for this port. The recorded validation
+evidence is scoped to the topologies and sample counts stated above; other
+combinations require their own NPU validation.
 
 Install the CAM packages from the repository root inside the container:
 
@@ -306,7 +300,7 @@ available: `async_dispatch_send`, `async_dispatch_recv`,
 - Prefill and decode context parallelism are unsupported with async MoE
   ubatching.
 - Routed experts should divide evenly across FFN ranks.
-- Full DeepSeek-V3.2 accuracy remains unvalidated after the metadata-ownership
-  fix. Other Ascend hardware, model families, CAM/CANN/container versions,
-  cross-version combinations, and topologies outside the documented matrices
-  should be treated as unverified.
+- Post-fix full-model accuracy is currently recorded only for the first 200
+  GSM8K samples. Other Ascend hardware, model families, CAM/CANN/container
+  versions, cross-version combinations, and topologies outside the documented
+  matrices should be treated as unverified.

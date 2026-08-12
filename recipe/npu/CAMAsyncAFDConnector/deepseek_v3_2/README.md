@@ -7,8 +7,9 @@
 > DP2TP8 Attention + EP16 accuracy test, use the
 > [v0.26 accuracy recipe](v0_26_accuracy/README.md).
 
-This recipe describes how to run DeepSeek-V3.2 with the AFD CAM async
-connector on Ascend NPU.
+The deployment commands below describe the retained v0.19.1 experiment. For
+the current v0.26 full-model deployment and its post-fix accuracy result, use
+the linked v0.26 accuracy recipe.
 
 For the connector's complete configuration contract, rank derivation, data
 flow, native DBO distinction, and limitations, see the
@@ -22,8 +23,9 @@ operators to move MoE activations between attention-side and FFN-side ranks,
 allowing the prefill computation to be split across independent attention and
 expert workers.
 
-Current limitation: CAM async currently supports only the prefill stage in a
-prefill/decode disaggregated deployment.
+The legacy deployment below targets the prefill stage of a prefill/decode
+disaggregated setup. The current v0.26 DP+TP/SP path also supports regular
+autoregressive decode; see the current user guide for its constraints.
 
 AFD provides the following backend-specific connectors:
 

@@ -114,6 +114,9 @@ from afd_plugin.v1.worker.ubatch_wrapper import build_ubatch_dp_metadata_list
 
 logger = init_logger(__name__)
 
+# Upstream backend initialization creates builder 0 for full-batch metadata.
+# Async CAM extends that list, and stage ``ubid`` uses builder
+# ``ASYNC_MOE_STAGE_METADATA_BUILDER_OFFSET + ubid``.
 ASYNC_MOE_STAGE_METADATA_BUILDER_OFFSET = 1
 
 

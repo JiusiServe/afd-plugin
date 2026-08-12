@@ -121,7 +121,7 @@ def run_attention_gate_afd_forward(
 
     afd_connector = afd_metadata.connector
     forward_context = get_forward_context()
-    stage_idx = int(afd_metadata.stage_idx)
+    stage_idx = afd_metadata.stage_idx
     pending_ffn_recv = False
     pending_dispatch_layout: CAMDispatchLayout | None = None
     pending_dispatch_ref: torch.Tensor | None = None

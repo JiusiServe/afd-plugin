@@ -64,7 +64,7 @@ exec env VLLM_USE_V1=1 vllm serve "$MODEL_PATH" \
   --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS" \
   --max-num-seqs "$MAX_NUM_SEQS" \
   --seed 1024 \
-  --gpu-memory-utilization 0.90 \
+  --gpu-memory-utilization 0.8 \
   --trust-remote-code \
   --no-enable-prefix-caching \
   --quantization ascend \
