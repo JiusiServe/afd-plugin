@@ -24,16 +24,16 @@ verified_platform_refs:
   - "Ascend E2E environment recorded in the installation and NPU guides"
 related_issues:
   - "#129"
-last_reviewed: 2026-08-03
+last_reviewed: 2026-08-12
 ---
 
 # AFD module design
 
-This directory is the routing and ownership layer for AFD module design. The
-documents are `draft` until their owners verify boundaries, invariants, and
-validation evidence. They record current plugin, role runtime, connector,
-model, platform, and compatibility contracts with direct source and test
-evidence; open interfaces remain explicitly draft.
+This directory is the routing and ownership layer for AFD module design. Each
+document declares its own status. A document remains `draft` until its owners
+verify boundaries, invariants, and validation evidence. The documents record
+plugin, role runtime, connector, model, platform, compatibility, and E2E
+testing contracts; open interfaces remain explicitly draft.
 
 ## Reading order
 
@@ -46,6 +46,8 @@ evidence; open interfaces remain explicitly draft.
 4. [Execution platforms](execution_platforms.md) for CUDA/NPU mechanisms.
 5. [Compatibility and patches](compatibility_and_patches.md) before modifying
    upstream compatibility behavior.
+6. [E2E testing](e2e_testing.md) after the production modules, for hardware
+   gate structure, pass criteria, and rules for adding cases.
 
 ## Dependency direction
 
@@ -102,6 +104,8 @@ The routing inventory covers runtime and package code under `afd_plugin/**`,
 native sources under `csrc/**`, and packaging files that affect shipped
 artifacts. Tests, development tools, recipes, generated files, user guides,
 and design documents are outside the production ownership inventory.
+The repository-level test contract is owned separately by
+[E2E testing](e2e_testing.md).
 
 ## Document status
 

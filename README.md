@@ -222,13 +222,16 @@ Attention API server. FFN workers are connector-driven; scheduler-driven FFN
 For repeatable local smoke testing, prefer the bundled runner:
 
 ```bash
+export HF_HOME=/path/to/huggingface
+python -c 'from datasets import load_dataset; load_dataset("openai/gsm8k", "main")'
+
 uv run python tests/e2e/runner.py \
   --model /path/to/DeepSeek-V2-Lite \
   --device-backend gpu \
-  --num-attention-ranks 1 \
-  --num-ffn-ranks 1 \
-  --attention-gpus 0 \
-  --ffn-gpus 1 \
+  --scenario afd-eager \
+  --attention-devices 0,1 \
+  --ffn-devices 2 \
+  --gsm8k-output-path /tmp/afd-e2e-gsm8k \
   --api-port-base 18000 \
   --afd-port 6239 \
   --common-vllm-arg=--trust-remote-code

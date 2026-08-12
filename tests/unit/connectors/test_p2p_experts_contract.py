@@ -37,6 +37,7 @@ def _attention_connector():
         local_rank=0,
         vllm_config=_vllm_config(),
         afd_config=AFDConfig(role="attention"),
+        role_rank=0,
     )
 
 
@@ -50,6 +51,7 @@ def _ffn_connector(*, attention_ranks=1):
             num_attention_ranks=attention_ranks,
             num_ffn_ranks=1,
         ),
+        role_rank=0,
     )
 
 

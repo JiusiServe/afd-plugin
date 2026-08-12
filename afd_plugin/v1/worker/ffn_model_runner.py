@@ -39,6 +39,10 @@ from afd_plugin.v1.worker.cuda_graph import (
     make_ffn_graph_key,
     validate_cuda_graph_mode,
 )
+from afd_plugin.v1.worker.ffn_metadata import (
+    aggregate_ffn_token_counts,
+    project_ffn_token_counts_to_dp,
+)
 
 if TYPE_CHECKING:
     from vllm.sequence import IntermediateTensors
@@ -186,6 +190,10 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             else tuple(range(num_layers))
         )
         stage_ids = sorted(int(stage_idx) for stage_idx in dp_metadata_list) or [0]
+        ffn_dp_metadata_list = {
+            stage_idx: self._make_ffn_dp_metadata(dp_metadata_list[stage_idx])
+            for stage_idx in stage_ids
+        }
         with _ffn_forward_context(self.vllm_config) as forward_context:
             for layer_idx in layer_indices:
                 uses_remote_experts = layer_idx in experts_layer_indices
@@ -205,9 +213,9 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                     metadata.layer_idx = layer_idx
                     metadata.stage_idx = stage_idx
                     if forward_context is not None:
-                        forward_context.dp_metadata = dp_metadata_list.get(
-                            metadata.stage_idx,
-                        )  # type: ignore
+                        forward_context.dp_metadata = ffn_dp_metadata_list[
+                            metadata.stage_idx
+                        ]
                         forward_context.additional_kwargs["afd_metadata"] = metadata
                         _set_moe_layer_index(forward_context, layer_idx)
                     if (
@@ -235,6 +243,24 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         layer_idx: int,
     ) -> torch.Tensor:
         return self.model.compute_ffn_output(hidden_states, layer_idx)
+
+    def _make_ffn_dp_metadata(
+        self,
+        dp_metadata: DPMetadata | AFDDPMetadata,
+    ) -> AFDDPMetadata:
+        attention_counts = tuple(
+            int(count) for count in dp_metadata.num_tokens_across_dp_cpu
+        )
+        ffn_counts = aggregate_ffn_token_counts(
+            attention_counts,
+            attention_size=int(self.connector.attn_size),
+            ffn_size=int(self.connector.ffn_size),
+        )
+        dp_counts = project_ffn_token_counts_to_dp(
+            ffn_counts,
+            dp_size=int(self.vllm_config.parallel_config.data_parallel_size),
+        )
+        return AFDDPMetadata(num_tokens_across_dp_cpu=dp_counts)
 
     def update_config(self, overrides: dict[str, Any]) -> None:
         for config_name, config_overrides in overrides.items():
