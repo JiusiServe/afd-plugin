@@ -47,6 +47,29 @@ The connector creates these communication groups:
 - one Gloo group used to send DP metadata from participating Attention ranks
   to FFN ranks.
 
+## Automatic HCCL buffer sizing
+
+The plugin derives independent Attention and FFN HCCL buffer sizes at startup
+and applies the role-local value to every CAMP2P-owned HCCL group. The metadata
+group uses Gloo and is unaffected. The current CAMP2P runtime supports only TP
+within a DP group, so the number of NPUs per DP group is its TP size:
+
+```text
+attention_bytes = 2 * hidden_size * ceil(max_num_batched_tokens / num_npus_per_dp_group) * (topk + 1)
+ffn_bytes = num_attention_ranks * 12288 * ceil(max_num_batched_tokens / num_npus_per_dp_group)
+role_buffer_mb = ceil(1.1 * role_bytes / 1_MiB)
+```
+
+The FFN formula intentionally has no `topk + 1` multiplier. Every rank logs its
+selected role and buffer size at INFO level. If the memory outside
+`gpu_memory_utilization` is less than 2.5 times the role-local buffer, the
+worker warns and recommends a maximum utilization without changing the
+configured value.
+
+The process-group setting is independent of the global `HCCL_BUFFSIZE`
+environment variable. The plugin neither modifies nor unsets that variable,
+so it remains available for other HCCL groups.
+
 ## DBO and ubatching
 
 DBO is configured with vLLM CLI flags, not inside the `afd` object:

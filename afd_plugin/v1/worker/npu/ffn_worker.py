@@ -19,6 +19,10 @@ from afd_plugin.compat.npu import (
     fix_all2all_backend_for_afd,
     npu_afd_num_ubatches,
 )
+from afd_plugin.config import parse_afd_config
+from afd_plugin.distributed.cam_hccl_buffer import (
+    warn_if_cam_memory_headroom_is_low,
+)
 from afd_plugin.model_executor.models.model_utils import get_afd_model_config
 from afd_plugin.v1.worker.npu.ffn_model_runner import AFDNPUFFNModelRunner
 from afd_plugin.validation import NPU_FFN_WORKER_FQCN, assert_compatible_afd_stack
@@ -63,6 +67,15 @@ class AFDNPUFFNWorker(NPUWorker):
             raise RuntimeError("AFD NPU FFN supports only vllm-ascend MRv1")
 
         self.device = self._init_device()
+        afd_config = parse_afd_config(
+            self.vllm_config,
+            expected_role="ffn",
+        )
+        warn_if_cam_memory_headroom_is_low(
+            self.vllm_config,
+            afd_config,
+            int(self.init_snapshot.total_memory),
+        )
         init_workspace_manager(
             self.device,
             npu_afd_num_ubatches(self.vllm_config),

@@ -138,6 +138,12 @@ AFD async-DP. The `--async-scheduling` CLI option used by all cases is a vLLM
 scheduler optimization and is unrelated to AFD async-DP or
 `CAMAsyncAFDConnector`.
 
+The AFD launchers do not set `HCCL_BUFFSIZE`. CAMP2P uses independently
+auto-derived Attention and FFN process-group buffers. An inherited
+`HCCL_BUFFSIZE` remains available for intentionally tuning other HCCL process
+groups. The EP64 baseline keeps its existing global setting because it does
+not use a CAM connector.
+
 AFD attention and FFN workers also enable Dual Batch Overlap (DBO):
 
 ```text

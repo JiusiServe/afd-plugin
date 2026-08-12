@@ -162,7 +162,7 @@ spelling used by the recipes.
 | Field | Type | Default | Meaning and constraint |
 | --- | --- | --- | --- |
 | `dynamicQuant` | `int` | `0` | Enables CAM dispatch/combine dynamic-quant metadata. Only `0` and `1` are accepted. With `1`, FFN receives quantized routed activations plus scale tensors and must return output compatible with combine-send. |
-| `attn_ranks_per_dp` | `int` | `1` | Positive Attention TP rank count per DP replica. It is the CAM Attention grouping width and is independent of the FFN process's local TP size. |
+| `attn_ranks_per_dp` | `int` | `1` | Positive number of Attention NPUs in each DP group. The current runtime supports only TP within this group, so this value must equal Attention TP size. It is independent of the FFN process's local TP size. |
 | `async_moe_ubatching` | `bool` | `false` | Enables AFD-managed asynchronous MoE-only ubatching. |
 | `async_moe_num_ubatches` | `int` | `2` | Number of asynchronous MoE stages. Only `2` is supported. |
 | `async_moe_split` | `str` | `"request"` | `"request"` requires two scheduled requests and preserves their boundaries. `"token"` balances flattened real tokens and requires Attention TP greater than one. Both modes reject context parallelism; FFN may independently use TP1. |
@@ -172,6 +172,38 @@ For a DP+SP deployment such as DP3TP2 Attention + DP2TP1/EP2 FFN, set
 `0` on FFN. Attention then holds contiguous TP-local sequence shards. For plain
 DP+TP Attention, leave FlashComm1 disabled on both roles. In either case, FFN
 consumes expert-routed CAM work items and may independently use TP1.
+
+### Automatic HCCL buffer sizing
+
+The plugin derives the CAM HCCL process-group buffer at startup for both CAM
+Async and synchronous CAMP2P. For CAM Async, the setting is applied only to the
+`afd_async_cam` process group, independently of the global `HCCL_BUFFSIZE`
+environment variable. Attention and FFN ranks use their own role-specific
+values:
+
+```text
+attention_bytes = 2 * hidden_size * ceil(max_num_batched_tokens / attn_ranks_per_dp) * (topk + 1)
+ffn_bytes = num_attention_ranks * (6176 if dynamicQuant else 12288) * ceil(max_num_batched_tokens / attn_ranks_per_dp)
+role_buffer_mb = ceil(1.1 * role_bytes / 1_MiB)
+```
+
+The MoE/FFN formula intentionally has no `topk + 1` multiplier. Every rank logs
+its selected role and buffer size at INFO level. This role-local configuration
+must be validated with the target torch-npu/HCCL stack because Attention and
+FFN ranks participate in the same CAM world with different buffer settings.
+
+Before model and KV-cache allocation, the worker checks whether the memory
+outside `gpu_memory_utilization` is at least 2.5 times its role-local buffer. If
+the configured utilization leaves less headroom, the worker emits a warning
+with a recommended maximum utilization. It does not modify the configured
+value.
+
+The plugin does not modify or unset `HCCL_BUFFSIZE`. The CAM process group uses
+its independently derived per-group value, so `HCCL_BUFFSIZE` does not size the
+CAM buffer. If you set the environment variable, it remains available to
+vLLM-Ascend and HCCL for other process groups such as TP, DP, PCP, or EP. Leave
+it unset if those process groups should use their normal HCCL defaults; set it
+only when you intentionally want to tune them.
 
 ## Native DBO and async MoE ubatching are different
 
@@ -274,7 +306,6 @@ the essential setup is:
 export ASCEND_CUSTOM_OPP_PATH=/usr/local/Ascend/cann-9.0.1/opp/vendors/CAM:${ASCEND_CUSTOM_OPP_PATH}
 export LD_LIBRARY_PATH=/usr/local/Ascend/cann-9.0.1/opp/vendors/CAM/op_api/lib:${LD_LIBRARY_PATH}
 export LD_LIBRARY_PATH=/usr/local/Ascend/cann-9.0.1/opp/vendors/CAM/op_api:${LD_LIBRARY_PATH}
-export HCCL_BUFFSIZE=4096
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 ```
 

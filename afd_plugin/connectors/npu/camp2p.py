@@ -50,7 +50,14 @@ from afd_plugin.connectors.metadata import (
     recv_control_payload,
     send_control_payload,
 )
-from afd_plugin.distributed import init_afd_process_group, topology_from_config
+from afd_plugin.distributed import (
+    create_hccl_process_group_options,
+    init_afd_process_group,
+    topology_from_config,
+)
+from afd_plugin.distributed.cam_hccl_buffer import (
+    derive_cam_hccl_buffer_plan_from_config,
+)
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -283,6 +290,20 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         self.hidden_size = hf_config.hidden_size
         self.num_experts_per_tok = hf_config.num_experts_per_tok
         self.num_routed_experts = hf_config.n_routed_experts
+        self.hccl_buffer_plan = derive_cam_hccl_buffer_plan_from_config(
+            vllm_config,
+            afd_config,
+        )
+        self.hccl_buffer_size_mb = self.hccl_buffer_plan.buffer_size_mb_for_role(
+            afd_config.role,
+        )
+        logger.info(
+            "CAM P2P %s HCCL buffer size is %d MB (auto-derived with "
+            "1.1x headroom from %d required bytes)",
+            afd_config.role,
+            self.hccl_buffer_size_mb,
+            self.hccl_buffer_plan.required_bytes_for_role(afd_config.role),
+        )
         self.control_plane = CAMP2pAFDControlPlane(self)
 
     @property
@@ -325,6 +346,9 @@ class CAMP2pAFDConnector(AFDConnectorBase):
                 rank=self.world_rank,
                 group_name=group_name,
                 timeout=timedelta(minutes=30),
+                pg_options=create_hccl_process_group_options(
+                    self.hccl_buffer_size_mb,
+                ),
             )
             self.afd_pg_list.append(afd_pg)
             backend = afd_pg._get_backend(torch.device("npu"))
@@ -346,6 +370,9 @@ class CAMP2pAFDConnector(AFDConnectorBase):
                 rank=self.world_rank,
                 group_name="afd_moe",
                 timeout=timedelta(minutes=30),
+                pg_options=create_hccl_process_group_options(
+                    self.hccl_buffer_size_mb,
+                ),
             )
             backend = self.ffn_pg._get_backend(torch.device("npu"))
             self.hccl_comm_name1 = str(

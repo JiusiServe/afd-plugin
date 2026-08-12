@@ -251,6 +251,10 @@ vllm serve /path/to/DeepSeek-V3.2 \
 - FFN side: `EP8`.
 - Connector: `CAMAsyncAFDConnector`.
 - Current scope: PD-disaggregated prefill stage only.
+- `HCCL_BUFFSIZE` is optional and is not used to size the CAM process-group
+  buffer. If set, it is preserved for other HCCL process groups; CAM uses its
+  independently auto-derived Attention/FFN value. Leave it unset unless those
+  other groups need explicit tuning.
 
 <details>
 <summary>Node0 Attention Deployment Command (DP0-DP1)</summary>
@@ -267,7 +271,6 @@ export VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1
 export HCCL_OP_EXPANSION_MODE=AIV
 
 export LD_LIBRARY_PATH=/usr/local/Ascend/cann-8.5.1/opp/vendors/CAM/op_api/lib:${LD_LIBRARY_PATH:-}
-export HCCL_BUFFSIZE=4096
 export VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 export AFD_FORCE_BALANCED_TOPK_IDS=1
@@ -331,7 +334,6 @@ export VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1
 export HCCL_OP_EXPANSION_MODE=AIV
 
 export LD_LIBRARY_PATH=/usr/local/Ascend/cann-8.5.1/opp/vendors/CAM/op_api/lib:${LD_LIBRARY_PATH:-}
-export HCCL_BUFFSIZE=4096
 export VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 export AFD_FORCE_BALANCED_TOPK_IDS=1
@@ -396,7 +398,6 @@ export VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1
 export HCCL_OP_EXPANSION_MODE=AIV
 
 export LD_LIBRARY_PATH=/usr/local/Ascend/cann-8.5.1/opp/vendors/CAM/op_api/lib:${LD_LIBRARY_PATH:-}
-export HCCL_BUFFSIZE=4096
 export VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 export AFD_FORCE_BALANCED_TOPK_IDS=1

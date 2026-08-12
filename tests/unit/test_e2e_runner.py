@@ -1201,3 +1201,13 @@ def test_runner_forces_gpu_v1_model_runner(monkeypatch):
     env = runner.build_env("0,1", args, role="attention")
 
     assert env["VLLM_USE_V2_MODEL_RUNNER"] == "0"
+
+
+def test_runner_preserves_global_hccl_buffer(monkeypatch):
+    args = _args()
+    args.device_backend = "npu"
+    monkeypatch.setenv("HCCL_BUFFSIZE", "8192")
+
+    env = runner.build_env("0,1", args, role="attention")
+
+    assert env["HCCL_BUFFSIZE"] == "8192"

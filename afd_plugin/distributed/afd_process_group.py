@@ -39,6 +39,19 @@ class DefaultProcessGroupSwitcher:
         _update_default_pg(self.default_group)
 
 
+def create_hccl_process_group_options(hccl_buffer_size: int) -> Any:
+    """Create fresh HCCL options for one plugin-owned process group.
+
+    ``hccl_buffer_size`` is expressed in MB. Per-process-group options keep CAM
+    buffer sizing independent from process-wide ``HCCL_BUFFSIZE``.
+    """
+    import torch_npu
+
+    options = torch_npu._C._distributed_c10d.ProcessGroupHCCL.Options()
+    options.hccl_config = {"hccl_buffer_size": hccl_buffer_size}
+    return options
+
+
 def init_afd_process_group(
     *,
     backend: str,
@@ -99,5 +112,6 @@ def init_afd_process_group(
 
 __all__ = [
     "DefaultProcessGroupSwitcher",
+    "create_hccl_process_group_options",
     "init_afd_process_group",
 ]

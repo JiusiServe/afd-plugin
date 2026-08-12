@@ -13,6 +13,10 @@ Both launch scripts set `--gpu-memory-utilization 0.8`. The remaining device
 memory is intentional headroom for CAM communication buffers and runtime
 allocations on this multi-node topology.
 
+The scripts do not set `HCCL_BUFFSIZE`; CAM uses its independently derived
+Attention/FFN process-group buffer. An inherited `HCCL_BUFFSIZE` remains
+available for intentionally tuning other HCCL process groups.
+
 The launch scripts intentionally do not use SSH or manage the other node's
 processes. Start each role through the cluster job system so teardown remains
 owned by that system.

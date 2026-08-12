@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -49,7 +50,10 @@ def _vllm_config(
             tensor_parallel_size=1,
             num_ubatches=num_ubatches,
         ),
-        scheduler_config=SimpleNamespace(max_num_seqs=8),
+        scheduler_config=SimpleNamespace(
+            max_num_seqs=8,
+            max_num_batched_tokens=8,
+        ),
         model_config=SimpleNamespace(
             hf_config=SimpleNamespace(
                 hidden_size=16,
@@ -82,6 +86,22 @@ def test_camp2p_factory_creates_connector():
     assert not connector.is_initialized
     assert connector.max_num_reqs == 8
     assert connector.extra_info.core_num == 12
+
+
+def test_camp2p_connector_logs_role_local_hccl_buffer(caplog):
+    with caplog.at_level(logging.INFO):
+        connector = CAMP2pAFDConnector(
+            0,
+            0,
+            _vllm_config(),
+            _afd_config(role="ffn"),
+            0,
+        )
+
+    assert (
+        connector.hccl_buffer_size_mb == connector.hccl_buffer_plan.ffn_buffer_size_mb
+    )
+    assert "CAM P2P ffn HCCL buffer size is" in caplog.text
 
 
 def test_camp2p_topology_matches_original_rank_layout():
@@ -203,6 +223,7 @@ def test_camp2p_connector_uses_role_specific_core_num(monkeypatch):
 
 def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
     calls = []
+    options = []
 
     monkeypatch.setitem(sys.modules, "torch_npu", ModuleType("torch_npu"))
     monkeypatch.setattr(camp2p_module, "ensure_cam_p2p_ops_available", lambda: None)
@@ -223,6 +244,11 @@ def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
         "init_afd_process_group",
         fake_init_afd_process_group,
     )
+    monkeypatch.setattr(
+        camp2p_module,
+        "create_hccl_process_group_options",
+        lambda buffer_size_mb: options.append(buffer_size_mb) or object(),
+    )
     connector = CAMP2pAFDConnector(
         0,
         0,
@@ -234,6 +260,8 @@ def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
     connector.init_afd_connector()
 
     assert [call["group_name"] for call in calls[:2]] == ["afd", "afd1"]
+    assert options == [connector.hccl_buffer_size_mb] * 2
+    assert all(call["pg_options"] is not None for call in calls[:2])
     assert connector.hccl_comm_name_list == ["hccl:afd:2", "hccl:afd1:2"]
     assert connector.hccl_comm_name == "hccl:afd:2"
     assert connector.hccl_comm_name2 == "hccl:afd1:2"
@@ -255,6 +283,50 @@ def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
         )
         == "hccl:afd1:2"
     )
+
+
+def test_camp2p_ffn_applies_role_buffer_to_all_hccl_groups(monkeypatch):
+    calls = []
+    options = []
+
+    monkeypatch.setitem(sys.modules, "torch_npu", ModuleType("torch_npu"))
+    monkeypatch.setattr(camp2p_module, "ensure_cam_p2p_ops_available", lambda: None)
+    monkeypatch.setattr(camp2p_module, "_register_camp2p_custom_ops", lambda: None)
+
+    def fake_init_afd_process_group(**kwargs):
+        calls.append(kwargs)
+        backend = SimpleNamespace(
+            get_hccl_comm_name=lambda rank: f"hccl:{kwargs['group_name']}:{rank}",
+        )
+        return SimpleNamespace(
+            group_name=kwargs["group_name"],
+            _get_backend=lambda device: backend,
+        )
+
+    monkeypatch.setattr(
+        camp2p_module,
+        "init_afd_process_group",
+        fake_init_afd_process_group,
+    )
+    monkeypatch.setattr(
+        camp2p_module,
+        "create_hccl_process_group_options",
+        lambda buffer_size_mb: options.append(buffer_size_mb) or object(),
+    )
+    connector = CAMP2pAFDConnector(
+        0,
+        0,
+        _vllm_config(),
+        _afd_config(role="ffn"),
+        0,
+    )
+
+    connector.init_afd_connector()
+
+    assert [call["group_name"] for call in calls] == ["afd", "afd_moe", "p2p"]
+    assert options == [connector.hccl_buffer_size_mb] * 2
+    assert all(call["pg_options"] is not None for call in calls[:2])
+    assert "pg_options" not in calls[2]
 
 
 def test_camp2p_send_attn_custom_op_receives_all_hccl_names(monkeypatch):

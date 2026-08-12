@@ -56,7 +56,13 @@ from afd_plugin.connectors.metadata import (
     AFDTransferMetadata,
     AFDTransferState,
 )
-from afd_plugin.distributed import init_afd_process_group
+from afd_plugin.distributed import (
+    create_hccl_process_group_options,
+    init_afd_process_group,
+)
+from afd_plugin.distributed.cam_hccl_buffer import (
+    derive_cam_hccl_buffer_plan_from_config,
+)
 
 if TYPE_CHECKING:
     from torch.distributed.distributed_c10d import ProcessGroup
@@ -238,8 +244,8 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
 
         Communication resources are created collectively by
         ``init_afd_connector``. ``role_rank`` is resolved before connector
-        construction; ``attn_ranks_per_dp`` is used as the CAM Attention TP
-        width.
+        construction; ``attn_ranks_per_dp`` supplies the number of NPUs in one
+        Attention data-parallel group.
         """
         super().__init__(rank, local_rank, vllm_config, afd_config, role_rank)
         self._initialized = False
@@ -251,7 +257,21 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self.group_name = ""
         self.max_seq_len = vllm_config.scheduler_config.max_num_batched_tokens
         self.comm_id = CAM_COMM_ID
-        self.tp_size = self.extra_info.attn_ranks_per_dp
+        self.num_npus_per_dp_group = self.extra_info.attn_ranks_per_dp
+        self.hccl_buffer_plan = derive_cam_hccl_buffer_plan_from_config(
+            vllm_config,
+            afd_config,
+        )
+        self.hccl_buffer_size_mb = self.hccl_buffer_plan.buffer_size_mb_for_role(
+            afd_config.role,
+        )
+        logger.info(
+            "CAM async %s HCCL buffer size is %d MB (auto-derived with "
+            "1.1x headroom from %d required bytes)",
+            afd_config.role,
+            self.hccl_buffer_size_mb,
+            self.hccl_buffer_plan.required_bytes_for_role(afd_config.role),
+        )
         self.cam_pg: ProcessGroup | None = None
         self.topology = build_async_topology(
             afd_config,
@@ -292,6 +312,9 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             rank=self.world_rank,
             group_name=AFD_ASYNC_CAM_GROUP_NAME,
             timeout=timedelta(minutes=30),
+            pg_options=create_hccl_process_group_options(
+                self.hccl_buffer_size_mb,
+            ),
         )
         backend = self.cam_pg._get_backend(torch.device("npu"))
         self.group_name = str(backend.get_hccl_comm_name(self.world_rank))
@@ -523,7 +546,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             rank=self.world_rank,
             world_size=self.topology.world_size,
             layer_idx=states.layer_idx,
-            tp_size=self.tp_size,
+            num_npus_per_dp_group=self.num_npus_per_dp_group,
             dynamic_quant=self.dynamic_quant,
             group_name=self.group_name,
         )
@@ -542,7 +565,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             self.world_rank,
             self.topology.world_size,
             states.layer_idx,
-            self.tp_size,
+            self.num_npus_per_dp_group,
             self.dynamic_quant,
             self.group_name,
         )
@@ -691,7 +714,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             expert_per_rank=self.expert_per_rank,
             rank=self.world_rank,
             world_size=self.topology.world_size,
-            tp_size=self.tp_size,
+            num_npus_per_dp_group=self.num_npus_per_dp_group,
             dynamic_quant=self.dynamic_quant,
             group_name=self.group_name,
         )
@@ -707,7 +730,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             self.expert_per_rank,
             self.world_rank,
             self.topology.world_size,
-            self.tp_size,
+            self.num_npus_per_dp_group,
             self.dynamic_quant,
             self.group_name,
         )
@@ -782,7 +805,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             expert_per_rank=self.expert_per_rank,
             rank=self.world_rank,
             world_size=self.topology.world_size,
-            tp_size=self.tp_size,
+            num_npus_per_dp_group=self.num_npus_per_dp_group,
             group_name=self.group_name,
         )
         torch.ops.umdk_cam_op_lib.async_combine_send(
@@ -799,7 +822,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             self.expert_per_rank,
             self.world_rank,
             self.topology.world_size,
-            self.tp_size,
+            self.num_npus_per_dp_group,
             self.group_name,
         )
 
