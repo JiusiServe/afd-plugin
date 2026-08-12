@@ -164,9 +164,14 @@ def _run_runner(command: list[str]) -> None:
                 signal.signal(signum, previous_handler)
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _prepare_e2e_assets() -> None:
+    """Prepare shared E2E assets once for this test module."""
+    prepare_e2e_assets()
+
+
 @pytest.mark.e2e
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=SCENARIOS)
 def test_deepseek_v2_lite(scenario: str, tmp_path: Path) -> None:
-    prepare_e2e_assets()
     command = build_runner_command(scenario, tmp_path / scenario)
     _run_runner(command)

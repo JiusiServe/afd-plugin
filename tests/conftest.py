@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -29,6 +30,10 @@ def download_model(repo_id: str) -> Path:
     Args:
         repo_id: Model repo id, e.g. ``deepseek-ai/DeepSeek-V2-Lite``.
     """
+    # Must be set before importing huggingface_hub: Xet chunk caches can fill
+    # the container root filesystem in CI even when HF_HOME is on a large volume.
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:
