@@ -1,0 +1,4 @@
+interface:
+  display_name: "NPU Runtime Upgrade"
+  short_description: "Upgrade AFD across pinned vLLM and vLLM-Ascend revisions"
+  default_prompt: "Use $upgrade-npu to upgrade the AFD NPU backend to pinned vLLM and vLLM-Ascend revisions."
