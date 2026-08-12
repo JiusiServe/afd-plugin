@@ -9,7 +9,6 @@ pytest.importorskip("torch")
 
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
-    AFDA2FTransportSpec,
     AFDA2FTransferPayload,
     AFDConnectorBase,
     AFDConnectorFactory,
@@ -82,11 +81,8 @@ def test_attn_output_carries_transfer_context():
     assert repr(output).startswith("AFDA2FTransferPayload(")
 
 
-def test_a2f_transport_spec_and_payload_preserve_token_id_dtype():
-    transport_spec = AFDA2FTransportSpec(
-        input_ids_dtype=torch.int64,
-    )
-    input_ids = torch.tensor([11, 13, 17], dtype=torch.int64)
+def test_a2f_payload_preserves_token_ids():
+    input_ids = torch.tensor([11, 13, 17], dtype=torch.int32)
     output = AFDA2FTransferPayload(
         hidden_states=torch.ones(3, 2),
         context=AFDTransferContext(
@@ -99,10 +95,8 @@ def test_a2f_transport_spec_and_payload_preserve_token_id_dtype():
         input_ids=input_ids,
     )
 
-    assert transport_spec.version == 1
-    assert transport_spec.input_ids_dtype is torch.int64
     assert output.input_ids is input_ids
-    assert output.input_ids.dtype is torch.int64
+    assert output.input_ids.dtype is torch.int32
     assert torch.equal(output.input_ids, input_ids)
 
 

@@ -26,7 +26,6 @@ from afd_plugin.compat.profiler import (
 )
 from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
-    AFDA2FTransportSpec,
     AFDConnectorFactory,
     AFDControlPayload,
     AFDDPMetadata,
@@ -140,12 +139,10 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata] | None = None,
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
-        transport_spec: AFDA2FTransportSpec | None = None,
     ) -> None:
         step_afd_gpu_profiler(self.prof)
         if dp_metadata_list is None:
             raise RuntimeError("GPUFFNModelRunner requires dp_metadata_list")
-        self._validate_transport_plan(transport_spec)
         graph_key = make_ffn_graph_key(dp_metadata_list)
         cuda_graph_info = self._cuda_graphs.get(graph_key)
         run_mode = graph_run_mode(
@@ -162,7 +159,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             dp_metadata_list=dp_metadata_list,
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,
-            transport_spec=transport_spec,
         )
         return None
 
@@ -173,16 +169,13 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
         update_connector_state: bool = True,
-        transport_spec: AFDA2FTransportSpec | None = None,
     ) -> torch.Tensor | None:
-        self._validate_transport_plan(transport_spec)
         if update_connector_state:
             self.connector.control_plane.update_state_from_dp_metadata(
                 _make_dp_metadata_payload(
                     dp_metadata_list,
                     is_graph_capturing=is_graph_capturing,
                     is_warmup=is_warmup,
-                    transport_spec=transport_spec,
                 ),
             )
 
@@ -201,6 +194,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             stage_idx: self._make_ffn_dp_metadata(dp_metadata_list[stage_idx])
             for stage_idx in stage_ids
         }
+        recv_input_ids = getattr(self.model, "afd_requires_input_ids", False)
         with _ffn_forward_context(self.vllm_config) as forward_context:
             for layer_idx in layer_indices:
                 uses_remote_experts = layer_idx in experts_layer_indices
@@ -209,13 +203,12 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                     if uses_remote_experts and self.afd_config.compute_gate_on_attention
                     else None
                 )
-                layer_transport_spec = self.model.get_afd_transport_spec(layer_idx)
                 for stage_idx in stage_ids:
                     recv_kwargs: dict[str, Any] = {}
                     if routing_spec is not None:
                         recv_kwargs["routing_spec"] = routing_spec
-                    if layer_transport_spec is not None:
-                        recv_kwargs["transport_spec"] = layer_transport_spec
+                    if recv_input_ids:
+                        recv_kwargs["recv_input_ids"] = True
                     payload = self.connector.recv_attn_output(
                         ubatch_idx=stage_idx,
                         **recv_kwargs,
@@ -250,19 +243,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                         )
                     self.connector.send_ffn_output(rank_ffn_output, context)
         return rank_ffn_output
-
-    def _validate_transport_plan(
-        self,
-        control_transport_spec: AFDA2FTransportSpec | None,
-    ) -> None:
-        """Fail before data receive if control and local model schemas differ."""
-        num_layers = max(int(self.num_layers or 0), 1)
-        for layer_idx in range(num_layers):
-            local_spec = self.model.get_afd_transport_spec(layer_idx)
-            if local_spec != control_transport_spec:
-                raise RuntimeError(
-                    "AFD control transport spec does not match the local model plan",
-                )
 
     def _execute_eager_mode(
         self,
@@ -313,7 +293,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         cudagraph_runtime_mode: CUDAGraphMode,
         dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
         is_attn_graph_capturing: bool,
-        transport_spec: AFDA2FTransportSpec | None = None,
     ) -> None:
         mode_name = getattr(cudagraph_runtime_mode, "name", str(cudagraph_runtime_mode))
         if mode_name.endswith(".FULL"):
@@ -330,7 +309,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                 _make_dp_metadata_payload(
                     dp_metadata_list,
                     is_graph_capturing=is_attn_graph_capturing,
-                    transport_spec=transport_spec,
                 ),
             )
             with torch.cuda.graph(cudagraph, pool=self._graph_memory_pool):
@@ -338,7 +316,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                     dp_metadata_list=dp_metadata_list,
                     is_graph_capturing=is_attn_graph_capturing,
                     update_connector_state=False,
-                    transport_spec=transport_spec,
                 )
             self._cuda_graphs[graph_key] = {
                 "graph": cudagraph,
@@ -349,7 +326,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             self._ffn_forward(
                 dp_metadata_list=dp_metadata_list,
                 is_graph_capturing=is_attn_graph_capturing,
-                transport_spec=transport_spec,
             )
 
     def capture_model(
@@ -357,13 +333,11 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata] | None = None,
         is_warmup: bool = False,
         is_attn_graph_capturing: bool = True,
-        transport_spec: AFDA2FTransportSpec | None = None,
     ) -> int:
         if not self.use_cuda_graph:
             return 0
         if dp_metadata_list is None:
             raise RuntimeError("GPUFFNModelRunner.capture_model requires metadata")
-        self._validate_transport_plan(transport_spec)
 
         start_free_gpu_memory = torch.cuda.mem_get_info()[0]
         if self._graph_memory_pool is None:
@@ -378,7 +352,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                             dp_metadata_list,
                             is_graph_capturing=False,
                             is_warmup=True,
-                            transport_spec=transport_spec,
                         ),
                     )
                     self._ffn_forward(
@@ -386,14 +359,12 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                         is_graph_capturing=False,
                         is_warmup=True,
                         update_connector_state=False,
-                        transport_spec=transport_spec,
                     )
                 else:
                     self._dummy_run(
                         cudagraph_runtime_mode=CUDAGraphMode.FULL,
                         dp_metadata_list=dp_metadata_list,
                         is_attn_graph_capturing=is_attn_graph_capturing,
-                        transport_spec=transport_spec,
                     )
         finally:
             set_cudagraph_capturing_enabled(False)
@@ -480,13 +451,11 @@ def _make_dp_metadata_payload(
     *,
     is_graph_capturing: bool = False,
     is_warmup: bool = False,
-    transport_spec: AFDA2FTransportSpec | None = None,
 ) -> AFDControlPayload:
     return AFDControlPayload(
         dp_metadata_list=dp_metadata_list,
         is_graph_capturing=is_graph_capturing,
         is_warmup=is_warmup,
-        transport_spec=transport_spec,
     )
 
 

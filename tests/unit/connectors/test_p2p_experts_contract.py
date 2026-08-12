@@ -9,7 +9,6 @@ pytest.importorskip("vllm")
 
 from afd_plugin.config import AFDConfig  # noqa: E402
 from afd_plugin.connectors import (  # noqa: E402
-    AFDA2FTransportSpec,
     AFDExpertRoutingSpec,
     AFDTransferContext,
     AFDTransferMetadata,
@@ -17,13 +16,13 @@ from afd_plugin.connectors import (  # noqa: E402
 from afd_plugin.connectors.gpu.p2p import P2pNcclAFDConnector  # noqa: E402
 
 
-def _vllm_config():
+def _vllm_config(*, enforce_eager=True):
     text_config = SimpleNamespace(hidden_size=4, num_hidden_layers=3)
     return SimpleNamespace(
         additional_config={},
         model_config=SimpleNamespace(
             dtype=torch.bfloat16,
-            enforce_eager=True,
+            enforce_eager=enforce_eager,
             hf_config=text_config,
             hf_text_config=text_config,
         ),
@@ -44,11 +43,11 @@ def _attention_connector():
     )
 
 
-def _ffn_connector(*, attention_ranks=1):
+def _ffn_connector(*, attention_ranks=1, enforce_eager=True):
     return P2pNcclAFDConnector(
         rank=0,
         local_rank=0,
-        vllm_config=_vllm_config(),
+        vllm_config=_vllm_config(enforce_eager=enforce_eager),
         afd_config=AFDConfig(
             role="ffn",
             num_attention_ranks=attention_ranks,
@@ -204,7 +203,7 @@ def test_ffn_gate_receive_does_not_expect_router_logits(monkeypatch):
 def test_attention_send_orders_token_ids_after_hidden_states(monkeypatch):
     connector = _attention_connector()
     hidden_states = torch.ones((2, 4), dtype=torch.bfloat16)
-    input_ids = torch.tensor([11, 13], dtype=torch.int64)
+    input_ids = torch.tensor([11, 13], dtype=torch.int32)
     sent = []
     monkeypatch.setattr(
         connector,
@@ -215,55 +214,10 @@ def test_attention_send_orders_token_ids_after_hidden_states(monkeypatch):
     connector.send_attn_output(
         hidden_states,
         _context(),
-        transport_spec=AFDA2FTransportSpec(),
         input_ids=input_ids,
     )
 
     assert sent == [hidden_states, input_ids]
-
-
-@pytest.mark.parametrize(
-    ("kwargs", "match"),
-    [
-        ({"version": 2}, "unsupported AFD A2F transport version"),
-        (
-            {"input_ids_dtype": torch.int32},
-            "version 1 input_ids must use torch.int64",
-        ),
-    ],
-)
-def test_a2f_transport_spec_rejects_unsupported_schema(kwargs, match):
-    with pytest.raises(ValueError, match=match):
-        AFDA2FTransportSpec(**kwargs)
-
-
-@pytest.mark.parametrize(
-    "send_kwargs",
-    [
-        {"input_ids": torch.tensor([11, 13], dtype=torch.int64)},
-        {"transport_spec": AFDA2FTransportSpec()},
-    ],
-)
-def test_attention_send_rejects_schema_field_mismatch_before_send(
-    monkeypatch,
-    send_kwargs,
-):
-    connector = _attention_connector()
-    sent = []
-    monkeypatch.setattr(
-        connector,
-        "_send_hidden_states",
-        lambda tensor, *args: sent.append(tensor),
-    )
-
-    with pytest.raises(ValueError, match="presence must exactly match"):
-        connector.send_attn_output(
-            torch.ones((2, 4), dtype=torch.bfloat16),
-            _context(),
-            **send_kwargs,
-        )
-
-    assert sent == []
 
 
 def test_ffn_fan_in_preserves_input_id_peer_order_and_dtype(monkeypatch):
@@ -280,9 +234,9 @@ def test_ffn_fan_in_preserves_input_id_peer_order_and_dtype(monkeypatch):
             size=torch.Size([2, 4]),
         )
     hidden_peer_1 = torch.full((2, 4), 1, dtype=torch.bfloat16)
-    input_ids_peer_1 = torch.tensor([11, 13], dtype=torch.int64)
+    input_ids_peer_1 = torch.tensor([11, 13], dtype=torch.int32)
     hidden_peer_2 = torch.full((2, 4), 2, dtype=torch.bfloat16)
-    input_ids_peer_2 = torch.tensor([17, 19], dtype=torch.int64)
+    input_ids_peer_2 = torch.tensor([17, 19], dtype=torch.int32)
     received = iter(
         [hidden_peer_1, input_ids_peer_1, hidden_peer_2, input_ids_peer_2],
     )
@@ -294,7 +248,7 @@ def test_ffn_fan_in_preserves_input_id_peer_order_and_dtype(monkeypatch):
 
     payload = connector.recv_attn_output(
         ubatch_idx=1,
-        transport_spec=AFDA2FTransportSpec(input_ids_dtype=torch.int64),
+        recv_input_ids=True,
     )
 
     assert torch.equal(
@@ -305,5 +259,34 @@ def test_ffn_fan_in_preserves_input_id_peer_order_and_dtype(monkeypatch):
         payload.input_ids,
         torch.cat([input_ids_peer_1, input_ids_peer_2]),
     )
-    assert payload.input_ids.dtype is torch.int64
+    assert payload.input_ids.dtype is torch.int32
     assert payload.context.metadata.seq_lens == [2, 2]
+
+
+def test_ffn_graph_receive_reuses_input_ids_buffer(monkeypatch):
+    connector = _ffn_connector(enforce_eager=False)
+    metadata = SimpleNamespace(
+        device=torch.device("cpu"),
+        dtype=torch.bfloat16,
+        size=torch.Size([2, 4]),
+    )
+    connector.tensor_metadata_list[0] = metadata
+    connector._recv_attn_tensor_metadata_list[(0, 1)] = metadata
+    hidden_ref = torch.empty((2, 4), dtype=torch.bfloat16)
+    input_ids_ref = torch.empty(2, dtype=torch.int32)
+    connector._recv_attn_buffers[(0, 1, (2, 4))] = hidden_ref
+    connector._recv_attn_input_ids_buffers[(0, 1, (2,))] = input_ids_ref
+    refs = []
+
+    def recv_hidden_states(*args, ref_tensor=None, **kwargs):
+        refs.append(ref_tensor)
+        return ref_tensor
+
+    monkeypatch.setattr(connector, "_recv_hidden_states", recv_hidden_states)
+
+    payload = connector.recv_attn_output(recv_input_ids=True)
+
+    assert refs[0] is hidden_ref
+    assert refs[1] is input_ids_ref
+    assert payload.hidden_states is hidden_ref
+    assert payload.input_ids is input_ids_ref

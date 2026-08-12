@@ -12,7 +12,6 @@ pytest.importorskip("vllm")
 
 from afd_plugin.config import AFDConfig, afd_config_from_mapping  # noqa: E402
 from afd_plugin.connectors import (  # noqa: E402
-    AFDA2FTransportSpec,
     AFDConnectorFactory,
     AFDControlPayload,
     AFDDPMetadata,
@@ -322,7 +321,6 @@ def test_p2p_dp_metadata_serialization_uses_json_payload():
             dp_metadata_list={7: metadata},
             is_graph_capturing=True,
             is_warmup=False,
-            transport_spec=AFDA2FTransportSpec(),
         ),
     )
     decoded_payload = module.decode_control_payload(payload)
@@ -337,7 +335,6 @@ def test_p2p_dp_metadata_serialization_uses_json_payload():
     assert _tolist(decoded[7].cu_tokens_across_sp(1)) == [3, 8]
     assert decoded_payload.is_graph_capturing is True
     assert decoded_payload.is_warmup is False
-    assert decoded_payload.transport_spec == AFDA2FTransportSpec()
 
 
 def test_graph_state_adds_input_ids_buffer_when_hidden_buffer_exists(monkeypatch):
@@ -362,12 +359,11 @@ def test_graph_state_adds_input_ids_buffer_when_hidden_buffer_exists(monkeypatch
             dp_metadata_list={0: AFDDPMetadata([2])},
             is_graph_capturing=True,
             is_warmup=False,
-            transport_spec=AFDA2FTransportSpec(),
         ),
     )
 
     assert connector._recv_attn_buffers[hidden_key] is existing_hidden
-    assert (0, 1, (2,), torch.int64) in connector._recv_attn_input_ids_buffers
+    assert (0, 1, (2,)) in connector._recv_attn_input_ids_buffers
 
 
 def test_p2p_custom_ops_register_send_recv_with_fake_impls(monkeypatch):

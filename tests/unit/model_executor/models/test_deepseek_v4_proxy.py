@@ -7,7 +7,6 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
-from afd_plugin.connectors import AFDA2FTransportSpec  # noqa: E402
 from afd_plugin.model_executor.models import deepseek_v4 as adapter  # noqa: E402
 
 
@@ -23,7 +22,7 @@ class _FakeConnector:
         return ref_tensor * 0.25
 
 
-def test_remote_v4_ffn_sends_only_ffn_tensor_spec_and_token_ids(monkeypatch):
+def test_remote_v4_ffn_sends_token_ids(monkeypatch):
     events = []
     connector = _FakeConnector(events)
     afd_metadata = SimpleNamespace(
@@ -46,41 +45,29 @@ def test_remote_v4_ffn_sends_only_ffn_tensor_spec_and_token_ids(monkeypatch):
         return hidden_states
 
     monkeypatch.setattr(adapter, "maybe_apply_dbo_yield", record_yield)
-    model = object.__new__(adapter.AFDDeepseekV4Model)
-    torch.nn.Module.__init__(model)
-    model.config = SimpleNamespace(num_hidden_layers=4)
-    transport_spec = model.get_afd_transport_spec(3)
-    proxy = adapter.RemoteDeepseekV4FFN(
-        layer_idx=3,
-        transport_spec=transport_spec,
-    )
+    proxy = adapter.RemoteDeepseekV4FFN(layer_idx=3)
     hidden_states = torch.full((2, 4), 8.0, dtype=torch.float16)
     input_ids = torch.tensor([11, 13], dtype=torch.int32)
 
     output = proxy(hidden_states, input_ids)
 
-    assert transport_spec is adapter._DEEPSEEK_V4_TRANSPORT_SPEC
-    assert transport_spec == AFDA2FTransportSpec()
+    assert adapter.AFDDeepseekV4ForCausalLM.afd_requires_input_ids
     assert [event[0] for event in events] == ["send", "yield", "recv"]
     sent_context = events[0][2]
     assert sent_context.metadata.layer_idx == 3
     assert sent_context.metadata.stage_idx == 2
     assert sent_context.metadata.seq_lens == [2]
     assert sent_context.states is None
-    assert set(events[0][3]) == {"transport_spec", "input_ids"}
-    assert events[0][3]["transport_spec"] is transport_spec
-    assert torch.equal(
-        events[0][3]["input_ids"],
-        input_ids.to(dtype=torch.int64),
-    )
-    assert events[0][3]["input_ids"].dtype is torch.int64
+    assert set(events[0][3]) == {"input_ids"}
+    assert events[0][3]["input_ids"] is input_ids
+    assert events[0][3]["input_ids"].dtype is torch.int32
     assert events[1][2] == "attention"
     assert events[2][2] == 2
     assert afd_metadata.stage_idx == 2
     assert torch.equal(output, hidden_states * 0.25)
 
 
-def test_remote_v4_ffn_zeroes_padding_ids_from_slot_mapping(monkeypatch):
+def test_remote_v4_ffn_preserves_ids_in_padding_slots(monkeypatch):
     events = []
     connector = _FakeConnector(events)
     afd_metadata = SimpleNamespace(connector=connector, stage_idx=0)
@@ -102,29 +89,17 @@ def test_remote_v4_ffn_zeroes_padding_ids_from_slot_mapping(monkeypatch):
         "maybe_apply_dbo_yield",
         lambda hidden_states, *, role: hidden_states,
     )
-    proxy = adapter.RemoteDeepseekV4FFN(
-        layer_idx=0,
-        transport_spec=AFDA2FTransportSpec(),
-    )
+    proxy = adapter.RemoteDeepseekV4FFN(layer_idx=0)
     hidden_states = torch.ones((4, 4), dtype=torch.float16)
     input_ids = torch.tensor([11, 13, 17, 19], dtype=torch.int32)
 
     proxy(hidden_states, input_ids)
 
     sent_input_ids = events[0][3]["input_ids"]
-    assert sent_input_ids.dtype is torch.int64
-    assert sent_input_ids.tolist() == [11, 13, 0, 0]
+    assert sent_input_ids is input_ids
+    assert sent_input_ids.dtype is torch.int32
+    assert sent_input_ids.tolist() == [11, 13, 17, 19]
     assert input_ids.tolist() == [11, 13, 17, 19]
-
-
-@pytest.mark.parametrize("layer_idx", [-1, 4])
-def test_v4_transport_plan_rejects_out_of_range_layer(layer_idx):
-    model = object.__new__(adapter.AFDDeepseekV4Model)
-    torch.nn.Module.__init__(model)
-    model.config = SimpleNamespace(num_hidden_layers=4)
-
-    with pytest.raises(IndexError, match="invalid DeepSeek-V4 layer index"):
-        model.get_afd_transport_spec(layer_idx)
 
 
 @pytest.mark.parametrize(
@@ -141,10 +116,7 @@ def test_remote_v4_ffn_validates_token_ids_before_metadata_lookup(
         "get_afd_metadata_from_forward_context",
         lambda: pytest.fail("metadata lookup must follow token-id validation"),
     )
-    proxy = adapter.RemoteDeepseekV4FFN(
-        layer_idx=0,
-        transport_spec=AFDA2FTransportSpec(),
-    )
+    proxy = adapter.RemoteDeepseekV4FFN(layer_idx=0)
 
     error = RuntimeError if input_ids is None else ValueError
     message = (
@@ -176,10 +148,7 @@ def test_v4_decoder_forward_rejects_ffn_role(monkeypatch):
 def test_v4_ffn_compute_rejects_attention_role_before_input_ids():
     layer = object.__new__(adapter.AFDDeepseekV4DecoderLayer)
     torch.nn.Module.__init__(layer)
-    layer.ffn = adapter.RemoteDeepseekV4FFN(
-        layer_idx=0,
-        transport_spec=AFDA2FTransportSpec(),
-    )
+    layer.ffn = adapter.RemoteDeepseekV4FFN(layer_idx=0)
 
     with pytest.raises(RuntimeError, match="FFN compute is FFN-role only"):
         layer.compute_ffn_output(torch.ones((2, 4)), input_ids=None)

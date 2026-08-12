@@ -18,18 +18,13 @@ from vllm.forward_context import get_forward_context
 from vllm.models.deepseek_v4.nvidia import model as native
 
 from afd_plugin.config import parse_afd_config
-from afd_plugin.connectors.metadata import (
-    AFDA2FTransportSpec,
-    AFDTransferContext,
-    AFDTransferMetadata,
-)
+from afd_plugin.connectors.metadata import AFDTransferContext, AFDTransferMetadata
 from afd_plugin.model_executor.models import get_afd_metadata_from_forward_context
 from afd_plugin.v1.worker.dbo import maybe_apply_dbo_yield
 
 _ATTENTION_ROLE = frozenset(("attention",))
 _FFN_ROLE = frozenset(("ffn",))
 _BOTH_ROLES = frozenset(("attention", "ffn"))
-_DEEPSEEK_V4_TRANSPORT_SPEC = AFDA2FTransportSpec()
 
 
 def _weight_layer_path(name: str) -> tuple[int, str] | None:
@@ -80,15 +75,9 @@ def _iter_role_weights(
 class RemoteDeepseekV4FFN(nn.Module):
     """Parameter-free FFN proxy carrying V4 hash-router token identifiers."""
 
-    def __init__(
-        self,
-        *,
-        layer_idx: int,
-        transport_spec: AFDA2FTransportSpec,
-    ) -> None:
+    def __init__(self, *, layer_idx: int) -> None:
         super().__init__()
         self.layer_idx = layer_idx
-        self.transport_spec = transport_spec
 
     def forward(
         self,
@@ -115,18 +104,10 @@ class RemoteDeepseekV4FFN(nn.Module):
             stage_idx=stage_idx,
             seq_len=int(hidden_states.shape[0]),
         )
-        input_ids = input_ids.to(dtype=torch.int64)
-        if forward_context.slot_mapping:
-            # The mapping is refreshed before every replay, so its captured mask
-            # removes stale IDs from CUDA graph padding slots.
-            slot_mapping = next(iter(forward_context.slot_mapping.values()))
-            input_ids.masked_fill_(slot_mapping == -1, 0)
-
         context = AFDTransferContext(metadata=metadata)
         afd_metadata.connector.send_attn_output(
             hidden_states,
             context,
-            transport_spec=self.transport_spec,
             input_ids=input_ids,
         )
         hidden_states = maybe_apply_dbo_yield(
@@ -172,10 +153,7 @@ class AFDDeepseekV4DecoderLayer(native.DeepseekV4DecoderLayer):
                 topk_indices_buffer=topk_indices_buffer,
                 aux_stream_list=aux_stream_list,
             )
-            self.ffn = RemoteDeepseekV4FFN(
-                layer_idx=layer_idx,
-                transport_spec=_DEEPSEEK_V4_TRANSPORT_SPEC,
-            )
+            self.ffn = RemoteDeepseekV4FFN(layer_idx=layer_idx)
         elif afd_config.role == "ffn":
             self.attn = native.PPMissingLayer()
             self.ffn = native.DeepseekV4MoE(vllm_config, prefix=f"{prefix}.ffn")
@@ -474,14 +452,6 @@ class AFDDeepseekV4Model(native.DeepseekV4Model):
             return []
         return super().get_expert_mapping()
 
-    def get_afd_transport_spec(
-        self,
-        layer_idx: int,
-    ) -> AFDA2FTransportSpec:
-        if layer_idx < 0 or layer_idx >= int(self.config.num_hidden_layers):
-            raise IndexError(f"invalid DeepSeek-V4 layer index {layer_idx}")
-        return _DEEPSEEK_V4_TRANSPORT_SPEC
-
     def finalize_mega_moe_weights(self) -> None:
         """MegaMoE is rejected before allocation, so no finalizer is needed."""
 
@@ -507,6 +477,7 @@ class AFDDeepseekV4ForCausalLM(native.DeepseekV4ForCausalLM):
     """DeepSeek-V4 causal LM exposing the GPU FFN-runner model contract."""
 
     model_cls = AFDDeepseekV4Model
+    afd_requires_input_ids = True
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
         self.afd_config = parse_afd_config(vllm_config, validate=False)
@@ -529,12 +500,6 @@ class AFDDeepseekV4ForCausalLM(native.DeepseekV4ForCausalLM):
 
     def get_experts_layer_indices(self) -> tuple[int, ...]:
         return self.model.get_experts_layer_indices()
-
-    def get_afd_transport_spec(
-        self,
-        layer_idx: int,
-    ) -> AFDA2FTransportSpec:
-        return self.model.get_afd_transport_spec(layer_idx)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         return super().load_weights(

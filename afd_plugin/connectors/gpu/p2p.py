@@ -80,7 +80,6 @@ from afd_plugin.connectors.base import (
 )
 from afd_plugin.connectors.metadata import (
     AFDA2FTransferPayload,
-    AFDA2FTransportSpec,
     AFDControlPayload,
     AFDDPMetadata,
     AFDExpertRoutingSpec,
@@ -99,6 +98,7 @@ if TYPE_CHECKING:
     from vllm.config import VllmConfig
 
 _AFD_COMMUNICATORS: dict[int, PyNcclCommunicator] = {}
+_INPUT_IDS_DTYPE = torch.int32
 _AFD_COMM_ID_COUNTER = 0
 _AFD_CUSTOM_OPS_REGISTERED = False
 
@@ -198,7 +198,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             torch.Tensor,
         ] = {}
         self._recv_attn_input_ids_buffers: dict[
-            tuple[int, int, tuple[int, ...], torch.dtype],
+            tuple[int, int, tuple[int, ...]],
             torch.Tensor,
         ] = {}
         self.a2e_group: StatelessProcessGroup | None = None
@@ -315,8 +315,8 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                 ``context.metadata.total_tokens``.
             context: Per-transfer context describing the token layout.
             **kwargs: Optional ``router_logits`` and token-aligned ``input_ids``
-                tensors. The stable version-1 wire order is hidden states,
-                router logits when present, then input IDs when present.
+                tensors. The wire order is hidden states, router logits when
+                present, then input IDs when present.
 
         Raises:
             ValueError: If the tensor shape does not match the metadata token
@@ -334,11 +334,6 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             )
         router_logits: torch.Tensor | None = kwargs.get("router_logits")
         input_ids: torch.Tensor | None = kwargs.get("input_ids")
-        transport_spec: AFDA2FTransportSpec | None = kwargs.get("transport_spec")
-        if (transport_spec is None) != (input_ids is None):
-            raise ValueError(
-                "input_ids presence must exactly match the AFD transport spec",
-            )
         if (
             router_logits is not None
             and router_logits.shape[0] != hidden_states.shape[0]
@@ -352,11 +347,8 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                     "input_ids must be one-dimensional and token-aligned with "
                     "hidden_states",
                 )
-            assert transport_spec is not None
-            if input_ids.dtype != transport_spec.input_ids_dtype:
-                raise ValueError(
-                    "P2P AFD input_ids dtype does not match the transport spec",
-                )
+            if input_ids.dtype != _INPUT_IDS_DTYPE:
+                raise ValueError("P2P AFD input_ids must use torch.int32")
         self._send_hidden_states(
             hidden_states,
             0,
@@ -430,8 +422,8 @@ class P2pNcclAFDConnector(AFDConnectorBase):
 
         Args:
             ubatch_idx: Stage/microbatch index to receive. Defaults to ``0``.
-            **kwargs: Optional ``routing_spec`` and versioned ``transport_spec``
-                describing model-owned Attention-to-FFN side tensors.
+            **kwargs: Optional ``routing_spec`` and ``recv_input_ids`` flag for
+                model-owned Attention-to-FFN tensors.
 
         Returns:
             ``AFDA2FTransferPayload`` with the concatenated hidden states and a
@@ -443,16 +435,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                 has no Attention peers.
         """
         routing_spec: AFDExpertRoutingSpec | None = kwargs.get("routing_spec")
-        transport_spec: AFDA2FTransportSpec | None = kwargs.get("transport_spec")
-        if transport_spec is not None and transport_spec.version != 1:
-            raise ValueError(
-                f"unsupported AFD A2F transport version {transport_spec.version}",
-            )
-        if (
-            transport_spec is not None
-            and transport_spec.input_ids_dtype not in (None, torch.int64)
-        ):
-            raise ValueError("P2P AFD input_ids transport requires torch.int64")
+        recv_input_ids: bool = kwargs.get("recv_input_ids", False)
         hidden_states_list: list[torch.Tensor] = []
         router_logits_list: list[torch.Tensor] = []
         input_ids_list: list[torch.Tensor] = []
@@ -495,24 +478,16 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                         router_metadata,
                     ),
                 )
-            if (
-                transport_spec is not None
-                and transport_spec.input_ids_dtype is not None
-            ):
+            if recv_input_ids:
                 input_ids_metadata = _TensorMetadata(
                     device=tensor_metadata.device,
-                    dtype=transport_spec.input_ids_dtype,
+                    dtype=_INPUT_IDS_DTYPE,
                     size=torch.Size([tensor_metadata.size[0]]),
                 )
                 input_ids_ref = None
                 if not self.vllm_config.model_config.enforce_eager:
                     input_ids_ref = self._recv_attn_input_ids_buffers.get(
-                        (
-                            ubatch_idx,
-                            src,
-                            tuple(input_ids_metadata.size),
-                            input_ids_metadata.dtype,
-                        ),
+                        (ubatch_idx, src, tuple(input_ids_metadata.size)),
                     )
                 input_ids_list.append(
                     self._recv_hidden_states(
@@ -816,21 +791,17 @@ class P2pNcclAFDControlPlane(AFDControlPlane):
                         dtype=tensor_metadata.dtype,
                         device=tensor_metadata.device,
                     )
-                if payload.transport_spec is not None:
-                    input_ids_key = (
-                        stage_idx,
-                        src_rank,
+                input_ids_key = (
+                    stage_idx,
+                    src_rank,
+                    (tensor_metadata.size[0],),
+                )
+                if input_ids_key not in connector._recv_attn_input_ids_buffers:
+                    connector._recv_attn_input_ids_buffers[input_ids_key] = torch.empty(
                         (tensor_metadata.size[0],),
-                        payload.transport_spec.input_ids_dtype,
+                        dtype=_INPUT_IDS_DTYPE,
+                        device=tensor_metadata.device,
                     )
-                    if input_ids_key not in connector._recv_attn_input_ids_buffers:
-                        connector._recv_attn_input_ids_buffers[input_ids_key] = (
-                            torch.empty(
-                                (tensor_metadata.size[0],),
-                                dtype=payload.transport_spec.input_ids_dtype,
-                                device=tensor_metadata.device,
-                            )
-                        )
 
     def send_dp_metadata_list(
         self,
