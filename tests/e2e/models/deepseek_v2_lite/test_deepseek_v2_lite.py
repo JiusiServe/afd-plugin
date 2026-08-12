@@ -13,7 +13,12 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import download_dataset, download_model
+
 REPO_ROOT = Path(__file__).resolve().parents[4]
+GSM8K_DATASET_ID = "openai/gsm8k"
+GSM8K_DATASET_CONFIG = "main"
+DEEPSEEK_V2_LITE_REPO_ID = "deepseek-ai/DeepSeek-V2-Lite"
 SCENARIOS = (
     "baseline-graph",
     "afd-eager",
@@ -38,6 +43,30 @@ def _devices(name: str, expected_count: int) -> list[str]:
     if len(devices) != len(set(devices)):
         raise RuntimeError(f"{name} devices must be unique")
     return devices
+
+
+def prepare_e2e_assets() -> None:
+    """Ensure GSM8K and DeepSeek-V2-Lite are available for the runner."""
+    download_dataset(GSM8K_DATASET_ID, GSM8K_DATASET_CONFIG)
+
+    backend = _required_env("AFD_E2E_BACKEND")
+    if backend == "gpu":
+        env_name = "AFD_GPU_E2E_MODEL"
+    elif backend == "npu":
+        env_name = "AFD_NPU_E2E_MODEL"
+    else:
+        raise RuntimeError("AFD_E2E_BACKEND must be 'gpu' or 'npu'")
+
+    existing = os.environ.get(env_name)
+    if existing:
+        print(
+            f"[e2e] Using existing model path {Path(existing).expanduser()}",
+            flush=True,
+        )
+        return
+
+    model_path = download_model(DEEPSEEK_V2_LITE_REPO_ID)
+    os.environ[env_name] = str(model_path)
 
 
 def build_runner_command(scenario: str, gsm8k_output_path: Path) -> list[str]:
@@ -138,5 +167,6 @@ def _run_runner(command: list[str]) -> None:
 @pytest.mark.e2e
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=SCENARIOS)
 def test_deepseek_v2_lite(scenario: str, tmp_path: Path) -> None:
+    prepare_e2e_assets()
     command = build_runner_command(scenario, tmp_path / scenario)
     _run_runner(command)

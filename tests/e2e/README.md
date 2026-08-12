@@ -18,29 +18,31 @@ adding a model or case.
 ## Run
 
 Run from the repository root. The environment needs `vllm`, `pytest`,
-`afd_plugin`, and `lm_eval`. NPU also needs `torch_npu`.
+`afd_plugin`, `lm_eval`, `datasets`, and `huggingface_hub`. NPU also needs
+`torch_npu`.
 
-Set the cache location and prepare GSM8K once:
-
-```bash
-export HF_HOME=/path/to/huggingface
-python -c 'from datasets import load_dataset; load_dataset("openai/gsm8k", "main")'
-```
+The test downloads/caches `openai/gsm8k` and
+`deepseek-ai/DeepSeek-V2-Lite` when the backend model env var is unset. Point
+`HF_HOME` at a persistent cache if you want to reuse downloads across runs.
 
 GPU:
 
 ```bash
+export HF_HOME=/path/to/huggingface
 export AFD_E2E_BACKEND=gpu
 export AFD_E2E_DEVICES=0,1,2
-export AFD_GPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite
+# Optional if the model is already local:
+# export AFD_GPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite
 ```
 
 NPU:
 
 ```bash
+export HF_HOME=/path/to/huggingface
 export AFD_E2E_BACKEND=npu
 export AFD_E2E_DEVICES=0,1,2
-export AFD_NPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite
+# Optional if the model is already local:
+# export AFD_NPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite
 ```
 
 Then run:
@@ -69,10 +71,11 @@ The repository includes the [`run-e2e`](../../.agents/skills/run-e2e/SKILL.md)
 skill. Open the repository in Codex and ask, for example:
 
 ```text
-Use run-e2e to run the GPU E2E tests with model /models/DeepSeek-V2-Lite,
-devices 0,1,2, and HF_HOME /data/huggingface.
+Use run-e2e to run the GPU E2E tests with devices 0,1,2 and
+HF_HOME /data/huggingface.
 ```
 
-For either backend, provide the model path, three device IDs, and `HF_HOME`.
-The skill checks prerequisites, runs the same four tests, and reports failures
-and process cleanup.
+For either backend, provide three device IDs and `HF_HOME`. The model path is
+optional when Hugging Face download is available. The skill checks
+prerequisites, runs the same four tests, and reports failures and process
+cleanup.

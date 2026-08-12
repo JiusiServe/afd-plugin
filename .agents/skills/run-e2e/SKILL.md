@@ -31,10 +31,11 @@ If both are available, ask which to use. If neither is available, stop.
 Before starting pytest, confirm:
 
 - AFD_E2E_DEVICES contains the device IDs required by test cases.
-- The backend model variable points to an available model.
+- AFD_GPU_E2E_MODEL / AFD_NPU_E2E_MODEL is set to a local path, or the
+  environment can download `deepseek-ai/DeepSeek-V2-Lite` via huggingface_hub.
 - The selected vllm command runs.
-- pytest, afd_plugin, and lm_eval are importable.
-- HF_HOME points to the Hugging Face cache used for GSM8K.
+- pytest, afd_plugin, lm_eval, datasets, and huggingface_hub are importable.
+- HF_HOME points to the Hugging Face cache used for GSM8K and model weights.
 - GPU: the selected devices are visible to CUDA.
 - NPU: torch_npu and the Ascend runtime work.
 
@@ -43,31 +44,30 @@ or uv.lock.
 
 Fail before pytest when a prerequisite is missing; never turn it into a skip.
 
-Set HF_HOME before every run. If GSM8K is not cached, prepare it before
-starting the cluster:
-
-~~~bash
-export HF_HOME=/path/to/huggingface
-python -c 'from datasets import load_dataset; load_dataset("openai/gsm8k", "main")'
-~~~
+Set HF_HOME before every run. The pytest entrypoint downloads/caches GSM8K and
+the model when the backend model env var is unset.
 
 ### 3. Configure the run
 
 For GPU:
 
 ~~~bash
+export HF_HOME=/path/to/huggingface
 export AFD_E2E_BACKEND=gpu
 export AFD_E2E_DEVICES=0,1,2
-export AFD_GPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite
+# Optional if the model is already local:
+# export AFD_GPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite
 # Optional: export AFD_GPU_E2E_VLLM_BIN=/path/to/vllm
 ~~~
 
 For NPU:
 
 ~~~bash
+export HF_HOME=/path/to/huggingface
 export AFD_E2E_BACKEND=npu
 export AFD_E2E_DEVICES=0,1,2
-export AFD_NPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite
+# Optional if the model is already local:
+# export AFD_NPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite
 # Optional: export AFD_NPU_E2E_VLLM_BIN=/path/to/vllm
 ~~~
 
@@ -98,8 +98,8 @@ actionable error, and cleanup status. Any skip is a gate failure.
 |---|---|---|
 | AFD_E2E_BACKEND | both | yes: gpu or npu |
 | AFD_E2E_DEVICES | both | yes: exactly 3 unique IDs |
-| AFD_GPU_E2E_MODEL | GPU | yes |
+| AFD_GPU_E2E_MODEL | GPU | no; downloads DeepSeek-V2-Lite when unset |
 | AFD_GPU_E2E_VLLM_BIN | GPU | no; defaults to vllm |
-| AFD_NPU_E2E_MODEL | NPU | yes |
+| AFD_NPU_E2E_MODEL | NPU | no; downloads DeepSeek-V2-Lite when unset |
 | AFD_NPU_E2E_VLLM_BIN | NPU | no; defaults to vllm |
-| HF_HOME | both | yes; GSM8K cache location |
+| HF_HOME | both | recommended; HF dataset/model cache |
