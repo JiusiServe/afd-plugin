@@ -31,7 +31,7 @@ from vllm.v1.attention.backends.utils import CommonAttentionMetadata
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import EncoderOnlyAttentionSpec, KVCacheConfig
 from vllm.v1.outputs import ModelRunnerOutput
-from vllm.v1.worker.ubatch_utils import UBatchSlices
+from vllm.v1.worker.ubatch_utils import UBatchSlice, UBatchSlices
 from vllm_ascend.ascend_forward_context import set_ascend_forward_context
 from vllm_ascend.attention.attention_v1 import AscendAttentionState
 from vllm_ascend.attention.context_parallel.dsa_cp import (
@@ -85,7 +85,19 @@ from afd_plugin.connectors import (
     AFDForwardContextMetadata,
 )
 from afd_plugin.connectors.npu.async_cam import AFDAsyncExtraInfo
-from afd_plugin.model_executor.models import ASYNC_MOE_UBATCH_METADATA_KEY
+from afd_plugin.model_executor.models.npu.async_cam_layout import (
+    ASYNC_MOE_UBATCH_METADATA_KEY,
+    AsyncMoeUbatchMetadata,
+)
+from afd_plugin.model_executor.models.npu.deepseek_attention_metadata import (
+    isolate_deepseek_attention_builder_inputs,
+    materialize_deepseek_attention_metadata,
+    materialize_deepseek_attention_metadata_by_layer,
+)
+from afd_plugin.model_executor.npu.async_cam_ubatching import (
+    AsyncMoeStage,
+    plan_async_moe_stages,
+)
 from afd_plugin.v1.worker.attention_model_runner import (
     _forward_context_num_tokens,
     _full_cudagraph_padded_tokens,
@@ -94,7 +106,6 @@ from afd_plugin.v1.worker.attention_model_runner import (
 from afd_plugin.v1.worker.npu.npu_ubatch_wrapper import AscendUBatchWrapper
 from afd_plugin.v1.worker.npu.ubatch_utils import (
     check_enable_ubatch,
-    create_request_boundary_ubatch_slices,
     maybe_create_ubatch_slices,
     pad_out_ubatch_slices,
     split_attn_metadata,
@@ -102,6 +113,11 @@ from afd_plugin.v1.worker.npu.ubatch_utils import (
 from afd_plugin.v1.worker.ubatch_wrapper import build_ubatch_dp_metadata_list
 
 logger = init_logger(__name__)
+
+# Upstream backend initialization creates builder 0 for full-batch metadata.
+# Async CAM extends that list, and stage ``ubid`` uses builder
+# ``ASYNC_MOE_STAGE_METADATA_BUILDER_OFFSET + ubid``.
+ASYNC_MOE_STAGE_METADATA_BUILDER_OFFSET = 1
 
 
 class AFDNPUAttentionModelRunner(NPUModelRunner):
@@ -349,29 +365,45 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         if num_scheduled_tokens_np is None:
             return full_metadata
 
-        ubatch_slices = create_request_boundary_ubatch_slices(
+        num_tokens_padded = int(num_tokens_padded or num_tokens)
+        num_reqs_padded = int(num_reqs_padded or len(num_scheduled_tokens_np))
+        use_sequence_parallel = bool(enable_sp(self.vllm_config))
+        stages = plan_async_moe_stages(
             num_scheduled_tokens_np,
-            num_ubatches=self.afd_async_extra_info.async_moe_num_ubatches,
+            split=self.afd_async_extra_info.async_moe_split,
+            use_sequence_parallel=use_sequence_parallel,
+            tensor_parallel_size=get_tensor_model_parallel_world_size(),
         )
-        if ubatch_slices is None:
+        if stages is None:
             return full_metadata
+        full_attn_metadata = full_metadata[0]
+        if not isinstance(full_attn_metadata, dict):
+            raise RuntimeError(
+                "Async CAM stage planning requires unsplit full-batch "
+                "attention metadata; received native ubatch metadata instead",
+            )
+        materialize_deepseek_attention_metadata_by_layer(
+            full_attn_metadata,
+            self.positions,
+        )
+        stage_slices = [
+            UBatchSlice(stage.request_slice, stage.token_slice) for stage in stages
+        ]
 
         logger.debug(
             "AFD NPU async MoE ubatch split; num_reqs=%s num_tokens=%s "
-            "num_scheduled_tokens=%s request_slices=%s token_slices=%s "
-            "stage_num_tokens=%s",
+            "num_scheduled_tokens=%s split=%s sequence_parallel=%s "
+            "request_slices=%s token_slices=%s stage_input_tokens=%s "
+            "stage_actual_tokens=%s",
             len(num_scheduled_tokens_np),
             num_tokens,
             num_scheduled_tokens_np.tolist(),
-            [
-                (ubatch_slice.request_slice.start, ubatch_slice.request_slice.stop)
-                for ubatch_slice in ubatch_slices
-            ],
-            [
-                (ubatch_slice.token_slice.start, ubatch_slice.token_slice.stop)
-                for ubatch_slice in ubatch_slices
-            ],
-            [int(ubatch_slice.num_tokens) for ubatch_slice in ubatch_slices],
+            self.afd_async_extra_info.async_moe_split,
+            use_sequence_parallel,
+            [(stage.request_slice.start, stage.request_slice.stop) for stage in stages],
+            [(stage.token_slice.start, stage.token_slice.stop) for stage in stages],
+            [int(stage.input_tokens) for stage in stages],
+            [stage.actual_tokens for stage in stages],
         )
 
         stage_attn_metadata, _ = self._build_attention_metadata_with_ubatches(
@@ -380,31 +412,38 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             max_query_len=max_query_len,
             num_tokens_padded=num_tokens_padded,
             num_reqs_padded=num_reqs_padded,
-            ubatch_slices=ubatch_slices,
+            ubatch_slices=stage_slices,
             logits_indices=logits_indices,
             use_spec_decode=use_spec_decode,
             for_cudagraph_capture=for_cudagraph_capture,
             num_scheduled_tokens=num_scheduled_tokens,
             num_scheduled_tokens_np=num_scheduled_tokens_np,
             cascade_attn_prefix_lens=cascade_attn_prefix_lens,
+            is_async_moe_stage_build=True,
         )
-        self._afd_pending_metadata = self._build_afd_metadata(
-            ubatch_slices,
-            num_tokens,
+        self._afd_async_moe_ubatch_metadata = AsyncMoeUbatchMetadata(
+            attn_metadata=stage_attn_metadata,
+            stages=stages,
+            use_sequence_parallel=use_sequence_parallel,
+            parent_input_tokens=num_tokens_padded,
         )
-        self._afd_async_moe_ubatch_metadata = {
-            "attn_metadata": stage_attn_metadata,
-            "ubatch_slices": ubatch_slices,
-        }
         return full_metadata
 
     # Upstream source: vllm-ascend commit 80d8c194f,
     # NPUModelRunner._build_attention_metadata.
     # Patch reason: upstream builds one metadata object even when AFD schedules
-    # two NPU execution stages.
-    # Patch functionality: copy the pinned upstream builders and emit one
-    # PerLayerAttnMetadata mapping per AFD ubatch.
-    # Signature: matches the upstream metadata hook; no added parameters.
+    # NPU execution stages, while CAMAsync also distinguishes real tokens from
+    # stage-local physical padding and keeps several metadata objects live at
+    # once. Some DeepSeek Ascend builders mutate common inputs or return
+    # reusable runtime buffers, so each live stage needs explicit ownership.
+    # Patch functionality: copy the pinned upstream builders, reserve isolated
+    # builder indices and DSA metadata caches for CAMAsync, isolate mutable
+    # DeepSeek builder inputs and outputs, pass each stage's actual request
+    # count. Native DBO keeps the original builder indices, shared caches, and
+    # request count.
+    # Signature: adds plugin-owned ``is_async_moe_stage_build`` to the copied
+    # upstream signature. Native DBO keeps the default and therefore retains
+    # the original builder range and cache behavior.
     def _build_attention_metadata_with_ubatches(
         self,
         num_tokens: int,
@@ -419,11 +458,15 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         num_scheduled_tokens: dict[str, int] | None = None,
         num_scheduled_tokens_np: np.ndarray | None = None,
         cascade_attn_prefix_lens: list[list[int]] | None = None,
+        # ### PATCH START: Async CAM stage metadata ownership
+        is_async_moe_stage_build: bool = False,
+        # ### PATCH END: Async CAM stage metadata ownership
     ) -> tuple[PerLayerAttnMetadata, CommonAttentionMetadata | None]:
-        """Build per-ubatch Ascend attention metadata.
+        """Build isolated per-stage Ascend attention metadata.
 
-        Builds the DBO-specific metadata layout required by Ascend ubatching
-        while keeping the implementation plugin-owned.
+        Async CAM stage builds reserve builder zero for full-batch metadata
+        and isolate mutable metadata state. Native DBO keeps the default and
+        retains upstream behavior.
         """
 
         if len(self.kv_cache_config.kv_cache_groups) == 0:
@@ -436,6 +479,11 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         # ### PATCH END: AFD per-ubatch metadata containers
         num_tokens_padded = num_tokens_padded or num_tokens
         num_reqs_padded = num_reqs_padded or num_reqs
+        # ### PATCH START: Reserve Async CAM stage builders
+        metadata_builder_offset = (
+            ASYNC_MOE_STAGE_METADATA_BUILDER_OFFSET if is_async_moe_stage_build else 0
+        )
+        # ### PATCH END: Reserve Async CAM stage builders
 
         if for_cudagraph_capture:
             max_seq_len = self.max_model_len
@@ -552,13 +600,20 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             kv_cache_gid: int,
             attn_gid: int,
             common_attn_metadata: CommonAttentionMetadata,
+            # ### PATCH START: AFD stage-local actual request count
+            num_reqs_actual: int,
+            # ### PATCH END: AFD stage-local actual request count
             prefill_ratio_to_sas_metadata: dict[Any, Any],
             decode_ratio_to_sas_metadata: dict[Any, Any],
             common_ratio_to_sas_metadata: dict[Any, Any],
             ubid: int | None = None,
         ) -> None:
             attn_group = self.attn_groups[kv_cache_gid][attn_gid]
-            builder = attn_group.get_metadata_builder(ubid or 0)
+            # ### PATCH START: Async CAM builder offset
+            builder = attn_group.get_metadata_builder(
+                metadata_builder_offset + (ubid or 0),
+            )
+            # ### PATCH END: Async CAM builder offset
             cascade_attn_prefix_len = (
                 cascade_attn_prefix_lens[kv_cache_gid][attn_gid]
                 if cascade_attn_prefix_lens
@@ -584,7 +639,9 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                     decode_ratio_to_sas_metadata = {}
                     common_ratio_to_sas_metadata = {}
                 extra_attn_metadata_args = dict(
-                    num_reqs_actual=num_reqs,
+                    # ### PATCH START: AFD stage-local actual request count
+                    num_reqs_actual=num_reqs_actual,
+                    # ### PATCH END: AFD stage-local actual request count
                     prefill_ratio_to_sas_metadata=prefill_ratio_to_sas_metadata,
                     decode_ratio_to_sas_metadata=decode_ratio_to_sas_metadata,
                     common_ratio_to_sas_metadata=common_ratio_to_sas_metadata,
@@ -601,6 +658,13 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                     common_attn_metadata,
                 )
             else:
+                # ### PATCH START: Isolate Async CAM builder inputs
+                if is_async_moe_stage_build:
+                    isolate_deepseek_attention_builder_inputs(
+                        builder,
+                        common_attn_metadata,
+                    )
+                # ### PATCH END: Isolate Async CAM builder inputs
                 attn_metadata_i = builder.build(
                     common_prefix_len=cascade_attn_prefix_len,
                     common_attn_metadata=common_attn_metadata,
@@ -617,6 +681,13 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                     attn_metadata_i.spec_state_indices_tensor[
                         attn_metadata_i.num_spec_decodes :
                     ].fill_(0)
+            # ### PATCH START: Materialize Async CAM backend metadata
+            if is_async_moe_stage_build:
+                materialize_deepseek_attention_metadata(
+                    attn_metadata_i,
+                    common_attn_metadata.positions,
+                )
+            # ### PATCH END: Materialize Async CAM backend metadata
             if isinstance(builder, AscendDSAMetadataBuilder):
                 prefill_ratio_to_sas_metadata = builder.prefill_ratio_to_sas_metadata
                 decode_ratio_to_sas_metadata = builder.decode_ratio_to_sas_metadata
@@ -629,9 +700,27 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 attn_metadata_dict[layer_name] = attn_metadata_i
             # ### PATCH END: AFD per-ubatch metadata assignment
 
-        prefill_ratio_to_sas_metadata: dict[Any, Any] = {}
-        decode_ratio_to_sas_metadata: dict[Any, Any] = {}
-        common_ratio_to_sas_metadata: dict[Any, Any] = {}
+        # ### PATCH START: Isolate Async CAM DSA metadata caches by stage
+        # DSA builders reuse these dictionaries across attention groups with
+        # the same token layout. Async CAM stages have different positions,
+        # sequence lengths, and sparse-attention metadata, so sharing one set
+        # makes later stages reuse the first stage's metadata. Preserve the
+        # pinned upstream cache and request-count behavior for native DBO.
+        if not is_async_moe_stage_build:
+            shared_dsa_metadata_caches = ({}, {}, {})
+            dsa_metadata_caches = [shared_dsa_metadata_caches for _ in ubatch_slices]
+            num_actual_reqs_per_ubatch = [num_reqs for _ in ubatch_slices]
+        else:
+            dsa_metadata_caches = [({}, {}, {}) for _ in ubatch_slices]
+            num_actual_reqs_per_ubatch = [
+                max(
+                    0,
+                    min(ubatch_slice.request_slice.stop, num_reqs)
+                    - ubatch_slice.request_slice.start,
+                )
+                for ubatch_slice in ubatch_slices
+            ]
+        # ### PATCH END: Isolate Async CAM DSA metadata caches by stage
         spec_decode_common_attn_metadata = None
         for kv_cache_gid, kv_cache_group in enumerate(
             self.kv_cache_config.kv_cache_groups,
@@ -644,7 +733,11 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             )
             if self._has_gdn:
                 attn_group = self.attn_groups[kv_cache_gid][0]
-                builder = attn_group.get_metadata_builder(0)
+                # ### PATCH START: Async CAM GDN builder offset
+                builder = attn_group.get_metadata_builder(
+                    metadata_builder_offset,
+                )
+                # ### PATCH END: Async CAM GDN builder offset
                 if isinstance(builder, GDNAttentionMetadataBuilder):
                     cm.query_start_loc_cpu = self.gdn_query_start_loc.cpu[
                         : num_reqs_padded + 1
@@ -680,23 +773,29 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 else:
                     spec_decode_common_attn_metadata = cm
             for attn_gid in range(len(self.attn_groups[kv_cache_gid])):
-                # ### PATCH START: AFD common-metadata split
+                # ### PATCH START: AFD stage metadata split
                 ubatch_common_metadata = split_attn_metadata(
                     ubatch_slices,
                     cm,
                     num_tokens_padded,
                 )
                 for ubid, ubatch_cm in enumerate(ubatch_common_metadata):
+                    (
+                        prefill_ratio_to_sas_metadata,
+                        decode_ratio_to_sas_metadata,
+                        common_ratio_to_sas_metadata,
+                    ) = dsa_metadata_caches[ubid]
                     _build_attn_group_metadata(
                         kv_cache_gid,
                         attn_gid,
                         ubatch_cm,
+                        num_actual_reqs_per_ubatch[ubid],
                         prefill_ratio_to_sas_metadata,
                         decode_ratio_to_sas_metadata,
                         common_ratio_to_sas_metadata,
                         ubid,
                     )
-                # ### PATCH END: AFD common-metadata split
+                # ### PATCH END: AFD stage metadata split
 
         if self.is_mm_prefix_lm:
             req_doc_ranges = {}
@@ -1349,11 +1448,34 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
     ) -> None:
         if self._afd_async_moe_ubatch_metadata is None:
             return
+        metadata = self._afd_async_moe_ubatch_metadata
+        runtime_sequence_parallel = bool(forward_context.flash_comm_v1_enabled)
+        if runtime_sequence_parallel and not metadata.use_sequence_parallel:
+            raise RuntimeError(
+                "Async CAM runtime enabled FlashComm1 for a stage plan that "
+                "was not TP-aligned",
+            )
+        if not runtime_sequence_parallel and metadata.use_sequence_parallel:
+            # vLLM-Ascend decides whether FlashComm1 is active for each model
+            # forward. When it disables FlashComm1, Attention keeps a
+            # replicated token dimension and stage-local TP padding must not
+            # leak into the non-SP model inputs or attention metadata.
+            metadata = AsyncMoeUbatchMetadata(
+                attn_metadata=metadata.attn_metadata,
+                stages=tuple(
+                    AsyncMoeStage(
+                        request_slice=stage.request_slice,
+                        token_slice=stage.token_slice,
+                        input_tokens=stage.actual_tokens,
+                    )
+                    for stage in metadata.stages
+                ),
+                parent_input_tokens=metadata.parent_input_tokens,
+                use_sequence_parallel=False,
+            )
         if forward_context.additional_kwargs is None:
             forward_context.additional_kwargs = {}
-        forward_context.additional_kwargs[ASYNC_MOE_UBATCH_METADATA_KEY] = (
-            self._afd_async_moe_ubatch_metadata
-        )
+        forward_context.additional_kwargs[ASYNC_MOE_UBATCH_METADATA_KEY] = metadata
 
     def _send_dp_metadata(
         self,
@@ -1452,17 +1574,23 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             )
             or self.afd_async_extra_info.async_moe_ubatching
         ):
-            self._ensure_two_metadata_builders()
+            num_metadata_builders = (
+                ASYNC_MOE_STAGE_METADATA_BUILDER_OFFSET
+                + int(self.afd_async_extra_info.async_moe_num_ubatches)
+                if self.afd_async_extra_info.async_moe_ubatching
+                else int(self.vllm_config.parallel_config.num_ubatches)
+            )
+            self._ensure_metadata_builders(num_metadata_builders)
 
-    def _ensure_two_metadata_builders(self) -> None:
+    def _ensure_metadata_builders(self, num_metadata_builders: int) -> None:
         for attn_groups in self.attn_groups:
             for attn_group in attn_groups:
-                if len(attn_group.metadata_builders) >= 2:
+                if len(attn_group.metadata_builders) >= num_metadata_builders:
                     continue
                 attn_group.create_metadata_builders(
                     self.vllm_config,
                     self.device,
-                    num_metadata_builders=2,
+                    num_metadata_builders=num_metadata_builders,
                 )
 
     def _sync_afd_metadata_across_dp(
