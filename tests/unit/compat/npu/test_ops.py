@@ -8,7 +8,7 @@ and that their Meta kernels preserve the expected shape/dtype contracts.
 The real NPU kernel path needs a two-rank HCCL group.  Run it explicitly with:
 
     AFD_RUN_ASCEND_OP_RUNTIME=1 torchrun --standalone --nproc_per_node=2 \
-        tests/e2e/npu/test_a2e_e2a_ops.py
+        tests/unit/compat/npu/test_ops.py
 """
 
 from __future__ import annotations
