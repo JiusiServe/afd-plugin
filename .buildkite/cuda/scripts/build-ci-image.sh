@@ -8,7 +8,7 @@ set -euo pipefail
 # Expects the following environment variables (set by Buildkite):
 #   BUILDKITE_COMMIT          - commit SHA used as the image tag
 ECR_NAMESPACE="public.ecr.aws/q9t5s3a7"
-REGISTRY="${ECR_NAMESPACE}/afd-plugin-ci-test-repo"
+REGISTRY="${ECR_NAMESPACE}/vllm-ci-test-repo"
 REGION="us-east-1"
 DOCKERFILE="docker/Dockerfile.ci"
 BUILDER_NAME="afd-plugin-builder"
