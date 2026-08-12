@@ -20,4 +20,4 @@ steps:
           - "export AFD_E2E_BACKEND=gpu"
           - "export AFD_E2E_DEVICES=0,1,2"
           - "pytest -sv tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py"
-        mirror_hardwares: l4_4
+        mirror_hardwares: h100_3
