@@ -36,10 +36,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VLLM_AFD_PLUGIN=0.0.0+ci \
     SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0+ci
 
-# Editable install into the base image's system Python, locked via uv.lock.
+# Install locked deps into the base image's system Python, then editable-install
+# the project. `uv sync` has no --system; export + uv pip matches the omni
+# system-Python layout while still honoring uv.lock.
 # Do NOT reinstall after the final COPY --link, or Buildkite would need to pull
 # the heavy base image for every source-only change.
-RUN uv sync --locked --group dev --system
+RUN uv export --locked --group dev --no-emit-project -o /tmp/requirements-dev.txt \
+    && uv pip install --system -r /tmp/requirements-dev.txt \
+    && uv pip install --system -e .
 
 # Final stage: overlay workspace sources onto the cached deps image.
 FROM deps
