@@ -50,6 +50,65 @@ rank/device mapping, or when choosing commit boundaries.
 - Run all non-accuracy NPU E2E gates before accuracy. Never use a limited
   accuracy run as final qualification.
 
+## Subagent orchestration
+
+Use distinct subagents when available to separate analysis, implementation,
+testing, and review. The primary agent owns the phase state, architecture-gate
+decision, task graph, integration, staged diff, commits, and final report.
+Subagent conclusions are evidence, not automatic gate decisions.
+
+- **Analysis agents**: keep them read-only. Split work by upstream history or
+  AFD surface, such as vLLM, vLLM-Ascend, patches, models, NPU runtime, and
+  connectors. Require exact paths, symbols, SHAs, classifications, affected
+  invariants, and proposed tests. Allow independent analysis agents to run in
+  parallel.
+- **Implementation agents**: dispatch them only after the architecture gate
+  passes. Give each agent one coherent root cause and an explicit, non-overlapping
+  AFD file set. They may edit only those files and their focused tests. Prohibit
+  staging, committing, pushing, changing branches, or modifying either upstream
+  source tree or target worktree. Serialize implementation in a shared AFD
+  checkout. Parallelize only in primary-created, fixed-base AFD worktrees with
+  independent file ownership; return each raw diff to the primary agent for
+  one-at-a-time integration and validation in the main upgrade checkout.
+- **Test agents**: prohibit changes to tracked or source files. Allow writes only
+  to handoff-designated temporary, log, cache, and artifact paths. Assign exact
+  commands and validation cells, require complete logs, counts, first root
+  traceback, skips, and cleanup, and return failures to the primary agent for
+  classification. Make agents that run NPU E2E read `../run-e2e/SKILL.md`.
+  Serialize jobs unless device IDs, port ranges, writable cache paths, temporary
+  and log directories, process/service ownership, and cleanup ownership are all
+  explicitly isolated. Permit shared read-only model access.
+- **Review agents**: keep them read-only and independent from the implementation
+  task. Give them the raw diff plus exact target upstream trees and require
+  review first for minimal and simple implementation, compliance with
+  `AGENTS.md` and established local style, and duplicated, obsolete, dead, or
+  unnecessary compatibility code. Then review exact upstream signatures, patch
+  markers, architecture, state ownership, execution order, and test coverage.
+  Require actionable findings with priority and file/line evidence; do not ask
+  the reviewer to fix its findings.
+
+Before dispatching any subagent, record its role, objective, current and target
+SHAs, upstream source/worktree paths, assigned AFD checkout/worktree and fixed
+base, allowed AFD files, allowed commands, prohibited actions, dependencies, and
+required output using the handoff template in the workbook. Because agents share
+one workspace, record the starting diff and never give concurrent implementation
+agents the same checkout or overlapping paths. Require every edit, test, and
+review command to run in the assigned AFD path. Never run testing or review in a
+workspace while an implementation agent is writing it. Freeze the diff first,
+then inspect every returned diff and command result directly.
+
+Use this loop for every coherent adaptation or test-failure root cause:
+
+```text
+ANALYZE -> PRIMARY GATE DECISION -> IMPLEMENT -> FOCUSED TEST
+        -> INDEPENDENT REVIEW -> PRIMARY STAGE/COMMIT -> REGRESSION GATE
+```
+
+If review or testing finds a new major architecture change, return to the
+architecture gate and stop production edits. If it finds a local defect, assign
+one bounded implementation task, repeat focused validation and independent
+review, then let only the primary agent create the signed-off commit.
+
 ## Required phase record
 
 At each phase boundary record:

@@ -7,12 +7,13 @@ do not add generated reports to the repository unless the user requests one.
 
 1. Identity ledger
 2. Source resolution and diff commands
-3. Patch and feature inventories
-4. Impact matrix
-5. Architecture stop report
-6. Commit discipline
-7. Validation ledger
-8. Completion report
+3. Subagent handoff ledger
+4. Patch and feature inventories
+5. Impact matrix
+6. Architecture stop report
+7. Commit discipline
+8. Validation ledger
+9. Completion report
 
 ## Identity ledger
 
@@ -89,6 +90,57 @@ rg -n 'NPUWorker|NPUModelRunner|forward_context|ACLGraph|ubatch|DBO|PCP|CAM' \
 Compare an AFD copied function with both old and target upstream definitions.
 Check the full signature, defaults, return annotation, decorator, method type,
 body order, state owner, and every local marker block.
+
+## Subagent handoff ledger
+
+Record every delegated task before dispatch. Do not give concurrent
+implementation agents overlapping files.
+
+| Agent/task | Role | Objective/root cause | Allowed files/commands | Dependencies | Status/evidence |
+| --- | --- | --- | --- | --- | --- |
+| | analysis / implementation / test / review | | | | |
+
+Use this handoff template:
+
+```text
+Role:
+Objective or root cause:
+Current vLLM / vLLM-Ascend SHAs:
+Target vLLM / vLLM-Ascend SHAs:
+Upstream source and target worktree paths:
+AFD working checkout/worktree path:
+AFD fixed base HEAD and starting diff:
+Allowed files:
+Allowed commands:
+Required invariants and tests:
+Primary review checks: simplicity/minimality, code style, redundant/dead code
+Prohibited actions:
+Dependencies:
+Exclusive device IDs:
+Exclusive port range:
+Read-only model path and access mode:
+Exclusive writable cache paths:
+Temporary, log, and artifact paths:
+Owned processes or service instances:
+Cleanup owner and command:
+Required output:
+```
+
+Default prohibited actions for every subagent are staging, committing, pushing,
+changing branches, editing user-provided upstream checkouts, and deleting or
+resetting user changes. Analysis and review agents are read-only. A test agent
+must not modify tracked or source files and may write only to its assigned
+temporary, log, cache, and artifact paths. An implementation agent may edit only
+its assigned non-overlapping AFD paths and focused tests. Require every agent to
+return inspected files, findings or changes, exact commands/results, remaining
+risks, and whether cleanup completed.
+
+Serialize implementation agents in a shared AFD checkout. For parallel
+implementation, have the primary agent create one fixed-base AFD worktree per
+root cause, prohibit overlap, and collect raw diffs for one-at-a-time integration
+and validation in the main upgrade checkout. Do not run a test or review in a
+worktree while any implementation agent is changing it. Serialize test agents
+unless every exclusive-resource field above has a non-conflicting value.
 
 ## Patch inventory
 
