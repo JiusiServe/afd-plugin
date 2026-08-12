@@ -1,7 +1,10 @@
 # NPU upgrade workbook
 
-Use these tables during an upgrade. Keep them in task notes or the final report;
-do not add generated reports to the repository unless the user requests one.
+Use these tables during an upgrade. Keep filled ledgers and the completion report
+in task notes; do not add them to the repository unless the user requests it.
+The required version-specific lesson is not a generated report: create, review,
+and commit it under this skill's `references/` directory after every completed
+upgrade.
 
 ## Contents
 
@@ -13,7 +16,8 @@ do not add generated reports to the repository unless the user requests one.
 6. Architecture stop report
 7. Commit discipline
 8. Validation ledger
-9. Completion report
+9. Upgrade lesson template
+10. Completion report
 
 ## Identity ledger
 
@@ -276,11 +280,85 @@ Use this sequence:
 5. all NPU model/connector E2E;
 6. full NPU accuracy eager and graph with no GSM8K limit;
 7. documentation refresh using `documentation-refresh.md`;
-8. final version/docs/generated-metadata consistency audit.
+8. final version/docs/generated-metadata consistency audit;
+9. new version-specific upgrade lesson and required review.
 
 After a code failure, rerun the narrow reproduction, the complete basic gate,
 then any later gates. Preserve failure logs instead of overwriting them with a
 passing retry.
+
+## Upgrade lesson template
+
+After the final audit passes, create a new file named
+`references/<YYYYMMDD>-<current-vllm>-to-<target-vllm>-lessons.md`. Sanitize
+refs for a portable filename, use a short resolved SHA when there is no immutable
+tag, and add a suffix rather than overwriting an existing file. Keep the
+`-lessons.md` suffix so future upgrades discover it with
+`references/*lessons.md`.
+
+```markdown
+# Lessons from the <current> to <target> NPU upgrade
+
+## Runtime identity and scope
+
+- AFD before/after commits:
+- current vLLM / vLLM-Ascend refs and full SHAs:
+- target vLLM / vLLM-Ascend refs and full SHAs:
+- Python / PyTorch / torch_npu / CANN / operators / hardware:
+- models, connectors, topology, eager/graph/DBO/PCP, and exclusions:
+
+## Upstream changes that mattered
+
+- changed contract and evidence:
+- affected AFD invariant:
+- mechanical, behavioral, or architectural classification:
+
+## Adaptations and patch lifecycle
+
+- implementation and why it was the smallest correct seam:
+- patches retained, rebased, removed, or replaced and why:
+- relevant commits and focused tests:
+
+## Failures and root causes
+
+- symptom and first useful traceback:
+- upstream or AFD root cause:
+- misleading attempts or assumptions:
+- final fix and proof:
+
+## Validation and environment lessons
+
+- commands/results that exposed real issues:
+- NPU, topology, package, port, cache, or cleanup pitfalls:
+- gaps between unit, native runtime, E2E, and accuracy evidence:
+
+## Documentation and process lessons
+
+- stale or conflicting claims found:
+- workflow, subagent, review, or commit practices that helped or failed:
+
+## Reusable principles
+
+- lesson that should apply beyond this version pair:
+
+## Version-specific facts
+
+- fact that must be revalidated and not generalized:
+
+## Remaining debt and next-upgrade checklist
+
+- unsupported or unvalidated cells:
+- temporary compatibility and removal trigger:
+- symbols, files, commands, and invariants to inspect first next time:
+```
+
+Keep the lesson concise and evidence-backed. Link logs, commits, tests, or
+upstream symbols rather than embedding large outputs. Do not include credentials,
+private endpoints, or machine-specific secrets. When a review subagent is
+available, obtain its independent read-only review. Otherwise freeze the diff
+and make the primary agent perform a separate read-only review pass before it
+creates the signed-off lesson commit. If review leads to any change, freeze the
+new diff and repeat the required review before committing.
 
 ## Completion report
 
@@ -312,6 +390,7 @@ Documentation refresh:
 - documentation commit SHAs:
 
 Final version/docs audit:
+Upgrade lesson path and commit:
 Unsupported/unvalidated/excluded:
 Branch/publish status:
 ```

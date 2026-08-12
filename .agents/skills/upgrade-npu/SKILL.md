@@ -12,10 +12,13 @@ obsolete implementation shapes merely because they existed at the old version.
 
 Read the repository `AGENTS.md` before acting. Read
 [`references/upgrade-workbook.md`](references/upgrade-workbook.md) for the
-required evidence tables, commands, and report templates. Read
+required evidence tables, commands, and report templates. List the available
+`references/*lessons.md` files and read every one before analysis; each is short,
+historical upgrade evidence whose relevance may not be obvious from its
+filename. In particular, apply the failure patterns in
 [`references/v0191-to-v026-lessons.md`](references/v0191-to-v026-lessons.md)
 when the upgrade affects MoE construction, W8A8, PCP, DBO/uBatch, CAM,
-rank/device mapping, or when choosing commit boundaries.
+rank/device mapping, or commit boundaries.
 
 ## Hard boundaries
 
@@ -135,7 +138,8 @@ FREEZE_IDENTITY
   -> NPU_BASIC_E2E_GATE
   -> NPU_ACCURACY_GATE
   -> DOCUMENTATION_REFRESH_GATE
-  -> AUDIT_AND_REPORT
+  -> FINAL_AUDIT
+  -> CAPTURE_LESSONS_AND_REPORT
 ```
 
 ## Phase 0 — Freeze identity
@@ -403,13 +407,39 @@ Do not enter final audit while documentation claims conflict, target runnable
 examples still use an obsolete stack, or a validated/unsupported status lacks
 evidence.
 
-## Phase 10 — Audit and report
+## Phase 10 — Final audit
 
 Audit all version pins, source annotations, support matrices, generated metadata,
 recipes, container/operator packages, historical-branch notes, and docs. Do not
 replace historical version references that remain intentionally scoped to old
 branches. Confirm every changed patch has a focused test and an upstream/removal
 plan.
+
+## Phase 11 — Capture lessons and report
+
+Enter only after validation, documentation refresh, and the final audit pass.
+Before declaring the workflow complete, create a new version-specific Markdown
+file under `.agents/skills/upgrade-npu/references/` using the lesson template in
+the workbook. Name it
+`<YYYYMMDD>-<current-vllm>-to-<target-vllm>-lessons.md`; sanitize refs for a
+portable filename and use a short resolved SHA when no immutable release tag is
+available. Record both vLLM-Ascend refs and SHAs inside the file. Never overwrite
+or rewrite a prior upgrade's lesson file.
+
+Record the exact four revisions and stack, architecture decision, adaptations,
+patches removed or retained, test failures and root causes, misleading attempts,
+effective fixes, validation evidence, documentation inconsistencies, remaining
+debt, and concrete checks for the next upgrade. Separate reusable principles
+from facts specific to this version pair. Link evidence instead of copying large
+logs, and exclude credentials, private endpoints, and machine-specific secrets.
+
+When available, have an independent review agent check the lesson for factual
+evidence, duplication, and actionable next-upgrade guidance. Otherwise freeze
+the diff and have the primary agent perform a separate read-only review pass
+before editing again. If review causes any change, freeze the new diff and repeat
+review. Create a focused signed-off documentation commit only after the final
+lesson diff passes review. Include the new lesson and any direct index/reference
+update it requires, then record its path and commit SHA in the completion report.
 
 Report:
 
@@ -420,10 +450,12 @@ Report:
 - static/unit, native control, basic E2E, and full accuracy commands/results;
 - pass/fail/error/skip counts, skip reasons, metrics, logs, and cleanup status;
 - every unvalidated, unsupported, removed, or explicitly excluded combination;
+- the new upgrade lesson path and its signed-off commit;
 - whether the branch is only local and that nothing was pushed.
 
 Declare the upgrade complete only when the target pair is immutable and
 compatible, the architecture gate passed before implementation, all code changes
 are committed atomically, the complete non-accuracy NPU gate passed with no new
 unexplained skips, full accuracy passed as the final test gate, the documentation
-refresh gate passed, and the final version/documentation audit is clean.
+refresh gate passed, the final version/documentation audit is clean, and a new
+reviewed version-specific lesson has been committed for the next upgrade.
