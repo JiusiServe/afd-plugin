@@ -1,6 +1,6 @@
 ---
 name: run-e2e
-description: Use when the user asks to run, validate, or diagnose the AFD plugin's DeepSeek-V2-Lite end-to-end tests on GPU or Ascend NPU hardware, including PR-gate E2E, GSM8K-7 accuracy, graph, eager, or DBO scenarios.
+description: Use when the user asks to run, validate, or diagnose the AFD plugin's DeepSeek-V2-Lite end-to-end tests on GPU or Ascend NPU hardware, including PR-gate E2E, GSM8K-7 accuracy, graph, eager, DBO, or 2A2F scenarios.
 ---
 
 # Run AFD E2E Tests
@@ -15,9 +15,8 @@ tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py:
 - afd-graph
 - afd-graph-dbo
 
-Each scenario evaluates the first 7 GSM8K samples with 2 Attention ranks and 1
-FFN rank. Do not use removed markers, categories, TP, or 2A2F workflows. This
-skill does not cover unit tests or source edits.
+Each default scenario evaluates the first 7 GSM8K samples with 2 Attention
+ranks and 1 FFN rank. `afd-graph-dbo-2a2f` is a separate opt-in case.
 
 ## Workflow
 
@@ -80,10 +79,24 @@ From the repository root, stream output in the foreground:
 
 ~~~bash
 python -m pytest -q -s \
-  tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py
+  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-eager]" \
+  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-graph]" \
+  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-graph-dbo]" \
+  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[baseline-graph]"
 ~~~
 
 Do not add backend markers or run scenarios in parallel; they share devices.
+
+For the opt-in GPU/NPU 2A2F case, set four unique device IDs and run:
+
+~~~bash
+export AFD_E2E_DEVICES=0,1,2,3
+python -m pytest -q -s \
+  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-graph-dbo-2a2f]"
+~~~
+
+The first two devices run Attention DP2/TP1. The last two run FFN
+DP2/TP1/EP2.
 
 On cancellation, forward SIGTERM and allow over 90 seconds for cleanup.
 
@@ -97,7 +110,7 @@ actionable error, and cleanup status. Any skip is a gate failure.
 | Variable | Backend | Required |
 |---|---|---|
 | AFD_E2E_BACKEND | both | yes: gpu or npu |
-| AFD_E2E_DEVICES | both | yes: exactly 3 unique IDs |
+| AFD_E2E_DEVICES | both | yes: 3 default or 4 for 2A2F |
 | AFD_GPU_E2E_MODEL | GPU | yes |
 | AFD_GPU_E2E_VLLM_BIN | GPU | no; defaults to vllm |
 | AFD_NPU_E2E_MODEL | NPU | yes |

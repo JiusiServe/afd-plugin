@@ -1,0 +1,130 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+"""NPU smoke test for DeepSeek-V2-Lite with async CAM."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+from tests.e2e.models.deepseek_v2_lite.test_deepseek_v2_lite import (
+    _devices,
+    _required_env,
+    _run_runner,
+)
+from tests.e2e.runner import (
+    ASYNC_CAM_ATTENTION_RANKS,
+    ASYNC_CAM_FFN_RANKS,
+    ASYNC_CAM_SCENARIO,
+)
+
+CAM_VENDOR_PATH = Path("/usr/local/Ascend/cann-9.0.1/opp/vendors/CAM")
+CAM_OP_API_PATH = CAM_VENDOR_PATH / "op_api"
+CAM_OP_API_LIB_PATH = CAM_OP_API_PATH / "lib"
+CAM_HCCL_BUFFER_SIZE = "4096"
+CAM_MAX_NUM_SEQUENCES = "8"
+CAM_MAX_BATCHED_TOKENS = "8000"
+CAM_MEMORY_UTILIZATION = "0.75"
+
+
+def _prepend_env_paths(env: dict[str, str], name: str, *paths: Path) -> None:
+    existing = [path for path in env.get(name, "").split(os.pathsep) if path]
+    env[name] = os.pathsep.join(
+        dict.fromkeys([*(str(path) for path in paths), *existing]),
+    )
+
+
+def _async_cam_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("VLLM_USE_V1", "1")
+    env["HCCL_BUFFSIZE"] = CAM_HCCL_BUFFER_SIZE
+    env.setdefault("PYTORCH_NPU_ALLOC_CONF", "expandable_segments:True")
+    env.setdefault("ASCEND_LAUNCH_BLOCKING", "1")
+    env.setdefault("VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL", "1")
+    env.setdefault("VLLM_ASCEND_ENABLE_FLASHCOMM1", "1")
+    _prepend_env_paths(
+        env,
+        "LD_LIBRARY_PATH",
+        CAM_OP_API_PATH,
+        CAM_OP_API_LIB_PATH,
+    )
+    _prepend_env_paths(env, "ASCEND_CUSTOM_OPP_PATH", CAM_VENDOR_PATH)
+    return env
+
+
+def _connector_extra_config(model: str) -> str:
+    dynamic_quant = int(
+        os.environ.get(
+            "AFD_NPU_ASYNC_CAM_E2E_DYNAMIC_QUANT",
+            "1" if (Path(model) / "quant_model_description.json").is_file() else "0",
+        ),
+    )
+    return json.dumps({"dynamicQuant": dynamic_quant}, separators=(",", ":"))
+
+
+def build_runner_command() -> list[str]:
+    backend = _required_env("AFD_E2E_BACKEND")
+    if backend != "npu":
+        raise RuntimeError("async CAM E2E requires AFD_E2E_BACKEND=npu")
+
+    device_count = ASYNC_CAM_ATTENTION_RANKS + ASYNC_CAM_FFN_RANKS
+    devices = _devices("AFD_E2E_DEVICES", device_count)
+    model = _required_env("AFD_NPU_E2E_MODEL")
+    common_arguments = (
+        "--trust-remote-code",
+        "--max-num-seqs",
+        CAM_MAX_NUM_SEQUENCES,
+        "--max-num-batched-tokens",
+        CAM_MAX_BATCHED_TOKENS,
+        "--gpu-memory-utilization",
+        CAM_MEMORY_UTILIZATION,
+        "--no-enable-prefix-caching",
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "tests.e2e.runner",
+        "--model",
+        model,
+        "--vllm-bin",
+        os.environ.get("AFD_NPU_E2E_VLLM_BIN", "vllm"),
+        "--device-backend",
+        "npu",
+        "--attention-devices",
+        ",".join(devices[:ASYNC_CAM_ATTENTION_RANKS]),
+        "--ffn-devices",
+        ",".join(devices[ASYNC_CAM_ATTENTION_RANKS:]),
+        "--scenario",
+        ASYNC_CAM_SCENARIO,
+        "--served-model-name-prefix",
+        "cam-async",
+        "--afd-connector-extra-config",
+        _connector_extra_config(model),
+        "--api-port-base",
+        os.environ.get("AFD_NPU_ASYNC_CAM_E2E_API_PORT", "19080"),
+        "--afd-port",
+        os.environ.get("AFD_NPU_ASYNC_CAM_E2E_AFD_PORT", "6453"),
+        "--startup-timeout",
+        os.environ.get("AFD_NPU_E2E_STARTUP_TIMEOUT", "900"),
+        *(f"--common-vllm-arg={argument}" for argument in common_arguments),
+    ]
+    max_model_len = os.environ.get("AFD_NPU_ASYNC_CAM_E2E_MAX_MODEL_LEN")
+    if max_model_len:
+        command.extend(
+            [
+                "--common-vllm-arg=--max-model-len",
+                f"--common-vllm-arg={max_model_len}",
+            ],
+        )
+    return command
+
+
+@pytest.mark.npu
+@pytest.mark.e2e
+@pytest.mark.slow
+def test_deepseek_v2_lite_async_cam() -> None:
+    _run_runner(build_runner_command(), env=_async_cam_env())
