@@ -5,7 +5,68 @@
 from __future__ import annotations
 
 import os
+import signal
+import subprocess
+from contextlib import suppress
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+# Covers the roughly 64-second nested lm-eval/vLLM cleanup bound with buffer.
+RUNNER_CLEANUP_TIMEOUT_S = 90
+
+
+def run_runner(command: list[str], env: dict[str, str] | None = None) -> None:
+    """Run an E2E runner command and forward cancellation to the process group."""
+    handled_signals = (signal.SIGTERM, signal.SIGINT)
+    previous_handlers = {signum: signal.getsignal(signum) for signum in handled_signals}
+    process: subprocess.Popen | None = None
+    received_signal: int | None = None
+    forwarded = False
+
+    def forward_received_signal() -> None:
+        nonlocal forwarded
+        if process is None or received_signal is None or forwarded:
+            return
+        forwarded = True
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, received_signal)
+        raise SystemExit(128 + received_signal)
+
+    def forward_cancellation(signum, _frame) -> None:
+        nonlocal received_signal
+        if received_signal is not None:
+            return
+        received_signal = signum
+        forward_received_signal()
+
+    for signum in handled_signals:
+        signal.signal(signum, forward_cancellation)
+
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=REPO_ROOT,
+            env=env,
+            start_new_session=True,
+        )
+        forward_received_signal()
+        returncode = process.wait()
+        if returncode != 0:
+            raise subprocess.CalledProcessError(returncode, command)
+    finally:
+        try:
+            if process is not None and process.poll() is None:
+                try:
+                    process.wait(timeout=RUNNER_CLEANUP_TIMEOUT_S)
+                except subprocess.TimeoutExpired:
+                    try:
+                        with suppress(ProcessLookupError):
+                            os.killpg(process.pid, signal.SIGKILL)
+                    finally:
+                        process.wait()
+        finally:
+            for signum, previous_handler in previous_handlers.items():
+                signal.signal(signum, previous_handler)
 
 
 def download_dataset(dataset_id: str, dataset_config: str | None = None) -> None:

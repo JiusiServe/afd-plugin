@@ -3,7 +3,7 @@
 # ``agents`` + ``plugins``, then strips ``mirror_hardwares`` before Buildkite upload.
 #
 # CUDA naming: {chip}_{count}
-#   l4_1, h100_3
+#   l4_1, h100_4
 
 mirror_hardwares:
   l4_1:

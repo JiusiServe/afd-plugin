@@ -1,270 +1,21 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import io
 import json
 import signal
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
+import tests.conftest as conftest
+from tests.conftest import REPO_ROOT, RUNNER_CLEANUP_TIMEOUT_S, run_runner
 from tests.e2e import runner
 from tests.e2e.accuracy import gsm8k as helpers_gsm8k
 
-E2E_ENTRYPOINT_ENV_VARS = (
-    "AFD_E2E_BACKEND",
-    "AFD_E2E_DEVICES",
-    "AFD_GPU_E2E_MODEL",
-    "AFD_GPU_E2E_VLLM_BIN",
-    "AFD_NPU_E2E_MODEL",
-    "AFD_NPU_E2E_VLLM_BIN",
-)
 
-
-def _e2e_entrypoint():
-    return importlib.import_module(
-        "tests.e2e.models.deepseek_v2_lite.test_deepseek_v2_lite",
-    )
-
-
-def _async_cam_entrypoint():
-    return importlib.import_module(
-        "tests.e2e.models.deepseek_v2_lite.test_async_cam_npu",
-    )
-
-
-def _set_e2e_entrypoint_env(monkeypatch, backend: str) -> None:
-    for name in E2E_ENTRYPOINT_ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("AFD_E2E_BACKEND", backend)
-    if backend == "gpu":
-        monkeypatch.setenv("AFD_E2E_DEVICES", "2, 4, 6")
-        monkeypatch.setenv("AFD_GPU_E2E_MODEL", "/models/deepseek-v2-lite-gpu")
-        monkeypatch.setenv("AFD_GPU_E2E_VLLM_BIN", "/opt/gpu/bin/vllm")
-    elif backend == "npu":
-        monkeypatch.setenv("AFD_E2E_DEVICES", "1, 3, 5")
-        monkeypatch.setenv("AFD_NPU_E2E_MODEL", "/models/deepseek-v2-lite-npu")
-        monkeypatch.setenv("AFD_NPU_E2E_VLLM_BIN", "/opt/npu/bin/vllm")
-
-
-def test_e2e_entrypoint_builds_gpu_runner_command(monkeypatch, tmp_path):
-    _set_e2e_entrypoint_env(monkeypatch, "gpu")
-    output_path = tmp_path / "afd-graph"
-
-    command = _e2e_entrypoint().build_runner_command("afd-graph", output_path)
-
-    assert command == [
-        sys.executable,
-        "-m",
-        "tests.e2e.runner",
-        "--model",
-        "/models/deepseek-v2-lite-gpu",
-        "--vllm-bin",
-        "/opt/gpu/bin/vllm",
-        "--device-backend",
-        "gpu",
-        "--attention-devices",
-        "2,4",
-        "--ffn-devices",
-        "6",
-        "--scenario",
-        "afd-graph",
-        "--gsm8k-output-path",
-        str(output_path),
-    ]
-
-
-def test_e2e_entrypoint_builds_npu_runner_command(monkeypatch, tmp_path):
-    _set_e2e_entrypoint_env(monkeypatch, "npu")
-    output_path = tmp_path / "afd-graph-dbo"
-
-    command = _e2e_entrypoint().build_runner_command(
-        "afd-graph-dbo",
-        output_path,
-    )
-
-    assert command == [
-        sys.executable,
-        "-m",
-        "tests.e2e.runner",
-        "--model",
-        "/models/deepseek-v2-lite-npu",
-        "--vllm-bin",
-        "/opt/npu/bin/vllm",
-        "--device-backend",
-        "npu",
-        "--attention-devices",
-        "1,3",
-        "--ffn-devices",
-        "5",
-        "--scenario",
-        "afd-graph-dbo",
-        "--gsm8k-output-path",
-        str(output_path),
-    ]
-
-
-@pytest.mark.parametrize("backend", ["gpu", "npu"])
-def test_e2e_entrypoint_builds_four_device_2a2f_command(
-    monkeypatch,
-    tmp_path,
-    backend,
-):
-    _set_e2e_entrypoint_env(monkeypatch, backend)
-    monkeypatch.setenv("AFD_E2E_DEVICES", "0,1,2,3")
-
-    command = _e2e_entrypoint().build_runner_command(
-        "afd-graph-dbo-2a2f",
-        tmp_path / "afd-graph-dbo-2a2f",
-    )
-
-    assert command[command.index("--attention-devices") + 1] == "0,1"
-    assert command[command.index("--ffn-devices") + 1] == "2,3"
-    assert command[command.index("--scenario") + 1] == "afd-graph-dbo-2a2f"
-
-
-@pytest.mark.parametrize(("backend", "expected_device"), [("gpu", "2"), ("npu", "1")])
-def test_e2e_entrypoint_baseline_uses_only_one_attention_device(
-    monkeypatch,
-    tmp_path,
-    backend,
-    expected_device,
-):
-    _set_e2e_entrypoint_env(monkeypatch, backend)
-
-    command = _e2e_entrypoint().build_runner_command(
-        "baseline-graph",
-        tmp_path / "baseline-graph",
-    )
-
-    assert command[command.index("--attention-devices") + 1] == expected_device
-    assert "--ffn-devices" not in command
-
-
-@pytest.mark.parametrize(
-    ("backend", "missing_name"),
-    [
-        (None, "AFD_E2E_BACKEND"),
-        ("gpu", "AFD_E2E_DEVICES"),
-        ("gpu", "AFD_GPU_E2E_MODEL"),
-        ("npu", "AFD_E2E_DEVICES"),
-        ("npu", "AFD_NPU_E2E_MODEL"),
-    ],
-)
-def test_e2e_entrypoint_rejects_missing_required_configuration(
-    monkeypatch,
-    tmp_path,
-    backend,
-    missing_name,
-):
-    _set_e2e_entrypoint_env(monkeypatch, backend or "")
-    monkeypatch.delenv(missing_name, raising=False)
-
-    with pytest.raises(RuntimeError, match=missing_name):
-        _e2e_entrypoint().build_runner_command("afd-eager", tmp_path / "results")
-
-
-def test_e2e_entrypoint_rejects_unknown_backend(monkeypatch, tmp_path):
-    _set_e2e_entrypoint_env(monkeypatch, "tpu")
-
-    with pytest.raises(RuntimeError, match="AFD_E2E_BACKEND"):
-        _e2e_entrypoint().build_runner_command("afd-eager", tmp_path / "results")
-
-
-@pytest.mark.parametrize(
-    "backend",
-    ["gpu", "npu"],
-)
-def test_e2e_entrypoint_rejects_wrong_device_count(
-    monkeypatch,
-    tmp_path,
-    backend,
-):
-    _set_e2e_entrypoint_env(monkeypatch, backend)
-    monkeypatch.setenv("AFD_E2E_DEVICES", "0,1")
-
-    with pytest.raises(RuntimeError, match="AFD_E2E_DEVICES"):
-        _e2e_entrypoint().build_runner_command("afd-eager", tmp_path / "results")
-
-
-@pytest.mark.parametrize(
-    "backend",
-    ["gpu", "npu"],
-)
-def test_e2e_entrypoint_rejects_reused_devices(
-    monkeypatch,
-    tmp_path,
-    backend,
-):
-    _set_e2e_entrypoint_env(monkeypatch, backend)
-    monkeypatch.setenv("AFD_E2E_DEVICES", "0,0,2")
-
-    with pytest.raises(RuntimeError, match="unique"):
-        _e2e_entrypoint().build_runner_command("afd-eager", tmp_path / "results")
-
-
-def test_async_cam_entrypoint_builds_a_four_npu_runner_command(
-    monkeypatch,
-):
-    monkeypatch.setenv("AFD_E2E_BACKEND", "npu")
-    monkeypatch.setenv("AFD_E2E_DEVICES", "0,2,4,6")
-    monkeypatch.setenv("AFD_NPU_E2E_MODEL", "/models/deepseek-v2-lite-npu")
-    monkeypatch.setenv("AFD_NPU_E2E_VLLM_BIN", "/opt/npu/bin/vllm")
-    monkeypatch.delenv("AFD_NPU_ASYNC_CAM_E2E_DYNAMIC_QUANT", raising=False)
-
-    entrypoint = _async_cam_entrypoint()
-    command = entrypoint.build_runner_command()
-    env = entrypoint._async_cam_env()
-
-    assert command[command.index("--attention-devices") + 1] == "0,2"
-    assert command[command.index("--ffn-devices") + 1] == "4,6"
-    assert command[command.index("--scenario") + 1] == "afd-eager-async-cam"
-    assert command[command.index("--model") + 1] == "/models/deepseek-v2-lite-npu"
-    assert command[command.index("--vllm-bin") + 1] == "/opt/npu/bin/vllm"
-    assert "--common-vllm-arg=--gpu-memory-utilization" in command
-    assert "--common-vllm-arg=0.75" in command
-    extra_config = json.loads(
-        command[command.index("--afd-connector-extra-config") + 1],
-    )
-    assert extra_config == {"dynamicQuant": 0}
-    assert env["HCCL_BUFFSIZE"] == "4096"
-    assert str(entrypoint.CAM_OP_API_LIB_PATH) in env["LD_LIBRARY_PATH"]
-    assert str(entrypoint.CAM_VENDOR_PATH) in env["ASCEND_CUSTOM_OPP_PATH"]
-
-
-@pytest.mark.parametrize(
-    ("backend", "devices", "model", "error"),
-    [
-        ("gpu", "0,1,2,3", "model", "requires AFD_E2E_BACKEND=npu"),
-        ("npu", "0,1,2", "model", "exactly 4 devices"),
-        ("npu", "0,1,2,2", "model", "unique"),
-        ("npu", "0,1,2,3", None, "AFD_NPU_E2E_MODEL"),
-    ],
-)
-def test_async_cam_entrypoint_rejects_invalid_configuration(
-    monkeypatch,
-    backend,
-    devices,
-    model,
-    error,
-):
-    monkeypatch.setenv("AFD_E2E_BACKEND", backend)
-    monkeypatch.setenv("AFD_E2E_DEVICES", devices)
-    monkeypatch.delenv("AFD_NPU_E2E_MODEL", raising=False)
-    if model:
-        monkeypatch.setenv("AFD_NPU_E2E_MODEL", model)
-
-    with pytest.raises(RuntimeError, match=error):
-        _async_cam_entrypoint().build_runner_command()
-
-
-def test_e2e_entrypoint_forwards_cancellation_and_reaps_runner(monkeypatch):
-    entrypoint = _e2e_entrypoint()
-    monkeypatch.setattr(entrypoint, "os", runner.os, raising=False)
-    monkeypatch.setattr(entrypoint, "signal", signal, raising=False)
+def test_run_runner_forwards_cancellation_and_reaps(monkeypatch):
     command = [sys.executable, "-m", "tests.e2e.runner"]
     previous_handlers = {
         signal.SIGTERM: object(),
@@ -304,42 +55,41 @@ def test_e2e_entrypoint_forwards_cancellation_and_reaps_runner(monkeypatch):
         signal_calls.append((signum, handler))
         installed_handlers[signum] = handler
 
-    monkeypatch.setattr(entrypoint.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(conftest.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(
-        entrypoint.signal,
+        conftest.signal,
         "getsignal",
         lambda signum: previous_handlers[signum],
     )
-    monkeypatch.setattr(entrypoint.signal, "signal", fake_signal)
+    monkeypatch.setattr(conftest.signal, "signal", fake_signal)
     monkeypatch.setattr(
-        entrypoint.os,
+        conftest.os,
         "killpg",
         lambda pid, sig: kill_calls.append((pid, sig)),
         raising=False,
     )
-    monkeypatch.setattr(entrypoint.signal, "SIGKILL", 9, raising=False)
+    monkeypatch.setattr(conftest.signal, "SIGKILL", 9, raising=False)
 
     with pytest.raises(SystemExit) as error:
-        entrypoint._run_runner(command)
+        run_runner(command)
 
     assert error.value.code == 128 + signal.SIGTERM
     assert popen_calls == [
         (
             command,
             {
-                "cwd": Path(__file__).resolve().parents[2],
+                "cwd": REPO_ROOT,
                 "env": None,
                 "start_new_session": True,
             },
         ),
     ]
     assert kill_calls == [(321, signal.SIGTERM), (321, 9)]
-    assert process.wait_calls == [None, entrypoint.RUNNER_CLEANUP_TIMEOUT_S, None]
+    assert process.wait_calls == [None, RUNNER_CLEANUP_TIMEOUT_S, None]
     assert signal_calls[-2:] == list(previous_handlers.items())
 
 
-def test_e2e_entrypoint_forwards_signal_received_during_spawn(monkeypatch):
-    entrypoint = _e2e_entrypoint()
+def test_run_runner_forwards_signal_received_during_spawn(monkeypatch):
     handlers = {}
     forwarded = []
 
@@ -353,29 +103,27 @@ def test_e2e_entrypoint_forwards_signal_received_during_spawn(monkeypatch):
         handlers[signal.SIGTERM](signal.SIGTERM, None)
         return FakeProcess()
 
-    monkeypatch.setattr(entrypoint.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(entrypoint.signal, "getsignal", lambda _signum: None)
+    monkeypatch.setattr(conftest.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(conftest.signal, "getsignal", lambda _signum: None)
     monkeypatch.setattr(
-        entrypoint.signal,
+        conftest.signal,
         "signal",
         lambda signum, handler: handlers.__setitem__(signum, handler),
     )
     monkeypatch.setattr(
-        entrypoint.os,
+        conftest.os,
         "killpg",
         lambda pid, sig: forwarded.append((pid, sig)),
         raising=False,
     )
 
     with pytest.raises(SystemExit, match=str(128 + signal.SIGTERM)):
-        entrypoint._run_runner(["runner"])
+        run_runner(["runner"])
 
     assert forwarded == [(321, signal.SIGTERM)]
 
 
-def test_e2e_entrypoint_fails_for_a_nonzero_runner_exit(monkeypatch):
-    entrypoint = _e2e_entrypoint()
-    monkeypatch.setattr(entrypoint, "signal", signal, raising=False)
+def test_run_runner_fails_for_a_nonzero_exit(monkeypatch):
     command = [sys.executable, "-m", "tests.e2e.runner"]
 
     class FailedProcess:
@@ -389,14 +137,14 @@ def test_e2e_entrypoint_fails_for_a_nonzero_runner_exit(monkeypatch):
             return self.returncode
 
     monkeypatch.setattr(
-        entrypoint.subprocess,
+        conftest.subprocess,
         "Popen",
         lambda *_args, **_kwargs: FailedProcess(),
     )
-    monkeypatch.setattr(entrypoint.signal, "signal", lambda *_args: None)
+    monkeypatch.setattr(conftest.signal, "signal", lambda *_args: None)
 
     with pytest.raises(subprocess.CalledProcessError) as error:
-        entrypoint._run_runner(command)
+        run_runner(command)
 
     assert error.value.returncode == 17
 
