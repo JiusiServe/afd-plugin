@@ -16,6 +16,7 @@ from tests.e2e.accuracy import gsm8k as helpers_gsm8k
 from tests.e2e.models.deepseek_v2_lite import (
     test_deepseek_v2_lite as deepseek_v2_lite_e2e,
 )
+from tests.e2e.models.qwen3_moe import test_qwen3_moe as qwen3_moe_e2e
 
 
 def test_baseline_entrypoint_uses_two_devices(monkeypatch, tmp_path):
@@ -43,6 +44,28 @@ def test_deepseek_v2_lite_entrypoint_limits_context(
     monkeypatch.delenv("AFD_E2E_DEVICES", raising=False)
 
     command = deepseek_v2_lite_e2e.build_runner_command(scenario, tmp_path)
+
+    assert "--common-vllm-arg=--max-model-len=4096" in command
+
+
+def test_qwen3_moe_baseline_entrypoint_uses_two_devices(monkeypatch, tmp_path):
+    monkeypatch.setenv("AFD_E2E_BACKEND", "gpu")
+    monkeypatch.setenv("AFD_E2E_DEVICES", "2,4,6")
+    monkeypatch.setenv("AFD_GPU_E2E_MODEL", "model")
+
+    command = qwen3_moe_e2e.build_runner_command("baseline-graph", tmp_path)
+
+    assert command[command.index("--attention-devices") + 1] == "2,4"
+    assert "--ffn-devices" not in command
+
+
+@pytest.mark.parametrize("scenario", qwen3_moe_e2e.SCENARIOS)
+def test_qwen3_moe_entrypoint_limits_context(monkeypatch, tmp_path, scenario):
+    monkeypatch.setenv("AFD_E2E_BACKEND", "gpu")
+    monkeypatch.setenv("AFD_GPU_E2E_MODEL", "model")
+    monkeypatch.delenv("AFD_E2E_DEVICES", raising=False)
+
+    command = qwen3_moe_e2e.build_runner_command(scenario, tmp_path)
 
     assert "--common-vllm-arg=--max-model-len=4096" in command
 
