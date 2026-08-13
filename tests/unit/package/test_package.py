@@ -45,7 +45,35 @@ def test_qwen3_moe_afd_model_registration_path_is_lazy_string():
     assert {
         **afd_plugin._DEEPSEEK_MODEL_REGISTRATIONS,
         **registrations,
+        **afd_plugin._QWEN3_5_MODEL_REGISTRATIONS,
     } == afd_plugin._MODEL_REGISTRATIONS
+
+
+def test_qwen3_5_afd_model_registration_path_is_lazy_string():
+    registrations = afd_plugin._QWEN3_5_MODEL_REGISTRATIONS
+
+    assert registrations["Qwen3_5MoeForConditionalGeneration"] == (
+        "afd_plugin.model_executor.models.qwen3_5:AFDQwen3_5MoeForConditionalGeneration"
+    )
+
+
+def test_merged_model_registrations_include_both_qwen_families():
+    registrations = afd_plugin._MODEL_REGISTRATIONS
+
+    assert registrations["DeepseekV2ForCausalLM"] == (
+        "afd_plugin.model_executor.models.deepseek_v2:AFDDeepseekV2ForCausalLM"
+    )
+    assert registrations["Qwen3_5MoeForConditionalGeneration"] == (
+        "afd_plugin.model_executor.models.qwen3_5:AFDQwen3_5MoeForConditionalGeneration"
+    )
+    assert registrations["Qwen3MoeForCausalLM"] == (
+        "afd_plugin.model_executor.models.qwen3_moe:AFDQwen3MoeForCausalLM"
+    )
+
+
+def test_merged_model_registrations_are_immutable():
+    with pytest.raises(TypeError):
+        afd_plugin._MODEL_REGISTRATIONS["Qwen3_5MoeForConditionalGeneration"] = ""
 
 
 def test_register_afd_does_not_replace_native_deepseek_model():
@@ -72,6 +100,18 @@ def test_register_afd_does_not_replace_native_qwen3_moe_model():
     assert "AFDQwen3MoeForCausalLM" in ModelRegistry.models
 
 
+def test_register_afd_does_not_replace_native_qwen3_5_model():
+    pytest.importorskip("vllm")
+    from vllm.model_executor.models import ModelRegistry
+
+    afd_plugin.register_afd()
+
+    native_registration = ModelRegistry.models["Qwen3_5MoeForConditionalGeneration"]
+    assert native_registration.module_name == "vllm.model_executor.models.qwen3_5"
+    assert native_registration.class_name == "Qwen3_5MoeForConditionalGeneration"
+    assert "AFDQwen3_5MoeForConditionalGeneration" in ModelRegistry.models
+
+
 def test_afd_model_config_uses_private_architecture_copy():
     pytest.importorskip("vllm")
     from afd_plugin.model_executor.models.model_utils import get_afd_model_config
@@ -82,7 +122,7 @@ def test_afd_model_config_uses_private_architecture_copy():
         hf_text_config=hf_config,
     )
 
-    afd_model_config = get_afd_model_config(model_config)
+    afd_model_config = get_afd_model_config(model_config, device_type="cuda")
 
     assert afd_model_config is not model_config
     assert afd_model_config.hf_config is not model_config.hf_config
@@ -91,7 +131,10 @@ def test_afd_model_config_uses_private_architecture_copy():
     assert model_config.hf_config.architectures == ["DeepseekV2ForCausalLM"]
 
 
-def test_afd_model_config_rewrites_qwen3_moe_architecture_only():
+@pytest.mark.parametrize("device_type", ["cuda", "npu"])
+def test_afd_model_config_rewrites_qwen3_moe_architecture_without_qwen3_5_policy(
+    device_type,
+):
     pytest.importorskip("vllm")
     from afd_plugin.model_executor.models.model_utils import get_afd_model_config
 
@@ -101,7 +144,7 @@ def test_afd_model_config_rewrites_qwen3_moe_architecture_only():
         hf_text_config=hf_config,
     )
 
-    afd_model_config = get_afd_model_config(model_config)
+    afd_model_config = get_afd_model_config(model_config, device_type=device_type)
 
     assert afd_model_config is not model_config
     assert afd_model_config.hf_config.architectures == ["AFDQwen3MoeForCausalLM"]
@@ -118,13 +161,82 @@ def test_afd_model_config_preserves_nested_text_config():
         hf_text_config=hf_text_config,
     )
 
-    afd_model_config = get_afd_model_config(model_config)
+    afd_model_config = get_afd_model_config(model_config, device_type="cuda")
 
     # deepcopy privatizes the whole graph; a genuinely distinct nested
     # hf_text_config stays distinct from hf_config.
     assert afd_model_config.hf_config is not model_config.hf_config
     assert afd_model_config.hf_text_config is not hf_text_config
     assert afd_model_config.hf_text_config is not afd_model_config.hf_config
+
+
+def test_afd_model_config_maps_qwen_architecture_on_cuda_without_aliasing():
+    pytest.importorskip("vllm")
+    from afd_plugin.model_executor.models.model_utils import get_afd_model_config
+
+    hf_text_config = SimpleNamespace(model_type="qwen3_5_moe_text")
+    model_config = SimpleNamespace(
+        hf_config=SimpleNamespace(
+            architectures=["Qwen3_5MoeForConditionalGeneration"],
+        ),
+        hf_text_config=hf_text_config,
+    )
+
+    afd_model_config = get_afd_model_config(model_config, device_type="cuda")
+
+    assert afd_model_config.hf_config.architectures == [
+        "AFDQwen3_5MoeForConditionalGeneration"
+    ]
+    assert model_config.hf_config.architectures == [
+        "Qwen3_5MoeForConditionalGeneration"
+    ]
+    assert afd_model_config.hf_text_config is not hf_text_config
+
+
+def test_afd_model_config_rejects_qwen_architecture_on_npu():
+    pytest.importorskip("vllm")
+    from afd_plugin.model_executor.models.model_utils import get_afd_model_config
+
+    model_config = SimpleNamespace(
+        hf_config=SimpleNamespace(
+            architectures=["Qwen3_5MoeForConditionalGeneration"],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Qwen3.5/3.6 supports CUDA execution only"):
+        get_afd_model_config(model_config, device_type="npu")
+
+    assert model_config.hf_config.architectures == [
+        "Qwen3_5MoeForConditionalGeneration"
+    ]
+
+
+def test_afd_model_config_preserves_unknown_architecture():
+    pytest.importorskip("vllm")
+    from afd_plugin.model_executor.models.model_utils import get_afd_model_config
+
+    model_config = SimpleNamespace(
+        hf_config=SimpleNamespace(architectures=["UnknownForCausalLM"]),
+    )
+
+    assert get_afd_model_config(model_config, device_type="cuda") is model_config
+
+
+@pytest.mark.parametrize("device_type", ["cuda", "npu"])
+def test_afd_model_config_maps_deepseek_architecture_on_supported_backends(
+    device_type,
+):
+    pytest.importorskip("vllm")
+    from afd_plugin.model_executor.models.model_utils import get_afd_model_config
+
+    model_config = SimpleNamespace(
+        hf_config=SimpleNamespace(architectures=["DeepseekV2ForCausalLM"]),
+    )
+
+    afd_model_config = get_afd_model_config(model_config, device_type=device_type)
+
+    assert afd_model_config.hf_config.architectures == ["AFDDeepseekV2ForCausalLM"]
+    assert model_config.hf_config.architectures == ["DeepseekV2ForCausalLM"]
 
 
 def test_entry_point_is_registered():

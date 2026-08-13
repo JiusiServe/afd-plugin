@@ -74,6 +74,7 @@ class AFDFFNWorker(Worker):
         super().init_device()
         self.vllm_config.model_config = get_afd_model_config(
             self.vllm_config.model_config,
+            device_type="cuda",
         )
         self.model_runner = GPUFFNModelRunner(self.vllm_config, self.device)
 

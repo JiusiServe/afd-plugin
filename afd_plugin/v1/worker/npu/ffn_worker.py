@@ -69,6 +69,7 @@ class AFDNPUFFNWorker(NPUWorker):
         )
         self.vllm_config.model_config = get_afd_model_config(
             self.vllm_config.model_config,
+            device_type="npu",
         )
         self.model_runner = AFDNPUFFNModelRunner(self.vllm_config, self.device)
 

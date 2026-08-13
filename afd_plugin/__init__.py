@@ -8,6 +8,7 @@ import importlib.util
 import logging
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from types import MappingProxyType
 
 from afd_plugin.config import AFDConfig, parse_afd_config, parse_optional_afd_config
 
@@ -68,10 +69,21 @@ _QWEN_MODEL_REGISTRATIONS = {
     ),
 }
 
-_MODEL_REGISTRATIONS = {
-    **_DEEPSEEK_MODEL_REGISTRATIONS,
-    **_QWEN_MODEL_REGISTRATIONS,
-}
+_QWEN3_5_MODEL_REGISTRATIONS = MappingProxyType(
+    {
+        "Qwen3_5MoeForConditionalGeneration": (
+            "afd_plugin.model_executor.models.qwen3_5:AFDQwen3_5MoeForConditionalGeneration"
+        ),
+    }
+)
+
+_MODEL_REGISTRATIONS = MappingProxyType(
+    {
+        **_DEEPSEEK_MODEL_REGISTRATIONS,
+        **_QWEN_MODEL_REGISTRATIONS,
+        **_QWEN3_5_MODEL_REGISTRATIONS,
+    }
+)
 
 
 def register_afd() -> None:
@@ -154,5 +166,6 @@ __all__ = [
     "_DEEPSEEK_MODEL_REGISTRATIONS",
     "_MODEL_REGISTRATIONS",
     "_QWEN_MODEL_REGISTRATIONS",
+    "_QWEN3_5_MODEL_REGISTRATIONS",
     "register_afd",
 ]
