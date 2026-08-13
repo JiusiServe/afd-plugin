@@ -1,0 +1,4 @@
+interface:
+  display_name: "GPU Runtime Upgrade"
+  short_description: "Upgrade AFD across pinned vLLM and CUDA revisions"
+  default_prompt: "Use $upgrade-gpu-version to plan, implement, or validate an AFD GPU runtime upgrade."
