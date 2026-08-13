@@ -51,6 +51,36 @@ if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
 
 
+@contextmanager
+def _dp_batch_coordination_disabled(disabled: bool):
+    """Skip vLLM's cross-DP batch agreement for connector-driven runs.
+
+    ``GPUModelRunner._determine_batch_execution_and_padding`` all-reduces the
+    batch shape across the DP group whenever ``data_parallel_size > 1``. Async
+    AFD deliberately lets each Attention replica advance on its own, so an idle
+    replica never joins that collective and a busy one blocks in it forever --
+    which is where a 2A2F run hangs before it reaches the first MoE layer.
+
+    Returning the single-rank answer (``num_tokens_across_dp=None``) makes the
+    upstream function skip its DP-padding branch entirely, exactly as it does
+    for ``data_parallel_size == 1``.
+    """
+    if not disabled:
+        yield
+        return
+
+    original = gpu_model_runner.coordinate_batch_across_dp
+
+    def _single_rank_coordination(*_args: Any, cudagraph_mode: int, **_kwargs: Any):
+        return False, None, cudagraph_mode
+
+    gpu_model_runner.coordinate_batch_across_dp = _single_rank_coordination
+    try:
+        yield
+    finally:
+        gpu_model_runner.coordinate_batch_across_dp = original
+
+
 class AFDAttentionModelRunner(GPUModelRunner):
     """Attention model runner that injects AFD metadata into forward context."""
 
@@ -76,11 +106,9 @@ class AFDAttentionModelRunner(GPUModelRunner):
             self.afd_config,
         )
         # The connector rendezvous is deferred to the end of ``load_model()``
-        # so Attention and FFN weight loading overlap; see that method.
-        # TODO: Async GPU connector will be supported in the future
-        assert self.connector.control_plane is not None, (
-            "GPU model runner only supports control-plane-driven connectors"
-        )
+        # so Attention and FFN weight loading overlap; see that method. The
+        # async GPU connector drives FFN work from its own receive loop and so
+        # has no control plane, which is why there is no assertion here.
         self._is_warmup = False
         self._afd_is_graph_capturing = False
         self._afd_pending_metadata: AFDForwardContextMetadata | None = None
@@ -126,9 +154,8 @@ class AFDAttentionModelRunner(GPUModelRunner):
         dp_metadata: DPMetadata | AFDDPMetadata | None,
         ubatch_slices: Any,
     ) -> None:
-        assert self.connector.control_plane is not None, (
-            "_send_dp_metadata needs control plane driven connectors"
-        )
+        if self.connector.control_plane is None:
+            return
 
         if ubatch_slices and len(ubatch_slices) > 1:
             dp_metadata_list = {
@@ -349,25 +376,28 @@ class AFDAttentionModelRunner(GPUModelRunner):
         torch.Tensor | None,
         CUDAGraphStat | None,
     ]:
-        (
-            cudagraph_mode,
-            batch_descriptor,
-            should_ubatch,
-            num_tokens_across_dp,
-            cudagraph_stats,
-        ) = super()._determine_batch_execution_and_padding(
-            num_tokens,
-            num_reqs,
-            num_scheduled_tokens_np,
-            max_num_scheduled_tokens,
-            use_cascade_attn,
-            allow_microbatching,
-            force_eager,
-            force_uniform_decode,
-            force_has_lora,
-            force_num_active_loras,
-            num_encoder_reqs,
-        )
+        with _dp_batch_coordination_disabled(
+            self.connector.control_plane is None,
+        ):
+            (
+                cudagraph_mode,
+                batch_descriptor,
+                should_ubatch,
+                num_tokens_across_dp,
+                cudagraph_stats,
+            ) = super()._determine_batch_execution_and_padding(
+                num_tokens,
+                num_reqs,
+                num_scheduled_tokens_np,
+                max_num_scheduled_tokens,
+                use_cascade_attn,
+                allow_microbatching,
+                force_eager,
+                force_uniform_decode,
+                force_has_lora,
+                force_num_active_loras,
+                num_encoder_reqs,
+            )
 
         args = (
             num_tokens,

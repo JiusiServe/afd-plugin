@@ -119,7 +119,7 @@ def test_parse_async_dp_config_from_async_alias():
 
 
 def test_async_dp_requires_async_connector():
-    with pytest.raises(ValueError, match="requires connector='CAMAsyncAFDConnector'"):
+    with pytest.raises(ValueError, match="AFD async mode requires one of"):
         parse_afd_config(
             {
                 "afd": {
@@ -129,6 +129,24 @@ def test_async_dp_requires_async_connector():
                 },
             },
         )
+
+
+@pytest.mark.parametrize(
+    "connector",
+    ["CAMAsyncAFDConnector", "GpuAsyncAFDConnector"],
+)
+def test_async_dp_accepts_every_async_connector(connector):
+    config = parse_afd_config(
+        {
+            "afd": {
+                "connector": connector,
+                "role": "attention",
+                "async": True,
+            },
+        },
+    )
+    assert config.connector == connector
+    assert config.async_dp
 
 
 def test_original_common_afd_field_aliases_are_supported():
