@@ -19,6 +19,7 @@ SCENARIOS = (
     "afd-eager",
     "afd-graph",
     "afd-graph-dbo",
+    "afd-graph-dbo-2a2f",
 )
 # Covers the roughly 64-second nested lm-eval/vLLM cleanup bound with buffer.
 RUNNER_CLEANUP_TIMEOUT_S = 90
@@ -51,7 +52,8 @@ def build_runner_command(scenario: str, gsm8k_output_path: Path) -> list[str]:
     else:
         raise RuntimeError("AFD_E2E_BACKEND must be 'gpu' or 'npu'")
 
-    devices = _devices("AFD_E2E_DEVICES", 3)
+    expected_device_count = 4 if scenario == "afd-graph-dbo-2a2f" else 3
+    devices = _devices("AFD_E2E_DEVICES", expected_device_count)
     attention_devices = devices[:2]
     ffn_devices = devices[2:]
     if scenario == "baseline-graph":
@@ -83,7 +85,7 @@ def build_runner_command(scenario: str, gsm8k_output_path: Path) -> list[str]:
     return command
 
 
-def _run_runner(command: list[str]) -> None:
+def _run_runner(command: list[str], env: dict[str, str] | None = None) -> None:
     handled_signals = (signal.SIGTERM, signal.SIGINT)
     previous_handlers = {signum: signal.getsignal(signum) for signum in handled_signals}
     process: subprocess.Popen | None = None
@@ -113,6 +115,7 @@ def _run_runner(command: list[str]) -> None:
         process = subprocess.Popen(
             command,
             cwd=REPO_ROOT,
+            env=env,
             start_new_session=True,
         )
         forward_received_signal()

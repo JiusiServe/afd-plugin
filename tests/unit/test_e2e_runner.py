@@ -30,6 +30,12 @@ def _e2e_entrypoint():
     )
 
 
+def _async_cam_entrypoint():
+    return importlib.import_module(
+        "tests.e2e.models.deepseek_v2_lite.test_async_cam_npu",
+    )
+
+
 def _set_e2e_entrypoint_env(monkeypatch, backend: str) -> None:
     for name in E2E_ENTRYPOINT_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
@@ -99,6 +105,25 @@ def test_e2e_entrypoint_builds_npu_runner_command(monkeypatch, tmp_path):
         "--gsm8k-output-path",
         str(output_path),
     ]
+
+
+@pytest.mark.parametrize("backend", ["gpu", "npu"])
+def test_e2e_entrypoint_builds_four_device_2a2f_command(
+    monkeypatch,
+    tmp_path,
+    backend,
+):
+    _set_e2e_entrypoint_env(monkeypatch, backend)
+    monkeypatch.setenv("AFD_E2E_DEVICES", "0,1,2,3")
+
+    command = _e2e_entrypoint().build_runner_command(
+        "afd-graph-dbo-2a2f",
+        tmp_path / "afd-graph-dbo-2a2f",
+    )
+
+    assert command[command.index("--attention-devices") + 1] == "0,1"
+    assert command[command.index("--ffn-devices") + 1] == "2,3"
+    assert command[command.index("--scenario") + 1] == "afd-graph-dbo-2a2f"
 
 
 @pytest.mark.parametrize(("backend", "expected_device"), [("gpu", "2"), ("npu", "1")])
@@ -181,6 +206,61 @@ def test_e2e_entrypoint_rejects_reused_devices(
         _e2e_entrypoint().build_runner_command("afd-eager", tmp_path / "results")
 
 
+def test_async_cam_entrypoint_builds_a_four_npu_runner_command(
+    monkeypatch,
+):
+    monkeypatch.setenv("AFD_E2E_BACKEND", "npu")
+    monkeypatch.setenv("AFD_E2E_DEVICES", "0,2,4,6")
+    monkeypatch.setenv("AFD_NPU_E2E_MODEL", "/models/deepseek-v2-lite-npu")
+    monkeypatch.setenv("AFD_NPU_E2E_VLLM_BIN", "/opt/npu/bin/vllm")
+    monkeypatch.delenv("AFD_NPU_ASYNC_CAM_E2E_DYNAMIC_QUANT", raising=False)
+
+    entrypoint = _async_cam_entrypoint()
+    command = entrypoint.build_runner_command()
+    env = entrypoint._async_cam_env()
+
+    assert command[command.index("--attention-devices") + 1] == "0,2"
+    assert command[command.index("--ffn-devices") + 1] == "4,6"
+    assert command[command.index("--scenario") + 1] == "afd-eager-async-cam"
+    assert command[command.index("--model") + 1] == "/models/deepseek-v2-lite-npu"
+    assert command[command.index("--vllm-bin") + 1] == "/opt/npu/bin/vllm"
+    assert "--common-vllm-arg=--gpu-memory-utilization" in command
+    assert "--common-vllm-arg=0.75" in command
+    extra_config = json.loads(
+        command[command.index("--afd-connector-extra-config") + 1],
+    )
+    assert extra_config == {"dynamicQuant": 0}
+    assert env["HCCL_BUFFSIZE"] == "4096"
+    assert str(entrypoint.CAM_OP_API_LIB_PATH) in env["LD_LIBRARY_PATH"]
+    assert str(entrypoint.CAM_VENDOR_PATH) in env["ASCEND_CUSTOM_OPP_PATH"]
+
+
+@pytest.mark.parametrize(
+    ("backend", "devices", "model", "error"),
+    [
+        ("gpu", "0,1,2,3", "model", "requires AFD_E2E_BACKEND=npu"),
+        ("npu", "0,1,2", "model", "exactly 4 devices"),
+        ("npu", "0,1,2,2", "model", "unique"),
+        ("npu", "0,1,2,3", None, "AFD_NPU_E2E_MODEL"),
+    ],
+)
+def test_async_cam_entrypoint_rejects_invalid_configuration(
+    monkeypatch,
+    backend,
+    devices,
+    model,
+    error,
+):
+    monkeypatch.setenv("AFD_E2E_BACKEND", backend)
+    monkeypatch.setenv("AFD_E2E_DEVICES", devices)
+    monkeypatch.delenv("AFD_NPU_E2E_MODEL", raising=False)
+    if model:
+        monkeypatch.setenv("AFD_NPU_E2E_MODEL", model)
+
+    with pytest.raises(RuntimeError, match=error):
+        _async_cam_entrypoint().build_runner_command()
+
+
 def test_e2e_entrypoint_forwards_cancellation_and_reaps_runner(monkeypatch):
     entrypoint = _e2e_entrypoint()
     monkeypatch.setattr(entrypoint, "os", runner.os, raising=False)
@@ -248,6 +328,7 @@ def test_e2e_entrypoint_forwards_cancellation_and_reaps_runner(monkeypatch):
             command,
             {
                 "cwd": Path(__file__).resolve().parents[2],
+                "env": None,
                 "start_new_session": True,
             },
         ),
@@ -402,10 +483,12 @@ def test_parse_args_rejects_legacy_fixed_scenario_options(monkeypatch, legacy_ar
 @pytest.mark.parametrize(
     ("scenario", "expected"),
     [
-        ("baseline-graph", (True, True, False, 1, 0, 1)),
-        ("afd-eager", (False, False, False, 2, 1, 1)),
-        ("afd-graph", (False, True, False, 2, 1, 1)),
-        ("afd-graph-dbo", (False, True, True, 2, 1, 1)),
+        ("baseline-graph", (True, True, False, 1, 0, 1, 1)),
+        ("afd-eager", (False, False, False, 2, 1, 1, 1)),
+        ("afd-graph", (False, True, False, 2, 1, 1, 1)),
+        ("afd-graph-dbo", (False, True, True, 2, 1, 1, 1)),
+        ("afd-graph-dbo-2a2f", (False, True, True, 2, 2, 1, 1)),
+        ("afd-eager-async-cam", (False, False, False, 2, 2, 1, 2)),
     ],
 )
 def test_configure_scenario_overwrites_fixed_topology_and_features(
@@ -429,14 +512,40 @@ def test_configure_scenario_overwrites_fixed_topology_and_features(
         args.num_attention_ranks,
         args.num_ffn_ranks,
         args.tp_size,
+        args.attention_tp_size,
     ) == expected
-    assert args.attention_tp_size == 1
     assert args.ffn_tp_size == 1
     if args.cuda_graph_full_decode_only:
         assert args.cudagraph_capture_size == 8
     if args.enable_dbo:
         assert args.dbo_decode_token_threshold == 1
         assert args.dbo_prefill_token_threshold == 8
+
+
+def test_async_cam_scenario_builds_dp1tp2_attention_and_dp2tp1_ffn():
+    args = _args()
+    args.scenario = "afd-eager-async-cam"
+    args.device_backend = "npu"
+    runner.configure_scenario(args)
+    runner.validate_topology(args, ["0", "1"], ["2", "3"])
+
+    attention_command = runner.build_vllm_command(args, role="attention")
+    ffn_command = runner.build_vllm_command(args, role="ffn")
+
+    assert attention_command[attention_command.index("--data-parallel-size") + 1] == "1"
+    assert (
+        attention_command[attention_command.index("--tensor-parallel-size") + 1] == "2"
+    )
+    assert ffn_command[ffn_command.index("--data-parallel-size") + 1] == "2"
+    assert ffn_command[ffn_command.index("--tensor-parallel-size") + 1] == "1"
+    attention_config = json.loads(
+        attention_command[attention_command.index("--additional-config") + 1],
+    )["afd"]
+    assert attention_config["connector"] == runner.ASYNC_AFD_CONNECTOR
+    assert attention_config["async"] is True
+    assert attention_config["compute_gate_on_attention"] is True
+    assert attention_config["connector_extra_config"]["attn_ranks_per_dp"] == 2
+    assert "--enable-expert-parallel" in ffn_command
 
 
 def test_build_baseline_command_uses_native_single_process_graph_server():
@@ -1113,6 +1222,46 @@ def test_run_gsm8k_evaluation_rejects_accuracy_that_does_not_meet_gate(
 
     with pytest.raises(RuntimeError, match="below the required threshold"):
         runner.run_gsm8k_evaluation(args)
+
+
+@pytest.mark.parametrize(
+    ("body", "error"),
+    [
+        ({"choices": [{"text": "B"}]}, None),
+        ({"choices": []}, "no choices"),
+        ({"choices": [{"text": ""}]}, "no text"),
+        ({"choices": [{"text": 32}]}, "no text"),
+    ],
+)
+def test_run_completion_evaluation_validates_one_32_token_request(
+    monkeypatch,
+    body,
+    error,
+):
+    args = _args()
+    args.scenario = "afd-eager-async-cam"
+    runner.configure_scenario(args)
+    request = {}
+
+    def fake_urlopen(http_request, timeout):
+        request.update(json.loads(http_request.data))
+        request["timeout"] = timeout
+        return io.BytesIO(json.dumps(body).encode())
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", fake_urlopen)
+
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            runner.run_completion_evaluation(args)
+    else:
+        runner.run_completion_evaluation(args)
+        assert request == {
+            "model": "deepseek-v2-lite-afd-attention",
+            "prompt": runner.ACCOUNTING_PROMPT,
+            "max_tokens": 32,
+            "temperature": 0,
+            "timeout": 120,
+        }
 
 
 def test_ensure_processes_alive_reports_exited_process_returncode():
