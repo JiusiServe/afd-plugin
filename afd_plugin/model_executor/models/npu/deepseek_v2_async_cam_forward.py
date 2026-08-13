@@ -173,7 +173,14 @@ def run_attention_gate_afd_forward(
             topk_weights,
             topk_ids,
             router_logits,
-            use_sequence_parallel=forward_context.flash_comm_v1_enabled,
+            # Ascend-only field: FlashComm1 leaves each Attention TP rank with a
+            # disjoint token shard. The CUDA forward context has no such field,
+            # so its absence means the token dimension is still replicated.
+            use_sequence_parallel=getattr(
+                forward_context,
+                "flash_comm_v1_enabled",
+                False,
+            ),
         )
         metadata = AFDTransferMetadata.create_attention_metadata(
             layer_idx=layer.layer_idx,
@@ -222,7 +229,11 @@ def run_async_moe_ubatch_afd_forward(
     """Run the two-stage async MoE ubatch pipeline used by async CAM."""
 
     forward_context = get_forward_context()
-    runtime_sequence_parallel = bool(forward_context.flash_comm_v1_enabled)
+    runtime_sequence_parallel = getattr(
+        forward_context,
+        "flash_comm_v1_enabled",
+        False,
+    )
     if runtime_sequence_parallel != async_moe_ubatch_metadata.use_sequence_parallel:
         raise RuntimeError(
             "Async CAM stage layout does not match the current FlashComm1 "
