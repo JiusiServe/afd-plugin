@@ -24,6 +24,7 @@ validation_paths:
   - "tests/unit/test_e2e_runner.py"
   - "tests/unit/test_e2e_process_utils.py"
   - "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py"
+  - "tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py"
 upstream_refs:
   - "vLLM 0.26.0 serving and shutdown interfaces"
   - "lm-evaluation-harness GSM8K task and local-completions API"
@@ -50,7 +51,7 @@ operator tests, benchmarks, and performance tests are outside this scope.
 
 ```text
 tests/e2e/
-├── models/<model>/test_<model>.py  # Test entry and case list
+├── models/<model>/test_*.py  # Test entries and case lists
 ├── accuracy/<task>.py       # Accuracy tool and result parsing
 ├── runner.py                # Service startup, evaluation, and cleanup
 └── process_utils.py         # Process-group termination and reaping
@@ -72,7 +73,8 @@ cleanup. Production code does not depend on the E2E harness.
   incomplete results, failed validation, or failed cleanup. They **MUST NOT**
   use `skip`, `xfail`, or success-on-empty behavior.
 - `E2E-INV-005` — The harness **MUST** check service liveness before and after
-  evaluation, evaluator exit status, sample count, `NaN`, and accuracy.
+  evaluation. Accuracy cases **MUST** also check evaluator exit status, sample
+  count, `NaN`, and accuracy.
 - `E2E-INV-006` — Child processes **MUST** use owned process groups.
   Cancellation **MUST** send `SIGTERM`, use a bounded grace period, then reap
   every leader. A harness `SIGKILL` escalation **MUST** fail the case.
@@ -96,6 +98,13 @@ for merge validation. Put slower coverage in a scheduled job.
 
 Prefer graph coverage. Keep one eager smoke test unless a feature cannot run in
 graph mode.
+
+`afd-eager-async-cam` is a separate NPU-only smoke test. It uses four devices
+for Attention DP1/TP2 and FFN DP2/TP1/EP2. It is not part of the PR gate above.
+
+`afd-graph-dbo-2a2f` is a separate GPU/NPU accuracy case. It uses four devices
+for Attention DP2/TP1 and FFN DP2/TP1/EP2 and runs GSM8K-7. The default gate
+selects only the four default cases by pytest node ID.
 
 ## Accuracy gate
 

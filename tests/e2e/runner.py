@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""Run DeepSeekV2-Lite DeepEP and AFD GSM8K E2E scenarios."""
+"""Run DeepSeek-V2-Lite DeepEP baseline and AFD E2E scenarios."""
 
 from __future__ import annotations
 
@@ -27,6 +27,10 @@ from tests.e2e.process_utils import terminate_process_groups
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ASYNC_AFD_CONNECTOR = "CAMAsyncAFDConnector"
+ASYNC_CAM_SCENARIO = "afd-eager-async-cam"
+ASYNC_CAM_ATTENTION_RANKS = 2
+ASYNC_CAM_FFN_RANKS = 2
+ASYNC_CAM_ATTENTION_TP_SIZE = 2
 PROCESS_TERMINATION_TIMEOUT_S = 20
 PROCESS_POLL_INTERVAL_S = 0.2
 PROCESS_REAP_TIMEOUT_S = 5
@@ -39,6 +43,31 @@ FULL_GSM8K_TIMEOUT_S = 8 * 60 * 60
 GSM8K_LIMIT_ENV = "AFD_GSM8K_LIMIT"
 GSM8K_THRESHOLD_ENV = "AFD_GSM8K_THRESHOLD"
 DEFAULT_GSM8K_THRESHOLD = 0.27
+COMPLETION_REQUEST_TIMEOUT_S = 120
+COMPLETION_MAX_TOKENS = 32
+COMPLETION_TEMPERATURE = 0
+ACCOUNTING_PROMPT = (
+    "<|im_start|>system\n"
+    "You are a professional accountant. Answer questions using accounting "
+    "knowledge, output only the option letter (A/B/C/D).<|im_end|>\n"
+    "<|im_start|>user\n"
+    "Question: A company's balance sheet as of December 31, 2023 shows:\n"
+    "  Current assets: Cash and equivalents 5 million yuan, Accounts "
+    "receivable 8 million yuan, Inventory 6 million yuan\n"
+    "  Non-current assets: Net fixed assets 12 million yuan\n"
+    "  Current liabilities: Short-term loans 4 million yuan, Accounts "
+    "payable 3 million yuan\n"
+    "  Non-current liabilities: Long-term loans 9 million yuan\n"
+    "  Owner's equity: Paid-in capital 10 million yuan, Retained earnings ?\n"
+    "Requirement: Calculate the company's Asset-Liability Ratio and Current "
+    "Ratio (round to two decimal places).\n"
+    "Options:\n"
+    "A. Asset-Liability Ratio=58.33%, Current Ratio=1.90\n"
+    "B. Asset-Liability Ratio=62.50%, Current Ratio=2.17\n"
+    "C. Asset-Liability Ratio=65.22%, Current Ratio=1.75\n"
+    "D. Asset-Liability Ratio=68.00%, Current Ratio=2.50<|im_end|>\n"
+    "<|im_start|>assistant\n"
+)
 
 
 def main() -> int:
@@ -108,7 +137,10 @@ def main() -> int:
         wait_for_openai_api(args, processes)
         ensure_processes_alive(processes)
 
-        run_gsm8k_evaluation(args)
+        if args.scenario == ASYNC_CAM_SCENARIO:
+            run_completion_evaluation(args)
+        else:
+            run_gsm8k_evaluation(args)
 
         ensure_processes_alive(processes)
         return 0
@@ -154,13 +186,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--scenario",
-        choices=["baseline-graph", "afd-eager", "afd-graph", "afd-graph-dbo"],
+        choices=[
+            "baseline-graph",
+            "afd-eager",
+            "afd-graph",
+            "afd-graph-dbo",
+            "afd-graph-dbo-2a2f",
+            ASYNC_CAM_SCENARIO,
+        ],
         required=True,
         help="Fixed E2E scenario to run.",
     )
     parser.add_argument(
         "--gsm8k-output-path",
-        required=True,
         help="Directory or file path where lm-eval writes GSM8K results.",
     )
     parser.add_argument(
@@ -173,7 +211,7 @@ def parse_args() -> argparse.Namespace:
         default="0",
         help=(
             "Comma-separated device IDs for the Attention serve process. "
-            "The number of devices must match Attention DP size."
+            "The number of devices must match Attention DP times TP."
         ),
     )
     parser.add_argument(
@@ -181,7 +219,7 @@ def parse_args() -> argparse.Namespace:
         default="",
         help=(
             "Comma-separated device IDs for the FFN serve process. "
-            "The number of devices must match FFN DP size."
+            "The number of devices must match FFN DP times TP."
         ),
     )
     parser.add_argument("--api-host", default="127.0.0.1")
@@ -255,11 +293,20 @@ def parse_args() -> argparse.Namespace:
 
 def configure_scenario(args: argparse.Namespace) -> None:
     """Set topology and features for the selected fixed scenario."""
+    is_async_cam = args.scenario == ASYNC_CAM_SCENARIO
     scenario_settings = {
         "baseline-graph": (True, True, False, 1, 0),
         "afd-eager": (False, False, False, 2, 1),
         "afd-graph": (False, True, False, 2, 1),
         "afd-graph-dbo": (False, True, True, 2, 1),
+        "afd-graph-dbo-2a2f": (False, True, True, 2, 2),
+        ASYNC_CAM_SCENARIO: (
+            False,
+            False,
+            False,
+            ASYNC_CAM_ATTENTION_RANKS,
+            ASYNC_CAM_FFN_RANKS,
+        ),
     }
     baseline, use_graph, enable_dbo, attention_ranks, ffn_ranks = scenario_settings[
         args.scenario
@@ -270,8 +317,21 @@ def configure_scenario(args: argparse.Namespace) -> None:
     args.num_attention_ranks = attention_ranks
     args.num_ffn_ranks = ffn_ranks
     args.tp_size = 1
-    args.attention_tp_size = 1
+    args.attention_tp_size = ASYNC_CAM_ATTENTION_TP_SIZE if is_async_cam else 1
     args.ffn_tp_size = 1
+    if not is_async_cam and args.gsm8k_output_path is None:
+        raise ValueError("--gsm8k-output-path is required for GSM8K scenarios")
+    if is_async_cam:
+        args.afd_connector = ASYNC_AFD_CONNECTOR
+        args.afd_async = True
+        args.compute_gate_on_attention = True
+        extra_config = parse_afd_connector_extra_config(
+            args.afd_connector_extra_config,
+        )
+        extra_config["attn_ranks_per_dp"] = ASYNC_CAM_ATTENTION_TP_SIZE
+        args.afd_connector_extra_config = [
+            json.dumps(extra_config, separators=(",", ":")),
+        ]
     if use_graph:
         args.cudagraph_capture_size = 8
     if enable_dbo:
@@ -311,8 +371,8 @@ def validate_topology(
         if role_tp_size(args, "attention") != 1:
             raise ValueError("baseline E2E requires Attention TP=1")
         return
-    if args.num_attention_ranks != 2 or args.num_ffn_ranks != 1:
-        raise ValueError("AFD E2E requires two Attention ranks and one FFN rank")
+    if args.scenario == ASYNC_CAM_SCENARIO and args.device_backend != "npu":
+        raise ValueError("async CAM E2E requires NPU")
     for role, rank_count in (
         ("attention", args.num_attention_ranks),
         ("ffn", args.num_ffn_ranks),
@@ -531,6 +591,8 @@ def ffn_api_port(args: argparse.Namespace) -> int:
 
 def run_gsm8k_evaluation(args: argparse.Namespace) -> None:
     """Run the configured GSM8K workload against the scenario's public API."""
+    if args.gsm8k_output_path is None:
+        raise RuntimeError("--gsm8k-output-path is required for GSM8K scenarios")
     configured_limit = os.environ.get(
         GSM8K_LIMIT_ENV,
         str(DEFAULT_GSM8K_SAMPLE_LIMIT),
@@ -566,6 +628,46 @@ def run_gsm8k_evaluation(args: argparse.Namespace) -> None:
             f"GSM8K accuracy {accuracy:.4f} is below the required "
             f"threshold {minimum_accuracy:.4f}",
         )
+
+
+def run_completion_evaluation(args: argparse.Namespace) -> None:
+    """Send the async CAM smoke request and require one returned choice."""
+    payload = json.dumps(
+        {
+            "model": served_model_name(args, "attention"),
+            "prompt": ACCOUNTING_PROMPT,
+            "max_tokens": COMPLETION_MAX_TOKENS,
+            "temperature": COMPLETION_TEMPERATURE,
+        },
+    ).encode()
+    request = urllib.request.Request(
+        f"http://{args.api_host}:{attention_api_port(args)}/v1/completions",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=COMPLETION_REQUEST_TIMEOUT_S,
+        ) as response:
+            result = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        raise RuntimeError(
+            f"completion request failed with HTTP {exc.code}: {body}",
+        ) from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"completion request failed: {exc}") from exc
+
+    choices = result.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise RuntimeError("completion response contains no choices")
+    choice = choices[0]
+    text = choice.get("text") if isinstance(choice, dict) else None
+    if not isinstance(text, str) or not text.strip():
+        raise RuntimeError("completion response contains no text")
+    print(f"Completion response: {text}")
 
 
 def build_env(
