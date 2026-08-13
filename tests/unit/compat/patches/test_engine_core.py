@@ -272,3 +272,77 @@ def test_engine_core_patch_runs_and_stops_ffn_loop(monkeypatch):
         "raise_ffn_loop_error_if_any",
         "stop_ffn_server_loop",
     ]
+
+
+def test_engine_core_ffn_readiness_log_follows_start_rpc(monkeypatch):
+    core_module = _install_fake_vllm_core(monkeypatch)
+    patch_module = _load_patch_module()
+    importlib.reload(patch_module)
+
+    events = []
+
+    class Executor:
+        def __init__(self, vllm_config):
+            self.calls = []
+
+        def collective_rpc(self, method):
+            events.append(f"rpc:{method}")
+
+        def shutdown(self):
+            self.calls.append("shutdown")
+
+    engine = core_module.EngineCoreProc(_config("ffn"), Executor, log_stats=True)
+    engine.shutdown_state = _EngineShutdownState.RUNNING
+
+    from afd_plugin.compat.patches import engine_core as engine_core_patch
+
+    def request_shutdown(_seconds):
+        events.append("sleep")
+        engine.shutdown_state = _EngineShutdownState.REQUESTED
+
+    monkeypatch.setattr(engine_core_patch.time, "sleep", request_shutdown)
+
+    original_info = core_module.logger.info
+
+    def recording_info(message, *args, **kwargs):
+        events.append("log:started")
+        return original_info(message, *args, **kwargs)
+
+    monkeypatch.setattr(core_module.logger, "info", recording_info)
+
+    with pytest.raises(SystemExit):
+        engine.run_busy_loop()
+
+    # The readiness log must not precede the collective start RPC: it is only
+    # emitted after every FFN worker entered its connector loop.
+    assert events.index("rpc:start_ffn_server_loop") < events.index("log:started")
+    assert events.index("log:started") < events.index("rpc:raise_ffn_loop_error_if_any")
+
+
+def test_engine_core_ffn_start_rpc_failure_emits_no_readiness_log(monkeypatch, caplog):
+    core_module = _install_fake_vllm_core(monkeypatch)
+    patch_module = _load_patch_module()
+    importlib.reload(patch_module)
+
+    class Executor:
+        def __init__(self, vllm_config):
+            self.calls = []
+
+        def collective_rpc(self, method):
+            if method == "start_ffn_server_loop":
+                raise RuntimeError("start failed")
+            self.calls.append(method)
+
+        def shutdown(self):
+            self.calls.append("shutdown")
+
+    engine = core_module.EngineCoreProc(_config("ffn"), Executor, log_stats=True)
+    engine.shutdown_state = _EngineShutdownState.RUNNING
+
+    with (
+        caplog.at_level(logging.INFO, logger="fake-vllm-core"),
+        pytest.raises(RuntimeError, match="start failed"),
+    ):
+        engine.run_busy_loop()
+
+    assert "AFD FFN EngineCore started; workers run connector loop." not in caplog.text

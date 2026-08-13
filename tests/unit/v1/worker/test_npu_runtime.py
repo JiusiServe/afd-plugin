@@ -2315,3 +2315,196 @@ def _tokens(dp_metadata):
     if hasattr(values, "tolist"):
         return values.tolist()
     return list(values)
+
+
+class _LifecycleConnector:
+    """Connector fake recording lifecycle events for load-order tests."""
+
+    def __init__(self, events, control_plane=None):
+        self.events = events
+        self.control_plane = control_plane
+        self._initialized = False
+
+    @property
+    def is_initialized(self):
+        return self._initialized
+
+    def init_afd_connector(self):
+        self.events.append("connector_init")
+        self._initialized = True
+
+    def close(self):
+        self.events.append("connector_close")
+
+
+def _fake_npu_connector_factory(monkeypatch, connector):
+    from afd_plugin.v1.worker.npu import attention_model_runner
+
+    monkeypatch.setattr(
+        attention_model_runner,
+        "_resolve_world_ranks",
+        lambda: (3, 0),
+    )
+    monkeypatch.setattr(
+        attention_model_runner.AFDConnectorFactory,
+        "create_connector",
+        lambda rank, local_rank, vllm_config, afd_config: connector,
+    )
+
+
+def test_npu_attention_runner_constructor_does_not_initialize_connector(monkeypatch):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import attention_model_runner
+
+    events = []
+    connector = _LifecycleConnector(events)
+
+    def fake_native_init(self, vllm_config, device):
+        self.vllm_config = vllm_config
+        self.device = device
+
+    monkeypatch.setattr(
+        attention_model_runner.NPUModelRunner,
+        "__init__",
+        fake_native_init,
+    )
+    monkeypatch.setattr(
+        attention_model_runner,
+        "fail_if_unsupported_npu_afd_features",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        attention_model_runner,
+        "AFDAsyncExtraInfo",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        attention_model_runner,
+        "create_afd_npu_profiler",
+        lambda _name: object(),
+    )
+    monkeypatch.setattr(
+        attention_model_runner.AFDNPUAttentionModelRunner,
+        "parse_config",
+        staticmethod(
+            lambda _vllm_config: SimpleNamespace(
+                connector="CAMP2pAFDConnector",
+            )
+        ),
+    )
+    _fake_npu_connector_factory(monkeypatch, connector)
+
+    runner = attention_model_runner.AFDNPUAttentionModelRunner(
+        SimpleNamespace(),
+        SimpleNamespace(index=0),
+    )
+
+    assert runner.connector is connector
+    # Connector construction is device-light; the collective rendezvous is
+    # deferred to load_model() so Attention and FFN weight loading overlap.
+    assert events == []
+    assert connector.is_initialized is False
+
+
+def test_npu_attention_runner_load_model_initializes_connector_after_weights(
+    monkeypatch,
+):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import attention_model_runner
+
+    events = []
+    connector = _LifecycleConnector(events)
+    runner = object.__new__(attention_model_runner.AFDNPUAttentionModelRunner)
+    runner.connector = connector
+    runner.vllm_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(use_ubatching=False),
+    )
+    monkeypatch.setattr(
+        attention_model_runner.NPUModelRunner,
+        "load_model",
+        lambda self: events.append("model_load"),
+    )
+
+    runner.load_model()
+
+    assert events == ["model_load", "connector_init"]
+    assert connector.is_initialized is True
+
+
+def test_npu_attention_runner_load_model_installs_ubatch_wrapper_before_init(
+    monkeypatch,
+):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import attention_model_runner
+
+    events = []
+    connector = _LifecycleConnector(events)
+    runner = object.__new__(attention_model_runner.AFDNPUAttentionModelRunner)
+    runner.connector = connector
+    runner.vllm_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(use_ubatching=True),
+    )
+    monkeypatch.setattr(
+        attention_model_runner.NPUModelRunner,
+        "load_model",
+        lambda self: events.append("model_load"),
+    )
+    monkeypatch.setattr(
+        attention_model_runner.AFDNPUAttentionModelRunner,
+        "_install_ascend_ubatch_wrapper",
+        lambda self: events.append("wrapper_install"),
+    )
+
+    runner.load_model()
+
+    assert events == ["model_load", "wrapper_install", "connector_init"]
+
+
+def test_npu_attention_runner_load_model_connector_init_is_idempotent(monkeypatch):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import attention_model_runner
+
+    events = []
+    connector = _LifecycleConnector(events)
+    runner = object.__new__(attention_model_runner.AFDNPUAttentionModelRunner)
+    runner.connector = connector
+    runner.vllm_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(use_ubatching=False),
+    )
+    monkeypatch.setattr(
+        attention_model_runner.NPUModelRunner,
+        "load_model",
+        lambda self: events.append("model_load"),
+    )
+
+    runner.load_model()
+    runner.load_model()
+
+    # A repeated load_model must not re-enter the collective rendezvous.
+    assert events == ["model_load", "connector_init", "model_load"]
+
+
+def test_npu_attention_runner_shutdown_closes_uninitialized_connector(monkeypatch):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import attention_model_runner
+
+    events = []
+    connector = _LifecycleConnector(events)
+    runner = object.__new__(attention_model_runner.AFDNPUAttentionModelRunner)
+    runner.connector = connector
+    runner.prof = object()
+    monkeypatch.setattr(
+        attention_model_runner,
+        "stop_afd_npu_profiler",
+        lambda _prof: None,
+    )
+    monkeypatch.setattr(
+        attention_model_runner.NPUModelRunner,
+        "shutdown",
+        lambda self: None,
+    )
+
+    # Cleanup must remain safe when startup failed before connector init.
+    runner.shutdown()
+
+    assert events == ["connector_close"]

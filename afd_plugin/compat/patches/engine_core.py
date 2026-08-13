@@ -557,12 +557,15 @@ def _prepare_late_loaded_ffn_engine_core(
 
 
 def _run_ffn_busy_loop(self, core_module: Any) -> None:
-    core_module.logger.info("AFD FFN EngineCore started; workers run connector loop.")
-
     started = False
     try:
         self.model_executor.collective_rpc("start_ffn_server_loop")
         started = True
+        # Emit readiness only after the collective start RPC succeeded; the
+        # worker connector loop may not be ready to receive before this point.
+        core_module.logger.info(
+            "AFD FFN EngineCore started; workers run connector loop."
+        )
         while _is_running(self, core_module):
             self.model_executor.collective_rpc("raise_ffn_loop_error_if_any")
             time.sleep(0.5)
