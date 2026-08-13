@@ -1,5 +1,4 @@
 # L3 merge — Simple Test + E2E. Uploaded by cuda/bootstrap-upload-steps.yml.
-# Temporary: New Build with env FORCE_MERGE=1 to run on non-main branches.
 steps:
   - group: ":card_index_dividers: Simple Test"
     depends_on: upload-merge-pipeline

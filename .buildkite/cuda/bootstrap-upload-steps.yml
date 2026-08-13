@@ -18,7 +18,7 @@ steps:
     agents:
       queue: "cpu_queue_premerge"
 
-  # L3 Test — PR merge-test label, main, or temporary FORCE_MERGE=1
+  # L3 Test — PR merge-test label or main
   - label: "Upload Merge Pipeline"
     depends_on: image-build
     key: upload-merge-pipeline

@@ -97,8 +97,6 @@ def _compute_bootstrap_if_exprs(*, decision, platform: str) -> dict[str, str]:
     disabled = "false"
     nightly_main = 'build.branch == "main" && build.env("NIGHTLY") == "1"'
     weekly_main = 'build.branch == "main" && build.env("WEEKLY") == "1"'
-    # Temporary escape hatch: New Build with FORCE_MERGE=1 on any branch.
-    force_merge = 'build.env("FORCE_MERGE") == "1"'
 
     ready_pr = 'build.branch != "main" && build.pull_request.labels includes "ready"'
     merge_main = (
@@ -108,9 +106,7 @@ def _compute_bootstrap_if_exprs(*, decision, platform: str) -> dict[str, str]:
     merge_pr = (
         'build.branch != "main" && build.pull_request.labels includes "merge-test"'
     )
-    merge_base = (
-        f"({force_merge}) || ({nightly_main}) || (({merge_main}) || ({merge_pr}))"
-    )
+    merge_base = f"({nightly_main}) || (({merge_main}) || ({merge_pr}))"
     ready_base = f"({nightly_main}) || ({ready_pr})"
     nightly_label_if = CUDA_NIGHTLY_ONLY
     weekly_label_if = (
@@ -119,10 +115,10 @@ def _compute_bootstrap_if_exprs(*, decision, platform: str) -> dict[str, str]:
     )
 
     if decision.skip_all:
-        # Docs / skip-mark only: no PR-label escape hatch (FORCE_MERGE still works).
-        image_expr = f"({force_merge}) || ({nightly_main}) || ({weekly_main})"
+        # Docs / skip-mark only: no PR-label escape hatch.
+        image_expr = f"({nightly_main}) || ({weekly_main})"
         ready_expr = nightly_main
-        merge_expr = f"({force_merge}) || ({nightly_main})"
+        merge_expr = nightly_main
         nightly_expr = nightly_main
         weekly_expr = weekly_main
     elif decision.skip_l2_l3:
@@ -130,12 +126,11 @@ def _compute_bootstrap_if_exprs(*, decision, platform: str) -> dict[str, str]:
         l3_enabled = decision.is_run(platform, "l3")
 
         ready_expr = ready_base if l2_enabled else disabled
-        merge_expr = merge_base if l3_enabled else force_merge
+        merge_expr = merge_base if l3_enabled else disabled
         nightly_expr = nightly_label_if
         weekly_expr = weekly_label_if
 
         image_parts = [
-            f"({force_merge})",
             f"({nightly_label_if})",
             f"({weekly_label_if})",
         ]
