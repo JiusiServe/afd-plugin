@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-# debug for test
 """Backend-neutral DeepSeek-V2-Lite E2E scenarios."""
 
 from __future__ import annotations
