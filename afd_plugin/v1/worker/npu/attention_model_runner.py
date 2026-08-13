@@ -1548,6 +1548,10 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         super().load_model()
         if bool(self.vllm_config.parallel_config.use_ubatching):
             self._install_ascend_ubatch_wrapper()
+        # Wrapper installation is local and non-blocking; the connector
+        # rendezvous is the blocking cross-role collective, so it is
+        # deliberately last: it doubles as the "both roles finished loading
+        # weights" barrier before memory profiling.
         if not self.connector.is_initialized:
             self.connector.init_afd_connector()
 
