@@ -54,16 +54,9 @@ BOOTSTRAP_IMAGE_BUILD_KEYS = frozenset({"image-build"})
 BOOTSTRAP_UPLOAD_IF_KEYS = {
     "upload-ready-pipeline": "ready",
     "upload-merge-pipeline": "merge",
-    "upload-nightly-pipeline": "nightly",
-    "upload-weekly-pipeline": "weekly",
 }
 E2E_GROUP_MARKER = "E2E Test"
 CI_MIRROR_HARDWARES_PATH = ROOT / ".buildkite/common/ci_mirror_hardwares.yml"
-
-CUDA_NIGHTLY_ONLY = (
-    '(build.pull_request.labels includes "nightly-test") || '
-    '(build.branch == "main" && build.env("NIGHTLY") == "1")'
-)
 
 
 # --- Logging ---
@@ -76,7 +69,11 @@ def _log(message: str) -> None:
 # --- Bootstrap pipeline (bootstrap-upload-steps.yml) ---
 
 
-def _get_bootstrap_platform(_path: Path) -> str:
+def _get_bootstrap_platform(path: Path) -> str:
+    """Infer platform from bootstrap YAML path (``.buildkite/<platform>/...``)."""
+    parts = path.parts
+    if "npu" in parts:
+        return "npu"
     return "cuda"
 
 
@@ -95,63 +92,41 @@ def _format_bootstrap_if(expr: str) -> str:
 
 def _compute_bootstrap_if_exprs(*, decision, platform: str) -> dict[str, str]:
     disabled = "false"
-    nightly_main = 'build.branch == "main" && build.env("NIGHTLY") == "1"'
-    weekly_main = 'build.branch == "main" && build.env("WEEKLY") == "1"'
-
     ready_pr = 'build.branch != "main" && build.pull_request.labels includes "ready"'
-    merge_main = (
-        'build.branch == "main" && build.env("NIGHTLY") != "1" '
-        '&& build.env("WEEKLY") != "1"'
-    )
+    merge_main = 'build.branch == "main"'
     merge_pr = (
         'build.branch != "main" && build.pull_request.labels includes "merge-test"'
     )
-    merge_base = f"({nightly_main}) || (({merge_main}) || ({merge_pr}))"
-    ready_base = f"({nightly_main}) || ({ready_pr})"
-    nightly_label_if = CUDA_NIGHTLY_ONLY
-    weekly_label_if = (
-        '(build.branch == "main" && build.env("WEEKLY") == "1") || '
-        '(build.branch != "main" && build.pull_request.labels includes "weekly-test")'
-    )
+    ready_base = ready_pr
+    merge_base = f"({merge_main}) || ({merge_pr})"
 
     if decision.skip_all:
-        # Docs / skip-mark only: no PR-label escape hatch.
-        image_expr = f"({nightly_main}) || ({weekly_main})"
-        ready_expr = nightly_main
-        merge_expr = nightly_main
-        nightly_expr = nightly_main
-        weekly_expr = weekly_main
+        # Docs / skip-mark only: suppress image + ready/merge uploads.
+        image_expr = disabled
+        ready_expr = disabled
+        merge_expr = disabled
     elif decision.skip_l2_l3:
         l2_enabled = decision.is_run(platform, "l2")
         l3_enabled = decision.is_run(platform, "l3")
 
         ready_expr = ready_base if l2_enabled else disabled
         merge_expr = merge_base if l3_enabled else disabled
-        nightly_expr = nightly_label_if
-        weekly_expr = weekly_label_if
 
-        image_parts = [
-            f"({nightly_label_if})",
-            f"({weekly_label_if})",
-        ]
+        image_parts: list[str] = []
         if l2_enabled:
-            image_parts.insert(0, f"({ready_base})")
+            image_parts.append(ready_base)
         if l3_enabled:
-            image_parts.insert(1 if l2_enabled else 0, f"({merge_base})")
-        image_expr = " || ".join(image_parts)
+            image_parts.append(merge_base)
+        image_expr = " || ".join(image_parts) if image_parts else disabled
     else:
         image_expr = "true"
         ready_expr = ready_base
         merge_expr = merge_base
-        nightly_expr = nightly_label_if
-        weekly_expr = weekly_label_if
 
     return {
         "image": _format_bootstrap_if(image_expr),
         "ready": _format_bootstrap_if(ready_expr),
         "merge": _format_bootstrap_if(merge_expr),
-        "nightly": _format_bootstrap_if(nightly_expr),
-        "weekly": _format_bootstrap_if(weekly_expr),
     }
 
 

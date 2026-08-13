@@ -1,6 +1,6 @@
 # Uploaded by upload_pipeline.py --upload (not the Buildkite hook).
 # ``if`` is injected by step ``key`` from skip-ci at upload time.
-# Slimmed for afd-plugin: ready (L2) + merge (L3) only.
+# CUDA ready (L2) + merge (L3). NPU will use `.buildkite/npu/` when added.
 steps:
   - label: ":docker: Build image"
     key: image-build

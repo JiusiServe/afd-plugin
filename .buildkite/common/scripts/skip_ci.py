@@ -7,21 +7,12 @@
 ``resolve_ci_context_from_git()`` resolves git diff once and returns
 decision + changed files for Buildkite bootstrap / upload scripts.
 
-CLI (for bootstrap scripts; exit code is the signal):
-  python3 skip_ci.py gate <platform> <level>
-      Exit 0 when bootstrap should stop (skip-all, or that L2/L3 target is off).
-      Prints ``skip-all`` or ``skip-l23`` on stdout; logs the decision once.
-  python3 skip_ci.py check-skip-all
-      Exit 0 when only docs/skip-mark changes → bootstrap skips entire CI upload.
-  python3 skip_ci.py check-skip-l2-l3 <platform> <level>
-      Exit 0 when that L2/L3 pipeline should be skipped (CI config YAML-only diffs).
-  python3 skip_ci.py print-annotate
-      Print decision message for Buildkite annotation.
+afd-plugin currently ships CUDA ready/merge pipelines; NPU YAML paths are
+whitelisted so the same gating works when NPU CI is added.
 """
 
 from __future__ import annotations
 
-import argparse
 import os
 import re
 import subprocess
@@ -32,24 +23,17 @@ from pathlib import Path
 LOG = "[skip-ci]"
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
-PLATFORMS = ("cuda", "amd", "intel", "npu")
+PLATFORMS = ("cuda", "npu")
 L23_LEVELS = frozenset({"l2", "l3"})
 
 L2_YAML_FILES: dict[str, str] = {
     ".buildkite/cuda/test-ready.yml": "cuda",
-    ".buildkite/amd/test-amd-ready.yml": "amd",
-    ".buildkite/intel/pipeline-intel.yml": "intel",
+    ".buildkite/npu/test-ready.yml": "npu",
 }
 
 L3_YAML_FILES: dict[str, str] = {
     ".buildkite/cuda/test-merge.yml": "cuda",
-    ".buildkite/amd/test-amd-merge.yml": "amd",
-}
-
-# afd-plugin currently ships CUDA ready/merge only; keep the map for forward-compat.
-L45_YAML_FILES: dict[str, str] = {
-    ".buildkite/cuda/test-nightly.yml": "cuda",
-    ".buildkite/cuda/test-weekly.yml": "cuda",
+    ".buildkite/npu/test-merge.yml": "npu",
 }
 
 
@@ -63,10 +47,6 @@ class CiDevice:
 
     skip_cuda_l2: bool = False
     skip_cuda_l3: bool = False
-    skip_amd_l2: bool = False
-    skip_amd_l3: bool = False
-    skip_intel_l2: bool = False
-    skip_intel_l3: bool = False
     skip_npu_l2: bool = False
     skip_npu_l3: bool = False
 
@@ -83,7 +63,6 @@ class DiffBuckets:
     other: list[str] = field(default_factory=list)
     l2: dict[str, list[str]] = field(default_factory=_empty_platform_buckets)
     l3: dict[str, list[str]] = field(default_factory=_empty_platform_buckets)
-    l45: dict[str, list[str]] = field(default_factory=_empty_platform_buckets)
 
     @property
     def has_doc_changes(self) -> bool:
@@ -104,18 +83,12 @@ class DiffBuckets:
         return any(self.l2[platform] or self.l3[platform] for platform in PLATFORMS)
 
     @property
-    def has_l45_yaml_changes(self) -> bool:
-        """At least one whitelisted L4/L5 (nightly/weekly) CI yaml file changed."""
-        return any(self.l45[platform] for platform in PLATFORMS)
-
-    @property
     def has_skip_ci_scope_changes(self) -> bool:
         """At least one doc / skip-mark / whitelisted CI yaml change."""
         return (
             self.has_doc_changes
             or self.has_skip_test_changes
             or self.has_l23_yaml_changes
-            or self.has_l45_yaml_changes
         )
 
     def l2_platforms(self) -> frozenset[str]:
@@ -123,28 +96,6 @@ class DiffBuckets:
 
     def l3_platforms(self) -> frozenset[str]:
         return frozenset(platform for platform in PLATFORMS if self.l3[platform])
-
-
-@dataclass(frozen=True)
-class SkipL2L3Basis:
-    skip_all_l2: bool
-    skip_all_l3: bool
-
-    @classmethod
-    def from_buckets(cls, buckets: DiffBuckets) -> SkipL2L3Basis | None:
-        """L4/L5 yaml → skip both L2 and L3 (L2/L3 buckets may rescue).
-
-        Docs / skip-mark changes do not block this path; they are ignored for
-        L2/L3 targeting when CI YAML is also present.
-        """
-        if buckets.has_other_changes:
-            return None
-        if not buckets.has_l45_yaml_changes:
-            return None
-        return cls(
-            skip_all_l2=not buckets.l2_platforms(),
-            skip_all_l3=not buckets.l3_platforms(),
-        )
 
 
 @dataclass(frozen=True)
@@ -187,7 +138,7 @@ class CiDecision:
         """Docs / pytest skip-mark only → suppress entire default CI."""
         if buckets.has_other_changes:
             return False
-        if (buckets.has_l23_yaml_changes or buckets.has_l45_yaml_changes) and (
+        if buckets.has_l23_yaml_changes and (
             buckets.has_doc_changes or buckets.has_skip_test_changes
         ):
             return False
@@ -199,7 +150,6 @@ class CiDecision:
     @classmethod
     def from_yaml_basis(
         cls,
-        l2_l3_basis: SkipL2L3Basis | None,
         l3_basis: SkipL3Basis | None,
         l2_basis: SkipL2Basis | None,
     ) -> CiDecision:
@@ -207,18 +157,10 @@ class CiDecision:
 
         Bases are applied as a union of enables: L2 yaml keeps L2 on touched
         platforms, L3 yaml keeps L3 on touched platforms. Cross-platform mixes
-        (e.g. CUDA ready + AMD merge) must preserve both enables. The resulting
+        (e.g. CUDA ready + NPU merge) must preserve both enables. The resulting
         per-platform / per-level matrix is stored on ``device`` as ``skip_*``.
         """
         run = {platform: {"l2": True, "l3": True} for platform in PLATFORMS}
-
-        if l2_l3_basis is not None:
-            if l2_l3_basis.skip_all_l2:
-                for platform in PLATFORMS:
-                    run[platform]["l2"] = False
-            if l2_l3_basis.skip_all_l3:
-                for platform in PLATFORMS:
-                    run[platform]["l3"] = False
 
         if l3_basis is not None:
             for platform in PLATFORMS:
@@ -501,9 +443,6 @@ def _classify_changed_files_into_buckets(
         elif file_path in L3_YAML_FILES:
             platform = L3_YAML_FILES[file_path]
             buckets.l3[platform].append(file_path)
-        elif file_path in L45_YAML_FILES:
-            platform = L45_YAML_FILES[file_path]
-            buckets.l45[platform].append(file_path)
         else:
             buckets.other.append(file_path)
     return buckets
@@ -524,7 +463,6 @@ def _format_yaml_gated_message(buckets: DiffBuckets, decision: CiDecision) -> st
     for level_name, by_platform in (
         ("L2", buckets.l2),
         ("L3", buckets.l3),
-        ("L4/L5", buckets.l45),
     ):
         files = [path for platform in PLATFORMS for path in by_platform[platform]]
         if files:
@@ -576,7 +514,7 @@ def resolve_ci_decision(
 
     # Docs / skip-mark mixed with whitelisted CI YAML → same yaml-gated path
     # as CI-YAML-only (docs/skip-mark do not widen to normal CI).
-    if not buckets.has_l23_yaml_changes and not buckets.has_l45_yaml_changes:
+    if not buckets.has_l23_yaml_changes:
         if buckets.has_skip_test_changes and diff_range is None:
             message = (
                 "only pytest skip-mark test changes detected, but no git "
@@ -595,74 +533,7 @@ def resolve_ci_decision(
         return _finish(CiDecision(), message)
 
     decision = CiDecision.from_yaml_basis(
-        SkipL2L3Basis.from_buckets(buckets),
         SkipL3Basis.from_buckets(buckets),
         SkipL2Basis.from_buckets(buckets),
     )
     return _finish(decision, _format_yaml_gated_message(buckets, decision))
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    gate_parser = subparsers.add_parser(
-        "gate",
-        help=(
-            "exit 0 when bootstrap should stop "
-            "(skip-all or PLATFORM/LEVEL disabled); logs once"
-        ),
-    )
-    gate_parser.add_argument("platform", help="cuda, amd, intel, or npu")
-    gate_parser.add_argument("level", choices=("l2", "l3"), help="test level")
-
-    subparsers.add_parser(
-        "check-skip-all",
-        help="exit 0 when docs/skip-mark-only diff should skip entire CI upload",
-    )
-
-    skip_parser = subparsers.add_parser(
-        "check-skip-l2-l3",
-        help=(
-            "exit 0 when PLATFORM l2/l3 pipeline should be skipped "
-            "(CI config YAML-only diffs)"
-        ),
-    )
-    skip_parser.add_argument("platform", help="cuda, amd, intel, or npu")
-    skip_parser.add_argument("level", choices=("l2", "l3"), help="test level")
-
-    subparsers.add_parser(
-        "print-annotate",
-        help="print human-readable skip reason for Buildkite annotation",
-    )
-
-    args = parser.parse_args()
-    decision = resolve_ci_context_from_git().decision
-
-    if args.command == "gate":
-        if decision.skip_all:
-            print("skip-all")
-            return 0
-        if not decision.is_run(args.platform, args.level):
-            print("skip-l23")
-            return 0
-        return 1
-
-    if args.command == "check-skip-all":
-        return 0 if decision.skip_all else 1
-
-    if args.command == "check-skip-l2-l3":
-        return 0 if not decision.is_run(args.platform, args.level) else 1
-
-    if args.command == "print-annotate":
-        print(decision.message or "CI will run normally")
-        return 0
-
-    return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
