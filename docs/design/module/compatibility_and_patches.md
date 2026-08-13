@@ -75,6 +75,7 @@ compatibility evidence rather than a released package or container tag.
 | --- | --- | --- |
 | Version policy | [`compat/vllm.py`](../../../afd_plugin/compat/vllm.py) | [`test_package.py`](../../../tests/unit/package/test_package.py) |
 | Core vLLM patches | [`compat/patches/`](../../../afd_plugin/compat/patches) | [`tests/unit/compat/patches/`](../../../tests/unit/compat/patches) |
+| CUDA benchmark routing | [`model_executor/routing_simulator.py`](../../../afd_plugin/model_executor/routing_simulator.py) | [`test_routing_simulator.py`](../../../tests/unit/model_executor/test_routing_simulator.py) |
 | NPU adapters | [`compat/npu/`](../../../afd_plugin/compat/npu) | [`test_runtime.py`](../../../tests/unit/compat/test_runtime.py), [`test_ascend_ops.py`](../../../tests/unit/compat/test_ascend_ops.py) |
 | NPU patch paths | [`compat/patches/npu/`](../../../afd_plugin/compat/patches/npu) | [`test_force_load_balance.py`](../../../tests/unit/compat/patches/test_force_load_balance.py), [`test_npu_runtime.py`](../../../tests/unit/v1/worker/test_npu_runtime.py) |
 | CUDA DBO Attention metadata workaround | [`attention_model_runner.py`](../../../afd_plugin/v1/worker/attention_model_runner.py) | restoration and error-path coverage in [`test_attention_model_runner.py`](../../../tests/unit/v1/worker/test_attention_model_runner.py) |
@@ -86,11 +87,12 @@ The vLLM plugin entry point applies compatibility in this order:
 1. perform the non-strict vLLM version check;
 2. import `async_dp_engine`, `async_dp_forward_context`, `config_validation`,
    and `engine_core` in one best-effort block;
-3. register the plugin-owned DBO yield operator;
-4. call the idempotent Ascend runtime facade, which installs the NPU platform
+3. register the plugin-owned CUDA benchmark routing strategy;
+4. register the plugin-owned DBO yield operator;
+5. call the idempotent Ascend runtime facade, which installs the NPU platform
    config wrapper when vLLM-Ascend is importable;
-5. import the force-load-balance patch only when vLLM-Ascend is discoverable;
-6. register model mappings, which is required for registration to complete.
+6. import the force-load-balance patch only when vLLM-Ascend is discoverable;
+7. register model mappings, which is required for registration to complete.
 
 Python module import provides process-level one-time execution in the ordinary
 path. Some patches also preserve originals or set explicit sentinels, but this
@@ -119,6 +121,7 @@ These modules adapt upstream behavior without replacing a global symbol:
 
 | Adapter | Current purpose |
 | --- | --- |
+| [`model_executor/routing_simulator.py`](../../../afd_plugin/model_executor/routing_simulator.py) | Registers the opt-in `afd_balanced` strategy through vLLM's public `RoutingSimulator` interface. Select it with `VLLM_MOE_ROUTING_SIMULATION_STRATEGY=afd_balanced`; `AFD_BENCHMARK_FORCE_LB_TOPN_PER_RANK` optionally limits each rank's expert pool. It provides deterministic source-rank phases and normalized weights for controlled CUDA performance tests without replacing router internals. EPLB remains outside the validated scope. |
 | [`compat/npu/runtime_config.py`](../../../afd_plugin/compat/npu/runtime_config.py) | Mirrors vLLM-Ascend's non-SP all-to-all backend rewrite for custom AFD workers and reports the active NPU ubatch count. |
 | [`compat/npu/feature_validation.py`](../../../afd_plugin/compat/npu/feature_validation.py) | Parses connector-owned typed extra information through the factory and fails before execution for unsupported NPU connector, quantization, graph, DBO, gate, or async MoE combinations. |
 | [`compat/npu/forward_context.py`](../../../afd_plugin/compat/npu/forward_context.py) | Enters the pinned Ascend forward context for connector-driven FFN compute and installs AFD metadata in `additional_kwargs`. |
