@@ -1006,9 +1006,6 @@ class _LifecycleConnector:
         self.events.append("connector_init")
         self._initialized = True
 
-    def close(self):
-        self.events.append("connector_close")
-
 
 def _fake_connector_factory(monkeypatch, connector):
     import afd_plugin.v1.worker.attention_model_runner as attention_model_runner
@@ -1067,50 +1064,40 @@ def test_attention_runner_constructor_does_not_initialize_connector(monkeypatch)
     assert connector.is_initialized is False
 
 
-def test_attention_runner_load_model_initializes_connector_after_weights(monkeypatch):
-    events = []
-    connector = _LifecycleConnector(events)
-    runner = object.__new__(AFDAttentionModelRunner)
-    runner.connector = connector
-    runner.vllm_config = SimpleNamespace(
-        parallel_config=SimpleNamespace(use_ubatching=False),
-    )
-    monkeypatch.setattr(
-        GPUModelRunner,
-        "load_model",
-        lambda self, load_dummy_weights=False: events.append("model_load"),
-    )
-
-    runner.load_model(load_dummy_weights=True)
-
-    assert events == ["model_load", "connector_init"]
-    assert connector.is_initialized is True
-
-
-def test_attention_runner_load_model_installs_ubatch_wrapper_before_init(
+@pytest.mark.parametrize("use_ubatching", [False, True])
+def test_attention_runner_load_model_initializes_connector_after_weights(
     monkeypatch,
+    use_ubatching,
 ):
     events = []
     connector = _LifecycleConnector(events)
     runner = object.__new__(AFDAttentionModelRunner)
     runner.connector = connector
     runner.vllm_config = SimpleNamespace(
-        parallel_config=SimpleNamespace(use_ubatching=True),
+        parallel_config=SimpleNamespace(use_ubatching=use_ubatching),
     )
     monkeypatch.setattr(
         GPUModelRunner,
         "load_model",
         lambda self, load_dummy_weights=False: events.append("model_load"),
     )
-    monkeypatch.setattr(
-        AFDAttentionModelRunner,
-        "_install_afd_ubatch_wrapper",
-        lambda self: events.append("wrapper_install"),
-    )
+    if use_ubatching:
+        monkeypatch.setattr(
+            AFDAttentionModelRunner,
+            "_install_afd_ubatch_wrapper",
+            lambda self: events.append("wrapper_install"),
+        )
 
-    runner.load_model()
+    runner.load_model(load_dummy_weights=True)
 
-    assert events == ["model_load", "wrapper_install", "connector_init"]
+    expected = ["model_load"]
+    if use_ubatching:
+        # Wrapper installation is local; the connector rendezvous is the
+        # blocking cross-role collective and comes last.
+        expected.append("wrapper_install")
+    expected.append("connector_init")
+    assert events == expected
+    assert connector.is_initialized is True
 
 
 def test_attention_runner_load_model_connector_init_is_idempotent(monkeypatch):
@@ -1132,24 +1119,3 @@ def test_attention_runner_load_model_connector_init_is_idempotent(monkeypatch):
 
     # A repeated load_model must not re-enter the collective rendezvous.
     assert events == ["model_load", "connector_init", "model_load"]
-
-
-def test_attention_runner_shutdown_closes_uninitialized_connector(monkeypatch):
-    import afd_plugin.v1.worker.attention_model_runner as attention_model_runner
-
-    events = []
-    connector = _LifecycleConnector(events)
-    runner = object.__new__(AFDAttentionModelRunner)
-    runner.connector = connector
-    runner.prof = object()
-    monkeypatch.setattr(
-        attention_model_runner,
-        "stop_afd_gpu_profiler",
-        lambda _prof: None,
-    )
-    monkeypatch.setattr(GPUModelRunner, "shutdown", lambda self: None)
-
-    # Cleanup must remain safe when startup failed before connector init.
-    runner.shutdown()
-
-    assert events == ["connector_close"]

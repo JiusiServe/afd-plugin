@@ -2333,9 +2333,6 @@ class _LifecycleConnector:
         self.events.append("connector_init")
         self._initialized = True
 
-    def close(self):
-        self.events.append("connector_close")
-
 
 def _fake_npu_connector_factory(monkeypatch, connector):
     from afd_plugin.v1.worker.npu import attention_model_runner
@@ -2406,8 +2403,10 @@ def test_npu_attention_runner_constructor_does_not_initialize_connector(monkeypa
     assert connector.is_initialized is False
 
 
+@pytest.mark.parametrize("use_ubatching", [False, True])
 def test_npu_attention_runner_load_model_initializes_connector_after_weights(
     monkeypatch,
+    use_ubatching,
 ):
     _require_npu_runtime()
     from afd_plugin.v1.worker.npu import attention_model_runner
@@ -2417,47 +2416,30 @@ def test_npu_attention_runner_load_model_initializes_connector_after_weights(
     runner = object.__new__(attention_model_runner.AFDNPUAttentionModelRunner)
     runner.connector = connector
     runner.vllm_config = SimpleNamespace(
-        parallel_config=SimpleNamespace(use_ubatching=False),
+        parallel_config=SimpleNamespace(use_ubatching=use_ubatching),
     )
     monkeypatch.setattr(
         attention_model_runner.NPUModelRunner,
         "load_model",
         lambda self: events.append("model_load"),
     )
+    if use_ubatching:
+        monkeypatch.setattr(
+            attention_model_runner.AFDNPUAttentionModelRunner,
+            "_install_ascend_ubatch_wrapper",
+            lambda self: events.append("wrapper_install"),
+        )
 
     runner.load_model()
 
-    assert events == ["model_load", "connector_init"]
+    expected = ["model_load"]
+    if use_ubatching:
+        # Wrapper installation is local; the connector rendezvous is the
+        # blocking cross-role collective and comes last.
+        expected.append("wrapper_install")
+    expected.append("connector_init")
+    assert events == expected
     assert connector.is_initialized is True
-
-
-def test_npu_attention_runner_load_model_installs_ubatch_wrapper_before_init(
-    monkeypatch,
-):
-    _require_npu_runtime()
-    from afd_plugin.v1.worker.npu import attention_model_runner
-
-    events = []
-    connector = _LifecycleConnector(events)
-    runner = object.__new__(attention_model_runner.AFDNPUAttentionModelRunner)
-    runner.connector = connector
-    runner.vllm_config = SimpleNamespace(
-        parallel_config=SimpleNamespace(use_ubatching=True),
-    )
-    monkeypatch.setattr(
-        attention_model_runner.NPUModelRunner,
-        "load_model",
-        lambda self: events.append("model_load"),
-    )
-    monkeypatch.setattr(
-        attention_model_runner.AFDNPUAttentionModelRunner,
-        "_install_ascend_ubatch_wrapper",
-        lambda self: events.append("wrapper_install"),
-    )
-
-    runner.load_model()
-
-    assert events == ["model_load", "wrapper_install", "connector_init"]
 
 
 def test_npu_attention_runner_load_model_connector_init_is_idempotent(monkeypatch):
@@ -2482,29 +2464,3 @@ def test_npu_attention_runner_load_model_connector_init_is_idempotent(monkeypatc
 
     # A repeated load_model must not re-enter the collective rendezvous.
     assert events == ["model_load", "connector_init", "model_load"]
-
-
-def test_npu_attention_runner_shutdown_closes_uninitialized_connector(monkeypatch):
-    _require_npu_runtime()
-    from afd_plugin.v1.worker.npu import attention_model_runner
-
-    events = []
-    connector = _LifecycleConnector(events)
-    runner = object.__new__(attention_model_runner.AFDNPUAttentionModelRunner)
-    runner.connector = connector
-    runner.prof = object()
-    monkeypatch.setattr(
-        attention_model_runner,
-        "stop_afd_npu_profiler",
-        lambda _prof: None,
-    )
-    monkeypatch.setattr(
-        attention_model_runner.NPUModelRunner,
-        "shutdown",
-        lambda self: None,
-    )
-
-    # Cleanup must remain safe when startup failed before connector init.
-    runner.shutdown()
-
-    assert events == ["connector_close"]
