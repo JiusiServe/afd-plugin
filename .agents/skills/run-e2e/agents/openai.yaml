@@ -1,0 +1,4 @@
+interface:
+  display_name: "AFD E2E Validation"
+  short_description: "Run DeepSeek-V2-Lite E2E tests on GPU or NPU"
+  default_prompt: "Use $run-e2e to run, validate, or diagnose the AFD DeepSeek-V2-Lite E2E test suite."
