@@ -294,12 +294,29 @@ def plan_dispatch(
     num_tokens, num_slots = topk_ids.shape
     flat = topk_ids.reshape(-1).to(torch.int64)
     order = torch.argsort(flat, stable=True)
-    counts = torch.bincount(flat, minlength=ffn_size * expert_per_rank)
-    offsets = torch.cumsum(counts, dim=0) - counts
+    sorted_experts = flat[order]
+
+    # Where each expert's partials start and stop, read off the sorted ids.
+    # torch.bincount would do this in one call, but it sizes its output from the
+    # data's maximum and so copies that maximum to the host -- a pageable
+    # readback measured at 783us per call, once per MoE layer, which was the
+    # largest single host cost on the Attention rank. searchsorted needs no such
+    # thing, because the expert count is known, and it hands back the offsets
+    # that would otherwise be a second pass.
+    bounds = torch.searchsorted(
+        sorted_experts,
+        torch.arange(
+            ffn_size * expert_per_rank + 1,
+            device=flat.device,
+            dtype=flat.dtype,
+        ),
+    )
+    offsets = bounds[:-1]
+    counts = bounds[1:] - offsets
 
     token_of_partial = order // num_slots
     weights = topk_weights.reshape(-1)[order].to(torch.float32)
-    dest_rank = flat[order] // expert_per_rank
+    dest_rank = sorted_experts // expert_per_rank
 
     # Partials sharing a (destination, token) share a shipped row. Sorting by
     # that key makes them adjacent, so "is this row new" is one neighbour
