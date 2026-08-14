@@ -1,0 +1,15 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+*.egg-info
+dist
+build
+_omni_bk
+_omni_bk_clean
+agent-transcripts
+**/.DS_Store

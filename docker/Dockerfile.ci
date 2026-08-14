@@ -1,0 +1,55 @@
+# Target vLLM version: keep VLLM_BASE_TAG aligned with
+# [project.optional-dependencies].vllm in pyproject.toml.
+#
+# The base image already ships vLLM and its CUDA runtime stack (torch,
+# flashinfer, etc.). Install only the AFD plugin + dev tools on top.
+ARG VLLM_BASE_IMAGE=vllm/vllm-openai
+ARG VLLM_BASE_TAG=v0.26.0
+
+# deps stage: everything except the real project sources, so most PRs can
+# cache-hit on the heavy dependency layer.
+FROM ${VLLM_BASE_IMAGE}:${VLLM_BASE_TAG} AS deps
+
+ARG APP_DIR=/opt/afd-plugin
+WORKDIR ${APP_DIR}
+
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+# Placeholder package tree so editable install can register APP_DIR.
+# The final stage COPY --link fills this directory with the real sources.
+RUN mkdir -p afd_plugin && touch afd_plugin/__init__.py
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git jq && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml setup.py uv.lock README.md LICENSE ./
+
+# Docker build context has no .git (see .dockerignore), so setuptools-scm
+# cannot infer a version; pretend one for CI image installs.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    AFD_BUILD_ASCEND_OPS=0 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_LINK_MODE=copy \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VLLM_AFD_PLUGIN=0.0.0+ci \
+    SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0+ci
+
+# Install locked deps into the base image's system Python, then editable-install
+# the project. `uv sync` has no --system; export + uv pip matches the omni
+# system-Python layout while still honoring uv.lock.
+# Do NOT reinstall after the final COPY --link, or Buildkite would need to pull
+# the heavy base image for every source-only change.
+RUN uv export --locked --group dev --no-emit-project -o /tmp/requirements-dev.txt \
+    && uv pip install --system -r /tmp/requirements-dev.txt \
+    && uv pip install --system -e .
+
+# Final stage: overlay workspace sources onto the cached deps image.
+FROM deps
+ARG APP_DIR=/opt/afd-plugin
+WORKDIR ${APP_DIR}
+
+COPY --link . .
+
+ENTRYPOINT []

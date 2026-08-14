@@ -11,11 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.models.deepseek_v2_lite.test_deepseek_v2_lite import (
-    _devices,
-    _required_env,
-    _run_runner,
-)
+from tests.conftest import run_runner
 from tests.e2e.runner import (
     ASYNC_CAM_ATTENTION_RANKS,
     ASYNC_CAM_FFN_RANKS,
@@ -29,6 +25,22 @@ CAM_HCCL_BUFFER_SIZE = "4096"
 CAM_MAX_NUM_SEQUENCES = "8"
 CAM_MAX_BATCHED_TOKENS = "8000"
 CAM_MEMORY_UTILIZATION = "0.75"
+
+
+def _required_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(f"{name} must be set")
+    return value
+
+
+def _devices(name: str, expected_count: int) -> list[str]:
+    devices = [item.strip() for item in _required_env(name).split(",") if item.strip()]
+    if len(devices) != expected_count:
+        raise RuntimeError(f"{name} must contain exactly {expected_count} devices")
+    if len(devices) != len(set(devices)):
+        raise RuntimeError(f"{name} devices must be unique")
+    return devices
 
 
 def _prepend_env_paths(env: dict[str, str], name: str, *paths: Path) -> None:
@@ -127,4 +139,4 @@ def build_runner_command() -> list[str]:
 @pytest.mark.e2e
 @pytest.mark.slow
 def test_deepseek_v2_lite_async_cam() -> None:
-    _run_runner(build_runner_command(), env=_async_cam_env())
+    run_runner(build_runner_command(), env=_async_cam_env())
