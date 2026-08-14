@@ -1,0 +1,4 @@
+interface:
+  display_name: "AFD Model Adaptation"
+  short_description: "Adapt and validate new AFD models on GPU or NPU"
+  default_prompt: "Use $adapt-model to assess, implement, review, or validate support for a new AFD model."
