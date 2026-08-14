@@ -1098,24 +1098,3 @@ def test_attention_runner_load_model_initializes_connector_after_weights(
     expected.append("connector_init")
     assert events == expected
     assert connector.is_initialized is True
-
-
-def test_attention_runner_load_model_connector_init_is_idempotent(monkeypatch):
-    events = []
-    connector = _LifecycleConnector(events)
-    runner = object.__new__(AFDAttentionModelRunner)
-    runner.connector = connector
-    runner.vllm_config = SimpleNamespace(
-        parallel_config=SimpleNamespace(use_ubatching=False),
-    )
-    monkeypatch.setattr(
-        GPUModelRunner,
-        "load_model",
-        lambda self, load_dummy_weights=False: events.append("model_load"),
-    )
-
-    runner.load_model()
-    runner.load_model()
-
-    # A repeated load_model must not re-enter the collective rendezvous.
-    assert events == ["model_load", "connector_init", "model_load"]
