@@ -538,15 +538,20 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
                 flags=0,
                 expert_counts=expert_counts,
             )
+            # Rows are gathered straight into the FFN rank's window; handing
+            # ``write_slot`` the index instead of a gathered tensor saves a
+            # local write and re-read of every payload byte.
             window.write_slot(
                 peer=self.attn_size + ffn_rank,
                 region=self.role_rank,
                 ring=ring,
                 header=header,
                 route_table=route_table[segment],
-                routed_x=hidden_states.index_select(0, token_ids[segment]),
+                routed_x=hidden_states,
+                routed_rows=token_ids[segment],
                 shared_idx=shared_idx,
-                shared_x=hidden_states.index_select(0, shared_idx.to(torch.int64)),
+                shared_x=hidden_states,
+                shared_rows=shared_idx.to(torch.int64),
             )
 
         logger.debug(

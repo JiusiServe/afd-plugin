@@ -20,6 +20,11 @@ Flag words are written *after* the payload on the same stream. Same-stream
 device-to-device copies complete in issue order, so a visible flag implies a
 complete payload. That holds for NVLink-mapped peer memory; a cross-node
 transport would need an explicit fence here.
+
+The receive side reads flags and headers on its own stream. What it reads was
+produced by a peer, never by anything this rank queued, so the read needs no
+ordering against local compute -- and staying off the compute stream is what
+lets an arrival be noticed while the previous kernel is still running.
 """
 
 from __future__ import annotations
@@ -212,6 +217,13 @@ class ArrivedSlot:
     header: SlotHeader
 
 
+def _row_count(src: torch.Tensor | None, rows: torch.Tensor | None) -> int:
+    """Rows a payload field will occupy, gathered or copied whole."""
+    if src is None:
+        return 0
+    return int(src.shape[0]) if rows is None else int(rows.numel())
+
+
 class SymmWindow:
     """Symmetric receive window plus the one-sided writes that fill peers'."""
 
@@ -280,6 +292,11 @@ class SymmWindow:
         # Host mirror of the local flag array; one D2H per poll refreshes it.
         self._flag_host = torch.zeros(self.num_flags, dtype=torch.int32).pin_memory()
         self._seen = [FLAG_EMPTY] * self.num_flags
+        # Polls read flags and headers that a *peer* wrote into our window, so
+        # they depend on nothing this rank has queued. On the compute stream the
+        # poll would still queue behind our own previous kernel, which serializes
+        # every receive against the compute it is supposed to overlap with.
+        self._poll_stream = torch.cuda.Stream(device=device)
 
     def local_bytes_view(self) -> torch.Tensor:
         return nvshmem_rt.tensor_from_ptr(
@@ -376,22 +393,30 @@ class SymmWindow:
         routed_x: torch.Tensor | None,
         shared_idx: torch.Tensor | None,
         shared_x: torch.Tensor | None,
+        routed_rows: torch.Tensor | None = None,
+        shared_rows: torch.Tensor | None = None,
     ) -> None:
         """Write one slot into ``peer``'s window, then stamp its flag.
 
         The flag copy is issued last on the same stream, so a peer that observes
         the flag also observes the payload.
+
+        ``routed_rows``/``shared_rows`` are row indices into ``routed_x`` /
+        ``shared_x``: the gather then lands directly in the peer's window.
+        Materializing the gathered rows locally first would write and re-read
+        every payload byte for nothing.
         """
         layout = self.layout
-        if routed_x is not None and routed_x.shape[0] > layout.routed_cap:
+        routed_count = _row_count(routed_x, routed_rows)
+        shared_count = _row_count(shared_x, shared_rows)
+        if routed_count > layout.routed_cap:
             raise RuntimeError(
-                f"routed tokens {routed_x.shape[0]} exceed routed_cap "
+                f"routed tokens {routed_count} exceed routed_cap "
                 f"{layout.routed_cap}; raise routed_cap_multiplier",
             )
-        if shared_x is not None and shared_x.shape[0] > layout.token_cap:
+        if shared_count > layout.token_cap:
             raise RuntimeError(
-                f"shared tokens {shared_x.shape[0]} exceed token_cap "
-                f"{layout.token_cap}",
+                f"shared tokens {shared_count} exceed token_cap {layout.token_cap}",
             )
 
         # Stage through pinned memory so the copy is asynchronous: a pageable
@@ -404,46 +429,59 @@ class SymmWindow:
             non_blocking=True,
         )
 
-        if route_table is not None and route_table.numel():
-            n = route_table.shape[0]
-            self._view(
+        def write_field(
+            field_off: int,
+            trailing_sizes: tuple[int, ...],
+            dtype: torch.dtype,
+            src: torch.Tensor | None,
+            count: int,
+            rows: torch.Tensor | None = None,
+        ) -> None:
+            if src is None or not count:
+                return
+            view = self._view(
                 peer,
                 region,
                 ring,
-                layout.route_table_off,
-                (n, 2),
-                torch.int32,
-            ).copy_(route_table, non_blocking=True)
-        if routed_x is not None and routed_x.numel():
-            n = routed_x.shape[0]
-            self._view(
-                peer,
-                region,
-                ring,
-                layout.routed_x_off,
-                (n, layout.hidden_size),
-                self.payload_dtype,
-            ).copy_(routed_x, non_blocking=True)
-        if shared_idx is not None and shared_idx.numel():
-            n = shared_idx.shape[0]
-            self._view(
-                peer,
-                region,
-                ring,
-                layout.shared_idx_off,
-                (n,),
-                torch.int32,
-            ).copy_(shared_idx, non_blocking=True)
-        if shared_x is not None and shared_x.numel():
-            n = shared_x.shape[0]
-            self._view(
-                peer,
-                region,
-                ring,
-                layout.shared_x_off,
-                (n, layout.hidden_size),
-                self.payload_dtype,
-            ).copy_(shared_x, non_blocking=True)
+                field_off,
+                (count, *trailing_sizes),
+                dtype,
+            )
+            if rows is None:
+                view.copy_(src, non_blocking=True)
+            else:
+                torch.index_select(src, 0, rows, out=view)
+
+        write_field(
+            layout.route_table_off,
+            (2,),
+            torch.int32,
+            route_table,
+            _row_count(route_table, None),
+        )
+        write_field(
+            layout.routed_x_off,
+            (layout.hidden_size,),
+            self.payload_dtype,
+            routed_x,
+            routed_count,
+            routed_rows,
+        )
+        write_field(
+            layout.shared_idx_off,
+            (),
+            torch.int32,
+            shared_idx,
+            _row_count(shared_idx, None),
+        )
+        write_field(
+            layout.shared_x_off,
+            (layout.hidden_size,),
+            self.payload_dtype,
+            shared_x,
+            shared_count,
+            shared_rows,
+        )
 
         seq = int(header[_H_SEQ].item())
         flag_idx = region * self.ring_depth + ring
@@ -456,11 +494,13 @@ class SymmWindow:
     def poll(self) -> ArrivedSlot | None:
         """Return the first slot whose flag advanced past what we consumed.
 
-        ponytail: host-side poll, one D2H per call. Correct but it burns a
-        synchronize per attempt; replace with a device-side ``wait_any`` kernel
-        spinning on the flag array when the poll shows up in a profile.
+        ponytail: host-side poll, one D2H per call on the poll stream. Correct
+        but it burns a synchronize per attempt; replace with a device-side
+        ``wait_any`` kernel spinning on the flag array when the poll shows up in
+        a profile.
         """
-        self._flag_host.copy_(self._flags_local, non_blocking=False)
+        with torch.cuda.stream(self._poll_stream):
+            self._flag_host.copy_(self._flags_local, non_blocking=False)
         host = self._flag_host.tolist()
         for idx in range(self.num_flags):
             if host[idx] != self._seen[idx]:
@@ -475,10 +515,12 @@ class SymmWindow:
 
     def read_header(self, region: int, ring: int) -> SlotHeader:
         # Reuse the pinned mirror instead of allocating a fresh host tensor on
-        # every arrival.
-        self._header_recv.copy_(
-            self._capacity_view(self.rank, region, ring, self.layout.header_off),
-        )
+        # every arrival, and read it on the poll stream for the same reason the
+        # flag is read there.
+        with torch.cuda.stream(self._poll_stream):
+            self._header_recv.copy_(
+                self._capacity_view(self.rank, region, ring, self.layout.header_off),
+            )
         return decode_header(self._header_recv)
 
     def local_route_table(self, region: int, ring: int, count: int) -> torch.Tensor:
