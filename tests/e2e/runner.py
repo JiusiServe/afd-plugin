@@ -295,7 +295,7 @@ def configure_scenario(args: argparse.Namespace) -> None:
     """Set topology and features for the selected fixed scenario."""
     is_async_cam = args.scenario == ASYNC_CAM_SCENARIO
     scenario_settings = {
-        "baseline-graph": (True, True, False, 1, 0),
+        "baseline-graph": (True, True, False, 2, 0),
         "afd-eager": (False, False, False, 2, 1),
         "afd-graph": (False, True, False, 2, 1),
         "afd-graph-dbo": (False, True, True, 2, 1),
@@ -364,9 +364,9 @@ def validate_topology(
             f"--ffn-devices must contain exactly {args.num_ffn_ranks} device",
         )
     if args.baseline:
-        if args.num_attention_ranks != 1 or args.num_ffn_ranks != 0:
+        if args.num_attention_ranks != 2 or args.num_ffn_ranks != 0:
             raise ValueError(
-                "baseline E2E requires one Attention rank and no FFN ranks",
+                "baseline E2E requires two Attention ranks and no FFN ranks",
             )
         if role_tp_size(args, "attention") != 1:
             raise ValueError("baseline E2E requires Attention TP=1")
@@ -388,7 +388,7 @@ def validate_topology(
 
 
 def build_baseline_command(args: argparse.Namespace) -> list[str]:
-    """Build the native single-process baseline command without AFD config."""
+    """Build the native baseline command without AFD config."""
     if any(
         arg == "--additional-config" or arg.startswith("--additional-config=")
         for arg in args.common_vllm_arg
@@ -405,7 +405,7 @@ def build_baseline_command(args: argparse.Namespace) -> list[str]:
         "--served-model-name",
         served_model_name(args, "baseline"),
         "--data-parallel-size",
-        "1",
+        str(args.num_attention_ranks),
         "--tensor-parallel-size",
         "1",
         "--enable-expert-parallel",

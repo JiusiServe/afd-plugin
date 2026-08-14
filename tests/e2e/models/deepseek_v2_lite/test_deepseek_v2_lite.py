@@ -15,6 +15,7 @@ from tests.conftest import download_dataset, download_model, run_runner
 GSM8K_DATASET_ID = "openai/gsm8k"
 GSM8K_DATASET_CONFIG = "main"
 DEEPSEEK_V2_LITE_REPO_ID = "deepseek-ai/DeepSeek-V2-Lite"
+DEEPSEEK_V2_LITE_MAX_MODEL_LEN = 4096
 SCENARIOS = (
     "baseline-graph",
     "afd-eager",
@@ -77,8 +78,6 @@ def build_runner_command(scenario: str, gsm8k_output_path: Path) -> list[str]:
         )
     attention_devices = devices[:2]
     ffn_devices = devices[2:]
-    if scenario == "baseline-graph":
-        attention_devices = attention_devices[:1]
 
     command = [
         sys.executable,
@@ -90,6 +89,7 @@ def build_runner_command(scenario: str, gsm8k_output_path: Path) -> list[str]:
         vllm_bin,
         "--device-backend",
         backend,
+        f"--common-vllm-arg=--max-model-len={DEEPSEEK_V2_LITE_MAX_MODEL_LEN}",
         "--attention-devices",
         ",".join(attention_devices),
     ]

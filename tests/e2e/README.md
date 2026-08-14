@@ -11,11 +11,12 @@ The default gate runs four scenarios:
 Each scenario evaluates the first 7 GSM8K samples. If `AFD_E2E_DEVICES` is set,
 that value is used as-is; otherwise the defaults are:
 
-- `0,1,2` for the default scenarios (Attention on the first two, FFN on the third)
+- `0,1,2` for the default scenarios. AFD uses the first two for Attention and
+  the third for FFN; `baseline-graph` uses the first two for DP2/TP1/EP2.
 - `0,1,2,3` for `afd-graph-dbo-2a2f`
 
 Tests run sequentially and must not skip. Every GSM8K evaluation uses 8
-few-shot examples.
+few-shot examples and a 4096-token maximum model length.
 
 See the [E2E testing design](../../docs/design/module/e2e_testing.md) before
 adding a model or case.

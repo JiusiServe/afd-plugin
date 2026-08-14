@@ -15,8 +15,9 @@ tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py:
 - afd-graph
 - afd-graph-dbo
 
-Each default scenario evaluates the first 7 GSM8K samples with 2 Attention
-ranks and 1 FFN rank. `afd-graph-dbo-2a2f` is a separate opt-in case.
+Each default scenario evaluates the first 7 GSM8K samples. AFD scenarios use
+2 Attention ranks and 1 FFN rank. `baseline-graph` uses native DP2/TP1/EP2.
+`afd-graph-dbo-2a2f` is a separate opt-in case.
 
 ## Workflow
 
@@ -71,7 +72,7 @@ export AFD_E2E_DEVICES=0,1,2
 ~~~
 
 Device order defines roles: the first two devices run Attention and the third
-runs FFN. baseline-graph uses only the first device.
+runs FFN. `baseline-graph` uses the first two devices for native DP2/TP1/EP2.
 
 ### 4. Run
 
