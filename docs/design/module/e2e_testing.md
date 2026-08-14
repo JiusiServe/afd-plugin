@@ -91,7 +91,7 @@ cleanup. Production code does not depend on the E2E harness.
 | `afd-eager` | AFD eager, 2A1F | 3 | Lifecycle and eager smoke test. |
 | `afd-graph` | AFD graph, 2A1F | 3 | Primary graph path. |
 | `afd-graph-dbo` | AFD graph + DBO, 2A1F | 3 | Graph path with DBO. |
-| `baseline-graph` | Native vLLM graph | 1 | Non-AFD control. |
+| `baseline-graph` | Native vLLM graph, DP2/TP1/EP2 | 2 | Non-AFD control. |
 
 Target runtime is about 20 minutes per platform for PRs and at most 30 minutes
 for merge validation. Put slower coverage in a scheduled job.

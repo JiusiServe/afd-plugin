@@ -13,6 +13,38 @@ import tests.conftest as conftest
 from tests.conftest import REPO_ROOT, RUNNER_CLEANUP_TIMEOUT_S, run_runner
 from tests.e2e import runner
 from tests.e2e.accuracy import gsm8k as helpers_gsm8k
+from tests.e2e.models.deepseek_v2_lite import (
+    test_deepseek_v2_lite as deepseek_v2_lite_e2e,
+)
+
+
+def test_baseline_entrypoint_uses_two_devices(monkeypatch, tmp_path):
+    monkeypatch.setenv("AFD_E2E_BACKEND", "gpu")
+    monkeypatch.setenv("AFD_E2E_DEVICES", "2,4,6")
+    monkeypatch.setenv("AFD_GPU_E2E_MODEL", "model")
+
+    command = deepseek_v2_lite_e2e.build_runner_command(
+        "baseline-graph",
+        tmp_path,
+    )
+
+    assert command[command.index("--attention-devices") + 1] == "2,4"
+    assert "--ffn-devices" not in command
+
+
+@pytest.mark.parametrize("scenario", deepseek_v2_lite_e2e.SCENARIOS)
+def test_deepseek_v2_lite_entrypoint_limits_context(
+    monkeypatch,
+    tmp_path,
+    scenario,
+):
+    monkeypatch.setenv("AFD_E2E_BACKEND", "gpu")
+    monkeypatch.setenv("AFD_GPU_E2E_MODEL", "model")
+    monkeypatch.delenv("AFD_E2E_DEVICES", raising=False)
+
+    command = deepseek_v2_lite_e2e.build_runner_command(scenario, tmp_path)
+
+    assert "--common-vllm-arg=--max-model-len=4096" in command
 
 
 def test_run_runner_forwards_cancellation_and_reaps(monkeypatch):
@@ -231,7 +263,7 @@ def test_parse_args_rejects_legacy_fixed_scenario_options(monkeypatch, legacy_ar
 @pytest.mark.parametrize(
     ("scenario", "expected"),
     [
-        ("baseline-graph", (True, True, False, 1, 0, 1, 1)),
+        ("baseline-graph", (True, True, False, 2, 0, 1, 1)),
         ("afd-eager", (False, False, False, 2, 1, 1, 1)),
         ("afd-graph", (False, True, False, 2, 1, 1, 1)),
         ("afd-graph-dbo", (False, True, True, 2, 1, 1, 1)),
@@ -296,7 +328,7 @@ def test_async_cam_scenario_builds_dp1tp2_attention_and_dp2tp1_ffn():
     assert "--enable-expert-parallel" in ffn_command
 
 
-def test_build_baseline_command_uses_native_single_process_graph_server():
+def test_build_baseline_command_uses_native_dp2_graph_server():
     args = _args()
     args.scenario = "baseline-graph"
     runner.configure_scenario(args)
@@ -304,8 +336,9 @@ def test_build_baseline_command_uses_native_single_process_graph_server():
     command = runner.build_baseline_command(args)
 
     assert "--additional-config" not in command
-    assert command[command.index("--data-parallel-size") + 1] == "1"
+    assert command[command.index("--data-parallel-size") + 1] == "2"
     assert command[command.index("--tensor-parallel-size") + 1] == "1"
+    assert "--enable-expert-parallel" in command
     assert json.loads(command[command.index("--compilation-config") + 1]) == {
         "cudagraph_mode": "FULL_DECODE_ONLY",
     }
@@ -354,7 +387,7 @@ def test_validate_topology_accepts_baseline_without_ffn_ranks():
     args.scenario = "baseline-graph"
     runner.configure_scenario(args)
 
-    runner.validate_topology(args, ["0"], [])
+    runner.validate_topology(args, ["0", "1"], [])
 
 
 @pytest.mark.parametrize(
