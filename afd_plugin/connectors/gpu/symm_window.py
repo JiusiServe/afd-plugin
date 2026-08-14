@@ -16,6 +16,14 @@ Layout of one window::
 payloads. Dispatch (A -> F) and combine (F -> A) use the same slot layout, so a
 single spec sizes both directions.
 
+A token is shipped once per destination rank however many of its topk slots
+landed there, so the payload rows are *distinct tokens* (``uniq_tokens``, at
+most ``token_cap``) while ``expand_idx`` and ``weights`` carry one entry per
+*partial* (``routed_tokens``, at most ``partial_cap``). Those two index arrays
+are 4 bytes a row against the payload's ``hidden_size`` elements, which is why
+they can be sized for the true worst case -- every partial to one rank -- while
+the payload is sized by a bound that no routing skew can exceed.
+
 Flag words are written *after* the payload on the same stream. Same-stream
 device-to-device copies complete in issue order, so a visible flag implies a
 complete payload. That holds for NVLink-mapped peer memory; a cross-node
@@ -41,7 +49,7 @@ if TYPE_CHECKING:
 
 # Header words shared by dispatch and combine, followed by expert_counts.
 HEADER_MAGIC = 0x41464447  # "AFDG"
-HEADER_VERSION = 1
+HEADER_VERSION = 2
 _H_MAGIC = 0
 _H_VERSION = 1
 _H_SEQ = 2
@@ -49,12 +57,13 @@ _H_SRC_ROLE_RANK = 3
 _H_LAYER_IDX = 4
 _H_STAGE_IDX = 5
 _H_NUM_TOKENS = 6
-_H_ROUTED_TOKENS = 7
+_H_ROUTED_TOKENS = 7  # partials: one per (token, topk slot) landing here
 _H_SHARED_TOKENS = 8
 _H_TOPK = 9
 _H_FLAGS = 10
 _H_ECHO_SEQ = 11  # combine only: the dispatch seq being answered
-HEADER_FIXED_WORDS = 12
+_H_UNIQ_TOKENS = 12  # payload rows: distinct tokens behind those partials
+HEADER_FIXED_WORDS = 13
 
 FLAG_EMPTY = 0
 FLAG_SHUTDOWN_BIT = 1 << 1
@@ -73,13 +82,14 @@ class SlotLayout:
     """Byte offsets and element counts for the fields inside one slot."""
 
     header_words: int
-    routed_cap: int
+    partial_cap: int
     token_cap: int
     hidden_size: int
     payload_itemsize: int
 
     header_off: int
-    route_table_off: int
+    expand_idx_off: int
+    weights_off: int
     routed_x_off: int
     shared_idx_off: int
     shared_x_off: int
@@ -90,28 +100,30 @@ class SlotLayout:
         cls,
         *,
         expert_per_rank: int,
-        routed_cap: int,
+        partial_cap: int,
         token_cap: int,
         hidden_size: int,
         payload_itemsize: int,
     ) -> SlotLayout:
         header_words = HEADER_FIXED_WORDS + expert_per_rank
         header_off = 0
-        route_table_off = _align(header_off + header_words * 4)
-        routed_x_off = _align(route_table_off + 2 * routed_cap * 4)
+        expand_idx_off = _align(header_off + header_words * 4)
+        weights_off = _align(expand_idx_off + partial_cap * 4)
+        routed_x_off = _align(weights_off + partial_cap * 4)
         shared_idx_off = _align(
-            routed_x_off + routed_cap * hidden_size * payload_itemsize
+            routed_x_off + token_cap * hidden_size * payload_itemsize
         )
         shared_x_off = _align(shared_idx_off + token_cap * 4)
         slot_bytes = _align(shared_x_off + token_cap * hidden_size * payload_itemsize)
         return cls(
             header_words=header_words,
-            routed_cap=routed_cap,
+            partial_cap=partial_cap,
             token_cap=token_cap,
             hidden_size=hidden_size,
             payload_itemsize=payload_itemsize,
             header_off=header_off,
-            route_table_off=route_table_off,
+            expand_idx_off=expand_idx_off,
+            weights_off=weights_off,
             routed_x_off=routed_x_off,
             shared_idx_off=shared_idx_off,
             shared_x_off=shared_x_off,
@@ -132,6 +144,7 @@ def encode_header(
     topk: int,
     flags: int,
     expert_counts: list[int],
+    uniq_tokens: int = 0,
     echo_seq: int = 0,
 ) -> torch.Tensor:
     """Build the fixed header for one slot as a CPU int32 tensor."""
@@ -154,6 +167,7 @@ def encode_header(
     header[_H_TOPK] = topk
     header[_H_FLAGS] = flags
     header[_H_ECHO_SEQ] = echo_seq
+    header[_H_UNIQ_TOKENS] = uniq_tokens
     if expert_per_rank:
         header[HEADER_FIXED_WORDS:] = torch.tensor(expert_counts, dtype=torch.int32)
     return header
@@ -173,6 +187,7 @@ class SlotHeader:
     topk: int
     flags: int
     echo_seq: int
+    uniq_tokens: int
     expert_counts: list[int]
 
     @property
@@ -204,6 +219,7 @@ def decode_header(header: torch.Tensor) -> SlotHeader:
         topk=values[_H_TOPK],
         flags=values[_H_FLAGS],
         echo_seq=values[_H_ECHO_SEQ],
+        uniq_tokens=values[_H_UNIQ_TOKENS],
         expert_counts=values[HEADER_FIXED_WORDS:],
     )
 
@@ -330,10 +346,12 @@ class SymmWindow:
         hidden = layout.hidden_size
         if field_off == layout.header_off:
             sizes, dtype = (layout.header_words,), torch.int32
-        elif field_off == layout.route_table_off:
-            sizes, dtype = (layout.routed_cap, 2), torch.int32
+        elif field_off == layout.expand_idx_off:
+            sizes, dtype = (layout.partial_cap,), torch.int32
+        elif field_off == layout.weights_off:
+            sizes, dtype = (layout.partial_cap,), torch.float32
         elif field_off == layout.routed_x_off:
-            sizes, dtype = (layout.routed_cap, hidden), self.payload_dtype
+            sizes, dtype = (layout.token_cap, hidden), self.payload_dtype
         elif field_off == layout.shared_idx_off:
             sizes, dtype = (layout.token_cap,), torch.int32
         elif field_off == layout.shared_x_off:
@@ -389,7 +407,8 @@ class SymmWindow:
         region: int,
         ring: int,
         header: torch.Tensor,
-        route_table: torch.Tensor | None,
+        expand_idx: torch.Tensor | None,
+        weights: torch.Tensor | None,
         routed_x: torch.Tensor | None,
         shared_idx: torch.Tensor | None,
         shared_x: torch.Tensor | None,
@@ -409,10 +428,14 @@ class SymmWindow:
         layout = self.layout
         routed_count = _row_count(routed_x, routed_rows)
         shared_count = _row_count(shared_x, shared_rows)
-        if routed_count > layout.routed_cap:
+        partial_count = _row_count(expand_idx, None)
+        if routed_count > layout.token_cap:
             raise RuntimeError(
-                f"routed tokens {routed_count} exceed routed_cap "
-                f"{layout.routed_cap}; raise routed_cap_multiplier",
+                f"payload rows {routed_count} exceed token_cap {layout.token_cap}",
+            )
+        if partial_count > layout.partial_cap:
+            raise RuntimeError(
+                f"partials {partial_count} exceed partial_cap {layout.partial_cap}",
             )
         if shared_count > layout.token_cap:
             raise RuntimeError(
@@ -453,11 +476,18 @@ class SymmWindow:
                 torch.index_select(src, 0, rows, out=view)
 
         write_field(
-            layout.route_table_off,
-            (2,),
+            layout.expand_idx_off,
+            (),
             torch.int32,
-            route_table,
-            _row_count(route_table, None),
+            expand_idx,
+            partial_count,
+        )
+        write_field(
+            layout.weights_off,
+            (),
+            torch.float32,
+            weights,
+            _row_count(weights, None),
         )
         write_field(
             layout.routed_x_off,
@@ -539,14 +569,24 @@ class SymmWindow:
         )
         return header[HEADER_FIXED_WORDS:]
 
-    def local_route_table(self, region: int, ring: int, count: int) -> torch.Tensor:
+    def local_expand_idx(self, region: int, ring: int, count: int) -> torch.Tensor:
         return self._view(
             self.rank,
             region,
             ring,
-            self.layout.route_table_off,
-            (count, 2),
+            self.layout.expand_idx_off,
+            (count,),
             torch.int32,
+        )
+
+    def local_weights(self, region: int, ring: int, count: int) -> torch.Tensor:
+        return self._view(
+            self.rank,
+            region,
+            ring,
+            self.layout.weights_off,
+            (count,),
+            torch.float32,
         )
 
     def local_routed(self, region: int, ring: int, count: int) -> torch.Tensor:
