@@ -20,6 +20,9 @@ from afd_plugin.connectors import (  # noqa: E402
     AFDTransferContext,
     AFDTransferMetadata,
 )
+from afd_plugin.model_executor.models.deepseek_v2 import (  # noqa: E402
+    AFDDeepseekV2ForCausalLM,
+)
 from afd_plugin.v1.worker.cuda_graph import make_ffn_graph_key  # noqa: E402
 from afd_plugin.v1.worker.ffn_model_runner import (  # noqa: E402
     GPUFFNModelRunner,
@@ -193,6 +196,34 @@ def test_ffn_runner_executes_model_compute_ffn_output():
     ]
     assert runner.connector.recv_input_ids == [False]
     assert metadata.layer_idx == 0
+
+
+def test_v2_ffn_runner_keeps_hidden_state_only_connector_contract():
+    class _V2Backbone:
+        def __init__(self):
+            self.calls = []
+
+        def get_experts_layer_indices(self):
+            return ()
+
+        def compute_ffn_output(self, hidden_states, layer_idx, **kwargs):
+            self.calls.append((hidden_states, layer_idx, kwargs))
+            return hidden_states
+
+    backbone = _V2Backbone()
+    model = object.__new__(AFDDeepseekV2ForCausalLM)
+    torch.nn.Module.__init__(model)
+    model.model = backbone
+    runner = _runner_with_connector_and_model(model)
+    metadata = _metadata()
+    runner.connector.attn_outputs.append(_payload("v2-hidden", metadata))
+
+    runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
+
+    assert not getattr(model, "afd_requires_input_ids", False)
+    assert runner.connector.recv_input_ids == [False]
+    assert backbone.calls == [("v2-hidden", 0, {})]
+    assert runner.connector.ffn_outputs == [("v2-hidden", metadata)]
 
 
 def test_ffn_runner_forwards_payload_input_ids_to_model():

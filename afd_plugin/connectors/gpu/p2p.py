@@ -197,7 +197,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             tuple[int, int, tuple[int, ...]],
             torch.Tensor,
         ] = {}
-        #This is used only for the hash MOE of deepseek v4 now.
+        # This is used only for the hash MOE of deepseek v4 now.
         self._recv_attn_input_ids_buffers: dict[
             tuple[int, int, tuple[int, ...]],
             torch.Tensor,
