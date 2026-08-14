@@ -370,6 +370,17 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
         self.is_attention = afd_config.role == "attention"
 
         self.ring_depth = self.extra_info.ring_depth
+        self.num_stages = (
+            max(1, self.extra_info.async_moe_num_ubatches)
+            if self.extra_info.async_moe_ubatching
+            else 1
+        )
+        if self.ring_depth < self.num_stages:
+            raise ValueError(
+                f"ring_depth {self.ring_depth} cannot serve "
+                f"{self.num_stages} async MoE stages; each stage needs a slot "
+                "of its own",
+            )
         # Every Attention rank routes to every FFN rank, so a window carries one
         # region per opposite-role peer. Both roles allocate the larger of the
         # two so the symmetric allocation matches.
@@ -396,6 +407,17 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
     @property
     def is_initialized(self) -> bool:
         return self._initialized
+
+    def _rings_for_stage(self, stage_idx: int) -> list[int]:
+        """Ring slots this stage owns.
+
+        A ring names a window slot, so stages must not share one: two stages of
+        the same layer are in flight at the same time, and handing both the same
+        slot means the second dispatch overwrites the first's payload and flag,
+        after which the reply the first is waiting for never arrives.
+        """
+        first = stage_idx % self.num_stages
+        return list(range(first, self.ring_depth, self.num_stages))
 
     def init_afd_connector(self) -> None:
         """Collectively create the AFD world group and the symmetric window.
@@ -426,8 +448,8 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             rank=self.world_rank,
             world_size=self.topology.world_size,
         )
-        for stage in range(max(1, self.extra_info.async_moe_num_ubatches)):
-            self._free_rings[stage] = list(range(self.ring_depth))
+        for stage in range(self.num_stages):
+            self._free_rings[stage] = self._rings_for_stage(stage)
         logger.info(
             "AFD async GPU window ready: role=%s role_rank=%d world_rank=%d/%d "
             "regions=%d rings=%d partial_cap=%d slot=%.1fMiB total=%.1fMiB",
@@ -532,7 +554,10 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             )
 
         stage_idx = metadata.stage_idx
-        rings = self._free_rings.setdefault(stage_idx, list(range(self.ring_depth)))
+        rings = self._free_rings.setdefault(
+            stage_idx,
+            self._rings_for_stage(stage_idx),
+        )
         if not rings:
             raise RuntimeError(
                 f"AFD async GPU ring exhausted on stage {stage_idx}; the "

@@ -338,6 +338,16 @@ def run_async_moe_ubatch_afd_forward(
         else:
             stage_forward_context.num_tokens = int(stage.input_tokens)
             stage_forward_context.pad_size = 0
+            # KV-cache writes are indexed per token, so a stage's slot mapping
+            # is its slice of the batch's. Leaving the full-batch mapping in
+            # place makes the attention layer write this stage's rows into the
+            # whole batch's slots and corrupt the cache. Under sequence
+            # parallelism the stage slice is in global coordinates and does not
+            # index the rank-local mapping, so that layout keeps the parent's.
+            stage_forward_context.slot_mapping = {
+                layer_name: mapping[stage.token_slice]
+                for layer_name, mapping in forward_context.slot_mapping.items()
+            }
         expected_tokens = int(stage_hidden_states[stage_idx].shape[0])
         log_async_moe_stage_attention(
             stage_idx,
@@ -514,7 +524,10 @@ def _restore_async_moe_stage_state(
         (hidden_width, residual_width),
         dim=-1,
     )
-    return hidden_states, residual
+    # Splitting the last dimension leaves two interleaved views. The next thing
+    # to touch them is the final norm, and CUDA's fused_add_rms_norm requires
+    # contiguous inputs -- it aborts in the kernel rather than falling back.
+    return hidden_states.contiguous(), residual.contiguous()
 
 
 __all__ = [
