@@ -75,7 +75,8 @@ class AFDAttentionModelRunner(GPUModelRunner):
             self.vllm_config,
             self.afd_config,
         )
-        self.connector.init_afd_connector()
+        # The connector rendezvous is deferred to the end of ``load_model()``
+        # so Attention and FFN weight loading overlap; see that method.
         # TODO: Async GPU connector will be supported in the future
         assert self.connector.control_plane is not None, (
             "GPU model runner only supports control-plane-driven connectors"
@@ -149,12 +150,26 @@ class AFDAttentionModelRunner(GPUModelRunner):
         self.connector.control_plane.update_state_from_dp_metadata(payload)
         self.connector.control_plane.send_dp_metadata_list(payload)
 
+    # Patch reason: upstream load_model has no AFD connector lifecycle.
+    # Patch functionality: after native weight loading and any AFD ubatch
+    # wrapper installation, collectively initialize the AFD connector so
+    # Attention and FFN model loading overlap across roles. Connector
+    # initialization is skipped when it already succeeded (the FFN side uses
+    # the same guard), and the rendezvous completes before memory profiling or
+    # the first model forward. The connector itself is idempotent.
+    # Signature: matches upstream; no added parameters.
     def load_model(self, load_dummy_weights: bool = False) -> None:
         use_ubatching = bool(self.vllm_config.parallel_config.use_ubatching)
         with _use_afd_ubatch_wrapper_during_load(use_ubatching):
             super().load_model(load_dummy_weights)
         if use_ubatching:
             self._install_afd_ubatch_wrapper()
+        # Wrapper installation is local and non-blocking; the connector
+        # rendezvous is the blocking cross-role collective, so it is
+        # deliberately last: it doubles as the "both roles finished loading
+        # weights" barrier before memory profiling.
+        if not self.connector.is_initialized:
+            self.connector.init_afd_connector()
 
     def _install_afd_ubatch_wrapper(self) -> None:
         if isinstance(self.model, AFDUBatchWrapper):

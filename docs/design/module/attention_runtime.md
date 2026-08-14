@@ -104,9 +104,16 @@ vLLM worker construction
   -> initialize the matching upstream device worker
   -> construct the AFD Attention model runner
   -> derive the role-local AFD rank from DP/TP ranks when needed
-  -> create and initialize the configured connector
+  -> create the configured connector (no communication resources yet)
   -> load the role-aware model
+  -> initialize the connector (collective rendezvous with FFN ranks)
 ```
+
+The connector rendezvous is deferred to the end of Attention `load_model()`,
+after any AFD/Ascend ubatch wrapper is installed, so Attention and FFN weight
+loading overlap across roles. FFN initializes its connector later from
+`initialize_from_config()`; the cross-role rendezvous completes before
+Attention memory profiling or the first model forward.
 
 The worker retains upstream ownership of device/distributed initialization,
 model loading entry points, KV-cache allocation, memory profiling, request
@@ -280,9 +287,11 @@ class, model runner v2, invalid native ubatch count, or unsupported graph mode.
 Missing DP metadata for DP greater than 1 and missing pending metadata for a
 fallback are runtime errors rather than silently guessed shapes.
 
-Connector initialization failures remain visible from runner construction.
-Shutdown stops the platform profiler and closes connector-owned resources;
-the Ascend runner also delegates to upstream shutdown.
+Connector initialization failures remain visible from the end of model
+loading, before memory profiling. Shutdown stops the platform profiler and
+closes connector-owned resources; closing an uninitialized connector is safe
+and leaves it closeable after partial startup failures. The Ascend runner also
+delegates to upstream shutdown.
 
 ## Candidate invariants
 

@@ -226,12 +226,17 @@ sequenceDiagram
 ```
 
 Construction is device-light; initialization owns backend discovery and
-communication setup. Synchronous connectors receive/apply control metadata
-before tensor transfer so they can derive shapes and graph buffers. CAM async
-does not use that control plane: dispatch payloads determine layer and token
-shape, and the FFN loop blocks on connector work. Closing must happen after
-work stops and must clear connector registries, pending queues, communicators,
-and process groups owned by that connector.
+communication setup. Both role runtimes construct their connectors during
+device initialization and defer the collective `init_afd_connector()` until
+after their model weights are loaded (Attention at the end of
+`load_model()`, FFN from `initialize_from_config()`), so Attention and FFN
+weight loading overlap across roles before the cross-role rendezvous.
+Synchronous connectors receive/apply control metadata before tensor transfer
+so they can derive shapes and graph buffers. CAM async does not use that
+control plane: dispatch payloads determine layer and token shape, and the FFN
+loop blocks on connector work. Closing must happen after work stops and must
+clear connector registries, pending queues, communicators, and process groups
+owned by that connector.
 
 The data-path sequence for synchronous connectors is Attention send, FFN
 receive, FFN compute, FFN send, then Attention receive for each layer/stage.

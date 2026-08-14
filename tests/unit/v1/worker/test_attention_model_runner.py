@@ -988,3 +988,113 @@ def test_afd_rank_raises_for_out_of_range_dp2_tp2(monkeypatch):
 
     with pytest.raises(ValueError, match="out of range"):
         resolve_role_rank(vllm_config, config)
+
+
+class _LifecycleConnector:
+    """Connector fake recording lifecycle events for load-order tests."""
+
+    def __init__(self, events):
+        self.events = events
+        self.control_plane = object()
+        self._initialized = False
+
+    @property
+    def is_initialized(self):
+        return self._initialized
+
+    def init_afd_connector(self):
+        self.events.append("connector_init")
+        self._initialized = True
+
+
+def _fake_connector_factory(monkeypatch, connector):
+    import afd_plugin.v1.worker.attention_model_runner as attention_model_runner
+
+    monkeypatch.setattr(
+        attention_model_runner,
+        "_resolve_world_ranks",
+        lambda: (3, 1),
+    )
+    monkeypatch.setattr(
+        attention_model_runner.AFDConnectorFactory,
+        "create_connector",
+        lambda rank, local_rank, vllm_config, afd_config: connector,
+    )
+
+
+def test_attention_runner_constructor_does_not_initialize_connector(monkeypatch):
+    import afd_plugin.v1.worker.attention_model_runner as attention_model_runner
+
+    events = []
+    connector = _LifecycleConnector(events)
+
+    def fake_native_init(self, vllm_config, device):
+        self.vllm_config = vllm_config
+        self.device = device
+
+    monkeypatch.setattr(GPUModelRunner, "__init__", fake_native_init)
+    monkeypatch.setattr(
+        attention_model_runner,
+        "fail_if_unsupported_ubatching",
+        lambda _config: None,
+    )
+    monkeypatch.setattr(
+        attention_model_runner,
+        "validate_cuda_graph_mode",
+        lambda _config, role: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        attention_model_runner,
+        "create_afd_gpu_profiler",
+        lambda _name: object(),
+    )
+    monkeypatch.setattr(
+        AFDAttentionModelRunner,
+        "parse_config",
+        staticmethod(lambda _vllm_config: SimpleNamespace()),
+    )
+    _fake_connector_factory(monkeypatch, connector)
+
+    runner = AFDAttentionModelRunner(SimpleNamespace(), SimpleNamespace(index=0))
+
+    assert runner.connector is connector
+    # Connector construction is device-light; the collective rendezvous is
+    # deferred to load_model() so Attention and FFN weight loading overlap.
+    assert events == []
+    assert connector.is_initialized is False
+
+
+@pytest.mark.parametrize("use_ubatching", [False, True])
+def test_attention_runner_load_model_initializes_connector_after_weights(
+    monkeypatch,
+    use_ubatching,
+):
+    events = []
+    connector = _LifecycleConnector(events)
+    runner = object.__new__(AFDAttentionModelRunner)
+    runner.connector = connector
+    runner.vllm_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(use_ubatching=use_ubatching),
+    )
+    monkeypatch.setattr(
+        GPUModelRunner,
+        "load_model",
+        lambda self, load_dummy_weights=False: events.append("model_load"),
+    )
+    if use_ubatching:
+        monkeypatch.setattr(
+            AFDAttentionModelRunner,
+            "_install_afd_ubatch_wrapper",
+            lambda self: events.append("wrapper_install"),
+        )
+
+    runner.load_model(load_dummy_weights=True)
+
+    expected = ["model_load"]
+    if use_ubatching:
+        # Wrapper installation is local; the connector rendezvous is the
+        # blocking cross-role collective and comes last.
+        expected.append("wrapper_install")
+    expected.append("connector_init")
+    assert events == expected
+    assert connector.is_initialized is True
