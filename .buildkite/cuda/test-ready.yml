@@ -18,7 +18,7 @@ steps:
           - "pip install 'lm_eval[api]==0.4.12'"
           - "export AFD_E2E_BACKEND=gpu"
           - 'pytest -sv tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py -k "not afd-v2-"'
-        mirror_hardwares: h100_4
+        mirror_hardwares: l4_4
 
       - label: "E2E · DeepSeekV2-Lite · ModelRunnerV2"
         timeout_in_minutes: 40
@@ -26,4 +26,4 @@ steps:
           - "pip install 'lm_eval[api]==0.4.12'"
           - "export AFD_E2E_BACKEND=gpu"
           - 'pytest -sv tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py -k "afd-v2-"'
-        mirror_hardwares: h100_4
+        mirror_hardwares: l4_4
