@@ -53,12 +53,6 @@ def compute_attention_gate_moe_ffn(
     routed_experts = runner.routed_experts
     counts = group_list.to(torch.int64)
     num_rows = int(hidden_states.shape[0])
-    if int(counts.sum()) != num_rows:
-        raise ValueError(
-            f"group_list sums to {int(counts.sum())} but hidden_states has "
-            f"{num_rows} rows",
-        )
-
     num_local_experts = counts.numel()
     if num_rows == 0:
         # Routing can leave a peer with nothing -- common in decode, where a
@@ -75,6 +69,10 @@ def compute_attention_gate_moe_ffn(
                 else None
             ),
         )
+    # ``output_size`` keeps this off the device: without it repeat_interleave
+    # reads the counts back to the host to size its output, which is a
+    # synchronize on every work item. It also enforces what the removed
+    # ``counts.sum() == num_rows`` check used to, raising if they disagree.
     expert_ids = torch.repeat_interleave(
         torch.arange(
             num_local_experts,
@@ -82,6 +80,7 @@ def compute_attention_gate_moe_ffn(
             dtype=torch.int32,
         ),
         counts,
+        output_size=num_rows,
     ).unsqueeze(1)
     # Unit weights: the real topk weighting happens in the connector's combine.
     unit_weights = torch.ones(

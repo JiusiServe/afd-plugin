@@ -523,6 +523,22 @@ class SymmWindow:
             )
         return decode_header(self._header_recv)
 
+    def local_expert_counts(self, region: int, ring: int) -> torch.Tensor:
+        """Device view of the arrived header's per-expert counts.
+
+        The counts already sit in device memory as the header's trailing words,
+        so the grouped GEMM can read them straight from the slot. Rebuilding the
+        tensor from the decoded host list would cost one blocking H2D per work
+        item.
+        """
+        header = self._capacity_view(
+            self.rank,
+            region,
+            ring,
+            self.layout.header_off,
+        )
+        return header[HEADER_FIXED_WORDS:]
+
     def local_route_table(self, region: int, ring: int, count: int) -> torch.Tensor:
         return self._view(
             self.rank,

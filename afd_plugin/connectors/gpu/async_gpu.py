@@ -21,8 +21,9 @@ only, and a single node.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final
 
@@ -194,6 +195,10 @@ class GpuAsyncTransferState(AFDTransferState):
     ``region``/``ring`` locate the window slot so ``send_ffn_work_item_output``
     can write back to the originating Attention rank and release the slot;
     ``route_table`` is echoed so the Attention side can scatter the result.
+
+    ``group_list`` is a device view of the arrived header's trailing words;
+    ``expert_counts_host`` is the same numbers as they were decoded on the host,
+    kept so the combine header can be built without reading the device back.
     """
 
     region: int = 0
@@ -206,6 +211,7 @@ class GpuAsyncTransferState(AFDTransferState):
     routed_tokens: int = 0
     shared_tokens: int = 0
     group_list: Tensor | None = None
+    expert_counts_host: list[int] = field(default_factory=list)
     route_table: Tensor | None = None
     shared_idx: Tensor | None = None
     expand_x_shared: Tensor | None = None
@@ -496,7 +502,10 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             expert_per_rank=self.expert_per_rank,
         )
         # One D2H per send: offsets are a prefix sum, cheaper to redo on host
-        # than to fetch a second tensor.
+        # than to fetch a second tensor. This is the last synchronize left on
+        # the layer path, and it is intrinsic to slicing the segments on the
+        # host -- removing it means computing the destination offsets on the
+        # device and writing full-capacity segments instead.
         counts_host = counts.cpu().tolist()
         offsets_host = [0] * len(counts_host)
         for i in range(1, len(counts_host)):
@@ -678,26 +687,29 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
         """
         window = self._require_initialized()
         timeout_ms = int(kwargs.get("timeout_ms", 0))
-        deadline = None
-        if timeout_ms:
-            import time
-
-            deadline = time.monotonic() + timeout_ms / 1000.0
+        deadline = time.monotonic() + timeout_ms / 1000.0 if timeout_ms else None
 
         while True:
             arrived = window.poll()
             if arrived is not None:
                 break
-            if deadline is not None:
-                import time
-
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("AFD async GPU dispatch recv timed out")
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("AFD async GPU dispatch recv timed out")
 
         header = arrived.header
         if header.is_shutdown:
             raise ConnectorShutdown(
                 f"Attention rank {header.src_role_rank} announced shutdown",
+            )
+        # The group list is echoed back on the combine header, so the sender's
+        # own accounting has to agree with it. Checking the decoded host values
+        # here is free; the equivalent check on the device tensor cost a
+        # synchronize per work item.
+        if sum(header.expert_counts) != header.routed_tokens:
+            raise RuntimeError(
+                f"AFD async GPU dispatch header from A{header.src_role_rank} "
+                f"has expert counts summing to {sum(header.expert_counts)} but "
+                f"declares {header.routed_tokens} routed tokens",
             )
 
         states = GpuAsyncTransferState(
@@ -710,11 +722,8 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             num_tokens=header.num_tokens,
             routed_tokens=header.routed_tokens,
             shared_tokens=header.shared_tokens,
-            group_list=torch.tensor(
-                header.expert_counts,
-                dtype=torch.int64,
-                device=torch.device("cuda", self.local_rank),
-            ),
+            group_list=window.local_expert_counts(arrived.region, arrived.ring),
+            expert_counts_host=header.expert_counts,
             route_table=window.local_route_table(
                 arrived.region,
                 arrived.ring,
@@ -783,7 +792,7 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             shared_tokens=states.shared_tokens if shared_output is not None else 0,
             topk=self.topk,
             flags=0,
-            expert_counts=list(header_counts(states)),
+            expert_counts=states.expert_counts_host,
             echo_seq=states.seq,
         )
         window.write_slot(
@@ -873,13 +882,6 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
                 shared_idx=None,
                 shared_x=None,
             )
-
-
-def header_counts(states: GpuAsyncTransferState) -> list[int]:
-    """Echo the per-expert group list back on the combine header."""
-    if states.group_list is None:
-        return []
-    return states.group_list.cpu().tolist()
 
 
 __all__ = [
