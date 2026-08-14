@@ -15,6 +15,7 @@ from afd_plugin.connectors import (
 
 torch = pytest.importorskip("torch")
 
+
 def test_dummy_connector_is_not_registered():
     with pytest.raises(ValueError, match="unsupported AFD connector type"):
         AFDConnectorFactory.get_connector_class("dummy")
