@@ -4,8 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 
-pytest.importorskip("torch")
-
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
     AFDA2FTransferPayload,
@@ -15,6 +13,7 @@ from afd_plugin.connectors import (
     AFDTransferMetadata,
 )
 
+torch = pytest.importorskip("torch")
 
 def test_dummy_connector_is_not_registered():
     with pytest.raises(ValueError, match="unsupported AFD connector type"):
