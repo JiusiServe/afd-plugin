@@ -8,9 +8,8 @@ of per-expert counts. The FFN side therefore must not run routing again -- it
 only needs the grouped GEMM over its local experts.
 
 That shape is a ``topk == 1`` problem: give every arriving row its own expert id
-and a unit weight, and vLLM's ``fused_experts`` computes exactly the local
-expert output. Topk weighting stays on the Attention side, applied during
-combine, matching the NPU path.
+and its own weight, and vLLM's ``fused_experts`` computes exactly the local
+expert output, already scaled, in the epilogue it runs anyway.
 """
 
 from __future__ import annotations
@@ -82,9 +81,18 @@ def compute_attention_gate_moe_ffn(
         counts,
         output_size=num_rows,
     ).unsqueeze(1)
-    # Unit weights: the real topk weighting happens in the connector's combine.
-    unit_weights = torch.ones(
+    # Mirrors the NPU gate path: scale the routed branch unless fp16, where the
+    # native model instead scales the shared branch down. ``fused_experts``
+    # multiplies every row by its topk weight in an epilogue it runs anyway, so
+    # feeding the factor in there costs nothing, where scaling its output cost a
+    # full pass over ``[num_partials, hidden]``. The topk weighting itself is
+    # not applied here -- the connector owns it, and applies it when it reduces
+    # the partials back to one row per token.
+    routed_scaling_factor = runner.routed_scaling_factor
+    scale_shared_instead = hidden_states.dtype == torch.float16
+    row_weights = torch.full(
         (num_rows, 1),
+        1.0 if scale_shared_instead else routed_scaling_factor,
         dtype=torch.float32,
         device=hidden_states.device,
     )
@@ -93,7 +101,7 @@ def compute_attention_gate_moe_ffn(
         hidden_states,
         routed_experts.w13_weight,
         routed_experts.w2_weight,
-        unit_weights,
+        row_weights,
         expert_ids,
         global_num_experts=num_local_experts,
         expert_map=None,
@@ -108,12 +116,7 @@ def compute_attention_gate_moe_ffn(
         # tokens as their own batch, so that machinery does not apply.
         shared_output = shared_experts._layer(expand_x_shared)
 
-    # Mirrors the NPU gate path: scale the routed branch unless fp16, where the
-    # native model instead scales the shared branch down.
-    routed_scaling_factor = runner.routed_scaling_factor
-    if hidden_states.dtype != torch.float16:
-        routed_output = routed_output * routed_scaling_factor
-    elif shared_output is not None:
+    if scale_shared_instead and shared_output is not None:
         shared_output = shared_output * (1.0 / routed_scaling_factor)
 
     return AFDF2ATransferPayload(

@@ -691,9 +691,14 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             )
         pending = queue.pop(0)
 
+        # Accumulate in the payload dtype. Each row takes at most one
+        # contribution per FFN rank plus its shared one -- the topk sum already
+        # happened on the FFN side -- so there is little left for a wider
+        # accumulator to protect, and float32 cost a widening pass over every
+        # arriving block plus a narrowing one on the way out.
         accumulator = torch.zeros(
             (pending.num_tokens, self.hidden_size),
-            dtype=torch.float32,
+            dtype=self.payload_dtype,
             device=ref_tensor.device,
         )
         outstanding = set(pending.expected_ffn)
@@ -738,7 +743,7 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
                         arrived.region,
                         arrived.ring,
                         header.uniq_tokens,
-                    ).to(accumulator.dtype),
+                    ),
                 )
             if header.shared_tokens:
                 accumulator.index_add_(
@@ -752,11 +757,11 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
                         arrived.region,
                         arrived.ring,
                         header.shared_tokens,
-                    ).to(accumulator.dtype),
+                    ),
                 )
 
         self._free_rings.setdefault(ubatch_idx, []).append(pending.ring)
-        return accumulator.to(ref_tensor.dtype)
+        return accumulator
 
     # ==================================================================
     # FFN-side data path
@@ -871,6 +876,12 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
         here, so the reply carries the same rows the dispatch did. Doing it on
         this side keeps the duplicates off the wire and leaves the Attention
         side a plain scatter-add.
+
+        Both the weighting and the sum stay in the payload dtype. Widening to
+        float32 first cost two extra passes over ``[partials, hidden]`` and made
+        the scatter move twice the bytes, which a profile showed costing almost
+        as much GPU time as the expert GEMM itself -- to protect a sum of at
+        most ``topk`` terms whose result goes on the wire narrowed anyway.
         """
         window = self._require_initialized()
         states = context.states
@@ -884,12 +895,11 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             )
         reduced = torch.zeros(
             (states.uniq_tokens, self.hidden_size),
-            dtype=torch.float32,
+            dtype=self.payload_dtype,
             device=ffn_output.device,
         )
         if states.routed_tokens:
-            weighted = ffn_output.to(torch.float32)
-            weighted.mul_(states.weights.unsqueeze(1))
+            weighted = ffn_output * states.weights.unsqueeze(1).to(ffn_output.dtype)
             reduced.index_add_(0, states.expand_idx, weighted)
 
         shared_output: Tensor | None = kwargs.get("shared_output")
