@@ -114,6 +114,12 @@ def register_afd() -> None:
             exc_info=True,
         )
 
+    from afd_plugin.model_executor.routing_simulator import (
+        register_afd_balanced_routing_strategy,
+    )
+
+    register_afd_balanced_routing_strategy()
+
     try:
         from afd_plugin.v1.worker.dbo import register_dbo_yield_custom_op
 
