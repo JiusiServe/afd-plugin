@@ -126,6 +126,8 @@ def run_attention_gate_afd_forward(
     pending_dispatch_layout: CAMDispatchLayout | None = None
     pending_dispatch_ref: torch.Tensor | None = None
 
+    # Async CAM profile forwards are a distributed startup contract: every
+    # Attention rank pairs CAM I/O with the FFN daemon to initialize resources.
     for layer_offset, layer in enumerate(
         islice(model.layers, model.start_layer, model.end_layer),
     ):
@@ -165,13 +167,6 @@ def run_attention_gate_afd_forward(
             residual,
             llama_4_scaling,
         )
-
-        # vLLM v0.26 profiles Attention with a local dummy forward and does not
-        # start the connector-driven FFN loop for a matching profile request.
-        # Launching CAM collectives here would therefore block on unmatched
-        # synthetic routing metadata; only the local Attention profile is run.
-        if forward_context.in_profile_run:
-            continue
 
         dispatch_payload = prepare_cam_dispatch_payload(
             hidden_states,

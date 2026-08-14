@@ -258,6 +258,16 @@ def test_async_dp_engine_patch_reload_is_idempotent(monkeypatch):
     assert engine.kind == "dp"
 
 
+def test_async_dp_engine_patch_rebinds_after_backend_override(monkeypatch):
+    patch_module = _load_patch_module(monkeypatch)
+    core_module = sys.modules["vllm.v1.engine.core"]
+
+    core_module.EngineCoreProc.run_engine_core = staticmethod(lambda **_kwargs: None)
+
+    assert patch_module.apply_async_dp_engine_patch() is True
+    assert core_module.EngineCoreProc.run_engine_core is patch_module.run_engine_core
+
+
 def test_async_dp_coordinator_disables_wave_coordination(monkeypatch):
     _load_patch_module(monkeypatch)
     utils_module = sys.modules["vllm.v1.engine.utils"]
