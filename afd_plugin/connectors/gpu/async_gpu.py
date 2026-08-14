@@ -223,10 +223,16 @@ class _PendingDispatch:
     ``r``, in the order they were shipped. The reply comes back one row per
     shipped token, already weighted and summed, so combine is a scatter-add at
     exactly those ids.
+
+    ``shared_ids[r]`` is the same thing for the shared-expert rows. Both are
+    recorded here because combine must know the shape of a reply *before* it
+    arrives: that is what lets the wait happen on a stream instead of on the
+    host, which cannot then be told what turned up.
     """
 
     context: AFDTransferContext
     uniq_ids: list[Tensor]
+    shared_ids: list[Tensor]
     num_tokens: int
     ring: int
     seq: int
@@ -354,6 +360,9 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
         self.hidden_size = hf_config.hidden_size
         self.topk = hf_config.num_experts_per_tok
         self.num_routed_experts = hf_config.n_routed_experts
+        # Combine has to know whether a reply carries shared-expert rows before
+        # it arrives, and only the model config says so.
+        self.has_shared_experts = bool(hf_config.n_shared_experts)
         self.payload_dtype = vllm_config.model_config.dtype
         self.max_seq_len = vllm_config.scheduler_config.max_num_batched_tokens
         self.tp_size = self.extra_info.attn_ranks_per_dp
@@ -597,6 +606,7 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
         # round-robin shared slice can come out empty for one rank.
         expected_ffn = list(range(self.ffn_size))
         uniq_ids: list[Tensor] = []
+        shared_ids: list[Tensor] = []
         uniq_start = 0
         for ffn_rank in range(self.ffn_size):
             base = ffn_rank * self.expert_per_rank
@@ -620,6 +630,8 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
                 device=hidden_states.device,
                 dtype=torch.int32,
             )
+            shared_rows = shared_idx.to(torch.int64)
+            shared_ids.append(shared_rows)
             header = encode_header(
                 self.layout,
                 seq=self._seq,
@@ -648,7 +660,7 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
                 routed_rows=rows,
                 shared_idx=shared_idx,
                 shared_x=hidden_states,
-                shared_rows=shared_idx.to(torch.int64),
+                shared_rows=shared_rows,
             )
 
         logger.debug(
@@ -667,6 +679,7 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             _PendingDispatch(
                 context=context,
                 uniq_ids=uniq_ids,
+                shared_ids=shared_ids,
                 num_tokens=num_tokens,
                 ring=ring,
                 seq=self._seq,
@@ -680,7 +693,21 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
         ubatch_idx: int = 0,
         **kwargs: Any,
     ) -> Tensor:
-        """Wait for this layer's expert output and reduce it back to ``[B, H]``."""
+        """Queue this layer's combine and return, without waiting for the data.
+
+        The waiting happens on the stream: every reply is answered into a known
+        slot, carries a known number of rows, and stamps the dispatch sequence
+        it answers, so the whole combine can be enqueued before any of it has
+        arrived. The host goes straight on to the next layer, which is the point
+        -- polling for the reply here left the GPU with nothing queued behind
+        the wait, and a profile found 86% of kernel launches executing within
+        5us of being issued because of it.
+
+        Nothing reports what turned up, so there is no per-arrival header check
+        any more. The stream wait replaces it: it blocks on one specific slot
+        reaching one specific sequence number, where the poll took whatever had
+        landed and had to check afterwards that it was the right thing.
+        """
 
         window = self._require_initialized()
         queue = self._pending.get(ubatch_idx)
@@ -701,64 +728,35 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             dtype=self.payload_dtype,
             device=ref_tensor.device,
         )
-        outstanding = set(pending.expected_ffn)
-        while outstanding:
-            arrived = window.wait()
-            if arrived is None:
-                continue
-            header = arrived.header
-            if header.is_shutdown:
-                raise ConnectorShutdown(
-                    f"FFN rank {header.src_role_rank} announced shutdown",
-                )
-            if header.src_role_rank not in outstanding:
-                raise RuntimeError(
-                    "AFD async GPU combine received an unexpected FFN rank "
-                    f"{header.src_role_rank}; expected one of {sorted(outstanding)}",
-                )
-            if header.echo_seq != pending.seq:
-                raise RuntimeError(
-                    "AFD async GPU combine answered dispatch seq "
-                    f"{header.echo_seq} while waiting on {pending.seq} "
-                    f"(F{header.src_role_rank}, layer {header.layer_idx}); the "
-                    "pending FIFO and the wire have diverged",
-                )
-            outstanding.discard(header.src_role_rank)
-            logger.debug(
-                "AFD combine recv: A%d <- F%d layer=%d routed=%d still_waiting=%s",
-                self.role_rank,
-                header.src_role_rank,
-                header.layer_idx,
-                header.routed_tokens,
-                sorted(outstanding),
-            )
-
-            if header.uniq_tokens:
+        for ffn_rank in pending.expected_ffn:
+            # An FFN rank replies into the region it owns, on the ring the
+            # dispatch used.
+            window.stream_wait(ffn_rank, pending.ring, pending.seq)
+            uniq_ids = pending.uniq_ids[ffn_rank]
+            if uniq_ids.numel():
                 # One row per token this rank was sent, already weighted and
                 # summed over that token's partials on the FFN side.
                 accumulator.index_add_(
                     0,
-                    pending.uniq_ids[header.src_role_rank],
-                    window.local_routed(
-                        arrived.region,
-                        arrived.ring,
-                        header.uniq_tokens,
-                    ),
+                    uniq_ids,
+                    window.local_routed(ffn_rank, pending.ring, uniq_ids.numel()),
                 )
-            if header.shared_tokens:
+            shared_ids = pending.shared_ids[ffn_rank]
+            if self.has_shared_experts and shared_ids.numel():
                 accumulator.index_add_(
                     0,
-                    window.local_shared_idx(
-                        arrived.region,
-                        arrived.ring,
-                        header.shared_tokens,
-                    ).to(torch.int64),
-                    window.local_shared(
-                        arrived.region,
-                        arrived.ring,
-                        header.shared_tokens,
-                    ),
+                    shared_ids,
+                    window.local_shared(ffn_rank, pending.ring, shared_ids.numel()),
                 )
+        logger.debug(
+            "AFD combine queued: A%d layer=%d stage=%d ring=%d seq=%d from=%s",
+            self.role_rank,
+            pending.context.metadata.layer_idx,
+            ubatch_idx,
+            pending.ring,
+            pending.seq,
+            pending.expected_ffn,
+        )
 
         self._free_rings.setdefault(ubatch_idx, []).append(pending.ring)
         return accumulator
@@ -932,6 +930,10 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             routed_x=reduced,
             shared_idx=states.shared_idx if shared_output is not None else None,
             shared_x=shared_output,
+            # Stamp the dispatch this answers, not our own counter: the
+            # Attention rank knows that number already and can hand it to a
+            # stream wait before the reply exists.
+            flag_value=states.seq,
         )
 
     # ==================================================================

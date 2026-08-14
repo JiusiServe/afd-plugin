@@ -50,6 +50,8 @@ def build_connector(role: str, local_rank: int) -> GpuAsyncAFDConnector:
                 hidden_size=HIDDEN,
                 num_experts_per_tok=TOPK,
                 n_routed_experts=NUM_EXPERTS,
+                # This test's FFN loop runs routed experts only.
+                n_shared_experts=0,
             ),
             dtype=torch.bfloat16,
         ),

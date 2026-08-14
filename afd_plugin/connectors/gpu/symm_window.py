@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from afd_plugin.connectors.gpu import nvshmem_rt
+from afd_plugin.connectors.gpu import cuda_rt, nvshmem_rt
 
 if TYPE_CHECKING:
     from torch.distributed.distributed_c10d import ProcessGroup
@@ -415,6 +415,7 @@ class SymmWindow:
         shared_x: torch.Tensor | None,
         routed_rows: torch.Tensor | None = None,
         shared_rows: torch.Tensor | None = None,
+        flag_value: int | None = None,
     ) -> None:
         """Write one slot into ``peer``'s window, then stamp its flag.
 
@@ -425,6 +426,12 @@ class SymmWindow:
         ``shared_x``: the gather then lands directly in the peer's window.
         Materializing the gathered rows locally first would write and re-read
         every payload byte for nothing.
+
+        ``flag_value`` overrides what the flag is stamped with, which defaults
+        to this message's own sequence number. A reply stamps the sequence it
+        answers instead, so the rank waiting for it knows the value to wait for
+        before it arrives -- that is what lets the wait happen on a stream
+        rather than on the host.
         """
         layout = self.layout
         routed_count = _row_count(routed_x, routed_rows)
@@ -514,7 +521,7 @@ class SymmWindow:
             shared_rows,
         )
 
-        seq = int(header[_H_SEQ].item())
+        seq = int(header[_H_SEQ].item()) if flag_value is None else flag_value
         flag_idx = region * self.ring_depth + ring
         self._flag_view(peer, flag_idx).fill_(seq)
 
@@ -549,6 +556,22 @@ class SymmWindow:
                 return arrived
             if deadline is not None and time.monotonic() >= deadline:
                 return None
+
+    def stream_wait(self, region: int, ring: int, value: int) -> None:
+        """Block the current stream until this slot's flag reaches ``value``.
+
+        The host returns immediately, so whatever it queues next -- the combine
+        that consumes this slot, the next layer -- is already on the stream when
+        the peer's write lands. Nothing here tells the host that the data
+        arrived, so the caller must already know the shapes it is going to read.
+        """
+        cuda_rt.require_stream_mem_ops(self.device.index)
+        flag_idx = region * self.ring_depth + ring
+        cuda_rt.stream_wait_value32(
+            torch.cuda.current_stream(self.device).cuda_stream,
+            self._base + flag_idx * 4,
+            value,
+        )
 
     def poll(self) -> ArrivedSlot | None:
         """Return the first slot whose flag advanced past what we consumed.
