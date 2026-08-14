@@ -510,6 +510,37 @@ def test_config_validation_installs_ascend_patch_only_on_npu(monkeypatch):
     assert calls == ["npu"]
 
 
+def test_config_validation_finalizes_async_attention_patch_after_ascend(monkeypatch):
+    arg_utils_module, config_module = _install_fake_vllm_config(monkeypatch)
+    config_module.VllmConfig.platform_worker_cls = VLLM_ASCEND_NPU_WORKER_FQCN
+    _set_fake_platform(is_cuda=False, device_type="npu")
+
+    config_patch_calls = []
+    engine_patch_configs = []
+    monkeypatch.setattr(
+        npu_compat,
+        "apply_afd_ascend_config_patch_if_needed",
+        lambda: config_patch_calls.append("config"),
+    )
+    monkeypatch.setattr(
+        npu_compat,
+        "apply_afd_async_dp_engine_patch_if_needed",
+        engine_patch_configs.append,
+    )
+    patch_module = _load_patch_module()
+    importlib.reload(patch_module)
+    args = _engine_args(active=True)
+    args.additional_config["afd"].update(
+        connector="CAMAsyncAFDConnector",
+        async_dp=True,
+    )
+
+    config = arg_utils_module.EngineArgs.create_engine_config(args)
+
+    assert config_patch_calls == ["config"]
+    assert engine_patch_configs == [config]
+
+
 def test_config_validation_patch_preserves_non_afd_platform_default(monkeypatch):
     arg_utils_module, config_module = _install_fake_vllm_config(monkeypatch)
     config_module.VllmConfig.platform_worker_cls = VLLM_GPU_WORKER_FQCN

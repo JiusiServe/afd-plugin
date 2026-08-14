@@ -389,12 +389,28 @@ def _is_target_vllm_compatible() -> bool:
     return version_text.startswith(TARGET_VLLM_VERSION)
 
 
-if _is_target_vllm_compatible():
+def apply_async_dp_engine_patch() -> bool:
+    """Install the async-DP patches against the current vLLM bindings.
+
+    vLLM-Ascend installs platform patches after general plugins and also wraps
+    ``EngineCoreProc.run_engine_core``. Re-applying this installer after the
+    final AFD Attention config is built ensures the process target captured by
+    vLLM uses AFD's async-DP entry point. The caller scopes that late install to
+    AFD async Attention, so non-AFD and FFN Ascend scheduling remain untouched.
+    """
+
+    if not _is_target_vllm_compatible():
+        return False
+
     EngineCoreProc.run_engine_core = staticmethod(run_engine_core)
     engine_utils_module.launch_core_engines = launch_core_engines
     core_client_module.launch_core_engines = launch_core_engines
     DPAsyncMPClient.add_request_async = add_request_async
     engine_core_module.logger.debug("AFD async-DP engine patch applied")
+    return True
 
 
-__all__: list[str] = []
+apply_async_dp_engine_patch()
+
+
+__all__ = ["apply_async_dp_engine_patch"]
