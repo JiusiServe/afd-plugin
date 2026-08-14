@@ -14,7 +14,9 @@ Layout of one window::
 
 ``slot(region, ring)`` holds a fixed header followed by the routed/shared
 payloads. Dispatch (A -> F) and combine (F -> A) use the same slot layout, so a
-single spec sizes both directions.
+single spec sizes both directions. Shared-expert tokens are a contiguous range
+of the batch, so the slot carries only their count -- the range is implied by
+which FFN rank the slot belongs to.
 
 A token is shipped once per destination rank however many of its topk slots
 landed there, so the payload rows are *distinct tokens* (``uniq_tokens``, at
@@ -41,6 +43,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import numpy as np
 import torch
 
 from afd_plugin.connectors.gpu import cuda_rt, nvshmem_rt
@@ -92,7 +95,6 @@ class SlotLayout:
     expand_idx_off: int
     weights_off: int
     routed_x_off: int
-    shared_idx_off: int
     shared_x_off: int
     slot_bytes: int
 
@@ -111,10 +113,7 @@ class SlotLayout:
         expand_idx_off = _align(header_off + header_words * 4)
         weights_off = _align(expand_idx_off + partial_cap * 4)
         routed_x_off = _align(weights_off + partial_cap * 4)
-        shared_idx_off = _align(
-            routed_x_off + token_cap * hidden_size * payload_itemsize
-        )
-        shared_x_off = _align(shared_idx_off + token_cap * 4)
+        shared_x_off = _align(routed_x_off + token_cap * hidden_size * payload_itemsize)
         slot_bytes = _align(shared_x_off + token_cap * hidden_size * payload_itemsize)
         return cls(
             header_words=header_words,
@@ -126,7 +125,6 @@ class SlotLayout:
             expand_idx_off=expand_idx_off,
             weights_off=weights_off,
             routed_x_off=routed_x_off,
-            shared_idx_off=shared_idx_off,
             shared_x_off=shared_x_off,
             slot_bytes=slot_bytes,
         )
@@ -155,23 +153,29 @@ def encode_header(
             f"expert_counts must have {expert_per_rank} entries, "
             f"got {len(expert_counts)}",
         )
-    header = torch.zeros(layout.header_words, dtype=torch.int32)
-    header[_H_MAGIC] = HEADER_MAGIC
-    header[_H_VERSION] = HEADER_VERSION
-    header[_H_SEQ] = seq
-    header[_H_SRC_ROLE_RANK] = src_role_rank
-    header[_H_LAYER_IDX] = layer_idx
-    header[_H_STAGE_IDX] = stage_idx
-    header[_H_NUM_TOKENS] = num_tokens
-    header[_H_ROUTED_TOKENS] = routed_tokens
-    header[_H_SHARED_TOKENS] = shared_tokens
-    header[_H_TOPK] = topk
-    header[_H_FLAGS] = flags
-    header[_H_ECHO_SEQ] = echo_seq
-    header[_H_UNIQ_TOKENS] = uniq_tokens
+    # Built with numpy and wrapped, not assigned field by field into a tensor:
+    # this runs once per peer per MoE layer, and fourteen tensor setitems there
+    # cost more host time than the transfer they describe. torch.from_numpy
+    # shares the buffer, so the wrap is free.
+    header = np.empty(layout.header_words, dtype=np.int32)
+    header[:HEADER_FIXED_WORDS] = (
+        HEADER_MAGIC,
+        HEADER_VERSION,
+        seq,
+        src_role_rank,
+        layer_idx,
+        stage_idx,
+        num_tokens,
+        routed_tokens,
+        shared_tokens,
+        topk,
+        flags,
+        echo_seq,
+        uniq_tokens,
+    )
     if expert_per_rank:
-        header[HEADER_FIXED_WORDS:] = torch.tensor(expert_counts, dtype=torch.int32)
-    return header
+        header[HEADER_FIXED_WORDS:] = expert_counts
+    return torch.from_numpy(header)
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,11 +355,7 @@ class SymmWindow:
             sizes, dtype = (layout.partial_cap,), torch.int32
         elif field_off == layout.weights_off:
             sizes, dtype = (layout.partial_cap,), torch.float32
-        elif field_off == layout.routed_x_off:
-            sizes, dtype = (layout.token_cap, hidden), self.payload_dtype
-        elif field_off == layout.shared_idx_off:
-            sizes, dtype = (layout.token_cap,), torch.int32
-        elif field_off == layout.shared_x_off:
+        elif field_off in (layout.routed_x_off, layout.shared_x_off):
             sizes, dtype = (layout.token_cap, hidden), self.payload_dtype
         else:
             raise ValueError(f"unknown slot field offset {field_off}")
@@ -411,7 +411,6 @@ class SymmWindow:
         expand_idx: torch.Tensor | None,
         weights: torch.Tensor | None,
         routed_x: torch.Tensor | None,
-        shared_idx: torch.Tensor | None,
         shared_x: torch.Tensor | None,
         routed_rows: torch.Tensor | None = None,
         shared_rows: torch.Tensor | None = None,
@@ -504,13 +503,6 @@ class SymmWindow:
             routed_x,
             routed_count,
             routed_rows,
-        )
-        write_field(
-            layout.shared_idx_off,
-            (),
-            torch.int32,
-            shared_idx,
-            _row_count(shared_idx, None),
         )
         write_field(
             layout.shared_x_off,
@@ -647,16 +639,6 @@ class SymmWindow:
             self.layout.routed_x_off,
             (count, self.layout.hidden_size),
             self.payload_dtype,
-        )
-
-    def local_shared_idx(self, region: int, ring: int, count: int) -> torch.Tensor:
-        return self._view(
-            self.rank,
-            region,
-            ring,
-            self.layout.shared_idx_off,
-            (count,),
-            torch.int32,
         )
 
     def local_shared(self, region: int, ring: int, count: int) -> torch.Tensor:

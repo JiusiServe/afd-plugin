@@ -197,7 +197,6 @@ class GpuAsyncTransferState(AFDTransferState):
     expert_counts_host: list[int] = field(default_factory=list)
     expand_idx: Tensor | None = None
     weights: Tensor | None = None
-    shared_idx: Tensor | None = None
     expand_x_shared: Tensor | None = None
 
 
@@ -224,15 +223,16 @@ class _PendingDispatch:
     shipped token, already weighted and summed, so combine is a scatter-add at
     exactly those ids.
 
-    ``shared_ids[r]`` is the same thing for the shared-expert rows. Both are
-    recorded here because combine must know the shape of a reply *before* it
-    arrives: that is what lets the wait happen on a stream instead of on the
-    host, which cannot then be told what turned up.
+    ``shared_slices[r]`` is the contiguous token range whose shared-expert
+    output that rank returns. Both are recorded here because combine must know
+    the shape of a reply *before* it arrives: that is what lets the wait happen
+    on a stream instead of on the host, which cannot then be told what turned
+    up.
     """
 
     context: AFDTransferContext
     uniq_ids: list[Tensor]
-    shared_ids: list[Tensor]
+    shared_slices: list[slice]
     num_tokens: int
     ring: int
     seq: int
@@ -254,6 +254,10 @@ class DispatchPlan:
             ``ffn_size * expert_per_rank``.
         offsets: Exclusive prefix sum of ``counts``.
         uniq_per_rank: Distinct tokens each FFN rank receives.
+        routed_per_rank: Partials each FFN rank receives.
+        segment_start: Where each FFN rank's partials begin. Summing counts and
+            prefix-summing them on the host cost a Python loop per layer; they
+            come back in the same readback instead.
         expand_idx: Per partial, which of its destination's shipped rows it
             reads. Already rank-local, so a slice needs no rebasing.
         uniq_token_ids: Per shipped row, the token it carries.
@@ -263,6 +267,8 @@ class DispatchPlan:
     counts: Tensor
     offsets: Tensor
     uniq_per_rank: Tensor
+    routed_per_rank: Tensor
+    segment_start: Tensor
     expand_idx: Tensor
     uniq_token_ids: Tensor
     weights: Tensor
@@ -324,10 +330,13 @@ def plan_dispatch(
     expand_idx.scatter_(0, key_order, row_of_partial.to(torch.int32))
     expand_idx -= row_base[dest_rank]
 
+    by_rank = counts.view(ffn_size, expert_per_rank)
     return DispatchPlan(
         counts=counts,
         offsets=offsets,
         uniq_per_rank=uniq_per_rank,
+        routed_per_rank=by_rank.sum(1).to(torch.int32),
+        segment_start=offsets.view(ffn_size, expert_per_rank)[:, 0].to(torch.int32),
         expand_idx=expand_idx,
         uniq_token_ids=uniq_token_ids,
         weights=weights,
@@ -590,13 +599,22 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
         # full-capacity segments instead.
         num_experts = self.ffn_size * self.expert_per_rank
         plan_host = (
-            torch.cat((plan.counts.to(torch.int32), plan.uniq_per_rank)).cpu().tolist()
+            torch.cat(
+                (
+                    plan.counts.to(torch.int32),
+                    plan.uniq_per_rank,
+                    plan.routed_per_rank,
+                    plan.segment_start,
+                ),
+            )
+            .cpu()
+            .tolist()
         )
         counts_host = plan_host[:num_experts]
-        uniq_host = plan_host[num_experts:]
-        offsets_host = [0] * num_experts
-        for i in range(1, num_experts):
-            offsets_host[i] = offsets_host[i - 1] + counts_host[i - 1]
+        rank_fields = plan_host[num_experts:]
+        uniq_host = rank_fields[: self.ffn_size]
+        routed_host = rank_fields[self.ffn_size : 2 * self.ffn_size]
+        start_host = rank_fields[2 * self.ffn_size :]
 
         # Every FFN rank gets a slot even when routing sends it nothing, and it
         # replies to every slot, so a reply is expected from all of them.
@@ -606,14 +624,16 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
         # round-robin shared slice can come out empty for one rank.
         expected_ffn = list(range(self.ffn_size))
         uniq_ids: list[Tensor] = []
-        shared_ids: list[Tensor] = []
+        shared_slices: list[slice] = []
         uniq_start = 0
         for ffn_rank in range(self.ffn_size):
             base = ffn_rank * self.expert_per_rank
             expert_counts = counts_host[base : base + self.expert_per_rank]
-            start = offsets_host[base]
-            routed_tokens = sum(expert_counts)
-            segment = slice(start, start + routed_tokens)
+            routed_tokens = routed_host[ffn_rank]
+            segment = slice(
+                start_host[ffn_rank],
+                start_host[ffn_rank] + routed_tokens,
+            )
             # The shipped rows this rank owns, and the tokens they carry. The
             # ids stay here rather than going on the wire: combine scatters the
             # reply back to exactly these rows.
@@ -622,16 +642,14 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             uniq_start += uniq_tokens
             uniq_ids.append(rows)
 
-            # Shared-expert tokens are split round-robin across FFN ranks.
-            shared_idx = torch.arange(
-                ffn_rank,
-                num_tokens,
-                self.ffn_size,
-                device=hidden_states.device,
-                dtype=torch.int32,
-            )
-            shared_rows = shared_idx.to(torch.int64)
-            shared_ids.append(shared_rows)
+            # Shared-expert tokens are split into contiguous chunks, so a
+            # rank's slice is a view: no index to build, none to gather
+            # through, and none to put on the wire. Round-robin needed an
+            # arange, a gather and a whole slot field per peer per layer to
+            # achieve the same balance.
+            shared_start = ffn_rank * num_tokens // self.ffn_size
+            shared_stop = (ffn_rank + 1) * num_tokens // self.ffn_size
+            shared_slices.append(slice(shared_start, shared_stop))
             header = encode_header(
                 self.layout,
                 seq=self._seq,
@@ -640,7 +658,7 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
                 stage_idx=stage_idx,
                 num_tokens=num_tokens,
                 routed_tokens=routed_tokens,
-                shared_tokens=int(shared_idx.numel()),
+                shared_tokens=shared_stop - shared_start,
                 topk=self.topk,
                 flags=0,
                 expert_counts=expert_counts,
@@ -658,9 +676,7 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
                 weights=plan.weights[segment],
                 routed_x=hidden_states,
                 routed_rows=rows,
-                shared_idx=shared_idx,
-                shared_x=hidden_states,
-                shared_rows=shared_rows,
+                shared_x=hidden_states[shared_start:shared_stop],
             )
 
         logger.debug(
@@ -679,7 +695,7 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             _PendingDispatch(
                 context=context,
                 uniq_ids=uniq_ids,
-                shared_ids=shared_ids,
+                shared_slices=shared_slices,
                 num_tokens=num_tokens,
                 ring=ring,
                 seq=self._seq,
@@ -741,12 +757,13 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
                     uniq_ids,
                     window.local_routed(ffn_rank, pending.ring, uniq_ids.numel()),
                 )
-            shared_ids = pending.shared_ids[ffn_rank]
-            if self.has_shared_experts and shared_ids.numel():
-                accumulator.index_add_(
-                    0,
-                    shared_ids,
-                    window.local_shared(ffn_rank, pending.ring, shared_ids.numel()),
+            shared = pending.shared_slices[ffn_rank]
+            shared_tokens = shared.stop - shared.start
+            if self.has_shared_experts and shared_tokens:
+                accumulator[shared] += window.local_shared(
+                    ffn_rank,
+                    pending.ring,
+                    shared_tokens,
                 )
         logger.debug(
             "AFD combine queued: A%d layer=%d stage=%d ring=%d seq=%d from=%s",
@@ -824,11 +841,6 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
                 arrived.region,
                 arrived.ring,
                 header.routed_tokens,
-            ),
-            shared_idx=window.local_shared_idx(
-                arrived.region,
-                arrived.ring,
-                header.shared_tokens,
             ),
             expand_x_shared=window.local_shared(
                 arrived.region,
@@ -928,7 +940,6 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             expand_idx=None,
             weights=None,
             routed_x=reduced,
-            shared_idx=states.shared_idx if shared_output is not None else None,
             shared_x=shared_output,
             # Stamp the dispatch this answers, not our own counter: the
             # Attention rank knows that number already and can hand it to a

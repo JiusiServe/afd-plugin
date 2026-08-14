@@ -68,9 +68,9 @@ def test_slot_fields_are_disjoint_and_fit_inside_the_slot(layout: SlotLayout):
     assert layout.expand_idx_off >= layout.header_off + layout.header_words * 4
     assert layout.weights_off >= layout.expand_idx_off + 100 * 4
     assert layout.routed_x_off >= layout.weights_off + 100 * 4
-    # The payload is sized by distinct tokens, not by partials.
-    assert layout.shared_idx_off >= layout.routed_x_off + 32 * 8 * 2
-    assert layout.shared_x_off >= layout.shared_idx_off + 32 * 4
+    # The payload is sized by distinct tokens, not by partials, and the shared
+    # rows are a contiguous range so no index rides along with them.
+    assert layout.shared_x_off >= layout.routed_x_off + 32 * 8 * 2
     assert layout.slot_bytes >= layout.shared_x_off + 32 * 8 * 2
 
 
@@ -82,7 +82,6 @@ def test_every_field_offset_is_viewable_as_int32_and_payload(layout: SlotLayout)
         layout.expand_idx_off,
         layout.weights_off,
         layout.routed_x_off,
-        layout.shared_idx_off,
         layout.shared_x_off,
     ):
         assert offset % 4 == 0
