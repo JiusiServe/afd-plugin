@@ -37,6 +37,7 @@ lets an arrival be noticed while the previous kernel is still running.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -521,13 +522,39 @@ class SymmWindow:
     # Receive side.
     # ------------------------------------------------------------------
 
+    def wait(self, *, timeout_s: float | None = None) -> ArrivedSlot | None:
+        """Spin until a slot arrives, or ``timeout_s`` passes.
+
+        The spin is hot on purpose. A poll is a D2H plus a stream synchronize,
+        about 40us, and a profile shows this loop issuing ~25k of them a second
+        per rank -- more copy-engine time than the expert GEMM itself. Backing
+        off looks like the obvious fix and is not: every layer is a serialized
+        A->F->A round trip, so detection latency lands directly on the critical
+        path twice per layer, and on the FFN side it also delays picking up the
+        next rank's dispatch. Measured on 2A2F, sleeping between attempts (4 hot
+        tries, then 50us doubling to 1ms) made mean TTFT worse at every rate:
+        346 -> 431 ms at 32 rps, 1869 -> 3906 ms at 64 rps.
+
+        ponytail: hot spin, and it costs real GPU copy-engine time. The fix is
+        not to poll less often but to stop polling from the host: a device-side
+        ``wait_any`` kernel spinning on the flag array would notice an arrival
+        in ~1us and let the host block on one synchronize. The larger win is to
+        take the round trip off the critical path entirely (ubatching), after
+        which detection latency stops being paid per layer.
+        """
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
+        while True:
+            arrived = self.poll()
+            if arrived is not None:
+                return arrived
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
+
     def poll(self) -> ArrivedSlot | None:
         """Return the first slot whose flag advanced past what we consumed.
 
-        ponytail: host-side poll, one D2H per call on the poll stream. Correct
-        but it burns a synchronize per attempt; replace with a device-side
-        ``wait_any`` kernel spinning on the flag array when the poll shows up in
-        a profile.
+        One D2H per call, on the poll stream. Callers should use ``wait``
+        instead of spinning on this.
         """
         with torch.cuda.stream(self._poll_stream):
             self._flag_host.copy_(self._flags_local, non_blocking=False)

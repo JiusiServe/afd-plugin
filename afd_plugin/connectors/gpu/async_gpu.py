@@ -21,7 +21,6 @@ only, and a single node.
 
 from __future__ import annotations
 
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -674,7 +673,7 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
         )
         outstanding = set(pending.expected_ffn)
         while outstanding:
-            arrived = window.poll()
+            arrived = window.wait()
             if arrived is None:
                 continue
             header = arrived.header
@@ -754,14 +753,9 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
         """
         window = self._require_initialized()
         timeout_ms = int(kwargs.get("timeout_ms", 0))
-        deadline = time.monotonic() + timeout_ms / 1000.0 if timeout_ms else None
-
-        while True:
-            arrived = window.poll()
-            if arrived is not None:
-                break
-            if deadline is not None and time.monotonic() >= deadline:
-                raise TimeoutError("AFD async GPU dispatch recv timed out")
+        arrived = window.wait(timeout_s=timeout_ms / 1000.0 if timeout_ms else None)
+        if arrived is None:
+            raise TimeoutError("AFD async GPU dispatch recv timed out")
 
         header = arrived.header
         if header.is_shutdown:
