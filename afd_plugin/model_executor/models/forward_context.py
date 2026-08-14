@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from functools import wraps
 from typing import Any
@@ -35,8 +35,14 @@ def get_afd_metadata_from_forward_context(
 
 
 @contextmanager
-def use_afd_metadata_provider(provider: Any) -> Iterator[None]:
+def use_afd_metadata_provider(
+    installer: Callable[[ForwardContext], None],
+) -> Iterator[None]:
     """Install AFD metadata as vLLM creates a forward context.
+
+    ``installer`` receives each newly created ``ForwardContext`` exactly once.
+    The native factory symbol is restored when the scope exits, including when
+    context creation or installation raises.
 
     Native vLLM dummy runs call the model directly, bypassing
     ``AFDAttentionModelRunner._model_forward()``. Out-of-tree plugins cannot
@@ -48,12 +54,11 @@ def use_afd_metadata_provider(provider: Any) -> Iterator[None]:
     """
 
     original_create = forward_context_module.create_forward_context
-    install = provider._install_afd_metadata_on_forward_context
 
     @wraps(original_create)
     def create_forward_context_with_afd(*args: Any, **kwargs: Any) -> ForwardContext:
         forward_context = original_create(*args, **kwargs)
-        install(forward_context)
+        installer(forward_context)
         return forward_context
 
     forward_context_module.create_forward_context = create_forward_context_with_afd

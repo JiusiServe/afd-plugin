@@ -8,6 +8,7 @@ import importlib
 from typing import TYPE_CHECKING, Any, Final
 
 from afd_plugin.config import AFDConfig, parse_afd_config
+from afd_plugin.v1.worker.cuda_graph import validate_cuda_graph_mode
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -27,6 +28,74 @@ VLLM_GPU_WORKER_FQCN: Final[str] = "vllm.v1.worker.gpu_worker.Worker"
 VLLM_ASCEND_NPU_WORKER_FQCN: Final[str] = "vllm_ascend.worker.worker.NPUWorker"
 VLLM_ASCEND_310P_WORKER_FQCN: Final[str] = "vllm_ascend._310p.worker_310p.NPUWorker310"
 VLLM_ASCEND_XLITE_WORKER_FQCN: Final[str] = "vllm_ascend.xlite.xlite_worker.XliteWorker"
+
+
+def validate_gpu_model_runner_v2_config(
+    vllm_config: VllmConfig,
+    *,
+    expected_role: str,
+    device_type: str,
+) -> None:
+    """Validate the shared GPU ModelRunnerV2 deployment constraints.
+
+    For the Attention role these checks guard native ModelRunnerV2 execution.
+    For the FFN role they validate only the paired deployment and the
+    ``Worker.init_device`` construction seam; ``GPUFFNModelRunner`` remains
+    connector-driven and does not implement native ModelRunnerV2 execution.
+    """
+
+    afd_config = parse_afd_config(vllm_config, expected_role=expected_role)
+    if (
+        device_type != "cuda"
+        or afd_config.connector != "P2pNcclAFDConnector"
+        or afd_config.compute_gate_on_attention
+    ):
+        raise RuntimeError(
+            "AFD ModelRunnerV2 requires CUDA, synchronous P2pNcclAFDConnector, and "
+            "compute_gate_on_attention=false",
+        )
+
+    parallel = vllm_config.parallel_config
+    if (
+        parallel.pipeline_parallel_size,
+        parallel.prefill_context_parallel_size,
+        parallel.decode_context_parallel_size,
+    ) != (1, 1, 1):
+        raise RuntimeError("AFD ModelRunnerV2 does not support PP or CP")
+
+    configured_ranks = (
+        afd_config.num_attention_ranks
+        if expected_role == "attention"
+        else afd_config.num_ffn_ranks
+    )
+    distributed_ranks = parallel.data_parallel_size * parallel.tensor_parallel_size
+    if configured_ranks != distributed_ranks:
+        raise RuntimeError(
+            f"AFD ModelRunnerV2 {expected_role} ranks must match DP * TP: "
+            f"configured={configured_ranks}, distributed={distributed_ranks}",
+        )
+    if (
+        not parallel.enable_expert_parallel
+        or parallel.enable_elastic_ep
+        or parallel.enable_eplb
+        or parallel.use_sequence_parallel_moe
+        or vllm_config.compilation_config.pass_config.enable_sp
+    ):
+        raise RuntimeError("AFD ModelRunnerV2 requires static expert parallelism")
+    if parallel.enable_dbo or parallel.use_ubatching:
+        raise RuntimeError("AFD ModelRunnerV2 does not support DBO or ubatching")
+
+    # Keep importing this CPU-safe validation module independent of the vLLM
+    # model-wrapper package; the validator itself runs only after vLLM config
+    # construction.
+    from afd_plugin.model_executor.models.model_utils import (
+        has_afd_model_registration,
+    )
+
+    if not has_afd_model_registration(vllm_config.model_config):
+        raise RuntimeError("AFD ModelRunnerV2 requires a registered AFD model")
+
+    validate_cuda_graph_mode(vllm_config, role=expected_role)
 
 
 def normalize_qualname(value: str) -> str:
@@ -174,4 +243,5 @@ __all__ = [
     "expected_worker_qualname",
     "normalize_qualname",
     "resolve_class_from_qualname",
+    "validate_gpu_model_runner_v2_config",
 ]

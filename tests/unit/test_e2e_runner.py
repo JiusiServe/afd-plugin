@@ -392,6 +392,7 @@ def _args() -> argparse.Namespace:
         attention_vllm_arg=[],
         ffn_vllm_arg=[],
         gsm8k_output_path="/tmp/gsm8k-results",
+        use_v2_model_runner=False,
     )
 
 
@@ -441,13 +442,19 @@ def test_parse_args_rejects_legacy_fixed_scenario_options(monkeypatch, legacy_ar
 @pytest.mark.parametrize(
     ("scenario", "expected"),
     [
-        ("baseline-graph", (True, True, False, 4, 0, 1, 1)),
-        ("afd-eager", (False, False, False, 2, 1, 1, 1)),
-        ("afd-graph", (False, True, False, 2, 1, 1, 1)),
-        ("afd-graph-dbo", (False, True, True, 2, 1, 1, 1)),
-        ("afd-graph-dbo-2a2f", (False, True, True, 2, 2, 1, 1)),
-        ("afd-eager-async-cam", (False, False, False, 2, 2, 1, 2)),
-        ("afd-async-ubatch", (False, False, False, 2, 1, 1, 2)),
+        ("baseline-graph", (True, True, False, 4, 0, 1, 1, 1, False)),
+        ("afd-eager", (False, False, False, 2, 1, 1, 1, 1, False)),
+        ("afd-graph", (False, True, False, 2, 1, 1, 1, 1, False)),
+        ("afd-graph-dbo", (False, True, True, 2, 1, 1, 1, 1, False)),
+        ("afd-graph-dbo-2a2f", (False, True, True, 2, 2, 1, 1, 1, False)),
+        ("afd-eager-async-cam", (False, False, False, 2, 2, 1, 2, 1, False)),
+        ("afd-async-ubatch", (False, False, False, 2, 1, 1, 2, 1, False)),
+        ("afd-v2-eager-1a1f", (False, False, False, 1, 1, 1, 1, 1, True)),
+        ("afd-v2-eager-dp2", (False, False, False, 2, 2, 1, 1, 1, True)),
+        ("afd-v2-eager-tp2", (False, False, False, 2, 2, 1, 2, 2, True)),
+        ("afd-v2-graph-1a1f", (False, True, False, 1, 1, 1, 1, 1, True)),
+        ("afd-v2-graph-dp2", (False, True, False, 2, 2, 1, 1, 1, True)),
+        ("afd-v2-graph-tp2", (False, True, False, 2, 2, 1, 2, 2, True)),
     ],
 )
 def test_configure_scenario_overwrites_fixed_topology_and_features(
@@ -472,8 +479,9 @@ def test_configure_scenario_overwrites_fixed_topology_and_features(
         args.num_ffn_ranks,
         args.tp_size,
         args.attention_tp_size,
+        args.ffn_tp_size,
+        args.use_v2_model_runner,
     ) == expected
-    assert args.ffn_tp_size == 1
     if args.cuda_graph_full_decode_only:
         assert args.cudagraph_capture_size == 8
     if args.enable_dbo:
@@ -541,6 +549,69 @@ def test_async_ubatch_scenario_enforces_token_split_moe_ubatching():
     assert extra_config["async_moe_num_ubatches"] == 2
     assert extra_config["async_moe_split"] == "token"
     assert extra_config["attn_ranks_per_dp"] == 2
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_dp_size", "expected_tp_size", "uses_graph"),
+    [
+        ("afd-v2-eager-1a1f", "1", "1", False),
+        ("afd-v2-eager-dp2", "2", "1", False),
+        ("afd-v2-eager-tp2", "1", "2", False),
+        ("afd-v2-graph-1a1f", "1", "1", True),
+        ("afd-v2-graph-dp2", "2", "1", True),
+        ("afd-v2-graph-tp2", "1", "2", True),
+    ],
+)
+def test_v2_scenarios_build_exact_commands(
+    scenario,
+    expected_dp_size,
+    expected_tp_size,
+    uses_graph,
+):
+    args = _args()
+    args.scenario = scenario
+    runner.configure_scenario(args)
+
+    for role in ("attention", "ffn"):
+        command = runner.build_vllm_command(args, role=role)
+        assert command[command.index("--data-parallel-size") + 1] == expected_dp_size
+        assert command[command.index("--tensor-parallel-size") + 1] == expected_tp_size
+        assert ("--enforce-eager" in command) is not uses_graph
+        assert ("--compilation-config" in command) is uses_graph
+        assert "--enable-dbo" not in command
+        assert "--max-num-batched-tokens" not in command
+        assert "--no-enable-prefix-caching" in command
+        assert "--no-enable-chunked-prefill" in command
+        assert "--no-async-scheduling" in command
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error_message"),
+    [
+        ("afd_async", True, "synchronous AFD"),
+        ("compute_gate_on_attention", True, "compute_gate_on_attention=false"),
+        ("afd_connector", "OtherConnector", "P2pNcclAFDConnector"),
+        ("afd_connector_extra_config", ['{"mode":"unsupported"}'], "extra config"),
+        ("use_decode_bench_connector", True, "decode-bench connector"),
+    ],
+)
+def test_v2_scenarios_reject_unsupported_options(field, value, error_message):
+    args = _args()
+    args.scenario = "afd-v2-eager-1a1f"
+    setattr(args, field, value)
+
+    with pytest.raises(ValueError, match=error_message):
+        runner.configure_scenario(args)
+
+
+def test_v2_scenarios_reject_npu_backend():
+    args = _args()
+    args.scenario = "afd-v2-eager-1a1f"
+    args.device_backend = "npu"
+    runner.configure_scenario(args)
+
+    with pytest.raises(ValueError, match="require GPU"):
+        runner.validate_topology(args, ["0"], ["1"])
 
 
 def test_build_baseline_command_uses_native_dp4_graph_server():
@@ -665,6 +736,7 @@ def test_validate_topology_rejects_reused_devices(
         ("baseline-graph", "npu", "ascend"),
         ("afd-eager", "gpu", "afd"),
         ("afd-eager", "npu", "ascend,afd"),
+        ("afd-v2-eager-1a1f", "gpu", "afd"),
     ],
 )
 def test_build_env_uses_the_scenario_plugin_allowlist(
@@ -1450,10 +1522,45 @@ def test_runner_drops_flashcomm_for_npu_role_without_tp(monkeypatch):
     assert "VLLM_ASCEND_ENABLE_FLASHCOMM1" not in env
 
 
-def test_runner_forces_gpu_v1_model_runner(monkeypatch):
+@pytest.mark.parametrize(
+    ("scenario", "expected"),
+    [("afd-eager", "0"), ("afd-v2-eager-1a1f", "1")],
+)
+def test_runner_selects_gpu_model_runner_from_scenario(
+    monkeypatch,
+    scenario,
+    expected,
+):
     args = _args()
+    args.scenario = scenario
+    runner.configure_scenario(args)
     monkeypatch.setenv("VLLM_USE_V2_MODEL_RUNNER", "1")
 
     env = runner.build_env("0,1", args, role="attention")
 
-    assert env["VLLM_USE_V2_MODEL_RUNNER"] == "0"
+    assert env["VLLM_USE_V2_MODEL_RUNNER"] == expected
+
+
+@pytest.mark.parametrize(
+    ("scenario", "attention_devices", "ffn_devices"),
+    [
+        ("afd-v2-eager-1a1f", "0", "1"),
+        ("afd-v2-eager-dp2", "0,1", "2,3"),
+        ("afd-v2-eager-tp2", "0,1", "2,3"),
+    ],
+)
+def test_v2_model_entry_builds_runner_command_with_exact_devices(
+    monkeypatch,
+    tmp_path,
+    scenario,
+    attention_devices,
+    ffn_devices,
+):
+    monkeypatch.setenv("AFD_E2E_BACKEND", "gpu")
+    monkeypatch.setenv("AFD_GPU_E2E_MODEL", "/models/DeepSeek-V2-Lite")
+    monkeypatch.delenv("AFD_E2E_DEVICES", raising=False)
+
+    command = deepseek_v2_lite_e2e.build_runner_command(scenario, tmp_path)
+
+    assert command[command.index("--attention-devices") + 1] == attention_devices
+    assert command[command.index("--ffn-devices") + 1] == ffn_devices

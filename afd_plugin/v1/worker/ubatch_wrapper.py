@@ -13,13 +13,18 @@ from typing import Any
 
 import torch
 from vllm.config import CUDAGraphMode, VllmConfig
-from vllm.forward_context import DPMetadata, create_forward_context, get_forward_context
+from vllm.forward_context import (
+    ForwardContext,
+    create_forward_context,
+    get_forward_context,
+)
 from vllm.model_executor.offloader.base import get_offloader
 from vllm.v1.worker.gpu_ubatch_wrapper import UbatchMetadata, UBatchWrapper
 from vllm.v1.worker.ubatching import make_ubatch_contexts
 
 from afd_plugin.config import is_afd_active
-from afd_plugin.connectors import AFDDPMetadata, AFDForwardContextMetadata
+from afd_plugin.connectors import AFDForwardContextMetadata
+from afd_plugin.v1.worker.attention_metadata import build_ubatch_dp_metadata_list
 
 
 class AFDUBatchWrapper(UBatchWrapper):
@@ -33,10 +38,15 @@ class AFDUBatchWrapper(UBatchWrapper):
         device: torch.cuda.device,
     ):
         super().__init__(runnable, vllm_config, runtime_mode, device)
-        self._afd_context_provider: Any | None = None
+        self._afd_metadata_installer: Callable[[ForwardContext], None] | None = None
 
-    def configure_afd_context_provider(self, provider: Any) -> None:
-        self._afd_context_provider = provider
+    def configure_afd_context_provider(
+        self,
+        installer: Callable[[ForwardContext], None],
+    ) -> None:
+        """Save the same typed installer used by the forward-context provider."""
+
+        self._afd_metadata_installer = installer
 
     # Patch reason: native SM partitioning conflicts with AFD connector work.
     # Patch functionality: disable native SM partitioning only for active AFD.
@@ -67,7 +77,7 @@ class AFDUBatchWrapper(UBatchWrapper):
         # ### PATCH START: install AFD metadata before splitting ubatches.
         parent_additional_kwargs = dict(forward_context.additional_kwargs)
         if "afd_metadata" not in parent_additional_kwargs:
-            self._install_missing_afd_metadata(forward_context, ubatch_slices)
+            self._install_missing_afd_metadata(forward_context)
             parent_additional_kwargs = dict(forward_context.additional_kwargs)
 
         num_tokens = sum(int(ubatch_slice.num_tokens) for ubatch_slice in ubatch_slices)
@@ -124,26 +134,14 @@ class AFDUBatchWrapper(UBatchWrapper):
 
     def _install_missing_afd_metadata(
         self,
-        forward_context: Any,
-        ubatch_slices: Any,
+        forward_context: ForwardContext,
     ) -> None:
-        provider = self._afd_context_provider
-        if provider is None:
+        installer = self._afd_metadata_installer
+        if installer is None:
             self._afd_use_native_ubatch_metadata = True
             return
 
-        num_tokens_unpadded = sum(int(ub.num_tokens) for ub in ubatch_slices)
-        afd_metadata = provider._build_afd_metadata(
-            ubatch_slices,
-            num_tokens_unpadded,
-        )
-        forward_context.additional_kwargs["afd_metadata"] = afd_metadata
-        provider._afd_pending_metadata = afd_metadata
-        if not bool(getattr(provider, "_afd_suppress_metadata_send", False)):
-            provider._send_dp_metadata(
-                forward_context.dp_metadata,
-                ubatch_slices,
-            )
+        installer(forward_context)
 
     # Patch reason: native per-ubatch contexts omit AFD transfer metadata.
     # Patch functionality: clone the parent AFD context into each native ubatch.
@@ -284,52 +282,6 @@ def build_ubatch_additional_kwargs(
     child_kwargs = dict(parent_additional_kwargs)
     child_kwargs["afd_metadata"] = afd_metadata
     return child_kwargs
-
-
-def build_ubatch_dp_metadata_list(
-    vllm_config: VllmConfig,
-    ubatch_slices: Any,
-) -> list[DPMetadata | AFDDPMetadata]:
-    """Create DP metadata for each ubatch.
-
-    For DP=1 we use the plugin-owned metadata object to stay independent of
-    vLLM internals. For DP>1 we delegate to vLLM's native ``DPMetadata.make``.
-    """
-
-    parallel_config = vllm_config.parallel_config
-    dp_size = int(parallel_config.data_parallel_size)
-    if dp_size <= 1:
-        return [
-            AFDDPMetadata(
-                num_tokens_across_dp_cpu=torch.tensor(
-                    [ubatch_slice.num_tokens],
-                    dtype=torch.int32,
-                    device="cpu",
-                ),
-                max_tokens_across_dp_cpu=torch.tensor(
-                    [ubatch_slice.num_tokens],
-                    dtype=torch.int32,
-                    device="cpu",
-                ),
-            )
-            for ubatch_slice in ubatch_slices
-        ]
-
-    ubatch_dp_metadata = []
-    for ubatch_slice in ubatch_slices:
-        num_tokens_across_dp_cpu = torch.tensor(
-            [ubatch_slice.num_tokens] * dp_size,
-            device="cpu",
-            dtype=torch.int32,
-        )
-        ubatch_dp_metadata.append(
-            DPMetadata.make(
-                parallel_config,
-                ubatch_slice.num_tokens,
-                num_tokens_across_dp_cpu,
-            ),
-        )
-    return ubatch_dp_metadata
 
 
 def _resolve_ubatch_unpadded_tokens(

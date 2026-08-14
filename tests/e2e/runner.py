@@ -37,6 +37,21 @@ ASYNC_UBATCH_FFN_RANKS = 1
 ASYNC_UBATCH_ATTENTION_TP_SIZE = 2
 ASYNC_UBATCH_NUM_STAGES = 2
 ASYNC_UBATCH_BATCH_SIZE = 2
+V2_SYNC_CONNECTOR = "P2pNcclAFDConnector"
+V2_SCENARIOS = (
+    "afd-v2-eager-1a1f",
+    "afd-v2-eager-dp2",
+    "afd-v2-eager-tp2",
+    "afd-v2-graph-1a1f",
+    "afd-v2-graph-dp2",
+    "afd-v2-graph-tp2",
+)
+V2_SINGLE_RANK_SCENARIOS = frozenset(
+    ("afd-v2-eager-1a1f", "afd-v2-graph-1a1f"),
+)
+V2_TENSOR_PARALLEL_SCENARIOS = frozenset(
+    ("afd-v2-eager-tp2", "afd-v2-graph-tp2"),
+)
 PROCESS_TERMINATION_TIMEOUT_S = 20
 PROCESS_POLL_INTERVAL_S = 0.2
 PROCESS_REAP_TIMEOUT_S = 5
@@ -202,6 +217,7 @@ def parse_args() -> argparse.Namespace:
             "afd-graph-dbo-2a2f",
             ASYNC_CAM_SCENARIO,
             ASYNC_UBATCH_SCENARIO,
+            *V2_SCENARIOS,
         ],
         required=True,
         help="Fixed E2E scenario to run.",
@@ -324,6 +340,12 @@ def configure_scenario(args: argparse.Namespace) -> None:
             ASYNC_UBATCH_ATTENTION_RANKS,
             ASYNC_UBATCH_FFN_RANKS,
         ),
+        "afd-v2-eager-1a1f": (False, False, False, 1, 1),
+        "afd-v2-eager-dp2": (False, False, False, 2, 2),
+        "afd-v2-eager-tp2": (False, False, False, 2, 2),
+        "afd-v2-graph-1a1f": (False, True, False, 1, 1),
+        "afd-v2-graph-dp2": (False, True, False, 2, 2),
+        "afd-v2-graph-tp2": (False, True, False, 2, 2),
     }
     baseline, use_graph, enable_dbo, attention_ranks, ffn_ranks = scenario_settings[
         args.scenario
@@ -338,9 +360,31 @@ def configure_scenario(args: argparse.Namespace) -> None:
         args.attention_tp_size = ASYNC_CAM_ATTENTION_TP_SIZE
     elif is_async_ubatch:
         args.attention_tp_size = ASYNC_UBATCH_ATTENTION_TP_SIZE
+    elif args.scenario in V2_TENSOR_PARALLEL_SCENARIOS:
+        args.attention_tp_size = 2
     else:
         args.attention_tp_size = 1
-    args.ffn_tp_size = 1
+    args.ffn_tp_size = 2 if args.scenario in V2_TENSOR_PARALLEL_SCENARIOS else 1
+    args.use_v2_model_runner = args.scenario in V2_SCENARIOS
+    if args.use_v2_model_runner:
+        if args.afd_async or args.afd_connector == ASYNC_AFD_CONNECTOR:
+            raise ValueError("ModelRunnerV2 E2E scenarios require synchronous AFD")
+        if args.compute_gate_on_attention:
+            raise ValueError(
+                "ModelRunnerV2 E2E scenarios require compute_gate_on_attention=false",
+            )
+        if args.afd_connector not in (None, V2_SYNC_CONNECTOR):
+            raise ValueError(
+                "ModelRunnerV2 E2E scenarios require P2pNcclAFDConnector",
+            )
+        if args.afd_connector_extra_config:
+            raise ValueError(
+                "ModelRunnerV2 E2E scenarios do not support connector extra config",
+            )
+        if args.use_decode_bench_connector:
+            raise ValueError(
+                "ModelRunnerV2 E2E scenarios do not support decode-bench connector",
+            )
     if not is_async_cam and args.gsm8k_output_path is None:
         raise ValueError("--gsm8k-output-path is required for GSM8K scenarios")
     if is_async_cam:
@@ -418,6 +462,8 @@ def validate_topology(
         if role_tp_size(args, "attention") != 1:
             raise ValueError("baseline E2E requires Attention TP=1")
         return
+    if args.use_v2_model_runner and args.device_backend != "gpu":
+        raise ValueError("ModelRunnerV2 E2E scenarios require GPU")
     if (
         args.scenario in (ASYNC_CAM_SCENARIO, ASYNC_UBATCH_SCENARIO)
         and args.device_backend != "npu"
@@ -536,13 +582,19 @@ def build_vllm_command(
         "--additional-config",
         json.dumps(afd_config, separators=(",", ":")),
     ]
+    if args.use_v2_model_runner:
+        cmd.extend(
+            [
+                "--no-enable-prefix-caching",
+                "--no-enable-chunked-prefill",
+                "--no-async-scheduling",
+            ],
+        )
     if args.cuda_graph_full_decode_only:
         capture_size = str(args.cudagraph_capture_size)
         cmd.extend(
             [
                 "--max-num-seqs",
-                capture_size,
-                "--max-num-batched-tokens",
                 capture_size,
                 "--max-cudagraph-capture-size",
                 capture_size,
@@ -736,7 +788,7 @@ def build_env(
     env.setdefault("VLLM_ENGINE_READY_TIMEOUT_S", "18000")
     env[visible_devices_env_name(args.device_backend)] = visible_devices
     if args.device_backend != "npu":
-        env["VLLM_USE_V2_MODEL_RUNNER"] = "0"
+        env["VLLM_USE_V2_MODEL_RUNNER"] = "1" if args.use_v2_model_runner else "0"
     if args.baseline:
         env["VLLM_PLUGINS"] = "ascend" if args.device_backend == "npu" else ""
     else:
