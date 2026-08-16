@@ -77,6 +77,7 @@ registers lazy AFD wrapper paths under `AFD`-prefixed aliases.
 | `DeepseekV32ForCausalLM` | `AFDDeepseekV32ForCausalLM` | `AFDDeepseekV3ForCausalLM` |
 | `GlmMoeDsaForCausalLM` | `AFDGlmMoeDsaForCausalLM` | `AFDGlmMoeDsaForCausalLM` |
 | `Qwen3MoeForCausalLM` | `AFDQwen3MoeForCausalLM` | `AFDQwen3MoeForCausalLM` |
+| `Qwen3_5MoeForConditionalGeneration` | `AFDQwen3_5MoeForConditionalGeneration` | `AFDQwen3_5MoeForConditionalGeneration` |
 
 Only AFD workers switch their worker-local model configuration to the matching
 alias before constructing the AFD model runner. Non-AFD workers keep the
@@ -84,8 +85,10 @@ checkpoint architecture and resolve to vLLM's native model class.
 
 The DeepSeek-family aliases share the DeepSeek V2-derived implementation.
 Qwen3 MoE has a separate wrapper around vLLM's native Qwen3 MoE classes. These
-aliases express known compatible architecture families; they do not make either
-wrapper a generic MoE model API.
+`Qwen3_5MoeForConditionalGeneration` has a separate Qwen3.5/3.6 adapter that
+retains its native hybrid model, decoder, MoE forward, and loader lifecycles.
+These aliases express known compatible architecture families; they do not make
+either wrapper a generic MoE model API.
 
 ## Role-aware module construction
 
@@ -128,6 +131,21 @@ native loader consumes them.
 This path is CUDA-only and requires `compute_gate_on_attention=false`. It fails
 during construction for sequence-parallel MoE, EPLB, pipeline parallelism,
 speculative decoding, LoRA, or NPU.
+
+### Qwen3.5/3.6 MoE CUDA boundary
+
+`AFDQwen3_5MoeForConditionalGeneration` is a distinct wrapper around vLLM's
+native hybrid Qwen3.5/3.6 architecture. Attention owns embeddings, norms, and
+linear/full-attention state, then sends hidden states only. FFN owns the native
+gate, routed experts, shared expert, and shared-expert gate.
+
+This path is CUDA-only, text-only, and requires `--language-model-only`,
+`compute_gate_on_attention=false`, and `pipeline_parallel_size=1`. It rejects
+multimodal execution, sequence-parallel MoE, EPLB, speculative decoding, and
+LoRA before language-model construction; NPU model-config resolution fails
+before model loading. Attention-side router transport, DBO, DP/EP/PP, async
+communication, multi-node, quantization, and performance are outside this
+adapter's current contract.
 
 ## Forward-context contract
 

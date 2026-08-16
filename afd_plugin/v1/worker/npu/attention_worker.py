@@ -55,6 +55,7 @@ class AFDNPUAttentionWorker(NPUWorker):
         )
         self.vllm_config.model_config = get_afd_model_config(
             self.vllm_config.model_config,
+            device_type="npu",
         )
         self.model_runner = AFDNPUAttentionModelRunner(
             self.vllm_config,
