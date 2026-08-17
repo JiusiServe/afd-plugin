@@ -25,6 +25,7 @@ validation_paths:
   - "tests/unit/test_e2e_process_utils.py"
   - "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py"
   - "tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py"
+  - "tests/e2e/models/qwen3_moe/test_qwen3_moe.py"
 upstream_refs:
   - "vLLM 0.26.0 serving and shutdown interfaces"
   - "lm-evaluation-harness GSM8K task and local-completions API"
@@ -32,8 +33,9 @@ upstream_refs:
 verified_platform_refs:
   - "CUDA DeepSeek-V2-Lite"
   - "Ascend NPU DeepSeek-V2-Lite"
+  - "CUDA Qwen3 MoE"
 related_issues: []
-last_reviewed: 2026-08-12
+last_reviewed: 2026-08-13
 ---
 
 # E2E testing
@@ -139,5 +141,5 @@ of 1319.
 7. Update `tests/e2e/README.md`. Update the `run-e2e` skill only when commands,
    variables, prerequisites, or the default suite change.
 
-Before adding a second model, extract the shared environment, device, and
-runner-subprocess logic from `test_deepseek_v2_lite.py`.
+Model entrypoints reuse the subprocess and download helpers in
+`tests/conftest.py`.

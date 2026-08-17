@@ -1,14 +1,18 @@
 ---
 name: run-e2e
-description: Use when the user asks to run, validate, or diagnose the AFD plugin's DeepSeek-V2-Lite end-to-end tests on GPU or Ascend NPU hardware, including PR-gate E2E, GSM8K-7 accuracy, graph, eager, DBO, or 2A2F scenarios.
+description: Use when the user asks to run, validate, or diagnose the AFD plugin's DeepSeek-V2-Lite GPU/NPU or Qwen3 MoE GPU end-to-end tests, including PR-gate E2E, GSM8K-7 accuracy, graph, eager, DBO, or 2A2F scenarios.
 ---
 
 # Run AFD E2E Tests
 
 ## Scope
 
-Run the four tests in
-tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py:
+Run one of the model suites:
+
+- `tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py` on GPU or NPU
+- `tests/e2e/models/qwen3_moe/test_qwen3_moe.py` on GPU
+
+Each suite contains four default scenarios:
 
 - baseline-graph
 - afd-eager
@@ -31,8 +35,8 @@ If both are available, ask which to use. If neither is available, stop.
 Before starting pytest, confirm:
 
 - AFD_E2E_DEVICES contains the device IDs required by test cases.
-- AFD_GPU_E2E_MODEL / AFD_NPU_E2E_MODEL is set to a local path, or the
-  environment can download `deepseek-ai/DeepSeek-V2-Lite` via huggingface_hub.
+- The backend model variable is set to a local path, or the environment can
+  download the selected suite's checkpoint via huggingface_hub.
 - The selected vllm command runs.
 - pytest, afd_plugin, lm_eval, datasets, and huggingface_hub are importable.
 - HF_HOME points to the Hugging Face cache used for GSM8K and model weights.
@@ -56,7 +60,7 @@ export HF_HOME=/path/to/huggingface
 export AFD_E2E_BACKEND=gpu
 export AFD_E2E_DEVICES=0,1,2
 # Optional if the model is already local:
-# export AFD_GPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite
+# export AFD_GPU_E2E_MODEL=/path/to/model
 # Optional: export AFD_GPU_E2E_VLLM_BIN=/path/to/vllm
 ~~~
 
@@ -86,9 +90,17 @@ python -m pytest -q -s \
   "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[baseline-graph]"
 ~~~
 
+For Qwen3 MoE on GPU, run:
+
+~~~bash
+python -m pytest -q -s \
+  tests/e2e/models/qwen3_moe/test_qwen3_moe.py
+~~~
+
 Do not add backend markers or run scenarios in parallel; they share devices.
 
-For the opt-in GPU/NPU 2A2F case, set four unique device IDs and run:
+For the opt-in DeepSeek-V2-Lite GPU/NPU 2A2F case, set four unique device IDs
+and run:
 
 ~~~bash
 export AFD_E2E_DEVICES=0,1,2,3
@@ -103,8 +115,9 @@ On cancellation, forward SIGTERM and allow over 90 seconds for cleanup.
 
 ### 5. Report
 
-Success means 4 passed and 0 skipped. Report the failed scenario, first
-actionable error, and cleanup status. Any skip is a gate failure.
+Success means the selected suite reports 4 passed and 0 skipped. Report the
+failed scenario, first actionable error, and cleanup status. Any skip is a
+gate failure.
 
 ## Environment reference
 
@@ -112,7 +125,7 @@ actionable error, and cleanup status. Any skip is a gate failure.
 |---|---|---|
 | AFD_E2E_BACKEND | both | yes: gpu or npu |
 | AFD_E2E_DEVICES | both | yes: exactly 3 unique IDs |
-| AFD_GPU_E2E_MODEL | GPU | no; downloads DeepSeek-V2-Lite when unset |
+| AFD_GPU_E2E_MODEL | GPU | no; downloads the selected suite's model when unset |
 | AFD_GPU_E2E_VLLM_BIN | GPU | no; defaults to vllm |
 | AFD_NPU_E2E_MODEL | NPU | no; downloads DeepSeek-V2-Lite when unset |
 | AFD_NPU_E2E_VLLM_BIN | NPU | no; defaults to vllm |
