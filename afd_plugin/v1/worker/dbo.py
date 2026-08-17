@@ -6,6 +6,23 @@ import torch
 from vllm.utils.torch_utils import direct_register_custom_op
 from vllm.v1.worker.ubatching import dbo_enabled, dbo_yield
 
+# Resolve the Ascend yield once. This used to be imported inside the op body,
+# which runs once per MoE layer: on a CUDA build the module is absent, Python
+# does not cache a failed import, and so every call re-walked the import
+# machinery. A profile of an Attention rank put that at 833us per call and 258ms
+# of a 1403ms window -- the single largest host cost on the layer path, for an
+# import that can never succeed there.
+try:
+    from afd_plugin.v1.worker.npu.ubatching import (
+        dbo_enabled as _ascend_dbo_enabled,
+    )
+    from afd_plugin.v1.worker.npu.ubatching import (
+        dbo_yield as _ascend_dbo_yield,
+    )
+except ImportError:  # not an Ascend build
+    _ascend_dbo_enabled = None
+    _ascend_dbo_yield = None
+
 _AFD_DBO_YIELD_OP_REGISTERED = False
 
 
@@ -50,23 +67,12 @@ def register_dbo_yield_custom_op() -> None:
 
 
 def _yield_if_dbo_enabled() -> None:
-    try:
-        from afd_plugin.v1.worker.npu.ubatching import (
-            dbo_enabled as ascend_dbo_enabled,
-        )
-        from afd_plugin.v1.worker.npu.ubatching import (
-            dbo_yield as ascend_dbo_yield,
-        )
-    except ImportError:
-        ascend_dbo_enabled = None
-        ascend_dbo_yield = None
-
     if (
-        ascend_dbo_enabled is not None
-        and ascend_dbo_yield is not None
-        and ascend_dbo_enabled()
+        _ascend_dbo_enabled is not None
+        and _ascend_dbo_yield is not None
+        and _ascend_dbo_enabled()
     ):
-        ascend_dbo_yield()
+        _ascend_dbo_yield()
         return
 
     if dbo_enabled():

@@ -173,7 +173,14 @@ def run_attention_gate_afd_forward(
             topk_weights,
             topk_ids,
             router_logits,
-            use_sequence_parallel=forward_context.flash_comm_v1_enabled,
+            # Ascend-only field: FlashComm1 leaves each Attention TP rank with a
+            # disjoint token shard. The CUDA forward context has no such field,
+            # so its absence means the token dimension is still replicated.
+            use_sequence_parallel=getattr(
+                forward_context,
+                "flash_comm_v1_enabled",
+                False,
+            ),
         )
         metadata = AFDTransferMetadata.create_attention_metadata(
             layer_idx=layer.layer_idx,
@@ -222,7 +229,11 @@ def run_async_moe_ubatch_afd_forward(
     """Run the two-stage async MoE ubatch pipeline used by async CAM."""
 
     forward_context = get_forward_context()
-    runtime_sequence_parallel = bool(forward_context.flash_comm_v1_enabled)
+    runtime_sequence_parallel = getattr(
+        forward_context,
+        "flash_comm_v1_enabled",
+        False,
+    )
     if runtime_sequence_parallel != async_moe_ubatch_metadata.use_sequence_parallel:
         raise RuntimeError(
             "Async CAM stage layout does not match the current FlashComm1 "
@@ -327,6 +338,16 @@ def run_async_moe_ubatch_afd_forward(
         else:
             stage_forward_context.num_tokens = int(stage.input_tokens)
             stage_forward_context.pad_size = 0
+            # KV-cache writes are indexed per token, so a stage's slot mapping
+            # is its slice of the batch's. Leaving the full-batch mapping in
+            # place makes the attention layer write this stage's rows into the
+            # whole batch's slots and corrupt the cache. Under sequence
+            # parallelism the stage slice is in global coordinates and does not
+            # index the rank-local mapping, so that layout keeps the parent's.
+            stage_forward_context.slot_mapping = {
+                layer_name: mapping[stage.token_slice]
+                for layer_name, mapping in forward_context.slot_mapping.items()
+            }
         expected_tokens = int(stage_hidden_states[stage_idx].shape[0])
         log_async_moe_stage_attention(
             stage_idx,
@@ -503,7 +524,10 @@ def _restore_async_moe_stage_state(
         (hidden_width, residual_width),
         dim=-1,
     )
-    return hidden_states, residual
+    # Splitting the last dimension leaves two interleaved views. The next thing
+    # to touch them is the final norm, and CUDA's fused_add_rms_norm requires
+    # contiguous inputs -- it aborts in the kernel rather than falling back.
+    return hidden_states.contiguous(), residual.contiguous()
 
 
 __all__ = [

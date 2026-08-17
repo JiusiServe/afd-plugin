@@ -1,0 +1,1039 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+"""NVSHMEM-backed asynchronous connector for CUDA AFD.
+
+``GpuAsyncAFDConnector`` is the CUDA counterpart of ``CAMAsyncAFDConnector``:
+Attention ranks run MoE routing, write routed tokens one-sided into the FFN
+ranks' symmetric windows, and later reduce the weighted expert output; FFN ranks
+poll their window, run their local experts, and write the result back. There is
+no DP metadata control plane (``control_plane`` stays ``None``) and FFN work is
+driven directly by the connector receive loop, so Attention DP replicas never
+wait for each other.
+
+The world is Attention-first, ``[A0, A1, ..., F0, F1, ...]``, matching
+``CAMAsyncAFDConnector``. Every Attention rank routes to every FFN rank, so an
+FFN window holds one region per Attention rank and vice versa.
+
+See ``docs/design/rfc_async_gpu_connector.md``. Supported deployment requires
+``async=true``, ``compute_gate_on_attention=true``, eager execution, prefill
+only, and a single node.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any, Final
+
+import torch
+from torch import Tensor
+from vllm.logger import init_logger
+
+from afd_plugin.config import AFDConfig
+from afd_plugin.config_utils import (
+    coerce_extra_bool,
+    coerce_extra_positive_int,
+    coerce_extra_str,
+)
+from afd_plugin.connectors.async_topology import (
+    ASYNC_MOE_REQUEST_SPLIT,
+    build_async_topology,
+)
+from afd_plugin.connectors.base import AFDConnectorBase, ConnectorExtraInfo
+from afd_plugin.connectors.gpu.symm_window import (
+    FLAG_SHUTDOWN_BIT,
+    H_ROUTED_TOKENS,
+    H_SEGMENT_START,
+    HEADER_FIXED_WORDS,
+    HEADER_HOST_WORDS,
+    SlotLayout,
+    SymmWindow,
+    encode_header,
+    encode_header_host_words,
+)
+from afd_plugin.connectors.metadata import (
+    AFDA2FTransferPayload,
+    AFDF2ATransferPayload,
+    AFDTransferContext,
+    AFDTransferMetadata,
+    AFDTransferState,
+)
+from afd_plugin.distributed import init_afd_process_group
+
+if TYPE_CHECKING:
+    from torch.distributed.distributed_c10d import ProcessGroup
+    from vllm.config import VllmConfig
+
+AFD_ASYNC_GPU_GROUP_NAME = "afd_async_gpu"
+
+_GPU_ASYNC_EXTRA_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "attn_ranks_per_dp",
+        "ring_depth",
+        "recv_poll_timeout_ms",
+        "async_moe_ubatching",
+        "async_moe_num_ubatches",
+        "async_moe_split",
+    },
+)
+
+# Name the logger inside vLLM's tree: vLLM installs its handler on the "vllm"
+# logger only, so a bare ``afd_plugin.*`` logger propagates to a handler-less
+# root and every line is dropped -- which is how the window summary, the only
+# report of a multi-GiB allocation, stayed invisible.
+logger = init_logger(f"vllm.{__name__}")
+
+
+@dataclass(frozen=True)
+class GpuAsyncExtraInfo(ConnectorExtraInfo):
+    """Typed async GPU connector configuration.
+
+    Attributes:
+        attn_ranks_per_dp: Number of Attention ranks in each data-parallel group.
+        ring_depth: Slots per peer region. Derived from the send-then-recv
+            invariant, not a performance knob: an Attention rank has at most one
+            in-flight request per ``(peer, stage)``, so ``num_stages`` suffices.
+        recv_poll_timeout_ms: Idle poll timeout on the FFN loop; bounds shutdown
+            response time.
+        async_moe_ubatching: Whether request-boundary async MoE ubatching is used.
+        async_moe_num_ubatches: Number of stages used by async MoE ubatching.
+        async_moe_split: Boundary at which async MoE work is split.
+    """
+
+    attn_ranks_per_dp: int = 1
+    ring_depth: int = 0
+    recv_poll_timeout_ms: int = 50
+    async_moe_ubatching: bool = False
+    async_moe_num_ubatches: int = 2
+    async_moe_split: str = ASYNC_MOE_REQUEST_SPLIT
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any] | None) -> GpuAsyncExtraInfo:
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, Mapping):
+            raise TypeError(
+                f"{cls.__name__} connector_extra_config must be a mapping, "
+                f"got {type(raw).__name__}",
+            )
+        unknown = sorted(
+            str(key) for key in raw if key not in _GPU_ASYNC_EXTRA_CONFIG_FIELDS
+        )
+        if unknown:
+            raise ValueError(
+                "unknown AFD async GPU connector_extra_config field(s): "
+                + ", ".join(unknown),
+            )
+
+        ubatching = coerce_extra_bool(
+            raw.get("async_moe_ubatching", False),
+            field_name="async_moe_ubatching",
+        )
+        num_ubatches = coerce_extra_positive_int(
+            raw.get("async_moe_num_ubatches", 2),
+            field_name="async_moe_num_ubatches",
+        )
+        # Ring depth follows the number of live stages unless pinned explicitly.
+        ring_depth = coerce_extra_positive_int(
+            raw.get("ring_depth", num_ubatches if ubatching else 1),
+            field_name="ring_depth",
+        )
+        return cls(
+            attn_ranks_per_dp=coerce_extra_positive_int(
+                raw.get("attn_ranks_per_dp", 1),
+                field_name="attn_ranks_per_dp",
+            ),
+            ring_depth=ring_depth,
+            recv_poll_timeout_ms=coerce_extra_positive_int(
+                raw.get("recv_poll_timeout_ms", 50),
+                field_name="recv_poll_timeout_ms",
+            ),
+            async_moe_ubatching=ubatching,
+            async_moe_num_ubatches=num_ubatches,
+            async_moe_split=coerce_extra_str(
+                raw.get("async_moe_split", ASYNC_MOE_REQUEST_SPLIT),
+                field_name="async_moe_split",
+            ),
+        )
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {
+            "attn_ranks_per_dp": self.attn_ranks_per_dp,
+            "ring_depth": self.ring_depth,
+            "recv_poll_timeout_ms": self.recv_poll_timeout_ms,
+            "async_moe_ubatching": self.async_moe_ubatching,
+            "async_moe_num_ubatches": self.async_moe_num_ubatches,
+            "async_moe_split": self.async_moe_split,
+        }
+
+
+class ConnectorShutdown(RuntimeError):  # noqa: N818
+    """Raised on the FFN loop when a peer announced shutdown."""
+
+
+@dataclass(slots=True)
+class GpuAsyncTransferState(AFDTransferState):
+    """FFN-side state carried from dispatch recv through combine send.
+
+    ``region``/``ring`` locate the window slot so ``send_ffn_work_item_output``
+    can write back to the originating Attention rank and release the slot.
+
+    ``group_list`` is a device view of the arrived header's trailing words;
+    ``expert_counts_host`` is the same numbers as they were decoded on the host,
+    kept so the combine header can be built without reading the device back.
+
+    ``expand_idx`` and ``weights`` describe this rank's own run of partials:
+    which token each one reads on the way in, and what to weight it by when the
+    expert output is reduced back to one row per token on the way out.
+    """
+
+    region: int = 0
+    ring: int = 0
+    src_role_rank: int = 0
+    layer_idx: int = 0
+    stage_idx: int = 0
+    seq: int = 0
+    num_tokens: int = 0
+    routed_tokens: int = 0
+    shared_tokens: int = 0
+    group_list: Tensor | None = None
+    expert_counts_host: list[int] = field(default_factory=list)
+    expand_idx: Tensor | None = None
+    weights: Tensor | None = None
+    expand_x_shared: Tensor | None = None
+
+
+@dataclass(slots=True)
+class GpuAsyncFFNWorkItem:
+    """Normalized FFN-side work item produced by a window arrival."""
+
+    hidden_states: Tensor
+    context: AFDTransferContext
+    recv_output: AFDA2FTransferPayload
+    layer_idx: int
+    stage_idx: int
+    num_tokens: int
+    total_num_tokens: int
+    shared_num_tokens: int
+
+
+@dataclass(slots=True)
+class _PendingDispatch:
+    """Attention-side record of one in-flight layer, popped by combine recv.
+
+    Every reply carries a full batch of rows, already weighted and summed over
+    that rank's experts, so combine is a plain add at matching row positions and
+    needs no index from the dispatch.
+
+    ``shared_slices[r]`` is the contiguous token range whose shared-expert
+    output that rank returns. It is recorded here because combine must know the
+    shape of a reply *before* it arrives: that is what lets the wait happen on a
+    stream instead of on the host, which cannot then be told what turned up.
+    """
+
+    context: AFDTransferContext
+    shared_slices: list[slice]
+    num_tokens: int
+    ring: int
+    seq: int
+    expected_ffn: list[int]
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchPlan:
+    """One layer's routing plan, already in the order every consumer wants.
+
+    Every field is indexed by partial -- one entry per ``(token, topk slot)`` --
+    and sorted by global expert, so a destination's partials are one contiguous
+    run, grouped by local expert inside it, which feeds the grouped GEMM
+    directly.
+
+    Nothing here is ever read back to the host. The three per-destination
+    vectors go into the slot headers on the device, and the arrays are shipped
+    whole, so the sender never needs to know how the routing came out.
+
+    Attributes:
+        counts: Partials per global expert, padded to
+            ``ffn_size * expert_per_rank``. These are the header's group list.
+        routed_per_rank: Partials each FFN rank receives.
+        segment_start: Where each FFN rank's run of partials begins.
+        expand_idx: Per partial, the token it carries.
+        weights: Per partial, its topk weight.
+    """
+
+    counts: Tensor
+    routed_per_rank: Tensor
+    segment_start: Tensor
+    expand_idx: Tensor
+    weights: Tensor
+
+
+def plan_dispatch(
+    topk_ids: Tensor,
+    topk_weights: Tensor,
+    *,
+    ffn_size: int,
+    expert_per_rank: int,
+) -> DispatchPlan:
+    """Cluster ``(token, topk_slot)`` partials by destination expert.
+
+    Sorting by the global expert id groups partials by destination rank and, in
+    the same pass, by local expert inside each destination, which is every
+    grouping any consumer needs. One sort and a bounds lookup is the whole plan.
+
+    Every step is a whole-tensor op and the host learns nothing here, by
+    design: a readback of the routing would block the send path behind the
+    device once per MoE layer.
+    """
+    num_slots = topk_ids.shape[1]
+    flat = topk_ids.reshape(-1).to(torch.int64)
+    order = torch.argsort(flat, stable=True)
+    sorted_experts = flat[order]
+
+    # Where each expert's partials start and stop, read off the sorted ids.
+    # torch.bincount would do this in one call, but it sizes its output from the
+    # data's maximum and so copies that maximum to the host -- a pageable
+    # readback measured at 783us per call, once per MoE layer, which was the
+    # largest single host cost on the Attention rank. searchsorted needs no such
+    # thing, because the expert count is known, and it hands back the offsets
+    # that would otherwise be a second pass.
+    bounds = torch.searchsorted(
+        sorted_experts,
+        torch.arange(
+            ffn_size * expert_per_rank + 1,
+            device=flat.device,
+            dtype=flat.dtype,
+        ),
+    )
+    offsets = bounds[:-1]
+    counts = bounds[1:] - offsets
+
+    # A destination reads the whole batch out of its slot, so a partial names
+    # its token directly and needs no rebasing onto shipped rows.
+    expand_idx = (order // num_slots).to(torch.int32)
+    weights = topk_weights.reshape(-1)[order].to(torch.float32)
+
+    # A rank owns a contiguous block of experts, so its partials begin where its
+    # first expert's do and run to the end of its last.
+    return DispatchPlan(
+        counts=counts,
+        routed_per_rank=counts.view(ffn_size, expert_per_rank).sum(1),
+        segment_start=offsets.view(ffn_size, expert_per_rank)[:, 0],
+        expand_idx=expand_idx,
+        weights=weights,
+    )
+
+
+class GpuAsyncAFDConnector(AFDConnectorBase):
+    """NVSHMEM symmetric-window asynchronous connector for CUDA AFD."""
+
+    control_plane = None
+
+    @classmethod
+    def parse_extra_config(
+        cls,
+        raw: Mapping[str, Any] | None,
+    ) -> GpuAsyncExtraInfo:
+        return GpuAsyncExtraInfo.from_mapping(raw)
+
+    def __init__(
+        self,
+        rank: int,
+        local_rank: int,
+        vllm_config: VllmConfig,
+        afd_config: AFDConfig,
+        role_rank: int,
+    ) -> None:
+        super().__init__(rank, local_rank, vllm_config, afd_config, role_rank)
+        self._initialized = False
+        hf_config = vllm_config.model_config.hf_config
+        self.hidden_size = hf_config.hidden_size
+        self.topk = hf_config.num_experts_per_tok
+        self.num_routed_experts = hf_config.n_routed_experts
+        # Combine has to know whether a reply carries shared-expert rows before
+        # it arrives, and only the model config says so.
+        self.has_shared_experts = bool(hf_config.n_shared_experts)
+        self.payload_dtype = vllm_config.model_config.dtype
+        self.max_seq_len = vllm_config.scheduler_config.max_num_batched_tokens
+        self.tp_size = self.extra_info.attn_ranks_per_dp
+
+        self.topology = build_async_topology(
+            afd_config,
+            role_rank,
+            num_routed_experts=self.num_routed_experts,
+        )
+        self.world_rank = self.topology.world_rank
+        self.attn_size = self.topology.attn_size
+        self.ffn_size = self.topology.ffn_size
+        self.expert_per_rank = self.topology.expert_per_rank
+        self.is_attention = afd_config.role == "attention"
+
+        self.ring_depth = self.extra_info.ring_depth
+        self.num_stages = (
+            max(1, self.extra_info.async_moe_num_ubatches)
+            if self.extra_info.async_moe_ubatching
+            else 1
+        )
+        if self.ring_depth < self.num_stages:
+            raise ValueError(
+                f"ring_depth {self.ring_depth} cannot serve "
+                f"{self.num_stages} async MoE stages; each stage needs a slot "
+                "of its own",
+            )
+        # Every Attention rank routes to every FFN rank, so a window carries one
+        # region per opposite-role peer. Both roles allocate the larger of the
+        # two so the symmetric allocation matches.
+        self.num_regions = max(self.attn_size, self.ffn_size)
+        # Payload rows are distinct tokens, so a batch is their bound no matter
+        # how skewed the gate is. Only the 4-byte-per-partial index arrays need
+        # the every-partial-to-one-rank worst case.
+        self.token_cap = max(1, self.max_seq_len)
+        self.partial_cap = max(1, self.max_seq_len * self.topk)
+        self.layout = SlotLayout.build(
+            expert_per_rank=self.expert_per_rank,
+            partial_cap=self.partial_cap,
+            token_cap=self.token_cap,
+            hidden_size=self.hidden_size,
+            payload_itemsize=torch.empty(0, dtype=self.payload_dtype).element_size(),
+        )
+
+        self._header_device: Tensor | None = None
+
+        self.pg: ProcessGroup | None = None
+        self.window: SymmWindow | None = None
+        self._seq = 0
+        self._pending: dict[int, list[_PendingDispatch]] = {}
+        self._free_rings: dict[int, list[int]] = {}
+
+    @property
+    def is_initialized(self) -> bool:
+        return self._initialized
+
+    def _rings_for_stage(self, stage_idx: int) -> list[int]:
+        """Ring slots this stage owns.
+
+        A ring names a window slot, so stages must not share one: two stages of
+        the same layer are in flight at the same time, and handing both the same
+        slot means the second dispatch overwrites the first's payload and flag,
+        after which the reply the first is waiting for never arrives.
+        """
+        first = stage_idx % self.num_stages
+        return list(range(first, self.ring_depth, self.num_stages))
+
+    def init_afd_connector(self) -> None:
+        """Collectively create the AFD world group and the symmetric window.
+
+        All Attention and FFN ranks must call this with identical rendezvous and
+        topology settings; the window allocation is symmetric, so a mismatched
+        size fails here rather than corrupting a later transfer.
+        """
+        if self._initialized:
+            return
+
+        self.pg = init_afd_process_group(
+            backend="nccl",
+            init_method=f"tcp://{self.afd_config.host}:{self.afd_config.port}",
+            world_size=self.topology.world_size,
+            rank=self.world_rank,
+            group_name=AFD_ASYNC_GPU_GROUP_NAME,
+            timeout=timedelta(minutes=30),
+        )
+        device = torch.device("cuda", self.local_rank)
+        self._header_device = torch.empty(
+            (self.ffn_size, self.layout.header_words),
+            dtype=torch.int32,
+            device=device,
+        )
+        self.window = SymmWindow(
+            num_regions=self.num_regions,
+            ring_depth=self.ring_depth,
+            layout=self.layout,
+            payload_dtype=self.payload_dtype,
+            device=device,
+            group=self.pg,
+            rank=self.world_rank,
+            world_size=self.topology.world_size,
+        )
+        for stage in range(self.num_stages):
+            self._free_rings[stage] = self._rings_for_stage(stage)
+        logger.info(
+            "AFD async GPU window ready: role=%s role_rank=%d world_rank=%d/%d "
+            "regions=%d rings=%d partial_cap=%d slot=%.1fMiB total=%.1fMiB",
+            self.afd_config.role,
+            self.role_rank,
+            self.world_rank,
+            self.topology.world_size,
+            self.num_regions,
+            self.ring_depth,
+            self.partial_cap,
+            self.layout.slot_bytes / 2**20,
+            self.window.total_bytes / 2**20,
+        )
+        self._initialized = True
+
+    def close(self) -> None:
+        if self.window is not None:
+            self.window.close()
+        self.window = None
+        if self.pg is not None:
+            import torch.distributed as dist
+
+            dist.destroy_process_group(self.pg)
+        self.pg = None
+        self._pending.clear()
+        self._free_rings.clear()
+        self._initialized = False
+
+    def select_experts(self, **kwargs: Any) -> tuple[Tensor, Tensor]:
+        """Run vLLM's grouped top-k on the Attention side.
+
+        ``compute_gate_topk`` delegates expert selection to the connector so the
+        CAM and CUDA paths can share one gate; this is the CUDA half.
+        """
+        from vllm.model_executor.layers.fused_moe.router.grouped_topk_router import (
+            grouped_topk,
+        )
+
+        if kwargs.get("mix_placement"):
+            raise RuntimeError(
+                "AFD async GPU connector does not support mix_placement",
+            )
+        return grouped_topk(
+            hidden_states=kwargs["hidden_states"],
+            gating_output=kwargs["router_logits"],
+            topk=kwargs["top_k"],
+            renormalize=kwargs["renormalize"],
+            num_expert_group=kwargs.get("num_expert_group", 0),
+            topk_group=kwargs.get("topk_group", 0),
+            scoring_func=kwargs.get("scoring_func", "softmax"),
+            routed_scaling_factor=kwargs.get("routed_scaling_factor", 1.0),
+            e_score_correction_bias=kwargs.get("e_score_correction_bias"),
+        )
+
+    def _require_initialized(self) -> SymmWindow:
+        if not self._initialized or self.window is None:
+            raise RuntimeError("AFD async GPU connector is not initialized")
+        return self.window
+
+    def _headers_for(
+        self,
+        *,
+        seq: int,
+        layer_idx: int,
+        stage_idx: int,
+        num_tokens: int,
+        plan: DispatchPlan,
+    ) -> Tensor:
+        """Assemble one dispatch header per FFN rank, on the device.
+
+        The host fills the prefix it knows and the plan fills the routing tail
+        without ever leaving the device. Reading the routing back to encode it
+        here instead was the last synchronize on the layer path, and a profile
+        put it at 392us a call once per MoE layer -- not the copy, but the host
+        waiting for everything queued ahead of it, which capped how far ahead of
+        the device the host could ever get.
+        """
+        assert self._header_device is not None
+        # A fresh staging buffer per dispatch, from the pinned caching allocator,
+        # dropped as soon as the copy is queued. The allocator will not hand the
+        # block out again until that copy has run, which is exactly the guarantee
+        # an asynchronous copy needs and the reason there is no event here.
+        #
+        # Reusing one buffer is the obvious thing and it is wrong: with nothing
+        # blocking on the layer path the host runs several layers ahead, so it
+        # rewrites the buffer under the in-flight copy. The header then carries a
+        # later layer's sequence number, the FFN rank echoes it onto the reply
+        # flag, and because the stream wait is a ``GEQ`` compare the Attention
+        # rank leaves it early and overwrites a slot still being read. A stress
+        # test of that pattern corrupted 298 copies out of 300.
+        staging = torch.empty(
+            (self.ffn_size, HEADER_HOST_WORDS),
+            dtype=torch.int32,
+            pin_memory=True,
+        )
+        staging_words = staging.numpy()
+        for ffn_rank in range(self.ffn_size):
+            shared_start = ffn_rank * num_tokens // self.ffn_size
+            shared_stop = (ffn_rank + 1) * num_tokens // self.ffn_size
+            staging_words[ffn_rank] = encode_header_host_words(
+                seq=seq,
+                src_role_rank=self.role_rank,
+                layer_idx=layer_idx,
+                stage_idx=stage_idx,
+                num_tokens=num_tokens,
+                shared_tokens=shared_stop - shared_start,
+                topk=self.topk,
+                flags=0,
+            )
+        headers = self._header_device
+        headers[:, :HEADER_HOST_WORDS].copy_(staging, non_blocking=True)
+        headers[:, H_ROUTED_TOKENS] = plan.routed_per_rank
+        headers[:, H_SEGMENT_START] = plan.segment_start
+        headers[:, HEADER_FIXED_WORDS:] = plan.counts.view(
+            self.ffn_size,
+            self.expert_per_rank,
+        )
+        return headers
+
+    # ==================================================================
+    # Attention-side data path
+    # ==================================================================
+
+    def send_attn_output(
+        self,
+        hidden_states: Tensor,
+        context: AFDTransferContext,
+        **kwargs: Any,
+    ) -> None:
+        """Route this layer's tokens and write them into every FFN window.
+
+        ``topk_ids``/``topk_weights`` come from the Attention-side gate. Weights
+        stay local -- only the routed activations and their route table go on the
+        wire, and the weighting happens in ``recv_ffn_output``.
+        """
+        window = self._require_initialized()
+        topk_ids: Tensor | None = kwargs.get("topk_ids")
+        topk_weights: Tensor | None = kwargs.get("topk_weights")
+        if topk_ids is None or topk_weights is None:
+            raise RuntimeError(
+                "AFD async GPU send_attn_output requires topk_ids and "
+                "topk_weights from the Attention-side gate",
+            )
+        metadata = context.metadata
+        num_tokens = metadata.total_tokens
+        if hidden_states.shape[0] != num_tokens:
+            raise ValueError(
+                f"hidden_states has {hidden_states.shape[0]} rows but metadata "
+                f"expects {num_tokens}",
+            )
+        expected_shape = (num_tokens, self.topk)
+        if tuple(topk_ids.shape) != expected_shape:
+            raise ValueError(
+                f"topk_ids shape must be {expected_shape}, got {tuple(topk_ids.shape)}",
+            )
+        # The weights are flattened alongside the ids to give each partial its
+        # own weight, so a mismatched shape would silently misalign them.
+        if tuple(topk_weights.shape) != expected_shape:
+            raise ValueError(
+                f"topk_weights shape must be {expected_shape}, "
+                f"got {tuple(topk_weights.shape)}",
+            )
+
+        stage_idx = metadata.stage_idx
+        rings = self._free_rings.setdefault(
+            stage_idx,
+            self._rings_for_stage(stage_idx),
+        )
+        if not rings:
+            raise RuntimeError(
+                f"AFD async GPU ring exhausted on stage {stage_idx}; the "
+                "send-then-recv invariant was violated or the topology config "
+                "does not match the actual peer count",
+            )
+        ring = rings.pop(0)
+        self._seq += 1
+
+        plan = plan_dispatch(
+            topk_ids,
+            topk_weights,
+            ffn_size=self.ffn_size,
+            expert_per_rank=self.expert_per_rank,
+        )
+        # Every FFN rank gets a slot even when routing sends it nothing, and it
+        # replies to every slot, so a reply is expected from all of them.
+        # Expecting only the ranks that received data leaves the empty rank's
+        # reply unmatched and its ring slot never released -- which is what a
+        # single-token decode hits, since both the routed segment and the
+        # round-robin shared slice can come out empty for one rank.
+        expected_ffn = list(range(self.ffn_size))
+        shared_slices: list[slice] = []
+        headers = self._headers_for(
+            seq=self._seq,
+            layer_idx=metadata.layer_idx,
+            stage_idx=stage_idx,
+            num_tokens=num_tokens,
+            plan=plan,
+        )
+        for ffn_rank in range(self.ffn_size):
+            # Shared-expert tokens are split into contiguous chunks, so a
+            # rank's slice is a view: no index to build, none to gather
+            # through, and none to put on the wire. Round-robin needed an
+            # arange, a gather and a whole slot field per peer per layer to
+            # achieve the same balance.
+            shared_start = ffn_rank * num_tokens // self.ffn_size
+            shared_stop = (ffn_rank + 1) * num_tokens // self.ffn_size
+            shared_slices.append(slice(shared_start, shared_stop))
+            # Everything but the shared slice goes out whole. The index arrays
+            # cost a fraction of a percent of the slot, and the payload rows a
+            # destination does not need are the few tokens none of whose topk
+            # slots landed on it -- 1.6% of them at 2A2F. Sizing either to the
+            # routing is what used to make the host wait for the device here.
+            window.write_slot(
+                peer=self.attn_size + ffn_rank,
+                region=self.role_rank,
+                ring=ring,
+                header=headers[ffn_rank],
+                expand_idx=plan.expand_idx,
+                weights=plan.weights,
+                routed_x=hidden_states,
+                shared_x=hidden_states[shared_start:shared_stop],
+                flag_value=self._seq,
+            )
+
+        logger.debug(
+            "AFD dispatch sent: A%d layer=%d stage=%d tokens=%d ring=%d "
+            "partials=%d awaiting_ffn=%s",
+            self.role_rank,
+            metadata.layer_idx,
+            stage_idx,
+            num_tokens,
+            ring,
+            num_tokens * self.topk,
+            expected_ffn,
+        )
+        self._pending.setdefault(stage_idx, []).append(
+            _PendingDispatch(
+                context=context,
+                shared_slices=shared_slices,
+                num_tokens=num_tokens,
+                ring=ring,
+                seq=self._seq,
+                expected_ffn=expected_ffn,
+            ),
+        )
+
+    def recv_ffn_output(
+        self,
+        ref_tensor: Tensor,
+        ubatch_idx: int = 0,
+        **kwargs: Any,
+    ) -> Tensor:
+        """Queue this layer's combine and return, without waiting for the data.
+
+        The waiting happens on the stream: every reply is answered into a known
+        slot, carries a known number of rows, and stamps the dispatch sequence
+        it answers, so the whole combine can be enqueued before any of it has
+        arrived. The host goes straight on to the next layer, which is the point
+        -- polling for the reply here left the GPU with nothing queued behind
+        the wait, and a profile found 86% of kernel launches executing within
+        5us of being issued because of it.
+
+        Nothing reports what turned up, so there is no per-arrival header check
+        any more. The stream wait replaces it: it blocks on one specific slot
+        reaching one specific sequence number, where the poll took whatever had
+        landed and had to check afterwards that it was the right thing.
+        """
+
+        window = self._require_initialized()
+        queue = self._pending.get(ubatch_idx)
+        if not queue:
+            raise RuntimeError(
+                f"AFD async GPU recv_ffn_output has no pending dispatch on "
+                f"stage {ubatch_idx}",
+            )
+        pending = queue.pop(0)
+
+        # Accumulate in the payload dtype. Each row takes at most one
+        # contribution per FFN rank plus its shared one -- the topk sum already
+        # happened on the FFN side -- so there is little left for a wider
+        # accumulator to protect, and float32 cost a widening pass over every
+        # arriving block plus a narrowing one on the way out.
+        accumulator = torch.zeros(
+            (pending.num_tokens, self.hidden_size),
+            dtype=self.payload_dtype,
+            device=ref_tensor.device,
+        )
+        for ffn_rank in pending.expected_ffn:
+            # An FFN rank replies into the region it owns, on the ring the
+            # dispatch used.
+            window.stream_wait(ffn_rank, pending.ring, pending.seq)
+            # A reply is a whole batch, already weighted and summed over that
+            # rank's experts, with a zero row wherever the rank held none of a
+            # token's experts. Row i answers token i, so this is a plain add:
+            # the scatter it replaces was the second largest kernel on the rank.
+            accumulator += window.local_routed(
+                ffn_rank,
+                pending.ring,
+                pending.num_tokens,
+            )
+            shared = pending.shared_slices[ffn_rank]
+            shared_tokens = shared.stop - shared.start
+            if self.has_shared_experts and shared_tokens:
+                accumulator[shared] += window.local_shared(
+                    ffn_rank,
+                    pending.ring,
+                    shared_tokens,
+                )
+        logger.debug(
+            "AFD combine queued: A%d layer=%d stage=%d ring=%d seq=%d from=%s",
+            self.role_rank,
+            pending.context.metadata.layer_idx,
+            ubatch_idx,
+            pending.ring,
+            pending.seq,
+            pending.expected_ffn,
+        )
+
+        self._free_rings.setdefault(ubatch_idx, []).append(pending.ring)
+        return accumulator
+
+    # ==================================================================
+    # FFN-side data path
+    # ==================================================================
+
+    def recv_attn_output(
+        self,
+        ubatch_idx: int = 0,
+        **kwargs: Any,
+    ) -> AFDA2FTransferPayload:
+        """Block until one Attention rank's routed tokens arrive.
+
+        The layer index, token counts, and per-expert group list all come from
+        the arrived slot header; the FFN side knows none of them beforehand.
+
+        The slot holds the sender's whole batch and every sender's partials, so
+        this rank takes the run of partials the header points it at and gathers
+        the tokens they name -- a local gather that replaces both the duplicate
+        rows the sender used to put on the wire and the readback it needed to
+        size a per-destination slice.
+        """
+        window = self._require_initialized()
+        timeout_ms = int(kwargs.get("timeout_ms", 0))
+        arrived = window.wait(timeout_s=timeout_ms / 1000.0 if timeout_ms else None)
+        if arrived is None:
+            raise TimeoutError("AFD async GPU dispatch recv timed out")
+
+        header = arrived.header
+        if header.is_shutdown:
+            raise ConnectorShutdown(
+                f"Attention rank {header.src_role_rank} announced shutdown",
+            )
+        # The group list is echoed back on the combine header, so the sender's
+        # own accounting has to agree with it. Checking the decoded host values
+        # here is free; the equivalent check on the device tensor cost a
+        # synchronize per work item.
+        if sum(header.expert_counts) != header.routed_tokens:
+            raise RuntimeError(
+                f"AFD async GPU dispatch header from A{header.src_role_rank} "
+                f"has expert counts summing to {sum(header.expert_counts)} but "
+                f"declares {header.routed_tokens} routed tokens",
+            )
+
+        expand_idx = window.local_expand_idx(
+            arrived.region,
+            arrived.ring,
+            header.routed_tokens,
+            header.segment_start,
+        ).to(torch.int64)
+        states = GpuAsyncTransferState(
+            region=arrived.region,
+            ring=arrived.ring,
+            seq=header.seq,
+            src_role_rank=header.src_role_rank,
+            layer_idx=header.layer_idx,
+            stage_idx=header.stage_idx,
+            num_tokens=header.num_tokens,
+            routed_tokens=header.routed_tokens,
+            shared_tokens=header.shared_tokens,
+            group_list=window.local_expert_counts(arrived.region, arrived.ring),
+            expert_counts_host=header.expert_counts,
+            expand_idx=expand_idx,
+            weights=window.local_weights(
+                arrived.region,
+                arrived.ring,
+                header.routed_tokens,
+                header.segment_start,
+            ),
+            expand_x_shared=window.local_shared(
+                arrived.region,
+                arrived.ring,
+                header.shared_tokens,
+            ),
+        )
+        logger.debug(
+            "AFD dispatch recv: F%d <- A%d layer=%d stage=%d routed=%d shared=%d "
+            "region=%d ring=%d",
+            self.role_rank,
+            header.src_role_rank,
+            header.layer_idx,
+            header.stage_idx,
+            header.routed_tokens,
+            header.shared_tokens,
+            arrived.region,
+            arrived.ring,
+        )
+        metadata = AFDTransferMetadata.create_ffn_metadata(
+            layer_idx=header.layer_idx,
+            stage_idx=header.stage_idx,
+            seq_lens=[max(1, header.routed_tokens)],
+        )
+        return AFDA2FTransferPayload(
+            hidden_states=window.local_routed(
+                arrived.region,
+                arrived.ring,
+                header.num_tokens,
+            ).index_select(0, expand_idx),
+            context=AFDTransferContext(metadata=metadata, states=states),
+        )
+
+    def send_ffn_output(
+        self,
+        ffn_output: Tensor,
+        context: AFDTransferContext,
+        **kwargs: Any,
+    ) -> None:
+        """Reduce expert output back to one row per token and write it back.
+
+        Every partial of a token that landed on this rank is weighted and summed
+        here, into the token's own row of a full batch. Tokens this rank held no
+        expert for keep their zero row, which is what lets the Attention side
+        add replies together without an index. Doing the reduction on this side
+        keeps the duplicates off the wire.
+
+        Both the weighting and the sum stay in the payload dtype. Widening to
+        float32 first cost two extra passes over ``[partials, hidden]`` and made
+        the scatter move twice the bytes, which a profile showed costing almost
+        as much GPU time as the expert GEMM itself -- to protect a sum of at
+        most ``topk`` terms whose result goes on the wire narrowed anyway.
+        """
+        window = self._require_initialized()
+        states = context.states
+        if not isinstance(states, GpuAsyncTransferState):
+            raise RuntimeError(
+                "AFD async GPU send_ffn_output requires GpuAsyncTransferState",
+            )
+        if states.expand_idx is None or states.weights is None:
+            raise RuntimeError(
+                "AFD async GPU send_ffn_output requires the dispatch expansion",
+            )
+        reduced = torch.zeros(
+            (states.num_tokens, self.hidden_size),
+            dtype=self.payload_dtype,
+            device=ffn_output.device,
+        )
+        if states.routed_tokens:
+            weighted = ffn_output * states.weights.unsqueeze(1).to(ffn_output.dtype)
+            reduced.index_add_(0, states.expand_idx, weighted)
+
+        shared_output: Tensor | None = kwargs.get("shared_output")
+        self._seq += 1
+        header = encode_header(
+            self.layout,
+            seq=self._seq,
+            src_role_rank=self.role_rank,
+            layer_idx=states.layer_idx,
+            stage_idx=states.stage_idx,
+            num_tokens=states.num_tokens,
+            routed_tokens=states.routed_tokens,
+            shared_tokens=states.shared_tokens if shared_output is not None else 0,
+            topk=self.topk,
+            flags=0,
+            expert_counts=states.expert_counts_host,
+            echo_seq=states.seq,
+        )
+        # ``reduced`` is float32 and the slot is the payload dtype; the copy
+        # inside write_slot casts on its way into the peer window, so the
+        # narrowing costs no extra pass over the rows.
+        window.write_slot(
+            peer=states.src_role_rank,
+            region=self.role_rank,
+            ring=states.ring,
+            header=header,
+            expand_idx=None,
+            weights=None,
+            routed_x=reduced,
+            shared_x=shared_output,
+            # Stamp the dispatch this answers, not our own counter: the
+            # Attention rank knows that number already and can hand it to a
+            # stream wait before the reply exists.
+            flag_value=states.seq,
+        )
+
+    # ==================================================================
+    # Connector-driven FFN loop
+    # ==================================================================
+
+    def recv_ffn_work_item(
+        self,
+        *,
+        stage_idx: int,
+        max_num_tokens: int,
+    ) -> GpuAsyncFFNWorkItem:
+        """Receive and normalize one connector-driven FFN dispatch item."""
+        recv_output = self.recv_attn_output(
+            ubatch_idx=stage_idx,
+            timeout_ms=self.extra_info.recv_poll_timeout_ms,
+        )
+        states = recv_output.context.states
+        assert isinstance(states, GpuAsyncTransferState)
+        return GpuAsyncFFNWorkItem(
+            hidden_states=recv_output.hidden_states,
+            context=recv_output.context,
+            recv_output=recv_output,
+            layer_idx=states.layer_idx,
+            stage_idx=states.stage_idx,
+            num_tokens=states.routed_tokens,
+            total_num_tokens=states.num_tokens,
+            shared_num_tokens=states.shared_tokens,
+        )
+
+    def send_ffn_work_item_output(
+        self,
+        work_item: GpuAsyncFFNWorkItem,
+        ffn_output: Tensor | AFDF2ATransferPayload,
+    ) -> Tensor:
+        """Return one work item's expert output to its Attention rank."""
+        if isinstance(ffn_output, AFDF2ATransferPayload):
+            routed = ffn_output.routed_output
+            shared = ffn_output.shared_output
+        else:
+            routed = ffn_output
+            shared = None
+        self.send_ffn_output(routed, work_item.context, shared_output=shared)
+        return routed
+
+    def announce_shutdown(self) -> None:
+        """Tell every opposite-role peer to leave its receive loop."""
+        window = self._require_initialized()
+        peers = (
+            range(self.attn_size, self.attn_size + self.ffn_size)
+            if self.is_attention
+            else range(self.attn_size)
+        )
+        self._seq += 1
+        header = encode_header(
+            self.layout,
+            seq=self._seq,
+            src_role_rank=self.role_rank,
+            layer_idx=0,
+            stage_idx=0,
+            num_tokens=0,
+            routed_tokens=0,
+            shared_tokens=0,
+            topk=self.topk,
+            flags=FLAG_SHUTDOWN_BIT,
+            expert_counts=[0] * self.expert_per_rank,
+        )
+        for peer in peers:
+            window.write_slot(
+                peer=peer,
+                region=self.role_rank,
+                ring=0,
+                header=header,
+                routed_x=None,
+                shared_idx=None,
+                shared_x=None,
+            )
+
+
+__all__ = [
+    "AFD_ASYNC_GPU_GROUP_NAME",
+    "ConnectorShutdown",
+    "DispatchPlan",
+    "GpuAsyncAFDConnector",
+    "GpuAsyncExtraInfo",
+    "GpuAsyncFFNWorkItem",
+    "GpuAsyncTransferState",
+    "plan_dispatch",
+]

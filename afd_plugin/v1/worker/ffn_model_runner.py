@@ -30,6 +30,11 @@ from afd_plugin.connectors import (
     AFDControlPayload,
     AFDDPMetadata,
 )
+from afd_plugin.connectors.gpu.async_gpu import (
+    ConnectorShutdown,
+    GpuAsyncTransferState,
+)
+from afd_plugin.connectors.metadata import AFDF2ATransferPayload
 from afd_plugin.v1.worker.attention_model_runner import (
     fail_if_unsupported_ubatching,
 )
@@ -53,10 +58,12 @@ if TYPE_CHECKING:
 class GPUFFNModelRunner(LoRAModelRunnerMixin):
     """FFN model runner for AFD GPU execution.
 
-    FFN steps are driven by the connector control plane rather than the vLLM
-    scheduler. GPU only supports control-plane-driven connectors, so the runner
-    asserts ``connector.control_plane is not None`` at construction; connectors
-    without a control plane (``control_plane is None``) are not supported.
+    FFN steps are driven by the connector rather than the vLLM scheduler, in one
+    of two ways. Control-plane connectors receive broadcast DP metadata and then
+    walk every layer in lockstep with the Attention side. Connectors without a
+    control plane (``control_plane is None``) instead pull one work item at a
+    time from their receive loop, learning the layer and token counts from the
+    arriving payload; see ``execute_connector_driven_step``.
     """
 
     afd_expected_role = "ffn"
@@ -80,10 +87,9 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             vllm_config,
             self.afd_config,
         )
-        # TODO: Async GPU connector will be supported in the future
-        assert self.connector.control_plane is not None, (
-            "GPU model runner only supports control-plane-driven connectors"
-        )
+        # A connector without a control plane drives FFN steps from its own
+        # receive loop instead of from broadcast DP metadata.
+        self.is_connector_driven = self.connector.control_plane is None
 
         self.model: Any | None = None
         self.model_memory_usage = 0
@@ -235,6 +241,61 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                             layer_idx,
                         )
                     self.connector.send_ffn_output(rank_ffn_output, context)
+        return rank_ffn_output
+
+    def execute_connector_driven_step(self) -> None:
+        """Drain whatever the connector has already received, then return.
+
+        Returning on an idle poll rather than blocking forever is what lets the
+        worker loop observe its shutdown event. The batch size below is only a
+        drain granularity: successive work items may belong to different layers
+        of different Attention replicas.
+        """
+        step_afd_gpu_profiler(self.prof)
+        self._ffn_forward_connector_driven()
+
+    def _ffn_forward_connector_driven(
+        self,
+    ) -> torch.Tensor | AFDF2ATransferPayload | None:
+        stage_idx = 0
+        rank_ffn_output = None
+        connector = self.connector
+        max_items = max(1, int(self.num_layers))
+
+        with _ffn_forward_context(self.vllm_config) as forward_context:
+            for _ in range(max_items):
+                try:
+                    work_item = connector.recv_ffn_work_item(
+                        stage_idx=stage_idx,
+                        max_num_tokens=self.vllm_config.scheduler_config.max_num_batched_tokens,
+                    )
+                except TimeoutError:
+                    # Nothing pending; hand control back so the worker loop can
+                    # check for shutdown.
+                    return rank_ffn_output
+                except ConnectorShutdown:
+                    raise
+
+                states = work_item.context.states
+                if not isinstance(states, GpuAsyncTransferState):
+                    raise RuntimeError(
+                        "async GPU FFN work item requires GpuAsyncTransferState",
+                    )
+                metadata = work_item.context.metadata
+                forward_context.dp_metadata = None
+                forward_context.additional_kwargs["afd_metadata"] = metadata
+                _set_moe_layer_index(forward_context, work_item.layer_idx)
+
+                rank_ffn_output = self.model.compute_ffn_output(
+                    hidden_states=work_item.hidden_states,
+                    layer_idx=work_item.layer_idx,
+                    group_list=states.group_list,
+                    expand_x_shared=states.expand_x_shared,
+                )
+                rank_ffn_output = connector.send_ffn_work_item_output(
+                    work_item,
+                    rank_ffn_output,
+                )
         return rank_ffn_output
 
     def _execute_eager_mode(

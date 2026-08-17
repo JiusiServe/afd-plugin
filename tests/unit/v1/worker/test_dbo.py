@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import builtins
-import sys
-from types import SimpleNamespace
 
 import pytest
 
@@ -84,22 +82,14 @@ def test_maybe_apply_dbo_yield_does_not_probe_ascend(monkeypatch):
 def test_dbo_yield_prefers_plugin_ascend_context(monkeypatch):
     calls = []
 
-    monkeypatch.setitem(
-        sys.modules,
-        "afd_plugin.v1.worker.npu.ubatching",
-        SimpleNamespace(
-            dbo_enabled=lambda: True,
-            dbo_yield=lambda: calls.append("ascend"),
-        ),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "vllm.v1.worker.ubatching",
-        SimpleNamespace(
-            dbo_enabled=lambda: True,
-            dbo_yield=lambda: calls.append("vllm"),
-        ),
-    )
+    # The Ascend yield is resolved once at import, so patch the resolved names
+    # rather than sys.modules: re-importing per call cost 833us of host time on
+    # a CUDA build, where the import can only ever fail.
+    monkeypatch.setattr(dbo, "_ascend_dbo_enabled", lambda: True)
+    monkeypatch.setattr(dbo, "_ascend_dbo_yield", lambda: calls.append("ascend"))
+    monkeypatch.setattr(dbo, "dbo_enabled", lambda: True)
+    monkeypatch.setattr(dbo, "dbo_yield", lambda: calls.append("vllm"))
+
     dbo._yield_if_dbo_enabled()
 
     assert calls == ["ascend"]
@@ -108,22 +98,8 @@ def test_dbo_yield_prefers_plugin_ascend_context(monkeypatch):
 def test_dbo_yield_falls_back_to_vllm_context(monkeypatch):
     calls = []
 
-    monkeypatch.setitem(
-        sys.modules,
-        "afd_plugin.v1.worker.npu.ubatching",
-        SimpleNamespace(
-            dbo_enabled=lambda: False,
-            dbo_yield=lambda: calls.append("ascend"),
-        ),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "vllm.v1.worker.ubatching",
-        SimpleNamespace(
-            dbo_enabled=lambda: True,
-            dbo_yield=lambda: calls.append("vllm"),
-        ),
-    )
+    monkeypatch.setattr(dbo, "_ascend_dbo_enabled", lambda: False)
+    monkeypatch.setattr(dbo, "_ascend_dbo_yield", lambda: calls.append("ascend"))
     monkeypatch.setattr(dbo, "dbo_enabled", lambda: True)
     monkeypatch.setattr(dbo, "dbo_yield", lambda: calls.append("vllm"))
 

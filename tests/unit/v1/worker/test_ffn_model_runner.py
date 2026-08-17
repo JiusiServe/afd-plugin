@@ -20,6 +20,7 @@ from afd_plugin.connectors import (  # noqa: E402
     AFDTransferContext,
     AFDTransferMetadata,
 )
+from afd_plugin.connectors.gpu.async_gpu import ConnectorShutdown  # noqa: E402
 from afd_plugin.v1.worker.cuda_graph import make_ffn_graph_key  # noqa: E402
 from afd_plugin.v1.worker.ffn_model_runner import (  # noqa: E402
     GPUFFNModelRunner,
@@ -657,18 +658,45 @@ def test_ffn_worker_reports_zero_compilation_times():
     assert compilation_times.encoder == 0.0
 
 
-def test_ffn_worker_loop_rejects_connector_without_control_plane():
+def test_ffn_worker_loop_drives_connector_without_control_plane():
     worker = object.__new__(AFDFFNWorker)
     event = threading.Event()
+    steps = []
+
+    def execute_connector_driven_step():
+        steps.append(1)
+        # The connector-driven step returns on an idle poll; the loop must come
+        # back to the shutdown event rather than block forever.
+        if len(steps) == 3:
+            event.set()
 
     worker._ffn_shutdown_event = event
     worker.device = SimpleNamespace(type="cpu")
     worker.model_runner = SimpleNamespace(
         connector=_ConnectorDrivenFakeConnector(),
+        execute_connector_driven_step=execute_connector_driven_step,
     )
 
-    with pytest.raises(NotImplementedError, match="control-plane-driven"):
-        worker._run_ffn_server_loop()
+    worker._run_ffn_server_loop()
+
+    assert len(steps) == 3
+
+
+def test_ffn_worker_loop_exits_cleanly_when_peer_announces_shutdown():
+    worker = object.__new__(AFDFFNWorker)
+
+    def execute_connector_driven_step():
+        raise ConnectorShutdown("peer left")
+
+    worker._ffn_shutdown_event = threading.Event()
+    worker.device = SimpleNamespace(type="cpu")
+    worker.model_runner = SimpleNamespace(
+        connector=_ConnectorDrivenFakeConnector(),
+        execute_connector_driven_step=execute_connector_driven_step,
+    )
+
+    # A peer shutdown is an ordinary exit, not a loop failure.
+    worker._run_ffn_server_loop()
 
 
 def test_ffn_worker_loop_logs_unexpected_thread_errors(caplog):

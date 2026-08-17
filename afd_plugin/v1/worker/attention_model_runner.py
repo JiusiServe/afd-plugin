@@ -23,6 +23,7 @@ from vllm.v1.outputs import AsyncModelRunnerOutput, ModelRunnerOutput
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner, PerLayerAttnMetadata
 from vllm.v1.worker.gpu_ubatch_wrapper import UBatchWrapper
 from vllm.v1.worker.ubatch_utils import (
+    UBatchSlice,
     UBatchSlices,
     check_ubatch_thresholds,
     is_last_ubatch_empty,
@@ -40,7 +41,14 @@ from afd_plugin.connectors import (
     AFDDPMetadata,
     AFDForwardContextMetadata,
 )
+from afd_plugin.connectors.async_topology import ASYNC_MOE_REQUEST_SPLIT
+from afd_plugin.connectors.gpu.async_gpu import GpuAsyncExtraInfo
 from afd_plugin.model_executor.models.forward_context import use_afd_metadata_provider
+from afd_plugin.model_executor.models.npu.async_cam_layout import (
+    ASYNC_MOE_UBATCH_METADATA_KEY,
+    AsyncMoeUbatchMetadata,
+)
+from afd_plugin.model_executor.npu.async_cam_ubatching import plan_async_moe_stages
 from afd_plugin.v1.worker.cuda_graph import validate_cuda_graph_mode
 from afd_plugin.v1.worker.ubatch_wrapper import (
     AFDUBatchWrapper,
@@ -49,12 +57,53 @@ from afd_plugin.v1.worker.ubatch_wrapper import (
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
+    from vllm.v1.kv_cache_interface import KVCacheConfig
+
+# The async MoE schedule interleaves exactly two stages: while the FFN ranks
+# hold one stage's tokens, Attention computes the other's.
+_ASYNC_MOE_STAGE_COUNT = 2
+
+
+@contextmanager
+def _dp_batch_coordination_disabled(disabled: bool):
+    """Skip vLLM's cross-DP batch agreement for connector-driven runs.
+
+    ``GPUModelRunner._determine_batch_execution_and_padding`` all-reduces the
+    batch shape across the DP group whenever ``data_parallel_size > 1``. Async
+    AFD deliberately lets each Attention replica advance on its own, so an idle
+    replica never joins that collective and a busy one blocks in it forever --
+    which is where a 2A2F run hangs before it reaches the first MoE layer.
+
+    Returning the single-rank answer (``num_tokens_across_dp=None``) makes the
+    upstream function skip its DP-padding branch entirely, exactly as it does
+    for ``data_parallel_size == 1``.
+    """
+    if not disabled:
+        yield
+        return
+
+    original = gpu_model_runner.coordinate_batch_across_dp
+
+    def _single_rank_coordination(*_args: Any, cudagraph_mode: int, **_kwargs: Any):
+        return False, None, cudagraph_mode
+
+    gpu_model_runner.coordinate_batch_across_dp = _single_rank_coordination
+    try:
+        yield
+    finally:
+        gpu_model_runner.coordinate_batch_across_dp = original
 
 
 class AFDAttentionModelRunner(GPUModelRunner):
     """Attention model runner that injects AFD metadata into forward context."""
 
     afd_expected_role = "attention"
+
+    # Class-level defaults so a runner built without ``__init__`` -- which is how
+    # the unit tests exercise the metadata plumbing -- still reads as "no async
+    # ubatching" instead of raising on a missing attribute.
+    _afd_async_extra_info: GpuAsyncExtraInfo | None = None
+    _afd_async_moe_ubatch_metadata: AsyncMoeUbatchMetadata | None = None
 
     def __init__(
         self,
@@ -76,16 +125,27 @@ class AFDAttentionModelRunner(GPUModelRunner):
             self.afd_config,
         )
         # The connector rendezvous is deferred to the end of ``load_model()``
-        # so Attention and FFN weight loading overlap; see that method.
-        # TODO: Async GPU connector will be supported in the future
-        assert self.connector.control_plane is not None, (
-            "GPU model runner only supports control-plane-driven connectors"
-        )
+        # so Attention and FFN weight loading overlap; see that method. The
+        # async GPU connector drives FFN work from its own receive loop and so
+        # has no control plane, which is why there is no assertion here.
         self._is_warmup = False
         self._afd_is_graph_capturing = False
         self._afd_pending_metadata: AFDForwardContextMetadata | None = None
         self._afd_suppress_metadata_send = False
         self._afd_transaction_counter = 0
+        # Async MoE ubatching is a property of the async connector, so only that
+        # connector's typed config carries the switch.
+        extra_info = self.connector.extra_info
+        self._afd_async_extra_info = (
+            extra_info if isinstance(extra_info, GpuAsyncExtraInfo) else None
+        )
+        self._afd_async_moe_ubatch_metadata = None
+        if self._afd_async_extra_info is not None:
+            fail_if_unsupported_async_moe_ubatching(
+                self.vllm_config,
+                self._afd_async_extra_info,
+                self.afd_config,
+            )
         self.prof = create_afd_gpu_profiler("attention")
 
     @staticmethod
@@ -126,9 +186,8 @@ class AFDAttentionModelRunner(GPUModelRunner):
         dp_metadata: DPMetadata | AFDDPMetadata | None,
         ubatch_slices: Any,
     ) -> None:
-        assert self.connector.control_plane is not None, (
-            "_send_dp_metadata needs control plane driven connectors"
-        )
+        if self.connector.control_plane is None:
+            return
 
         if ubatch_slices and len(ubatch_slices) > 1:
             dp_metadata_list = {
@@ -258,6 +317,10 @@ class AFDAttentionModelRunner(GPUModelRunner):
             forward_context.additional_kwargs["afd_metadata"] = (
                 self._afd_pending_metadata
             )
+        if self._afd_async_moe_ubatch_metadata is not None:
+            forward_context.additional_kwargs[ASYNC_MOE_UBATCH_METADATA_KEY] = (
+                self._afd_async_moe_ubatch_metadata
+            )
         if bool(getattr(self, "_afd_suppress_metadata_send", False)):
             return
         dp_metadata = forward_context.dp_metadata
@@ -266,6 +329,117 @@ class AFDAttentionModelRunner(GPUModelRunner):
         if padded_graph_tokens is not None and not ubatch_slices:
             dp_metadata = self._build_capture_dp_metadata(padded_graph_tokens)
         self._send_dp_metadata(dp_metadata, ubatch_slices)
+
+    # Upstream source: vLLM v0.26.0,
+    # vllm/v1/worker/gpu_model_runner.py GPUModelRunner.initialize_metadata_builders
+    # Patch reason: upstream sizes the per-ubatch metadata builder pool from
+    # vLLM's own ubatching switch. AFD async MoE ubatching splits the batch
+    # itself and leaves that switch off, so only one builder exists and building
+    # the second stage's metadata asserts.
+    # Patch functionality: ask for one builder per AFD MoE stage instead.
+    # Signature: matches upstream; no added parameters.
+    def initialize_metadata_builders(
+        self,
+        kv_cache_config: KVCacheConfig,
+        kernel_block_sizes: list[int],
+    ) -> None:
+        for kv_cache_group_id in range(len(kv_cache_config.kv_cache_groups)):
+            for attn_group in self.attn_groups[kv_cache_group_id]:
+                attn_group.create_metadata_builders(
+                    self.vllm_config,
+                    self.device,
+                    kernel_block_sizes[kv_cache_group_id]
+                    if kv_cache_group_id < len(kernel_block_sizes)
+                    else None,
+                    # ### PATCH START: one builder per AFD MoE stage
+                    num_metadata_builders=self._num_afd_metadata_builders(),
+                    # ### PATCH END: one builder per AFD MoE stage
+                )
+        # Calculate reorder batch threshold (if needed)
+        # Note (tdoublep): do this *after* constructing builders,
+        # because some of them change the threshold at init time.
+        self.calculate_reorder_batch_threshold()
+
+        # Initialize drafter attention backend
+        if self.speculative_config and (
+            self.speculative_config.use_eagle()
+            or self.speculative_config.uses_draft_model()
+        ):
+            self.drafter.initialize_attn_backend(kv_cache_config, kernel_block_sizes)
+
+    def _num_afd_metadata_builders(self) -> int:
+        """Builders needed, one per set of metadata that is live at once.
+
+        Async MoE ubatching keeps the full-batch metadata alive for the dense
+        prefix while both stages' metadata drive the MoE layers, so it needs a
+        builder for the full batch plus one per stage. Sharing builder 0 between
+        the full batch and stage 0 lets the second build hand back reusable
+        runtime buffers sized for the first, which reads as an illegal memory
+        access inside attention.
+        """
+        if self.parallel_config.use_ubatching:
+            return int(self.parallel_config.num_ubatches)
+        extra_info = self._afd_async_extra_info
+        if extra_info is not None and extra_info.async_moe_ubatching:
+            return 1 + _ASYNC_MOE_STAGE_COUNT
+        return 1
+
+    @contextmanager
+    def _afd_stage_metadata_builders(self):
+        """Hide builder 0 so a stage build cannot touch the full batch's."""
+        saved: list[tuple[Any, list[AttentionMetadataBuilder]]] = []
+        for kv_cache_group in self.attn_groups:
+            for attention_group in kv_cache_group:
+                saved.append((attention_group, attention_group.metadata_builders))
+                attention_group.metadata_builders = attention_group.metadata_builders[
+                    1:
+                ]
+        try:
+            yield
+        finally:
+            for attention_group, builders in saved:
+                attention_group.metadata_builders = builders
+
+    def _plan_async_moe_stages(
+        self,
+        *,
+        num_reqs: int,
+        ubatch_slices: UBatchSlices | None,
+        for_cudagraph_capture: bool,
+        num_scheduled_tokens: dict[str, int] | None,
+    ) -> tuple[Any, ...] | None:
+        """Split this batch into two MoE stages, or ``None`` to run it whole.
+
+        Splitting is what gives the FFN ranks something to chew on while
+        Attention computes: one stage is in flight across the wire while the
+        other runs locally. It needs at least two requests to split at a request
+        boundary, so a single-request batch falls back to the unstaged schedule.
+
+        Capture and dummy runs are excluded: the staged schedule dispatches to
+        peers that are not expecting a synthetic batch.
+        """
+        extra_info = self._afd_async_extra_info
+        if extra_info is None or not extra_info.async_moe_ubatching:
+            return None
+        if for_cudagraph_capture or self._afd_is_graph_capturing:
+            return None
+        if ubatch_slices is not None or num_scheduled_tokens is None:
+            # vLLM is already ubatching this batch; two splitters would fight.
+            return None
+        if num_reqs < _ASYNC_MOE_STAGE_COUNT:
+            return None
+        # Request order in the batch, which is the order the token dimension is
+        # laid out in -- the dict is keyed by request id and is not that order.
+        req_ids = self.input_batch.req_ids[:num_reqs]
+        scheduled = [int(num_scheduled_tokens[req_id]) for req_id in req_ids]
+        if any(token_count <= 0 for token_count in scheduled):
+            return None
+        return plan_async_moe_stages(
+            scheduled,
+            split=extra_info.async_moe_split,
+            use_sequence_parallel=False,
+            tensor_parallel_size=self.vllm_config.parallel_config.tensor_parallel_size,
+        )
 
     # Patch reason: AFD stages connector metadata before native Attention
     # metadata construction. In addition, vLLM v0.26 caches Attention metadata
@@ -300,17 +474,28 @@ class AFDAttentionModelRunner(GPUModelRunner):
             ubatch_slices,
             int(num_tokens),
         )
+        stages = self._plan_async_moe_stages(
+            num_reqs=num_reqs,
+            ubatch_slices=ubatch_slices,
+            for_cudagraph_capture=for_cudagraph_capture,
+            num_scheduled_tokens=num_scheduled_tokens,
+        )
+        self._afd_async_moe_ubatch_metadata = None
+        num_metadata_ubatches = max(
+            len(ubatch_slices) if ubatch_slices is not None else 1,
+            len(stages) if stages is not None else 1,
+        )
         disabled_metadata_builders: dict[int, AttentionMetadataBuilder] = {}
         try:
-            if ubatch_slices is not None and len(ubatch_slices) > 1:
+            if num_metadata_ubatches > 1:
                 for kv_cache_group in self.attn_groups:
                     for attention_group in kv_cache_group:
-                        for ubatch_idx in range(len(ubatch_slices)):
+                        for ubatch_idx in range(num_metadata_ubatches):
                             builder = attention_group.get_metadata_builder(ubatch_idx)
                             if builder.supports_update_block_table:
                                 disabled_metadata_builders[id(builder)] = builder
                                 builder.supports_update_block_table = False
-            return super()._build_attention_metadata(
+            full_metadata = super()._build_attention_metadata(
                 num_tokens,
                 num_reqs,
                 max_query_len,
@@ -324,6 +509,35 @@ class AFDAttentionModelRunner(GPUModelRunner):
                 cascade_attn_prefix_lens,
                 slot_mappings,
             )
+            if stages is not None:
+                # A second build over the same inputs, sliced per stage, on the
+                # stages' own builders. The dense prefix still runs on the whole
+                # batch and needs the full metadata, so both live at once.
+                with self._afd_stage_metadata_builders():
+                    stage_metadata, _ = super()._build_attention_metadata(
+                        num_tokens,
+                        num_reqs,
+                        max_query_len,
+                        num_tokens_padded,
+                        num_reqs_padded,
+                        [
+                            UBatchSlice(stage.request_slice, stage.token_slice)
+                            for stage in stages
+                        ],
+                        logits_indices,
+                        use_spec_decode,
+                        for_cudagraph_capture,
+                        num_scheduled_tokens,
+                        cascade_attn_prefix_lens,
+                        slot_mappings,
+                    )
+                self._afd_async_moe_ubatch_metadata = AsyncMoeUbatchMetadata(
+                    attn_metadata=stage_metadata,
+                    stages=stages,
+                    parent_input_tokens=int(num_tokens_padded or num_tokens),
+                    use_sequence_parallel=False,
+                )
+            return full_metadata
         finally:
             for builder in disabled_metadata_builders.values():
                 builder.supports_update_block_table = True
@@ -349,25 +563,28 @@ class AFDAttentionModelRunner(GPUModelRunner):
         torch.Tensor | None,
         CUDAGraphStat | None,
     ]:
-        (
-            cudagraph_mode,
-            batch_descriptor,
-            should_ubatch,
-            num_tokens_across_dp,
-            cudagraph_stats,
-        ) = super()._determine_batch_execution_and_padding(
-            num_tokens,
-            num_reqs,
-            num_scheduled_tokens_np,
-            max_num_scheduled_tokens,
-            use_cascade_attn,
-            allow_microbatching,
-            force_eager,
-            force_uniform_decode,
-            force_has_lora,
-            force_num_active_loras,
-            num_encoder_reqs,
-        )
+        with _dp_batch_coordination_disabled(
+            self.connector.control_plane is None,
+        ):
+            (
+                cudagraph_mode,
+                batch_descriptor,
+                should_ubatch,
+                num_tokens_across_dp,
+                cudagraph_stats,
+            ) = super()._determine_batch_execution_and_padding(
+                num_tokens,
+                num_reqs,
+                num_scheduled_tokens_np,
+                max_num_scheduled_tokens,
+                use_cascade_attn,
+                allow_microbatching,
+                force_eager,
+                force_uniform_decode,
+                force_has_lora,
+                force_num_active_loras,
+                num_encoder_reqs,
+            )
 
         args = (
             num_tokens,
@@ -509,6 +726,10 @@ class AFDAttentionModelRunner(GPUModelRunner):
         """
 
         previous_metadata = self._afd_pending_metadata
+        previous_stage_metadata = self._afd_async_moe_ubatch_metadata
+        # A dummy batch is synthetic: nobody on the FFN side is waiting for its
+        # stages, so it always runs the unstaged schedule.
+        self._afd_async_moe_ubatch_metadata = None
         previous_is_graph_capturing = getattr(
             self,
             "_afd_is_graph_capturing",
@@ -534,6 +755,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
         finally:
             self._afd_is_graph_capturing = previous_is_graph_capturing
             self._afd_pending_metadata = previous_metadata
+            self._afd_async_moe_ubatch_metadata = previous_stage_metadata
 
     # Patch reason: native capture does not publish AFD warmup/capture metadata.
     # Patch functionality: preserve the upstream warmup/capture flow while
@@ -665,6 +887,40 @@ def fail_if_unsupported_ubatching(vllm_config: VllmConfig) -> None:
 
 
 fail_if_ubatching_enabled = fail_if_unsupported_ubatching
+
+
+def fail_if_unsupported_async_moe_ubatching(
+    vllm_config: VllmConfig,
+    extra_info: GpuAsyncExtraInfo,
+    afd_config: AFDConfig,
+) -> None:
+    """Reject async MoE ubatching settings the GPU schedule cannot honour.
+
+    Mirrors the NPU checks: the schedule interleaves exactly two stages, needs
+    the Attention-side gate to have the routing payloads to dispatch, and splits
+    the batch itself, so vLLM's own ubatching must stay off.
+    """
+    if not extra_info.async_moe_ubatching:
+        return
+    if extra_info.async_moe_num_ubatches != _ASYNC_MOE_STAGE_COUNT:
+        raise RuntimeError(
+            "async_moe_ubatching currently supports exactly two stages; got "
+            f"async_moe_num_ubatches={extra_info.async_moe_num_ubatches}",
+        )
+    if extra_info.async_moe_split != ASYNC_MOE_REQUEST_SPLIT:
+        raise RuntimeError(
+            "async_moe_ubatching only supports request-boundary splits; got "
+            f"async_moe_split={extra_info.async_moe_split!r}",
+        )
+    if not afd_config.compute_gate_on_attention:
+        raise RuntimeError(
+            "async_moe_ubatching requires compute_gate_on_attention=true",
+        )
+    if bool(vllm_config.parallel_config.use_ubatching):
+        raise RuntimeError(
+            "async_moe_ubatching splits the batch itself; vLLM's own ubatching "
+            "must stay disabled",
+        )
 
 
 def fail_if_cuda_graph_enabled(vllm_config: VllmConfig) -> None:

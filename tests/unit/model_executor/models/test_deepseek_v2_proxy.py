@@ -8,7 +8,7 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("vllm")
 nn = torch.nn
 
-from afd_plugin.config import AFD_ASYNC_CONNECTOR, AFDConfig  # noqa: E402
+from afd_plugin.config import AFD_ASYNC_NPU_CONNECTOR, AFDConfig  # noqa: E402
 from afd_plugin.model_executor.models import deepseek_v2 as adapter  # noqa: E402
 
 
@@ -247,7 +247,7 @@ def test_async_connector_dispatches_to_schedule_adapter(monkeypatch):
     nn.Module.__init__(model)
     model.afd_config = AFDConfig(
         role="attention",
-        connector=AFD_ASYNC_CONNECTOR,
+        connector=AFD_ASYNC_NPU_CONNECTOR,
     )
     positions = torch.arange(1)
 
