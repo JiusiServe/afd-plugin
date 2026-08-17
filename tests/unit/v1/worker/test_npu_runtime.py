@@ -606,7 +606,10 @@ def test_npu_attention_runner_sends_graph_flags():
     runner._afd_transaction_counter = 0
     runner._afd_pending_metadata = runner._build_afd_metadata(None, 3)
 
-    runner._send_dp_metadata(SimpleNamespace(num_tokens_across_dp_cpu=torch.tensor([3])), None)
+    runner._send_dp_metadata(
+        SimpleNamespace(num_tokens_across_dp_cpu=torch.tensor([3])),
+        None,
+    )
 
     assert runner.connector.dp_metadata_updates[0][1:] == (True, True)
     assert runner.connector.sent_dp_metadata_lists[0][1:] == (True, True)
