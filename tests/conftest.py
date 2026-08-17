@@ -8,11 +8,22 @@ import os
 import signal
 import subprocess
 from contextlib import suppress
+from importlib.util import find_spec
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # Covers the roughly 64-second nested lm-eval/vLLM cleanup bound with buffer.
 RUNNER_CLEANUP_TIMEOUT_S = 90
+
+# vLLM-Ascend 80d8c194f (v0.26 baseline) has an inherent circular import:
+# device/device_op.py -> ops/__init__ -> fused_moe -> experts_selector.py ->
+# back to the partially initialized device_op. Real ``vllm serve`` imports
+# ``vllm_ascend.ops`` first and never trips it, but pytest's import order does.
+# Pre-importing ``vllm_ascend.ops`` here breaks the cycle for the test run.
+# Environments without vllm_ascend (CPU-only CI) simply skip this. When the
+# package is installed, import and ABI failures must remain visible.
+if find_spec("vllm_ascend") is not None:  # pragma: no cover - environment-dependent
+    import vllm_ascend.ops  # noqa: F401
 
 
 def run_runner(command: list[str], env: dict[str, str] | None = None) -> None:

@@ -215,3 +215,6 @@ vllm serve /path/to/model \
 
 For a complete DeepSeek-V3.2 deployment, see
 [`recipe/npu/CAMP2pAFDConnector/deepseek_v3_2/`](../../recipe/npu/CAMP2pAFDConnector/deepseek_v3_2/).
+
+For CAM operator, HCCL, and device-memory failures, see the
+[NPU troubleshooting guide](TROUBLESHOOTING.md).

@@ -31,6 +31,12 @@ ASYNC_CAM_SCENARIO = "afd-eager-async-cam"
 ASYNC_CAM_ATTENTION_RANKS = 2
 ASYNC_CAM_FFN_RANKS = 2
 ASYNC_CAM_ATTENTION_TP_SIZE = 2
+ASYNC_UBATCH_SCENARIO = "afd-async-ubatch"
+ASYNC_UBATCH_ATTENTION_RANKS = 2
+ASYNC_UBATCH_FFN_RANKS = 1
+ASYNC_UBATCH_ATTENTION_TP_SIZE = 2
+ASYNC_UBATCH_NUM_STAGES = 2
+ASYNC_UBATCH_BATCH_SIZE = 2
 PROCESS_TERMINATION_TIMEOUT_S = 20
 PROCESS_POLL_INTERVAL_S = 0.2
 PROCESS_REAP_TIMEOUT_S = 5
@@ -143,7 +149,6 @@ def main() -> int:
             run_gsm8k_evaluation(args)
 
         ensure_processes_alive(processes)
-        return 0
     finally:
         body_error = sys.exc_info()[1]
         cleanup_error: BaseException | None = None
@@ -174,6 +179,9 @@ def main() -> int:
                 raise body_error from cleanup_error
             raise cleanup_error
 
+    print(f"\nE2E SCENARIO {args.scenario} PASSED")
+    return 0
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -193,6 +201,7 @@ def parse_args() -> argparse.Namespace:
             "afd-graph-dbo",
             "afd-graph-dbo-2a2f",
             ASYNC_CAM_SCENARIO,
+            ASYNC_UBATCH_SCENARIO,
         ],
         required=True,
         help="Fixed E2E scenario to run.",
@@ -294,6 +303,7 @@ def parse_args() -> argparse.Namespace:
 def configure_scenario(args: argparse.Namespace) -> None:
     """Set topology and features for the selected fixed scenario."""
     is_async_cam = args.scenario == ASYNC_CAM_SCENARIO
+    is_async_ubatch = args.scenario == ASYNC_UBATCH_SCENARIO
     scenario_settings = {
         "baseline-graph": (True, True, False, 4, 0),
         "afd-eager": (False, False, False, 2, 1),
@@ -307,6 +317,13 @@ def configure_scenario(args: argparse.Namespace) -> None:
             ASYNC_CAM_ATTENTION_RANKS,
             ASYNC_CAM_FFN_RANKS,
         ),
+        ASYNC_UBATCH_SCENARIO: (
+            False,
+            False,
+            False,
+            ASYNC_UBATCH_ATTENTION_RANKS,
+            ASYNC_UBATCH_FFN_RANKS,
+        ),
     }
     baseline, use_graph, enable_dbo, attention_ranks, ffn_ranks = scenario_settings[
         args.scenario
@@ -317,7 +334,12 @@ def configure_scenario(args: argparse.Namespace) -> None:
     args.num_attention_ranks = attention_ranks
     args.num_ffn_ranks = ffn_ranks
     args.tp_size = 1
-    args.attention_tp_size = ASYNC_CAM_ATTENTION_TP_SIZE if is_async_cam else 1
+    if is_async_cam:
+        args.attention_tp_size = ASYNC_CAM_ATTENTION_TP_SIZE
+    elif is_async_ubatch:
+        args.attention_tp_size = ASYNC_UBATCH_ATTENTION_TP_SIZE
+    else:
+        args.attention_tp_size = 1
     args.ffn_tp_size = 1
     if not is_async_cam and args.gsm8k_output_path is None:
         raise ValueError("--gsm8k-output-path is required for GSM8K scenarios")
@@ -332,6 +354,31 @@ def configure_scenario(args: argparse.Namespace) -> None:
         args.afd_connector_extra_config = [
             json.dumps(extra_config, separators=(",", ":")),
         ]
+    if is_async_ubatch:
+        args.afd_connector = ASYNC_AFD_CONNECTOR
+        args.afd_async = True
+        args.compute_gate_on_attention = True
+        extra_config = parse_afd_connector_extra_config(
+            args.afd_connector_extra_config,
+        )
+        # This fixed scenario must exercise the TP/SP token-split path. Replace
+        # conflicting caller values instead of silently changing its contract.
+        extra_config["attn_ranks_per_dp"] = ASYNC_UBATCH_ATTENTION_TP_SIZE
+        extra_config["async_moe_ubatching"] = True
+        extra_config["async_moe_num_ubatches"] = ASYNC_UBATCH_NUM_STAGES
+        extra_config["async_moe_split"] = "token"
+        args.afd_connector_extra_config = [
+            json.dumps(extra_config, separators=(",", ":")),
+        ]
+        # CAM dispatch allocates its HCCL communication pool (~8.6 GB) outside
+        # the torch memory pool; the default 0.92 GPU memory utilization leaves
+        # too little room and fails with EL0004. 0.8 leaves enough headroom.
+        if not any(
+            arg == "--gpu-memory-utilization"
+            or arg.startswith("--gpu-memory-utilization=")
+            for arg in args.common_vllm_arg
+        ):
+            args.common_vllm_arg.extend(["--gpu-memory-utilization", "0.8"])
     if use_graph:
         args.cudagraph_capture_size = 8
     if enable_dbo:
@@ -371,8 +418,11 @@ def validate_topology(
         if role_tp_size(args, "attention") != 1:
             raise ValueError("baseline E2E requires Attention TP=1")
         return
-    if args.scenario == ASYNC_CAM_SCENARIO and args.device_backend != "npu":
-        raise ValueError("async CAM E2E requires NPU")
+    if (
+        args.scenario in (ASYNC_CAM_SCENARIO, ASYNC_UBATCH_SCENARIO)
+        and args.device_backend != "npu"
+    ):
+        raise ValueError("async CAM scenarios require NPU")
     for role, rank_count in (
         ("attention", args.num_attention_ranks),
         ("ffn", args.num_ffn_ranks),
@@ -604,6 +654,11 @@ def run_gsm8k_evaluation(args: argparse.Namespace) -> None:
     full_run_options = (
         {"timeout_s": FULL_GSM8K_TIMEOUT_S} if sample_limit is None else {}
     )
+    scenario_options = (
+        {"batch_size": ASYNC_UBATCH_BATCH_SIZE}
+        if args.scenario == ASYNC_UBATCH_SCENARIO
+        else {}
+    )
     role = "baseline" if args.baseline else "attention"
     results = _run_lm_eval(
         f"http://{args.api_host}:{attention_api_port(args)}",
@@ -612,6 +667,7 @@ def run_gsm8k_evaluation(args: argparse.Namespace) -> None:
         num_fewshot=GSM8K_NUM_FEWSHOT,
         tokenizer=args.model,
         limit=sample_limit,
+        **scenario_options,
         **full_run_options,
     )
     sample_count = _extract_gsm8k_sample_count(results)

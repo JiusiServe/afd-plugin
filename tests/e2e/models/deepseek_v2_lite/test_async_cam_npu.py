@@ -16,6 +16,9 @@ from tests.e2e.runner import (
     ASYNC_CAM_ATTENTION_RANKS,
     ASYNC_CAM_FFN_RANKS,
     ASYNC_CAM_SCENARIO,
+    ASYNC_UBATCH_ATTENTION_RANKS,
+    ASYNC_UBATCH_FFN_RANKS,
+    ASYNC_UBATCH_SCENARIO,
 )
 
 CAM_VENDOR_PATH = Path("/usr/local/Ascend/cann-9.0.1/opp/vendors/CAM")
@@ -140,3 +143,53 @@ def build_runner_command() -> list[str]:
 @pytest.mark.slow
 def test_deepseek_v2_lite_async_cam() -> None:
     run_runner(build_runner_command(), env=_async_cam_env())
+
+
+def build_ubatch_runner_command(gsm8k_output_path: Path) -> list[str]:
+    """Build the DP1/TP2 Attention async MoE ubatching runner command.
+
+    The fixed scenario owns the token-split and batch-size configuration. This
+    entrypoint supplies the devices, ports, and GSM8K output path.
+    """
+    backend = _required_env("AFD_E2E_BACKEND")
+    if backend != "npu":
+        raise RuntimeError("async ubatch E2E requires AFD_E2E_BACKEND=npu")
+
+    device_count = ASYNC_UBATCH_ATTENTION_RANKS + ASYNC_UBATCH_FFN_RANKS
+    devices = _devices("AFD_E2E_DEVICES", device_count)
+    model = _required_env("AFD_NPU_E2E_MODEL")
+    return [
+        sys.executable,
+        "-m",
+        "tests.e2e.runner",
+        "--model",
+        model,
+        "--vllm-bin",
+        os.environ.get("AFD_NPU_E2E_VLLM_BIN", "vllm"),
+        "--device-backend",
+        "npu",
+        "--attention-devices",
+        ",".join(devices[:ASYNC_UBATCH_ATTENTION_RANKS]),
+        "--ffn-devices",
+        ",".join(devices[ASYNC_UBATCH_ATTENTION_RANKS:]),
+        "--scenario",
+        ASYNC_UBATCH_SCENARIO,
+        "--served-model-name-prefix",
+        "cam-async-ubatch",
+        "--api-port-base",
+        os.environ.get("AFD_NPU_ASYNC_UBATCH_E2E_API_PORT", "19180"),
+        "--afd-port",
+        os.environ.get("AFD_NPU_ASYNC_UBATCH_E2E_AFD_PORT", "6454"),
+        "--startup-timeout",
+        os.environ.get("AFD_NPU_E2E_STARTUP_TIMEOUT", "900"),
+        "--gsm8k-output-path",
+        str(gsm8k_output_path),
+    ]
+
+
+@pytest.mark.npu
+@pytest.mark.e2e
+@pytest.mark.slow
+def test_deepseek_v2_lite_async_ubatch(tmp_path: Path) -> None:
+    command = build_ubatch_runner_command(tmp_path / ASYNC_UBATCH_SCENARIO)
+    run_runner(command, env=_async_cam_env())

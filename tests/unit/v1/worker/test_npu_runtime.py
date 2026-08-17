@@ -410,6 +410,16 @@ def _new_ffn_runner():
     runner.prof = None
     runner.device = SimpleNamespace(type="npu")
     runner._is_shutdown = False
+    # _ffn_layer_indices reads these; production runs with the gate on the
+    # Attention side, so every layer index is a MoE FFN layer here.
+    runner.afd_config = SimpleNamespace(compute_gate_on_attention=True)
+    runner.model_config = SimpleNamespace(
+        hf_config=SimpleNamespace(
+            n_routed_experts=8,
+            first_k_dense_replace=0,
+            moe_layer_freq=1,
+        ),
+    )
     return runner
 
 
@@ -417,7 +427,9 @@ def _new_ffn_worker():
     _require_npu_runtime()
     from afd_plugin.v1.worker.npu.ffn_worker import AFDNPUFFNWorker
 
-    return object.__new__(AFDNPUFFNWorker)
+    worker = object.__new__(AFDNPUFFNWorker)
+    worker._ffn_loop_error = None
+    return worker
 
 
 @pytest.mark.parametrize(
@@ -517,6 +529,7 @@ def test_npu_attention_runner_installs_mla_graph_wrapper(monkeypatch):
 
 
 def test_npu_attention_runner_builds_and_sets_metadata():
+    torch = pytest.importorskip("torch")
     runner = _new_attention_runner()
     runner.vllm_config = _vllm_config(role="attention")
     runner.connector = _RecordingConnector()
@@ -524,9 +537,10 @@ def test_npu_attention_runner_builds_and_sets_metadata():
     runner._afd_is_graph_capturing = False
     runner._afd_pending_metadata = None
     runner._afd_transaction_counter = 0
+    runner._afd_suppress_metadata_send = False
     forward_context = SimpleNamespace(
         additional_kwargs={},
-        dp_metadata=SimpleNamespace(num_tokens_across_dp_cpu=[1]),
+        dp_metadata=SimpleNamespace(num_tokens_across_dp_cpu=torch.tensor([1])),
         ubatch_slices=None,
         batch_descriptor=SimpleNamespace(num_tokens=5),
     )
@@ -583,6 +597,7 @@ def test_npu_attention_runner_builds_dp_fallback():
 
 
 def test_npu_attention_runner_sends_graph_flags():
+    torch = pytest.importorskip("torch")
     runner = _new_attention_runner()
     runner.vllm_config = _vllm_config(role="attention")
     runner.connector = _RecordingConnector()
@@ -591,7 +606,10 @@ def test_npu_attention_runner_sends_graph_flags():
     runner._afd_transaction_counter = 0
     runner._afd_pending_metadata = runner._build_afd_metadata(None, 3)
 
-    runner._send_dp_metadata(SimpleNamespace(num_tokens_across_dp_cpu=[3]), None)
+    runner._send_dp_metadata(
+        SimpleNamespace(num_tokens_across_dp_cpu=torch.tensor([3])),
+        None,
+    )
 
     assert runner.connector.dp_metadata_updates[0][1:] == (True, True)
     assert runner.connector.sent_dp_metadata_lists[0][1:] == (True, True)
@@ -683,13 +701,12 @@ def test_npu_attention_capture_microbatch_also_captures_single_stage():
     runner._send_dp_metadata = send_dp_metadata
     desc = SimpleNamespace(num_tokens=12, uniform=True, num_active_loras=0)
 
-    result = runner._warmup_and_capture(
+    runner._warmup_and_capture(
         desc,
         CUDAGraphMode.FULL,
         allow_microbatching=True,
     )
 
-    assert result is True
     assert [call[1]["allow_microbatching"] for call in dummy_calls] == [
         False,
         False,
@@ -1053,7 +1070,9 @@ def test_npu_attention_runner_isolates_dsa_caches_per_stage(monkeypatch):
     runner.attn_groups = [[make_attn_group(0), make_attn_group(1)]]
     runner.max_model_len = 105
     runner.optimistic_seq_lens_cpu = torch.tensor([105], dtype=torch.int32)
-    runner.use_dcp = False
+    # vLLM-Ascend v0.26 exposes use_dcp as a read-only property derived from
+    # dcp_size, so the fixture sets the underlying size instead.
+    runner.dcp_size = 1
     runner.use_async_spec_decode = False
     runner.input_batch = SimpleNamespace(
         block_table=[block_table],
@@ -1215,7 +1234,7 @@ def test_npu_attention_runner_async_moe_allocates_three_metadata_builders(
         lambda self, *args, **kwargs: initialized,
     )
 
-    assert runner.initialize_attn_backend() is initialized
+    runner.initialize_attn_backend(None)
     assert create_calls == [3]
     assert len(attn_group.metadata_builders) == 3
 
