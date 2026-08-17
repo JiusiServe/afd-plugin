@@ -305,7 +305,7 @@ def configure_scenario(args: argparse.Namespace) -> None:
     is_async_cam = args.scenario == ASYNC_CAM_SCENARIO
     is_async_ubatch = args.scenario == ASYNC_UBATCH_SCENARIO
     scenario_settings = {
-        "baseline-graph": (True, True, False, 2, 0),
+        "baseline-graph": (True, True, False, 4, 0),
         "afd-eager": (False, False, False, 2, 1),
         "afd-graph": (False, True, False, 2, 1),
         "afd-graph-dbo": (False, True, True, 2, 1),
@@ -411,9 +411,9 @@ def validate_topology(
             f"--ffn-devices must contain exactly {args.num_ffn_ranks} device",
         )
     if args.baseline:
-        if args.num_attention_ranks != 2 or args.num_ffn_ranks != 0:
+        if args.num_attention_ranks != 4 or args.num_ffn_ranks != 0:
             raise ValueError(
-                "baseline E2E requires two Attention ranks and no FFN ranks",
+                "baseline E2E requires four Attention ranks and no FFN ranks",
             )
         if role_tp_size(args, "attention") != 1:
             raise ValueError("baseline E2E requires Attention TP=1")

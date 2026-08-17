@@ -1,7 +1,7 @@
 # End-to-End Tests
 
-These tests validate DeepSeek-V2-Lite on real GPU or Ascend NPU hardware.
-The default gate runs four scenarios:
+These tests validate DeepSeek-V2-Lite on real GPU or Ascend NPU hardware and
+Qwen3 MoE on real GPU hardware. Each default gate runs four scenarios:
 
 - `baseline-graph`
 - `afd-eager`
@@ -11,9 +11,8 @@ The default gate runs four scenarios:
 Each scenario evaluates the first 7 GSM8K samples. If `AFD_E2E_DEVICES` is set,
 that value is used as-is; otherwise the defaults are:
 
-- `0,1,2` for the default scenarios. AFD uses the first two for Attention and
-  the third for FFN; `baseline-graph` uses the first two for DP2/TP1/EP2.
-- `0,1,2,3` for `afd-graph-dbo-2a2f`
+- `0,1,2,3` for the default scenarios. AFD uses the first two for Attention
+  and the third for FFN; `baseline-graph` uses all four for DP4/TP1/EP4.
 
 Tests run sequentially and must not skip. Every GSM8K evaluation uses 8
 few-shot examples and a 4096-token maximum model length.
@@ -27,18 +26,18 @@ Run from the repository root. The environment needs `vllm`, `pytest`,
 `afd_plugin`, `lm_eval`, `datasets`, and `huggingface_hub`. NPU also needs
 `torch_npu`.
 
-The test downloads/caches `openai/gsm8k` and
-`deepseek-ai/DeepSeek-V2-Lite` when the backend model env var is unset. Point
-`HF_HOME` at a persistent cache if you want to reuse downloads across runs.
+The selected test downloads/caches `openai/gsm8k` and its Hugging Face model
+when the backend model env var is unset. Point `HF_HOME` at a persistent cache
+if you want to reuse downloads across runs.
 
 GPU:
 
 ```bash
 export HF_HOME=/path/to/huggingface
 export AFD_E2E_BACKEND=gpu
-# Optional: export AFD_E2E_DEVICES=0,1,2
+# Optional: export AFD_E2E_DEVICES=0,1,2,3
 # Optional if the model is already local:
-# export AFD_GPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite
+# export AFD_GPU_E2E_MODEL=/path/to/model
 ```
 
 NPU:
@@ -46,19 +45,24 @@ NPU:
 ```bash
 export HF_HOME=/path/to/huggingface
 export AFD_E2E_BACKEND=npu
-# Optional: export AFD_E2E_DEVICES=0,1,2
+# Optional: export AFD_E2E_DEVICES=0,1,2,3
 # Optional if the model is already local:
 # export AFD_NPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite
 ```
 
-Then run:
+Then run the selected model suite:
 
 ```bash
+# DeepSeek-V2-Lite
 python -m pytest -q -s \
   "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-eager]" \
   "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-graph]" \
   "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-graph-dbo]" \
   "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[baseline-graph]"
+
+# Qwen3 MoE
+python -m pytest -q -s \
+  tests/e2e/models/qwen3_moe/test_qwen3_moe.py
 ```
 
 Success means 4 passed and 0 skipped.
@@ -78,8 +82,13 @@ For the weekly full GSM8K test, run only `afd-graph-dbo`:
 
 ```bash
 export AFD_GSM8K_LIMIT=all
+# DeepSeek-V2-Lite
 python -m pytest -q -s \
   "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-graph-dbo]"
+
+# Qwen3 MoE
+python -m pytest -q -s \
+  "tests/e2e/models/qwen3_moe/test_qwen3_moe.py::test_qwen3_moe[afd-graph-dbo]"
 ```
 
 This evaluates all 1319 GSM8K test samples. Without `AFD_GSM8K_LIMIT`, each
@@ -91,7 +100,8 @@ The repository includes the [`run-e2e`](../../.agents/skills/run-e2e/SKILL.md)
 skill. Open the repository in Codex and ask, for example:
 
 ```text
-Use run-e2e to run the GPU E2E tests with HF_HOME /data/huggingface.
+Use run-e2e to run the Qwen3 MoE GPU E2E tests with HF_HOME
+/data/huggingface.
 ```
 
 Provide `HF_HOME` and `AFD_E2E_BACKEND`. `AFD_E2E_DEVICES` is optional; when

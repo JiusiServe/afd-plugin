@@ -25,6 +25,7 @@ validation_paths:
   - "tests/unit/test_e2e_process_utils.py"
   - "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py"
   - "tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py"
+  - "tests/e2e/models/qwen3_moe/test_qwen3_moe.py"
 upstream_refs:
   - "vLLM 0.26.0 serving and shutdown interfaces"
   - "lm-evaluation-harness GSM8K task and local-completions API"
@@ -32,8 +33,9 @@ upstream_refs:
 verified_platform_refs:
   - "CUDA DeepSeek-V2-Lite"
   - "Ascend NPU DeepSeek-V2-Lite"
+  - "CUDA Qwen3 MoE"
 related_issues: []
-last_reviewed: 2026-08-12
+last_reviewed: 2026-08-13
 ---
 
 # E2E testing
@@ -64,7 +66,7 @@ cleanup. Production code does not depend on the E2E harness.
 
 - `E2E-INV-001` — A case **MUST** have a stable lower-kebab-case ID and cover
   behavior not already covered by an existing case.
-- `E2E-INV-002` — A PR case **MUST NOT** use more than three unique devices.
+- `E2E-INV-002` — A PR case **MUST NOT** use more than four unique devices.
   Standard AFD cases **MUST** use 2 Attention ranks and 1 FFN rank.
 - `E2E-INV-003` — Cases sharing devices or ports **MUST** run sequentially,
   remain order-independent, and release owned process groups before the next
@@ -91,7 +93,7 @@ cleanup. Production code does not depend on the E2E harness.
 | `afd-eager` | AFD eager, 2A1F | 3 | Lifecycle and eager smoke test. |
 | `afd-graph` | AFD graph, 2A1F | 3 | Primary graph path. |
 | `afd-graph-dbo` | AFD graph + DBO, 2A1F | 3 | Graph path with DBO. |
-| `baseline-graph` | Native vLLM graph, DP2/TP1/EP2 | 2 | Non-AFD control. |
+| `baseline-graph` | Native vLLM graph, DP4/TP1/EP4 | 4 | Non-AFD control. |
 
 Target runtime is about 20 minutes per platform for PRs and at most 30 minutes
 for merge validation. Put slower coverage in a scheduled job.
@@ -139,5 +141,5 @@ of 1319.
 7. Update `tests/e2e/README.md`. Update the `run-e2e` skill only when commands,
    variables, prerequisites, or the default suite change.
 
-Before adding a second model, extract the shared environment, device, and
-runner-subprocess logic from `test_deepseek_v2_lite.py`.
+Model entrypoints reuse the subprocess and download helpers in
+`tests/conftest.py`.
