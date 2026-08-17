@@ -39,6 +39,24 @@ class _FakeScalar:
         return self._value
 
 
+class _FakeIntVector:
+    """Stands in for a token-count tensor in fake-torch tests.
+
+    Supports the ``.to(dtype).sum().item()`` chain the connector applies to
+    ``group_list``; ``.to()`` is a no-op so the fake torch's string dtypes
+    cannot leak into a real tensor API.
+    """
+
+    def __init__(self, values):
+        self._values = [int(value) for value in values]
+
+    def to(self, _dtype):
+        return self
+
+    def sum(self):
+        return _FakeScalar(sum(self._values))
+
+
 class _FakeTensorLike:
     def __init__(self, name, *, shape=None, device="npu:0"):
         self.name = name
@@ -585,7 +603,7 @@ def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
                 _FakeScalar(7),
             ],
             expert_token_nums_shared=[_FakeScalar(5)],
-            group_list=torch.zeros(8, dtype=torch.int64),
+            group_list=_FakeIntVector([0] * 8),
             expand_x_shared=_FakeTensorLike("shared-hidden"),
             dynamic_scales_shared=_FakeTensorLike("shared-scales"),
         )

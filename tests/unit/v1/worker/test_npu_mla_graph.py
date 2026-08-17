@@ -22,7 +22,25 @@ def _reload_module(
     return importlib.import_module(module_name)
 
 
+def _preimport_real_module(module_name: str) -> None:
+    """Import the real module before the fake sys.modules swap.
+
+    ``_reload_module`` only restores state monkeypatch recorded: when the real
+    module was never imported, teardown has no original sys.modules entry or
+    parent-package attribute to restore, and the fresh fake-bound module leaks
+    into later tests through the package attribute. Pre-importing guarantees a
+    genuine original exists to restore. On environments without the real
+    dependencies (CPU-only CI) the import fails and the fake path is used as
+    before.
+    """
+    try:
+        importlib.import_module(module_name)
+    except Exception:
+        pass
+
+
 def _load_mla_graph_module(monkeypatch):
+    _preimport_real_module("afd_plugin.v1.worker.npu.mla_graph")
     fake_ascend = ModuleType("vllm_ascend")
     fake_ascend.__path__ = []
     fake_compilation = ModuleType("vllm_ascend.compilation")
@@ -69,6 +87,8 @@ def _graph_params(
 
 
 def _load_forward_context_module(monkeypatch):
+    _preimport_real_module("afd_plugin.v1.worker.ubatch_wrapper")
+    _preimport_real_module("afd_plugin.v1.worker.npu.forward_context")
     fake_vllm = ModuleType("vllm")
     fake_vllm.__path__ = []
     fake_config = ModuleType("vllm.config")
@@ -139,6 +159,7 @@ def _load_forward_context_module(monkeypatch):
 
 
 def _load_ubatch_wrapper_module(monkeypatch):
+    _preimport_real_module("afd_plugin.v1.worker.ubatch_wrapper")
     class FakeStream:
         def __init__(self, device=None):
             self.device = device
