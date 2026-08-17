@@ -112,7 +112,7 @@ CUDA_VISIBLE_DEVICES=3 uv run vllm serve "$MODEL_PATH" \
 # decoder pulls the KV. Send benchmark/client traffic to 18305, NOT to 18303.
 # Wait for the prefill/attn/ffn servers to print "Application startup complete"
 # before this proxy starts accepting traffic.
-uv run python "$SCRIPT_DIR/../../../../tools/proxy_server.py" \
+uv run python "$SCRIPT_DIR/../../../../../tools/proxy_server.py" \
     --host 127.0.0.1 \
     --port 18305 \
     --prefiller-hosts 127.0.0.1 127.0.0.1 \
