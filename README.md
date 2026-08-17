@@ -280,6 +280,9 @@ uv run pytest
 uv run ruff check .
 ```
 
+The NPU-dependent unit suite must run in an Ascend development environment;
+see [Running NPU unit tests](docs/npu/TESTING.md).
+
 Native C/C++ sources are grouped by backend under `csrc/`: Ascend/CANN sources
 live in `csrc/npu`, including the `a2e` and `e2a` ACLNN operators, and
 `csrc/gpu` is reserved for GPU native sources.

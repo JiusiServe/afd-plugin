@@ -303,3 +303,6 @@ available: `async_dispatch_send`, `async_dispatch_recv`,
   complete GSM8K evaluation. Other Ascend hardware, model families,
   CAM/CANN/container versions, cross-version combinations, and topologies
   outside the documented matrices should be treated as unverified.
+
+For startup, HCCL, CAM operator, and shutdown failures, see the
+[NPU troubleshooting guide](TROUBLESHOOTING.md).
