@@ -1005,6 +1005,9 @@ class _LifecycleConnector:
         self.events = events
         self.control_plane = object()
         self._initialized = False
+        # Every real connector carries one; the runner reads it to decide
+        # whether async MoE ubatching is configured.
+        self.extra_info = None
 
     @property
     def is_initialized(self):
@@ -1106,6 +1109,7 @@ def test_attention_runner_load_model_initializes_connector_after_weights(
     expected.append("connector_init")
     assert events == expected
     assert connector.is_initialized is True
+
 
 def test_connector_driven_runs_skip_cross_dp_batch_coordination():
     """An idle Attention replica never joins the DP all-reduce.
