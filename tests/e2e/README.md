@@ -116,3 +116,29 @@ python -m pytest -q -s \
 The CAM/CANN runtime and custom operators must already be installed. Missing
 model configuration or a device list other than four unique IDs fails the
 test.
+
+## NPU async CAM ubatching test
+
+This case runs the `afd-async-ubatch` scenario (`CAMAsyncAFDConnector` with
+AFD-managed two-stage MoE ubatching over request boundaries). It uses three
+NPUs: the first two for Attention DP=2/TP=1, the last one for FFN
+DP=1/TP=1/EP=2. Unlike the smoke test above, it reuses the shared runner's
+GSM8K path (first 7 samples, 8-shot, sample-count and accuracy gates).
+
+```bash
+export AFD_E2E_BACKEND=npu
+export AFD_E2E_DEVICES=0,1,2
+export AFD_NPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite
+python -m pytest -q -s \
+  tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py -k async_ubatch
+```
+
+The device count is derived from the scenario's Attention/FFN rank constants,
+not hard-coded; `AFD_E2E_DEVICES` may supply any three unique NPU IDs. The
+topology is fixed at 2A1F because the token-split ubatch mode requires TP > 1
+and the request-split mode is the valid choice for a DP-only Attention layout.
+
+Prerequisites match the async CAM smoke test (CAM/CANN runtime, custom
+operators, `HCCL_BUFFSIZE=4096`), plus a reachable GSM8K dataset source —
+offline pods need a local HF mirror (`HF_ENDPOINT`); see
+[`docs/npu/TROUBLESHOOTING.md`](../../docs/npu/TROUBLESHOOTING.md#3-eval-harness-gsm8k--lm-eval-offline-setup).

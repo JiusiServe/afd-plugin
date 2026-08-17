@@ -328,6 +328,33 @@ def test_async_cam_scenario_builds_dp1tp2_attention_and_dp2tp1_ffn():
     assert "--enable-expert-parallel" in ffn_command
 
 
+def test_async_ubatch_scenario_enables_request_split_moe_ubatching():
+    args = _args()
+    args.scenario = "afd-async-ubatch"
+    args.device_backend = "npu"
+    runner.configure_scenario(args)
+
+    attention_command = runner.build_vllm_command(args, role="attention")
+
+    assert (
+        attention_command[attention_command.index("--data-parallel-size") + 1] == "2"
+    )
+    assert (
+        attention_command[attention_command.index("--tensor-parallel-size") + 1] == "1"
+    )
+    attention_config = json.loads(
+        attention_command[attention_command.index("--additional-config") + 1],
+    )["afd"]
+    assert attention_config["connector"] == runner.ASYNC_AFD_CONNECTOR
+    assert attention_config["async"] is True
+    assert attention_config["compute_gate_on_attention"] is True
+    extra_config = attention_config["connector_extra_config"]
+    assert extra_config["async_moe_ubatching"] is True
+    assert extra_config["async_moe_num_ubatches"] == 2
+    # DP2TP1 Attention cannot use the token split (requires TP > 1).
+    assert extra_config["async_moe_split"] == "request"
+
+
 def test_build_baseline_command_uses_native_dp2_graph_server():
     args = _args()
     args.scenario = "baseline-graph"

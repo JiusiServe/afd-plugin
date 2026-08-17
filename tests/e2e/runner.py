@@ -31,6 +31,9 @@ ASYNC_CAM_SCENARIO = "afd-eager-async-cam"
 ASYNC_CAM_ATTENTION_RANKS = 2
 ASYNC_CAM_FFN_RANKS = 2
 ASYNC_CAM_ATTENTION_TP_SIZE = 2
+ASYNC_UBATCH_SCENARIO = "afd-async-ubatch"
+ASYNC_UBATCH_ATTENTION_RANKS = 2
+ASYNC_UBATCH_FFN_RANKS = 1
 PROCESS_TERMINATION_TIMEOUT_S = 20
 PROCESS_POLL_INTERVAL_S = 0.2
 PROCESS_REAP_TIMEOUT_S = 5
@@ -143,6 +146,9 @@ def main() -> int:
             run_gsm8k_evaluation(args)
 
         ensure_processes_alive(processes)
+        # Explicit marker: teardown logs (KeyboardInterrupt, engine shutdown
+        # noise) otherwise make a passing run look like a failure.
+        print(f"\nE2E SCENARIO {args.scenario} PASSED (evaluation gate met)")
         return 0
     finally:
         body_error = sys.exc_info()[1]
@@ -193,6 +199,7 @@ def parse_args() -> argparse.Namespace:
             "afd-graph-dbo",
             "afd-graph-dbo-2a2f",
             ASYNC_CAM_SCENARIO,
+            ASYNC_UBATCH_SCENARIO,
         ],
         required=True,
         help="Fixed E2E scenario to run.",
@@ -294,6 +301,7 @@ def parse_args() -> argparse.Namespace:
 def configure_scenario(args: argparse.Namespace) -> None:
     """Set topology and features for the selected fixed scenario."""
     is_async_cam = args.scenario == ASYNC_CAM_SCENARIO
+    is_async_ubatch = args.scenario == ASYNC_UBATCH_SCENARIO
     scenario_settings = {
         "baseline-graph": (True, True, False, 2, 0),
         "afd-eager": (False, False, False, 2, 1),
@@ -306,6 +314,13 @@ def configure_scenario(args: argparse.Namespace) -> None:
             False,
             ASYNC_CAM_ATTENTION_RANKS,
             ASYNC_CAM_FFN_RANKS,
+        ),
+        ASYNC_UBATCH_SCENARIO: (
+            False,
+            False,
+            False,
+            ASYNC_UBATCH_ATTENTION_RANKS,
+            ASYNC_UBATCH_FFN_RANKS,
         ),
     }
     baseline, use_graph, enable_dbo, attention_ranks, ffn_ranks = scenario_settings[
@@ -332,6 +347,31 @@ def configure_scenario(args: argparse.Namespace) -> None:
         args.afd_connector_extra_config = [
             json.dumps(extra_config, separators=(",", ":")),
         ]
+    if is_async_ubatch:
+        args.afd_connector = ASYNC_AFD_CONNECTOR
+        args.afd_async = True
+        args.compute_gate_on_attention = True
+        extra_config = parse_afd_connector_extra_config(
+            args.afd_connector_extra_config,
+        )
+        # AFD-managed two-stage MoE ubatching over request boundaries. The
+        # Attention topology here is DP2TP1, so only the request split is
+        # valid (token split requires TP > 1).
+        extra_config.setdefault("async_moe_ubatching", True)
+        extra_config.setdefault("async_moe_num_ubatches", 2)
+        extra_config.setdefault("async_moe_split", "request")
+        args.afd_connector_extra_config = [
+            json.dumps(extra_config, separators=(",", ":")),
+        ]
+        # CAM dispatch allocates its HCCL communication pool (~8.6 GB) outside
+        # the torch memory pool; the default 0.92 GPU memory utilization leaves
+        # too little room and fails with EL0004. 0.8 leaves enough headroom.
+        if not any(
+            arg == "--gpu-memory-utilization"
+            or arg.startswith("--gpu-memory-utilization=")
+            for arg in args.common_vllm_arg
+        ):
+            args.common_vllm_arg.extend(["--gpu-memory-utilization", "0.8"])
     if use_graph:
         args.cudagraph_capture_size = 8
     if enable_dbo:
