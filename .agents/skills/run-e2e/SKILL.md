@@ -20,7 +20,7 @@ Each suite contains four default scenarios:
 - afd-graph-dbo
 
 Each default scenario evaluates the first 7 GSM8K samples. AFD scenarios use
-2 Attention ranks and 1 FFN rank. `baseline-graph` uses native DP2/TP1/EP2.
+2 Attention ranks and 1 FFN rank. `baseline-graph` uses native DP4/TP1/EP4.
 `afd-graph-dbo-2a2f` is a separate opt-in case.
 
 ## Workflow
@@ -58,7 +58,7 @@ For GPU:
 ~~~bash
 export HF_HOME=/path/to/huggingface
 export AFD_E2E_BACKEND=gpu
-export AFD_E2E_DEVICES=0,1,2
+export AFD_E2E_DEVICES=0,1,2,3
 # Optional if the model is already local:
 # export AFD_GPU_E2E_MODEL=/path/to/model
 # Optional: export AFD_GPU_E2E_VLLM_BIN=/path/to/vllm
@@ -69,14 +69,14 @@ For NPU:
 ~~~bash
 export HF_HOME=/path/to/huggingface
 export AFD_E2E_BACKEND=npu
-export AFD_E2E_DEVICES=0,1,2
+export AFD_E2E_DEVICES=0,1,2,3
 # Optional if the model is already local:
 # export AFD_NPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite
 # Optional: export AFD_NPU_E2E_VLLM_BIN=/path/to/vllm
 ~~~
 
-Device order defines roles: the first two devices run Attention and the third
-runs FFN. `baseline-graph` uses the first two devices for native DP2/TP1/EP2.
+Device order defines roles: AFD uses the first two devices for Attention and
+the third for FFN. `baseline-graph` uses the first four for native DP4/TP1/EP4.
 
 ### 4. Run
 
@@ -124,9 +124,9 @@ gate failure.
 | Variable | Backend | Required |
 |---|---|---|
 | AFD_E2E_BACKEND | both | yes: gpu or npu |
-| AFD_E2E_DEVICES | both | yes: exactly 3 unique IDs |
+| AFD_E2E_DEVICES | both | yes: four unique IDs for the default suite |
 | AFD_GPU_E2E_MODEL | GPU | no; downloads the selected suite's model when unset |
 | AFD_GPU_E2E_VLLM_BIN | GPU | no; defaults to vllm |
-| AFD_NPU_E2E_MODEL | NPU | no; downloads DeepSeek-V2-Lite when unset |
+| AFD_NPU_E2E_MODEL | NPU | no; downloads the selected suite's model when unset |
 | AFD_NPU_E2E_VLLM_BIN | NPU | no; defaults to vllm |
 | HF_HOME | both | recommended; HF dataset/model cache |

@@ -16,6 +16,10 @@ GSM8K_DATASET_ID = "openai/gsm8k"
 GSM8K_DATASET_CONFIG = "main"
 DEEPSEEK_V2_LITE_REPO_ID = "deepseek-ai/DeepSeek-V2-Lite"
 DEEPSEEK_V2_LITE_MAX_MODEL_LEN = 4096
+DEFAULT_DEVICE_IDS = ("0", "1", "2", "3")
+ATTENTION_DEVICE_COUNT = 2
+AFD_FFN_DEVICE_COUNT = 1
+BASELINE_DEVICE_COUNT = 4
 SCENARIOS = (
     "baseline-graph",
     "afd-eager",
@@ -68,16 +72,22 @@ def build_runner_command(scenario: str, gsm8k_output_path: Path) -> list[str]:
         raise RuntimeError("AFD_E2E_BACKEND must be 'gpu' or 'npu'")
 
     env_devices = os.environ.get("AFD_E2E_DEVICES")
-    if env_devices:
-        devices = [item.strip() for item in env_devices.split(",") if item.strip()]
+    devices = (
+        [item.strip() for item in env_devices.split(",") if item.strip()]
+        if env_devices
+        else list(DEFAULT_DEVICE_IDS)
+    )
+    if scenario == "baseline-graph":
+        attention_devices = devices[:BASELINE_DEVICE_COUNT]
+        ffn_devices = []
     else:
-        devices = (
-            ["0", "1", "2", "3"]
+        attention_devices = devices[:ATTENTION_DEVICE_COUNT]
+        ffn_end = (
+            BASELINE_DEVICE_COUNT
             if scenario == "afd-graph-dbo-2a2f"
-            else ["0", "1", "2"]
+            else ATTENTION_DEVICE_COUNT + AFD_FFN_DEVICE_COUNT
         )
-    attention_devices = devices[:2]
-    ffn_devices = devices[2:]
+        ffn_devices = devices[ATTENTION_DEVICE_COUNT:ffn_end]
 
     command = [
         sys.executable,
