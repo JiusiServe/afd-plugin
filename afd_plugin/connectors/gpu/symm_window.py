@@ -18,13 +18,19 @@ single spec sizes both directions. Shared-expert tokens are a contiguous range
 of the batch, so the slot carries only their count -- the range is implied by
 which FFN rank the slot belongs to.
 
-A token is shipped once per destination rank however many of its topk slots
-landed there, so the payload rows are *distinct tokens* (``uniq_tokens``, at
-most ``token_cap``) while ``expand_idx`` and ``weights`` carry one entry per
-*partial* (``routed_tokens``, at most ``partial_cap``). Those two index arrays
-are 4 bytes a row against the payload's ``hidden_size`` elements, which is why
-they can be sized for the true worst case -- every partial to one rank -- while
-the payload is sized by a bound that no routing skew can exceed.
+Every slot is written at capacity: the payload carries the whole batch
+(``num_tokens`` rows) and the ``expand_idx``/``weights`` arrays carry every
+partial, with ``segment_start``/``routed_tokens`` in the header telling a
+destination which run of partials is its own. Sizing the writes by the routing
+instead would save a fraction of the bytes and cost a device-to-host readback
+per layer to learn the sizes, which measured far more than the bytes are worth:
+with ``topk`` slots spread over ``ffn_size`` destinations a token misses a given
+destination only ``(1 - 1/ffn_size) ** topk`` of the time, so at 2A2F and
+``topk=6`` the capacity payload is about 1.6% larger than the exact one.
+
+``expand_idx`` and ``weights`` are 4 bytes a row against the payload's
+``hidden_size`` elements, so shipping them whole to every peer costs well under
+a percent of the slot.
 
 Flag words are written *after* the payload on the same stream. Same-stream
 device-to-device copies complete in issue order, so a visible flag implies a
@@ -53,7 +59,7 @@ if TYPE_CHECKING:
 
 # Header words shared by dispatch and combine, followed by expert_counts.
 HEADER_MAGIC = 0x41464447  # "AFDG"
-HEADER_VERSION = 2
+HEADER_VERSION = 3
 _H_MAGIC = 0
 _H_VERSION = 1
 _H_SEQ = 2
@@ -61,12 +67,17 @@ _H_SRC_ROLE_RANK = 3
 _H_LAYER_IDX = 4
 _H_STAGE_IDX = 5
 _H_NUM_TOKENS = 6
-_H_ROUTED_TOKENS = 7  # partials: one per (token, topk slot) landing here
-_H_SHARED_TOKENS = 8
-_H_TOPK = 9
-_H_FLAGS = 10
-_H_ECHO_SEQ = 11  # combine only: the dispatch seq being answered
-_H_UNIQ_TOKENS = 12  # payload rows: distinct tokens behind those partials
+_H_SHARED_TOKENS = 7
+_H_TOPK = 8
+_H_FLAGS = 9
+_H_ECHO_SEQ = 10  # combine only: the dispatch seq being answered
+# Everything from here on is routing, which only the device knows. Keeping those
+# words in one contiguous tail is what lets a sender fill the host-known prefix
+# with a single copy and the rest straight from the plan, so no dispatch ever
+# reads the routing back to the host.
+HEADER_HOST_WORDS = 11
+H_ROUTED_TOKENS = 11  # partials: one per (token, topk slot) landing here
+H_SEGMENT_START = 12  # where those partials begin in the shipped index arrays
 HEADER_FIXED_WORDS = 13
 
 FLAG_EMPTY = 0
@@ -130,6 +141,44 @@ class SlotLayout:
         )
 
 
+def encode_header_host_words(
+    *,
+    seq: int,
+    src_role_rank: int,
+    layer_idx: int,
+    stage_idx: int,
+    num_tokens: int,
+    shared_tokens: int,
+    topk: int,
+    flags: int,
+    echo_seq: int = 0,
+) -> np.ndarray:
+    """Build the host-known prefix of one slot header as int32.
+
+    The routing tail -- ``routed_tokens``, ``segment_start`` and the per-expert
+    counts -- is not here: a dispatch fills it straight from the plan on the
+    device, which is what keeps the send path free of a readback.
+    """
+    # Built with numpy and assigned as one tuple, not field by field into a
+    # tensor: this runs once per peer per MoE layer, and a dozen tensor setitems
+    # there cost more host time than the transfer they describe.
+    words = np.empty(HEADER_HOST_WORDS, dtype=np.int32)
+    words[:] = (
+        HEADER_MAGIC,
+        HEADER_VERSION,
+        seq,
+        src_role_rank,
+        layer_idx,
+        stage_idx,
+        num_tokens,
+        shared_tokens,
+        topk,
+        flags,
+        echo_seq,
+    )
+    return words
+
+
 def encode_header(
     layout: SlotLayout,
     *,
@@ -143,38 +192,38 @@ def encode_header(
     topk: int,
     flags: int,
     expert_counts: list[int],
-    uniq_tokens: int = 0,
+    segment_start: int = 0,
     echo_seq: int = 0,
 ) -> torch.Tensor:
-    """Build the fixed header for one slot as a CPU int32 tensor."""
+    """Build a whole slot header as a CPU int32 tensor.
+
+    Used where the routing is already on the host: the FFN reply, which decoded
+    it from the dispatch it answers, and the shutdown announcement, which has no
+    routing at all.
+    """
     expert_per_rank = layout.header_words - HEADER_FIXED_WORDS
     if len(expert_counts) != expert_per_rank:
         raise ValueError(
             f"expert_counts must have {expert_per_rank} entries, "
             f"got {len(expert_counts)}",
         )
-    # Built with numpy and wrapped, not assigned field by field into a tensor:
-    # this runs once per peer per MoE layer, and fourteen tensor setitems there
-    # cost more host time than the transfer they describe. torch.from_numpy
-    # shares the buffer, so the wrap is free.
     header = np.empty(layout.header_words, dtype=np.int32)
-    header[:HEADER_FIXED_WORDS] = (
-        HEADER_MAGIC,
-        HEADER_VERSION,
-        seq,
-        src_role_rank,
-        layer_idx,
-        stage_idx,
-        num_tokens,
-        routed_tokens,
-        shared_tokens,
-        topk,
-        flags,
-        echo_seq,
-        uniq_tokens,
+    header[:HEADER_HOST_WORDS] = encode_header_host_words(
+        seq=seq,
+        src_role_rank=src_role_rank,
+        layer_idx=layer_idx,
+        stage_idx=stage_idx,
+        num_tokens=num_tokens,
+        shared_tokens=shared_tokens,
+        topk=topk,
+        flags=flags,
+        echo_seq=echo_seq,
     )
+    header[H_ROUTED_TOKENS] = routed_tokens
+    header[H_SEGMENT_START] = segment_start
     if expert_per_rank:
         header[HEADER_FIXED_WORDS:] = expert_counts
+    # torch.from_numpy shares the buffer, so the wrap is free.
     return torch.from_numpy(header)
 
 
@@ -192,7 +241,7 @@ class SlotHeader:
     topk: int
     flags: int
     echo_seq: int
-    uniq_tokens: int
+    segment_start: int
     expert_counts: list[int]
 
     @property
@@ -219,12 +268,12 @@ def decode_header(header: torch.Tensor) -> SlotHeader:
         layer_idx=values[_H_LAYER_IDX],
         stage_idx=values[_H_STAGE_IDX],
         num_tokens=values[_H_NUM_TOKENS],
-        routed_tokens=values[_H_ROUTED_TOKENS],
+        routed_tokens=values[H_ROUTED_TOKENS],
         shared_tokens=values[_H_SHARED_TOKENS],
         topk=values[_H_TOPK],
         flags=values[_H_FLAGS],
         echo_seq=values[_H_ECHO_SEQ],
-        uniq_tokens=values[_H_UNIQ_TOKENS],
+        segment_start=values[H_SEGMENT_START],
         expert_counts=values[HEADER_FIXED_WORDS:],
     )
 
@@ -431,6 +480,10 @@ class SymmWindow:
         answers instead, so the rank waiting for it knows the value to wait for
         before it arrives -- that is what lets the wait happen on a stream
         rather than on the host.
+
+        ``header`` may live on the device, which is how a dispatch ships routing
+        it never read back; such a header has no readable sequence number, so
+        ``flag_value`` is then required.
         """
         layout = self.layout
         routed_count = _row_count(routed_x, routed_rows)
@@ -449,15 +502,16 @@ class SymmWindow:
                 f"shared tokens {shared_count} exceed token_cap {layout.token_cap}",
             )
 
-        # Stage through pinned memory so the copy is asynchronous: a pageable
-        # source would force a blocking transfer, and there is one header per
-        # peer per layer.
-        staging = self._header_send[peer][ring]
-        staging.copy_(header)
-        self._capacity_view(peer, region, ring, layout.header_off).copy_(
-            staging,
-            non_blocking=True,
-        )
+        header_view = self._capacity_view(peer, region, ring, layout.header_off)
+        if header.is_cuda:
+            header_view.copy_(header, non_blocking=True)
+        else:
+            # Stage through pinned memory so the copy is asynchronous: a
+            # pageable source would force a blocking transfer, and there is one
+            # header per peer per layer.
+            staging = self._header_send[peer][ring]
+            staging.copy_(header)
+            header_view.copy_(staging, non_blocking=True)
 
         def write_field(
             field_off: int,
@@ -513,7 +567,14 @@ class SymmWindow:
             shared_rows,
         )
 
-        seq = int(header[_H_SEQ].item()) if flag_value is None else flag_value
+        if flag_value is None:
+            if header.is_cuda:
+                raise ValueError(
+                    "write_slot needs flag_value for a device-resident header: "
+                    "reading its sequence number back would synchronize",
+                )
+            flag_value = int(header[_H_SEQ].item())
+        seq = flag_value
         flag_idx = region * self.ring_depth + ring
         self._flag_view(peer, flag_idx).fill_(seq)
 
@@ -611,25 +672,42 @@ class SymmWindow:
         )
         return header[HEADER_FIXED_WORDS:]
 
-    def local_expand_idx(self, region: int, ring: int, count: int) -> torch.Tensor:
+    def local_expand_idx(
+        self,
+        region: int,
+        ring: int,
+        count: int,
+        start: int = 0,
+    ) -> torch.Tensor:
+        """Device view of this destination's run of partial indices.
+
+        Senders ship the whole array, so a destination's own partials start at
+        the ``segment_start`` its header carries.
+        """
         return self._view(
             self.rank,
             region,
             ring,
             self.layout.expand_idx_off,
-            (count,),
+            (start + count,),
             torch.int32,
-        )
+        )[start:]
 
-    def local_weights(self, region: int, ring: int, count: int) -> torch.Tensor:
+    def local_weights(
+        self,
+        region: int,
+        ring: int,
+        count: int,
+        start: int = 0,
+    ) -> torch.Tensor:
         return self._view(
             self.rank,
             region,
             ring,
             self.layout.weights_off,
-            (count,),
+            (start + count,),
             torch.float32,
-        )
+        )[start:]
 
     def local_routed(self, region: int, ring: int, count: int) -> torch.Tensor:
         return self._view(

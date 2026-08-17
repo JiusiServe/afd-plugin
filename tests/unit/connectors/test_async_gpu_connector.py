@@ -106,7 +106,7 @@ def test_header_round_trip(layout: SlotLayout):
         topk=6,
         flags=0,
         expert_counts=[10, 20, 30, 30],
-        uniq_tokens=25,
+        segment_start=25,
     )
     decoded = decode_header(header)
     assert decoded.seq == 7
@@ -118,7 +118,7 @@ def test_header_round_trip(layout: SlotLayout):
     assert decoded.shared_tokens == 16
     assert decoded.topk == 6
     assert decoded.expert_counts == [10, 20, 30, 30]
-    assert decoded.uniq_tokens == 25
+    assert decoded.segment_start == 25
     assert sum(decoded.expert_counts) == decoded.routed_tokens
     assert not decoded.is_shutdown
 
@@ -203,17 +203,16 @@ def routing_inputs():
 
 
 def _destination_slices(plan, ffn_size, expert_per_rank):
-    """Walk the plan the way send_attn_output does: one slice per destination."""
-    counts, offsets = plan.counts.tolist(), plan.offsets.tolist()
-    uniq = plan.uniq_per_rank.tolist()
-    uniq_start = 0
+    """Walk the plan the way an FFN rank does: one run of partials each.
+
+    A destination is told where its run starts and how long it is, and reads the
+    index arrays the sender shipped whole -- there is no per-destination slicing
+    on the send side any more, which is what removed the readback.
+    """
+    routed = plan.routed_per_rank.tolist()
+    starts = plan.segment_start.tolist()
     for ffn_rank in range(ffn_size):
-        base = ffn_rank * expert_per_rank
-        total = sum(counts[base : base + expert_per_rank])
-        partials = slice(offsets[base], offsets[base] + total)
-        rows = plan.uniq_token_ids[uniq_start : uniq_start + uniq[ffn_rank]]
-        uniq_start += uniq[ffn_rank]
-        yield ffn_rank, partials, rows
+        yield ffn_rank, slice(starts[ffn_rank], starts[ffn_rank] + routed[ffn_rank])
 
 
 def test_every_partial_is_routed_exactly_once(routing_inputs):
@@ -227,7 +226,14 @@ def test_every_partial_is_routed_exactly_once(routing_inputs):
     assert plan.expand_idx.shape == (_NUM_TOKENS * _TOPK,)
     assert plan.weights.shape == (_NUM_TOKENS * _TOPK,)
     assert int(plan.counts.sum()) == _NUM_TOKENS * _TOPK
-    assert int(plan.uniq_per_rank.sum()) <= _NUM_TOKENS * _TOPK
+    assert int(plan.routed_per_rank.sum()) == _NUM_TOKENS * _TOPK
+    # The runs must tile the array end to end, or a partial is read twice or not
+    # at all: they are the only thing a destination gets to locate itself by.
+    cursor = 0
+    for _, partials in _destination_slices(plan, _FFN_SIZE, _EXPERT_PER_RANK):
+        assert partials.start == cursor
+        cursor = partials.stop
+    assert cursor == _NUM_TOKENS * _TOPK
 
 
 def test_each_destination_segment_is_grouped_by_local_expert(routing_inputs):
@@ -238,15 +244,15 @@ def test_each_destination_segment_is_grouped_by_local_expert(routing_inputs):
         ffn_size=_FFN_SIZE,
         expert_per_rank=_EXPERT_PER_RANK,
     )
-    counts, offsets = plan.counts.tolist(), plan.offsets.tolist()
-    for ffn_rank, partials, rows in _destination_slices(
+    counts = plan.counts.tolist()
+    for ffn_rank, partials in _destination_slices(
         plan,
         _FFN_SIZE,
         _EXPERT_PER_RANK,
     ):
         base = ffn_rank * _EXPERT_PER_RANK
         # The token behind each partial, in the order the receiver sees them.
-        tokens = rows.index_select(0, plan.expand_idx[partials].to(torch.int64))
+        tokens = plan.expand_idx[partials]
         cursor = 0
         for local_expert in range(_EXPERT_PER_RANK):
             for _ in range(counts[base + local_expert]):
@@ -254,10 +260,9 @@ def test_each_destination_segment_is_grouped_by_local_expert(routing_inputs):
                 assert base + local_expert in topk_ids[token_idx].tolist()
                 cursor += 1
         assert cursor == partials.stop - partials.start
-        assert offsets[base] == partials.start
 
 
-def test_each_token_is_shipped_once_per_destination(routing_inputs):
+def test_every_partial_names_a_token_of_this_batch(routing_inputs):
     topk_ids, _, topk_weights = routing_inputs
     plan = plan_dispatch(
         topk_ids,
@@ -265,13 +270,11 @@ def test_each_token_is_shipped_once_per_destination(routing_inputs):
         ffn_size=_FFN_SIZE,
         expert_per_rank=_EXPERT_PER_RANK,
     )
-    for ffn_rank, partials, rows in _destination_slices(
-        plan,
-        _FFN_SIZE,
-        _EXPERT_PER_RANK,
-    ):
-        shipped = rows.tolist()
-        assert len(set(shipped)) == len(shipped), "a token was shipped twice"
+    # Destinations read the whole batch out of the slot, so an index is only in
+    # range if it names a row of it.
+    assert int(plan.expand_idx.min()) >= 0
+    assert int(plan.expand_idx.max()) < _NUM_TOKENS
+    for ffn_rank, partials in _destination_slices(plan, _FFN_SIZE, _EXPERT_PER_RANK):
         base = ffn_rank * _EXPERT_PER_RANK
         expected = {
             token
@@ -279,15 +282,11 @@ def test_each_token_is_shipped_once_per_destination(routing_inputs):
             for expert in topk_ids[token].tolist()
             if base <= expert < base + _EXPERT_PER_RANK
         }
-        assert set(shipped) == expected
-        # Every partial must land inside its destination's own payload.
-        expand = plan.expand_idx[partials]
-        assert int(expand.min()) >= 0
-        assert int(expand.max()) < len(shipped)
+        assert set(plan.expand_idx[partials].tolist()) == expected
 
 
 def test_identity_experts_recombine_to_the_weighted_sum(routing_inputs):
-    """The full chain: ship distinct rows, expand, weight, reduce, scatter."""
+    """The full chain: ship the batch, expand, weight, reduce, add."""
     topk_ids, hidden_states, topk_weights = routing_inputs
     plan = plan_dispatch(
         topk_ids,
@@ -296,13 +295,14 @@ def test_identity_experts_recombine_to_the_weighted_sum(routing_inputs):
         expert_per_rank=_EXPERT_PER_RANK,
     )
     accumulator = torch.zeros(_NUM_TOKENS, _HIDDEN, dtype=torch.float32)
-    for _, partials, rows in _destination_slices(plan, _FFN_SIZE, _EXPERT_PER_RANK):
+    for _, partials in _destination_slices(plan, _FFN_SIZE, _EXPERT_PER_RANK):
         expand = plan.expand_idx[partials].to(torch.int64)
-        # What crosses the wire, and what the FFN side does with it.
-        expanded = hidden_states.index_select(0, rows).index_select(0, expand)
-        reduced = torch.zeros(rows.numel(), _HIDDEN, dtype=torch.float32)
+        # What the FFN side does with the batch it was sent.
+        expanded = hidden_states.index_select(0, expand)
+        reduced = torch.zeros(_NUM_TOKENS, _HIDDEN, dtype=torch.float32)
         reduced.index_add_(0, expand, expanded * plan.weights[partials].unsqueeze(1))
-        accumulator.index_add_(0, rows, reduced)
+        # A reply is a whole batch, so combine adds it without an index.
+        accumulator += reduced
     expected = hidden_states * topk_weights.sum(dim=1, keepdim=True)
     torch.testing.assert_close(accumulator, expected.to(torch.float32))
 
@@ -340,16 +340,16 @@ def test_routing_can_leave_one_destination_empty():
     )
     slices = list(_destination_slices(plan, ffn_size, expert_per_rank))
 
-    _, busy_partials, busy_rows = slices[0]
+    _, busy_partials = slices[0]
     assert busy_partials.stop - busy_partials.start == 3
-    # One token, three of its partials: it is shipped once, read three times.
-    assert busy_rows.tolist() == [0]
+    # One token, three of its partials: it is sent once, read three times.
+    assert plan.expand_idx[busy_partials].tolist() == [0, 0, 0]
 
-    _, empty_partials, empty_rows = slices[1]
+    _, empty_partials = slices[1]
     assert empty_partials.stop - empty_partials.start == 0
-    assert empty_rows.numel() == 0
 
     # Reducing an empty destination must be a no-op, not an error.
     accumulator = torch.zeros(1, 4, dtype=torch.float32)
-    accumulator.index_add_(0, empty_rows, torch.zeros(0, 4))
+    empty = plan.expand_idx[empty_partials].to(torch.int64)
+    accumulator.index_add_(0, empty, torch.zeros(0, 4))
     assert torch.count_nonzero(accumulator) == 0
