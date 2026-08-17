@@ -8,6 +8,7 @@ import os
 import signal
 import subprocess
 from contextlib import suppress
+from importlib.util import find_spec
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -19,11 +20,10 @@ RUNNER_CLEANUP_TIMEOUT_S = 90
 # back to the partially initialized device_op. Real ``vllm serve`` imports
 # ``vllm_ascend.ops`` first and never trips it, but pytest's import order does.
 # Pre-importing ``vllm_ascend.ops`` here breaks the cycle for the test run.
-# Environments without vllm_ascend (CPU-only CI) simply skip this.
-try:  # pragma: no cover - environment-dependent import ordering fix
+# Environments without vllm_ascend (CPU-only CI) simply skip this. When the
+# package is installed, import and ABI failures must remain visible.
+if find_spec("vllm_ascend") is not None:  # pragma: no cover - environment-dependent
     import vllm_ascend.ops  # noqa: F401
-except Exception:
-    pass
 
 
 def run_runner(command: list[str], env: dict[str, str] | None = None) -> None:

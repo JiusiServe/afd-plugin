@@ -269,6 +269,7 @@ def test_parse_args_rejects_legacy_fixed_scenario_options(monkeypatch, legacy_ar
         ("afd-graph-dbo", (False, True, True, 2, 1, 1, 1)),
         ("afd-graph-dbo-2a2f", (False, True, True, 2, 2, 1, 1)),
         ("afd-eager-async-cam", (False, False, False, 2, 2, 1, 2)),
+        ("afd-async-ubatch", (False, False, False, 2, 1, 1, 2)),
     ],
 )
 def test_configure_scenario_overwrites_fixed_topology_and_features(
@@ -328,19 +329,28 @@ def test_async_cam_scenario_builds_dp1tp2_attention_and_dp2tp1_ffn():
     assert "--enable-expert-parallel" in ffn_command
 
 
-def test_async_ubatch_scenario_enables_request_split_moe_ubatching():
+def test_async_ubatch_scenario_enforces_token_split_moe_ubatching():
     args = _args()
     args.scenario = "afd-async-ubatch"
     args.device_backend = "npu"
+    args.afd_connector_extra_config = [
+        json.dumps(
+            {
+                "attn_ranks_per_dp": 1,
+                "async_moe_ubatching": False,
+                "async_moe_num_ubatches": 99,
+                "async_moe_split": "request",
+            },
+        ),
+    ]
     runner.configure_scenario(args)
+    runner.validate_topology(args, ["0", "1"], ["2"])
 
     attention_command = runner.build_vllm_command(args, role="attention")
 
+    assert attention_command[attention_command.index("--data-parallel-size") + 1] == "1"
     assert (
-        attention_command[attention_command.index("--data-parallel-size") + 1] == "2"
-    )
-    assert (
-        attention_command[attention_command.index("--tensor-parallel-size") + 1] == "1"
+        attention_command[attention_command.index("--tensor-parallel-size") + 1] == "2"
     )
     attention_config = json.loads(
         attention_command[attention_command.index("--additional-config") + 1],
@@ -351,8 +361,8 @@ def test_async_ubatch_scenario_enables_request_split_moe_ubatching():
     extra_config = attention_config["connector_extra_config"]
     assert extra_config["async_moe_ubatching"] is True
     assert extra_config["async_moe_num_ubatches"] == 2
-    # DP2TP1 Attention cannot use the token split (requires TP > 1).
-    assert extra_config["async_moe_split"] == "request"
+    assert extra_config["async_moe_split"] == "token"
+    assert extra_config["attn_ranks_per_dp"] == 2
 
 
 def test_build_baseline_command_uses_native_dp2_graph_server():
@@ -415,6 +425,21 @@ def test_validate_topology_accepts_baseline_without_ffn_ranks():
     runner.configure_scenario(args)
 
     runner.validate_topology(args, ["0", "1"], [])
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [runner.ASYNC_CAM_SCENARIO, runner.ASYNC_UBATCH_SCENARIO],
+)
+def test_validate_topology_rejects_async_cam_scenarios_on_gpu(scenario):
+    args = _args()
+    args.scenario = scenario
+    args.device_backend = "gpu"
+    runner.configure_scenario(args)
+
+    ffn_devices = ["2", "3"] if scenario == runner.ASYNC_CAM_SCENARIO else ["2"]
+    with pytest.raises(ValueError, match="require NPU"):
+        runner.validate_topology(args, ["0", "1"], ffn_devices)
 
 
 @pytest.mark.parametrize(
@@ -973,6 +998,30 @@ def test_run_gsm8k_evaluation_runs_the_full_dataset_when_requested(
     ]
 
 
+def test_run_gsm8k_evaluation_uses_batch_two_for_async_token_split(
+    monkeypatch,
+):
+    args = _args()
+    args.scenario = runner.ASYNC_UBATCH_SCENARIO
+    args.device_backend = "npu"
+    runner.configure_scenario(args)
+    calls = []
+    monkeypatch.delenv("AFD_GSM8K_LIMIT", raising=False)
+
+    def fake_run_lm_eval(base_url, model_name, **kwargs):
+        calls.append((base_url, model_name, kwargs))
+        return {
+            "n-samples": {"gsm8k": {"effective": 7}},
+            "results": {"gsm8k": {"exact_match": 0.27}},
+        }
+
+    monkeypatch.setattr(runner, "_run_lm_eval", fake_run_lm_eval)
+
+    runner.run_gsm8k_evaluation(args)
+
+    assert calls[0][2]["batch_size"] == 2
+
+
 def test_run_gsm8k_evaluation_rejects_an_incomplete_full_dataset(
     monkeypatch,
 ):
@@ -1092,6 +1141,7 @@ def test_terminate_processes_rejects_cleanup_failure(monkeypatch):
 
 def test_main_checks_processes_and_restores_signal_handlers_when_cleanup_fails(
     monkeypatch,
+    capsys,
 ):
     args = _args()
     args.attention_devices = "0"
@@ -1148,6 +1198,7 @@ def test_main_checks_processes_and_restores_signal_handlers_when_cleanup_fails(
     assert checked_processes == [[process, process]] * 2
     assert log_thread.joined is True
     assert installed_handlers[2:] == list(previous_handlers.items())
+    assert "E2E SCENARIO" not in capsys.readouterr().out
     with pytest.raises(SystemExit) as exit_error:
         installed_handlers[0][1](signal.SIGTERM, None)
     assert exit_error.value.code == 128 + signal.SIGTERM

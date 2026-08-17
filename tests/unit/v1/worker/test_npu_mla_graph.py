@@ -3,11 +3,13 @@ from __future__ import annotations
 import importlib
 import sys
 from contextlib import contextmanager
+from importlib.util import find_spec
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
 torch = pytest.importorskip("torch")
+NPU_RUNTIME_MODULES = ("vllm", "vllm_ascend", "torch_npu")
 
 
 def _reload_module(
@@ -29,14 +31,27 @@ def _preimport_real_module(module_name: str) -> None:
     module was never imported, teardown has no original sys.modules entry or
     parent-package attribute to restore, and the fresh fake-bound module leaks
     into later tests through the package attribute. Pre-importing guarantees a
-    genuine original exists to restore. On environments without the real
-    dependencies (CPU-only CI) the import fails and the fake path is used as
-    before.
+    genuine original exists to restore. CPU-only environments use the fake
+    path when the NPU runtime is unavailable; failures from an installed
+    runtime remain visible.
     """
-    try:
-        importlib.import_module(module_name)
-    except Exception:
-        pass
+    if not all(find_spec(dependency) is not None for dependency in NPU_RUNTIME_MODULES):
+        return
+    importlib.import_module(module_name)
+
+
+def test_preimport_real_module_surfaces_installed_runtime_failures(monkeypatch):
+    def fail_import(_module_name):
+        raise RuntimeError("ABI mismatch")
+
+    monkeypatch.setattr(
+        f"{__name__}.find_spec",
+        lambda _dependency: SimpleNamespace(),
+    )
+    monkeypatch.setattr(importlib, "import_module", fail_import)
+
+    with pytest.raises(RuntimeError, match="ABI mismatch"):
+        _preimport_real_module("afd_plugin.v1.worker.npu.mla_graph")
 
 
 def _load_mla_graph_module(monkeypatch):
@@ -160,6 +175,7 @@ def _load_forward_context_module(monkeypatch):
 
 def _load_ubatch_wrapper_module(monkeypatch):
     _preimport_real_module("afd_plugin.v1.worker.ubatch_wrapper")
+
     class FakeStream:
         def __init__(self, device=None):
             self.device = device

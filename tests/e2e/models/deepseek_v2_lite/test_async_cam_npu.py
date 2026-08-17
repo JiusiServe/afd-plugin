@@ -146,11 +146,10 @@ def test_deepseek_v2_lite_async_cam() -> None:
 
 
 def build_ubatch_runner_command(gsm8k_output_path: Path) -> list[str]:
-    """Build the afd-async-ubatch (A2F1, MoE ubatching) runner command.
+    """Build the DP1/TP2 Attention async MoE ubatching runner command.
 
-    Reuses the shared runner's GSM8K path (first 7 samples, 8-shot, sample
-    count and accuracy gates) and the scenario's own ubatch connector
-    configuration; only devices, ports, and the output path are set here.
+    The fixed scenario owns the token-split and batch-size configuration. This
+    entrypoint supplies the devices, ports, and GSM8K output path.
     """
     backend = _required_env("AFD_E2E_BACKEND")
     if backend != "npu":

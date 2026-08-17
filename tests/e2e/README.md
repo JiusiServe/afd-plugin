@@ -102,7 +102,7 @@ the same four tests, and reports failures and process cleanup.
 ## NPU async CAM smoke test
 
 This separate test still reads `AFD_E2E_DEVICES`. It uses four NPUs: the first
-two for Attention TP=2, and the last two for FFN DP=2/TP=1/EP=2. It sends one
+two for Attention TP=2, and the last two for FFN DP=2/TP=1. It sends one
 prompt and requests 32 tokens. It does not run GSM8K.
 
 ```bash
@@ -120,10 +120,10 @@ test.
 ## NPU async CAM ubatching test
 
 This case runs the `afd-async-ubatch` scenario (`CAMAsyncAFDConnector` with
-AFD-managed two-stage MoE ubatching over request boundaries). It uses three
-NPUs: the first two for Attention DP=2/TP=1, the last one for FFN
-DP=1/TP=1/EP=2. Unlike the smoke test above, it reuses the shared runner's
-GSM8K path (first 7 samples, 8-shot, sample-count and accuracy gates).
+AFD-managed two-stage MoE token-split ubatching). It uses three NPUs: the first
+two for Attention DP=1/TP=2, and the last one for FFN DP=1/TP=1. Unlike the
+smoke test above, it reuses the shared runner's GSM8K path with batch size 2
+(first 7 samples, 8-shot, sample-count and accuracy gates).
 
 ```bash
 export AFD_E2E_BACKEND=npu
@@ -135,10 +135,9 @@ python -m pytest -q -s \
 
 The device count is derived from the scenario's Attention/FFN rank constants,
 not hard-coded; `AFD_E2E_DEVICES` may supply any three unique NPU IDs. The
-topology is fixed at 2A1F because the token-split ubatch mode requires TP > 1
-and the request-split mode is the valid choice for a DP-only Attention layout.
+topology is fixed at 2A1F, with TP=2 on Attention as required by token split.
 
 Prerequisites match the async CAM smoke test (CAM/CANN runtime, custom
 operators, `HCCL_BUFFSIZE=4096`), plus a reachable GSM8K dataset source —
-offline pods need a local HF mirror (`HF_ENDPOINT`); see
-[`docs/npu/TROUBLESHOOTING.md`](../../docs/npu/TROUBLESHOOTING.md#3-eval-harness-gsm8k--lm-eval-offline-setup).
+offline pods need a local HF mirror (`HF_ENDPOINT`). See
+[`docs/npu/TROUBLESHOOTING.md`](../../docs/npu/TROUBLESHOOTING.md).
