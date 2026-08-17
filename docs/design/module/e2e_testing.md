@@ -66,7 +66,7 @@ cleanup. Production code does not depend on the E2E harness.
 
 - `E2E-INV-001` — A case **MUST** have a stable lower-kebab-case ID and cover
   behavior not already covered by an existing case.
-- `E2E-INV-002` — A PR case **MUST NOT** use more than three unique devices.
+- `E2E-INV-002` — A PR case **MUST NOT** use more than four unique devices.
   Standard AFD cases **MUST** use 2 Attention ranks and 1 FFN rank.
 - `E2E-INV-003` — Cases sharing devices or ports **MUST** run sequentially,
   remain order-independent, and release owned process groups before the next
@@ -93,7 +93,7 @@ cleanup. Production code does not depend on the E2E harness.
 | `afd-eager` | AFD eager, 2A1F | 3 | Lifecycle and eager smoke test. |
 | `afd-graph` | AFD graph, 2A1F | 3 | Primary graph path. |
 | `afd-graph-dbo` | AFD graph + DBO, 2A1F | 3 | Graph path with DBO. |
-| `baseline-graph` | Native vLLM graph, DP2/TP1/EP2 | 2 | Non-AFD control. |
+| `baseline-graph` | Native vLLM graph, DP4/TP1/EP4 | 4 | Non-AFD control. |
 
 Target runtime is about 20 minutes per platform for PRs and at most 30 minutes
 for merge validation. Put slower coverage in a scheduled job.

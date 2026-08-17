@@ -11,9 +11,8 @@ Qwen3 MoE on real GPU hardware. Each default gate runs four scenarios:
 Each scenario evaluates the first 7 GSM8K samples. If `AFD_E2E_DEVICES` is set,
 that value is used as-is; otherwise the defaults are:
 
-- `0,1,2` for the default scenarios. AFD uses the first two for Attention and
-  the third for FFN; `baseline-graph` uses the first two for DP2/TP1/EP2.
-- `0,1,2,3` for `afd-graph-dbo-2a2f`
+- `0,1,2,3` for the default scenarios. AFD uses the first two for Attention
+  and the third for FFN; `baseline-graph` uses all four for DP4/TP1/EP4.
 
 Tests run sequentially and must not skip. Every GSM8K evaluation uses 8
 few-shot examples and a 4096-token maximum model length.
@@ -36,7 +35,7 @@ GPU:
 ```bash
 export HF_HOME=/path/to/huggingface
 export AFD_E2E_BACKEND=gpu
-# Optional: export AFD_E2E_DEVICES=0,1,2
+# Optional: export AFD_E2E_DEVICES=0,1,2,3
 # Optional if the model is already local:
 # export AFD_GPU_E2E_MODEL=/path/to/model
 ```
@@ -46,7 +45,7 @@ NPU:
 ```bash
 export HF_HOME=/path/to/huggingface
 export AFD_E2E_BACKEND=npu
-# Optional: export AFD_E2E_DEVICES=0,1,2
+# Optional: export AFD_E2E_DEVICES=0,1,2,3
 # Optional if the model is already local:
 # export AFD_NPU_E2E_MODEL=/path/to/DeepSeek-V2-Lite
 ```
