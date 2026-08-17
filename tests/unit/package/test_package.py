@@ -176,7 +176,7 @@ def test_afd_model_config_uses_v4_private_architecture_copy():
         hf_text_config=hf_config,
     )
 
-    afd_model_config = get_afd_model_config(model_config)
+    afd_model_config = get_afd_model_config(model_config, device_type="cuda")
 
     assert afd_model_config is not model_config
     assert afd_model_config.hf_config is not model_config.hf_config
@@ -193,7 +193,7 @@ def test_non_afd_model_config_is_unchanged():
         hf_config=SimpleNamespace(architectures=["UnsupportedForCausalLM"]),
     )
 
-    assert get_afd_model_config(model_config) is model_config
+    assert get_afd_model_config(model_config, device_type="cuda") is model_config
 
 
 def test_afd_model_config_preserves_nested_text_config():
