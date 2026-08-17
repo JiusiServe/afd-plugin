@@ -49,7 +49,6 @@ from vllm_ascend.compilation.acl_graph import ACLGraphWrapper
 from vllm_ascend.ops.rotary_embedding import update_cos_sin
 from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
 from vllm_ascend.spec_decode.draft_proposer import AscendDraftModelProposer
-from vllm_ascend.spec_decode.dspark_proposer import AscendDSparkProposer
 from vllm_ascend.spec_decode.eagle_proposer import AscendEagleProposer
 from vllm_ascend.spec_decode.step3p5 import AscendStep3p5MTPProposer
 from vllm_ascend.utils import (
@@ -204,6 +203,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
     ):
         forward_context = get_forward_context()
         # ### PATCH START: AFD forward-context metadata
+        forward_context.input_ids = input_ids
         if self.ubatch_slices is not None:
             forward_context.ubatch_slices = self.ubatch_slices
         forward_context.dbo_enabled = False
@@ -753,7 +753,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 )
             if self.speculative_config and isinstance(
                 self.drafter,
-                AscendStep3p5MTPProposer | AscendDSparkProposer,
+                AscendStep3p5MTPProposer,
             ):
                 self.drafter.set_per_group_attn_metadata(
                     kv_cache_gid,
@@ -765,8 +765,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                     self.drafter,
                     AscendEagleProposer
                     | AscendDraftModelProposer
-                    | AscendDflashProposer
-                    | AscendDSparkProposer,
+                    | AscendDflashProposer,
                 ):
                     if self.drafter.attn_layer_names[0] in kv_cache_group.layer_names:
                         spec_decode_common_attn_metadata = cm
@@ -1440,7 +1439,11 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         padded_graph_tokens = _full_cudagraph_padded_tokens(forward_context)
         if padded_graph_tokens is not None and not ubatch_slices:
             dp_metadata = self._build_capture_dp_metadata(padded_graph_tokens)
-        self._send_dp_metadata(dp_metadata, ubatch_slices)
+        self._send_dp_metadata(
+            dp_metadata,
+            ubatch_slices,
+            input_ids=getattr(forward_context, "input_ids", None),
+        )
 
     def _install_async_moe_ubatch_metadata_on_forward_context(
         self,
@@ -1481,6 +1484,8 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         self,
         dp_metadata: DPMetadata | AFDDPMetadata | None,
         ubatch_slices: UBatchSlices | None,
+        *,
+        input_ids: torch.Tensor | None = None,
     ) -> None:
         assert self.connector.control_plane is not None, (
             "_send_dp_metadata needs control plane driven connectors"
@@ -1496,12 +1501,31 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         else:
             dp_metadata = self._ensure_dp_metadata(dp_metadata)
             dp_metadata_list = {0: dp_metadata}
+        input_ids_by_stage: dict[int, list[int]] = {}
+        if input_ids is not None:
+            if ubatch_slices and len(ubatch_slices) > 1:
+                for idx, ubatch in enumerate(ubatch_slices):
+                    input_ids_by_stage[idx] = (
+                        input_ids[ubatch.token_slice]
+                        .detach()
+                        .to(device="cpu", dtype=torch.int64)
+                        .flatten()
+                        .tolist()
+                    )
+            else:
+                input_ids_by_stage[0] = (
+                    input_ids.detach()
+                    .to(device="cpu", dtype=torch.int64)
+                    .flatten()
+                    .tolist()
+                )
         is_warmup = bool(self._is_warmup)
         is_graph_capturing = bool(self._afd_is_graph_capturing)
         payload = AFDControlPayload(
             dp_metadata_list=dp_metadata_list,
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,
+            input_ids_by_stage=input_ids_by_stage,
         )
         self.connector.control_plane.update_state_from_dp_metadata(payload)
         logger.warning(

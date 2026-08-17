@@ -27,7 +27,6 @@ derivation, launch guidance, and the full limitations.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
@@ -327,6 +326,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         *,
         stage_idx: int,
         max_num_tokens: int,
+        expected_layer_idx: int,
     ) -> AFDAsyncFFNWorkItem:
         """Receive and normalize one connector-driven FFN dispatch item.
 
@@ -349,7 +349,23 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
                 "TokenNums_Rankid_Layeridx from async_dispatch_recv",
             )
         total_num_tokens = max(1, int(token_nums_rankid_layeridx[0].item()))
-        layer_idx = int(token_nums_rankid_layeridx[2].item())
+        # A zero in the header's leading count is valid for an FFN rank that
+        # received no routed tokens in this dispatch.  Such ranks must still
+        # enter combine-send (the zero-token fallback below supplies its
+        # placeholder) so every participant completes the CAM collective.
+        # CAM 209 currently returns zero in the documented layer-index slot
+        # for every dispatch-recv result.  The connector-driven FFN runner
+        # already has the authoritative decoder-layer order, so consuming this
+        # stale field makes every DSV4 work item execute FFN layer 0.  CAM
+        # combine-send also uses this header to match the completion to its
+        # original dispatch, so merely fixing the local model call is not
+        # sufficient: all later layers would still be combined as layer 0.
+        # Preserve the vendor-produced count/rank fields and repair only its
+        # stale layer field before returning the header to combine-send.
+        layer_idx = int(expected_layer_idx)
+        token_nums_rankid_layeridx = token_nums_rankid_layeridx.clone()
+        token_nums_rankid_layeridx[2] = layer_idx
+        states.token_nums_rankid_layeridx = token_nums_rankid_layeridx
 
         expert_token_nums_shared = states.expert_token_nums_shared
         if expert_token_nums_shared is None:
@@ -506,27 +522,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             (context, topk_ids, topk_weights),
         )
 
-        _log_cam_op_values(
-            "async_dispatch_send",
-            "inputs",
-            hidden_states=hidden_states,
-            topk_ids=topk_ids,
-            comm_args=self.comm_args,
-            comm_id=self.comm_id,
-            max_seq_len=self.max_seq_len,
-            batch_size=states.batch_size,
-            hidden_size=states.hidden_size,
-            topk=states.topk,
-            ffn_size=self.ffn_size,
-            attn_size=self.attn_size,
-            expert_per_rank=self.expert_per_rank,
-            rank=self.world_rank,
-            world_size=self.topology.world_size,
-            layer_idx=states.layer_idx,
-            tp_size=self.tp_size,
-            dynamic_quant=self.dynamic_quant,
-            group_name=self.group_name,
-        )
         torch.ops.umdk_cam_op_lib.async_dispatch_send(
             hidden_states,
             topk_ids,
@@ -546,6 +541,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             self.dynamic_quant,
             self.group_name,
         )
+        torch.npu.synchronize()
         return None
 
     def recv_ffn_output(
@@ -609,24 +605,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             topk=states.topk,
         )
         placeholder = ref_tensor.new_empty((1,))
-        _log_cam_op_values(
-            "async_combine_recv",
-            "inputs",
-            placeholder=placeholder,
-            topk_ids=topk_ids,
-            topk_weights=topk_weights,
-            comm_args=self.comm_args,
-            comm_id=self.comm_id,
-            batch_size=states.batch_size,
-            hidden_size=states.hidden_size,
-            topk=states.topk,
-            ffn_size=self.ffn_size,
-            attn_size=self.attn_size,
-            expert_per_rank=self.expert_per_rank,
-            rank=self.world_rank,
-            world_size=self.topology.world_size,
-            group_name=self.group_name,
-        )
         output = torch.ops.umdk_cam_op_lib.async_combine_recv(
             placeholder,
             topk_ids,
@@ -643,7 +621,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             self.topology.world_size,
             self.group_name,
         )
-        _log_cam_op_values("async_combine_recv", "outputs", output=output)
+        torch.npu.synchronize()
         return output
 
     def recv_attn_output(
@@ -677,24 +655,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             states=states,
         )
         placeholder = kwargs.get("placeholder", self._placeholder)
-        _log_cam_op_values(
-            "async_dispatch_recv",
-            "inputs",
-            placeholder=placeholder,
-            comm_args=self.comm_args,
-            comm_id=self.comm_id,
-            batch_size=states.batch_size,
-            hidden_size=states.hidden_size,
-            topk=states.topk,
-            ffn_size=self.ffn_size,
-            attn_size=self.attn_size,
-            expert_per_rank=self.expert_per_rank,
-            rank=self.world_rank,
-            world_size=self.topology.world_size,
-            tp_size=self.tp_size,
-            dynamic_quant=self.dynamic_quant,
-            group_name=self.group_name,
-        )
         outputs = torch.ops.umdk_cam_op_lib.async_dispatch_recv(
             placeholder,
             self.comm_args,
@@ -720,17 +680,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             expert_token_nums,
             expert_token_nums_shared,
         ) = outputs
-        _log_cam_op_values(
-            "async_dispatch_recv",
-            "outputs",
-            hidden_states=hidden_states,
-            expand_x_shared=expand_x_shared,
-            dynamic_scales=dynamic_scales,
-            dynamic_scales_shared=dynamic_scales_shared,
-            token_nums_rankid_layeridx=token_nums_rankid_layeridx,
-            expert_token_nums=expert_token_nums,
-            expert_token_nums_shared=expert_token_nums_shared,
-        )
         states.token_nums_rankid_layeridx = token_nums_rankid_layeridx
         states.expert_token_nums_shared = expert_token_nums_shared
         states.group_list = expert_token_nums
@@ -766,25 +715,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
                 "AFD async CAM combine send requires "
                 "TokenNums_Rankid_Layeridx from async_dispatch_recv",
             )
-        _log_cam_op_values(
-            "async_combine_send",
-            "inputs",
-            ffn_output=ffn_output,
-            expand_x_shared=expand_x_shared,
-            comm_args=self.comm_args,
-            token_nums_rankid_layeridx=token_nums_rankid_layeridx,
-            comm_id=self.comm_id,
-            batch_size=states.batch_size,
-            hidden_size=states.hidden_size,
-            topk=states.topk,
-            ffn_size=self.ffn_size,
-            attn_size=self.attn_size,
-            expert_per_rank=self.expert_per_rank,
-            rank=self.world_rank,
-            world_size=self.topology.world_size,
-            tp_size=self.tp_size,
-            group_name=self.group_name,
-        )
         torch.ops.umdk_cam_op_lib.async_combine_send(
             ffn_output,
             expand_x_shared,
@@ -802,7 +732,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             self.tp_size,
             self.group_name,
         )
-
     def _require_initialized(self) -> None:
         if not self._initialized:
             raise RuntimeError("CAMAsyncAFDConnector is not initialized")
@@ -818,36 +747,6 @@ def _require_async_transfer_state(
             "transfer context",
         )
     return states
-
-
-_CAM_LOG_SKIPPED_ARGS = frozenset({"comm_args", "comm_id", "group_name"})
-_CAM_OP_IO_LOG_ENV = "AFD_CAM_OP_IO_LOG"
-
-
-def _log_cam_op_values(op_name: str, label: str, **kwargs: object) -> None:
-    if os.environ.get(_CAM_OP_IO_LOG_ENV, "").lower() not in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        return
-    lines: list[str] = []
-    for name, value in kwargs.items():
-        if name in _CAM_LOG_SKIPPED_ARGS:
-            continue
-        if isinstance(value, Tensor):
-            description = f"Tensor(dtype={value.dtype}, shape={tuple(value.shape)})"
-            if name == "token_nums_rankid_layeridx":
-                try:
-                    first5: object = value.detach().flatten()[:5].cpu().tolist()
-                except Exception as exc:  # pragma: no cover - defensive logging helper
-                    first5 = f"<unavailable: {type(exc).__name__}>"
-                description = f"{description}, first5={first5!r}"
-        else:
-            description = repr(value)
-        lines.append(f"  {name}={description}")
-    logger.warning("AFD CAM %s %s:\n%s", op_name, label, "\n".join(lines))
 
 
 def build_async_topology(

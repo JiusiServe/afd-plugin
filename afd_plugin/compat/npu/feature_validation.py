@@ -40,6 +40,8 @@ def fail_if_unsupported_npu_afd_features(
             afd_config,
             extra_info,
         )
+        if _is_dsv4_target(vllm_config):
+            _fail_if_unsupported_dsv4_async_features(afd_config, extra_info)
         return
 
     if afd_config.compute_gate_on_attention:
@@ -81,6 +83,47 @@ def fail_if_unsupported_npu_afd_features(
     if uses_mla_dbo_full_graph and cudagraph_mode.name != "FULL_DECODE_ONLY":
         raise RuntimeError(
             "AFD NPU MLA DBO graph execution requires FULL_DECODE_ONLY",
+        )
+
+
+def _is_dsv4_target(vllm_config: VllmConfig) -> bool:
+    """Return whether the target model is DeepSeek V4."""
+    model_config = vllm_config.model_config
+    hf_config = getattr(model_config, "hf_config", None)
+    if hf_config is None:
+        hf_config = getattr(model_config, "hf_text_config", None)
+    if hf_config is None:
+        return False
+    if getattr(hf_config, "model_type", None) == "deepseek_v4":
+        return True
+    architectures = getattr(hf_config, "architectures", ()) or ()
+    return any("DeepseekV4" in str(architecture) for architecture in architectures)
+
+
+def _fail_if_unsupported_dsv4_async_features(
+    afd_config: AFDConfig,
+    extra_info: ConnectorExtraInfo,
+) -> None:
+    """Keep the initial DSV4 Async CAM target path deliberately narrow."""
+    from afd_plugin.connectors.npu.async_cam import AFDAsyncExtraInfo
+
+    if not afd_config.compute_gate_on_attention:
+        raise RuntimeError(
+            "DSV4 CAMAsyncAFDConnector requires compute_gate_on_attention=true",
+        )
+    if not isinstance(extra_info, AFDAsyncExtraInfo):
+        raise TypeError(
+            "DSV4 CAMAsyncAFDConnector requires AFDAsyncExtraInfo, got "
+            f"{type(extra_info).__name__}",
+        )
+    if extra_info.dynamic_quant != 1:
+        raise RuntimeError(
+            "DSV4 Flash-INT8 CAMAsyncAFDConnector requires dynamicQuant=1",
+        )
+    if extra_info.async_moe_ubatching:
+        raise RuntimeError(
+            "DSV4 CAMAsyncAFDConnector target baseline does not support "
+            "async_moe_ubatching yet",
         )
 
 

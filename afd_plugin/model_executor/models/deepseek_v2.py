@@ -128,6 +128,14 @@ class RemoteFFNProxy(nn.Module):
         if afd_metadata is None:
             raise RuntimeError("RemoteFFNProxy requires AFD forward metadata")
         forward_context = get_forward_context()
+        # vLLM's startup memory profile executes a synthetic, role-local
+        # forward.  There is no matching FFN request stream at that point, so
+        # issuing CAM dispatch/combine from the Attention profile can pair its
+        # small dummy batch with an FFN receive-capacity buffer and leave the
+        # external communicator in a broken state.  Keep the profile local;
+        # live forwards below retain the real remote-FFN exchange.
+        if bool(getattr(forward_context, "in_profile_run", False)):
+            return hidden_states
         stage_idx = int(
             getattr(forward_context, "ubatch_idx", afd_metadata.stage_idx),
         )
