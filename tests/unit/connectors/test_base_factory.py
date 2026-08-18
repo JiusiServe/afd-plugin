@@ -4,8 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 
-pytest.importorskip("torch")
-
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
     AFDA2FTransferPayload,
@@ -14,6 +12,8 @@ from afd_plugin.connectors import (
     AFDTransferContext,
     AFDTransferMetadata,
 )
+
+torch = pytest.importorskip("torch")
 
 
 def test_dummy_connector_is_not_registered():
@@ -78,6 +78,25 @@ def test_attn_output_carries_transfer_context():
     assert output.context.metadata is metadata
     assert output.context.states is None
     assert repr(output).startswith("AFDA2FTransferPayload(")
+
+
+def test_a2f_payload_preserves_token_ids():
+    input_ids = torch.tensor([11, 13, 17], dtype=torch.int32)
+    output = AFDA2FTransferPayload(
+        hidden_states=torch.ones(3, 2),
+        context=AFDTransferContext(
+            metadata=AFDTransferMetadata.create_ffn_metadata(
+                layer_idx=1,
+                stage_idx=2,
+                seq_lens=[3],
+            ),
+        ),
+        input_ids=input_ids,
+    )
+
+    assert output.input_ids is input_ids
+    assert output.input_ids.dtype is torch.int32
+    assert torch.equal(output.input_ids, input_ids)
 
 
 class _MinimalConnector(AFDConnectorBase):

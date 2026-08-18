@@ -194,6 +194,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             stage_idx: self._make_ffn_dp_metadata(dp_metadata_list[stage_idx])
             for stage_idx in stage_ids
         }
+        recv_input_ids = getattr(self.model, "afd_requires_input_ids", False)
         with _ffn_forward_context(self.vllm_config) as forward_context:
             for layer_idx in layer_indices:
                 uses_remote_experts = layer_idx in experts_layer_indices
@@ -203,9 +204,14 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                     else None
                 )
                 for stage_idx in stage_ids:
+                    recv_kwargs: dict[str, Any] = {}
+                    if routing_spec is not None:
+                        recv_kwargs["routing_spec"] = routing_spec
+                    if recv_input_ids:
+                        recv_kwargs["recv_input_ids"] = True
                     payload = self.connector.recv_attn_output(
                         ubatch_idx=stage_idx,
-                        routing_spec=routing_spec,
+                        **recv_kwargs,
                     )
                     hidden_states = payload.hidden_states
                     context = payload.context
@@ -233,6 +239,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                         rank_ffn_output = self._execute_eager_mode(
                             hidden_states,
                             layer_idx,
+                            input_ids=payload.input_ids,
                         )
                     self.connector.send_ffn_output(rank_ffn_output, context)
         return rank_ffn_output
@@ -241,8 +248,16 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         self,
         hidden_states: torch.Tensor,
         layer_idx: int,
+        *,
+        input_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        return self.model.compute_ffn_output(hidden_states, layer_idx)
+        if input_ids is None:
+            return self.model.compute_ffn_output(hidden_states, layer_idx)
+        return self.model.compute_ffn_output(
+            hidden_states,
+            layer_idx,
+            input_ids=input_ids,
+        )
 
     def _make_ffn_dp_metadata(
         self,

@@ -337,6 +337,35 @@ def test_p2p_dp_metadata_serialization_uses_json_payload():
     assert decoded_payload.is_warmup is False
 
 
+def test_graph_state_adds_input_ids_buffer_when_hidden_buffer_exists(monkeypatch):
+    connector = AFDConnectorFactory.create_connector(
+        0,
+        0,
+        _fake_vllm_config(enforce_eager=False),
+        AFDConfig(
+            role="ffn",
+            connector="P2pNcclAFDConnector",
+            num_attention_ranks=1,
+            num_ffn_ranks=1,
+        ),
+    )
+    hidden_key = (0, 1, (2, 16))
+    existing_hidden = object()
+    connector._recv_attn_buffers[hidden_key] = existing_hidden
+    monkeypatch.setattr(torch, "empty", lambda *args, **kwargs: object())
+
+    connector.control_plane.update_state_from_dp_metadata(
+        AFDControlPayload(
+            dp_metadata_list={0: AFDDPMetadata([2])},
+            is_graph_capturing=True,
+            is_warmup=False,
+        ),
+    )
+
+    assert connector._recv_attn_buffers[hidden_key] is existing_hidden
+    assert (0, 1, (2,)) in connector._recv_attn_input_ids_buffers
+
+
 def test_p2p_custom_ops_register_send_recv_with_fake_impls(monkeypatch):
     module = importlib.import_module("afd_plugin.connectors.gpu.p2p")
     calls = []

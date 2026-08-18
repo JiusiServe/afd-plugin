@@ -263,11 +263,14 @@ class AFDA2FTransferPayload:
         context: Transfer context describing the received transfer, including
             transfer metadata and backend-produced transfer state.
         router_logits: Optional Attention-side routing tensor.
+        input_ids: Optional token-aligned identifiers required by the remote
+            FFN implementation.
     """
 
     hidden_states: torch.Tensor
     context: AFDTransferContext
     router_logits: torch.Tensor | None = None
+    input_ids: torch.Tensor | None = None
 
 
 @dataclass(slots=True)

@@ -20,6 +20,9 @@ from afd_plugin.connectors import (  # noqa: E402
     AFDTransferContext,
     AFDTransferMetadata,
 )
+from afd_plugin.model_executor.models.deepseek_v2 import (  # noqa: E402
+    AFDDeepseekV2ForCausalLM,
+)
 from afd_plugin.v1.worker.cuda_graph import make_ffn_graph_key  # noqa: E402
 from afd_plugin.v1.worker.ffn_model_runner import (  # noqa: E402
     GPUFFNModelRunner,
@@ -33,6 +36,7 @@ class _FakeConnector:
         self.attn_outputs = deque()
         self.ffn_outputs = []
         self.expert_routing_specs = []
+        self.recv_input_ids = []
         self.dp_metadata_updates = []
         self.closed = False
         self.attn_size = 1
@@ -51,9 +55,15 @@ class _FakeConnector:
             ),
         )
 
-    def recv_attn_output(self, ubatch_idx=None, routing_spec=None):
+    def recv_attn_output(
+        self,
+        ubatch_idx=None,
+        routing_spec=None,
+        recv_input_ids=False,
+    ):
         if routing_spec is not None:
             self.expert_routing_specs.append(routing_spec)
+        self.recv_input_ids.append(recv_input_ids)
         if ubatch_idx is None:
             return self.attn_outputs.popleft()
         for item in tuple(self.attn_outputs):
@@ -187,16 +197,66 @@ def test_ffn_runner_executes_model_compute_ffn_output():
     assert runner.connector.ffn_outputs == [
         ("ffn(hidden, layer=0)", metadata),
     ]
+    assert runner.connector.recv_input_ids == [False]
     assert metadata.layer_idx == 0
 
 
-def test_ffn_runner_exposes_missing_model_contract():
-    runner = _runner_with_connector_and_model(SimpleNamespace())
-    metadata = _metadata()
-    runner.connector.attn_outputs.append(_payload("hidden", metadata))
+def test_v2_ffn_runner_keeps_hidden_state_only_connector_contract():
+    class _V2Backbone:
+        def __init__(self):
+            self.calls = []
 
-    with pytest.raises(AttributeError, match="get_experts_layer_indices"):
-        runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
+        def get_experts_layer_indices(self):
+            return ()
+
+        def compute_ffn_output(self, hidden_states, layer_idx, **kwargs):
+            self.calls.append((hidden_states, layer_idx, kwargs))
+            return hidden_states
+
+    backbone = _V2Backbone()
+    model = object.__new__(AFDDeepseekV2ForCausalLM)
+    torch.nn.Module.__init__(model)
+    model.model = backbone
+    runner = _runner_with_connector_and_model(model)
+    metadata = _metadata()
+    runner.connector.attn_outputs.append(_payload("v2-hidden", metadata))
+
+    runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
+
+    assert not getattr(model, "afd_requires_input_ids", False)
+    assert runner.connector.recv_input_ids == [False]
+    assert backbone.calls == [("v2-hidden", 0, {})]
+    assert runner.connector.ffn_outputs == [("v2-hidden", metadata)]
+
+
+def test_ffn_runner_forwards_payload_input_ids_to_model():
+    class _InputIdsModel(_FakeModel):
+        afd_requires_input_ids = True
+
+        def __init__(self):
+            self.calls = []
+
+        def compute_ffn_output(self, hidden_states, layer_idx, *, input_ids):
+            self.calls.append((hidden_states, layer_idx, input_ids))
+            return input_ids
+
+    model = _InputIdsModel()
+    runner = _runner_with_connector_and_model(model)
+    metadata = _metadata()
+    input_ids = torch.tensor([11], dtype=torch.int32)
+    runner.connector.attn_outputs.append(
+        AFDA2FTransferPayload(
+            hidden_states="hidden",
+            context=AFDTransferContext(metadata=metadata),
+            input_ids=input_ids,
+        ),
+    )
+
+    runner.execute_model(dp_metadata_list={0: _FakeDPMetadata([1])})
+
+    assert model.calls == [("hidden", 0, input_ids)]
+    assert runner.connector.ffn_outputs == [(input_ids, metadata)]
+    assert runner.connector.recv_input_ids == [True]
 
 
 def test_ffn_runner_processes_each_ubatch_for_each_layer():
