@@ -1,6 +1,6 @@
 ---
 name: run-e2e
-description: Use when the user asks to run, validate, or diagnose the AFD plugin's DeepSeek-V2-Lite GPU/NPU or Qwen3 MoE GPU end-to-end tests, including PR-gate E2E, GSM8K-7 accuracy, graph, eager, DBO, or 2A2F scenarios.
+description: Use when the user asks to run, validate, or diagnose the AFD plugin's DeepSeek-V2-Lite GPU/NPU, Qwen3 MoE GPU, or Qwen3.5/3.6 MoE CUDA end-to-end tests, including PR-gate E2E, GSM8K-7 accuracy, graph, eager, DBO, or 2A2F scenarios.
 ---
 
 # Run AFD E2E Tests
@@ -11,6 +11,7 @@ Run one of the model suites:
 
 - `tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py` on GPU or NPU
 - `tests/e2e/models/qwen3_moe/test_qwen3_moe.py` on GPU
+- `tests/e2e/models/qwen3_6/test_qwen3_6.py` on CUDA (text-only)
 
 Each suite contains four default scenarios:
 
@@ -96,6 +97,24 @@ For Qwen3 MoE on GPU, run:
 python -m pytest -q -s \
   tests/e2e/models/qwen3_moe/test_qwen3_moe.py
 ~~~
+
+For Qwen3.6 MoE on CUDA, run:
+
+~~~bash
+export AFD_E2E_BACKEND=gpu
+export AFD_E2E_DEVICES=0,1,2,3
+export AFD_GPU_E2E_MODEL=/path/to/Qwen3.6-35B-A3B
+python -m pytest -q -s \
+  tests/e2e/models/qwen3_6/test_qwen3_6.py
+~~~
+
+The Qwen3.6 suite uses `Qwen/Qwen3.6-35B-A3B`, vLLM V1, and passes
+`--language-model-only` to every runner invocation. It is CUDA-only and
+text-only: `baseline-graph` is native DP4/TP1/EP4, while the AFD scenarios are
+synchronous 2A1F with Attention on the first two devices and FFN on the third.
+Multimodal, NPU, `compute_gate_on_attention=true`, asynchronous,
+pipeline-parallel, and multi-node execution are not covered; quantization is
+unverified.
 
 Do not add backend markers or run scenarios in parallel; they share devices.
 

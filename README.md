@@ -44,6 +44,7 @@ Model support:
 | --- | --- | --- | --- |
 | DeepSeekV2 / DeepSeekV3 / DeepSeekV3.2 | `DeepseekForCausalLM`, `DeepseekV2ForCausalLM`, `DeepseekV3ForCausalLM`, `DeepseekV32ForCausalLM` | `AFDDeepseekForCausalLM`, `AFDDeepseekV2ForCausalLM`, `AFDDeepseekV3ForCausalLM` | DeepSeekV3.2 uses `AFDDeepseekV3ForCausalLM`. Each AFD role constructs and loads only its role-required model components, while shared embedding, normalization, and output components remain available where required by the model lifecycle. |
 | Qwen3 MoE | `Qwen3MoeForCausalLM` | `AFDQwen3MoeForCausalLM` | CUDA with `compute_gate_on_attention=false`. |
+| Qwen3.5 / Qwen3.6 MoE | `Qwen3_5MoeForConditionalGeneration` | `AFDQwen3_5MoeForConditionalGeneration` | CUDA text-only lane validated with Qwen3.6-35B-A3B, `--language-model-only`, synchronous `P2pNcclAFDConnector`, native DP4/TP1/EP4 baseline, and AFD 2A1F eager/graph/graph+DBO. |
 
 Connector support:
 
@@ -69,6 +70,11 @@ Known gaps:
   `CAMAsyncAFDConnector`.
 - Qwen3 MoE currently rejects Attention-side gate placement, sequence-parallel
   MoE, EPLB, pipeline parallelism, speculative decoding, LoRA, and NPU.
+- Qwen3.5/3.6 MoE support is limited to the validated CUDA text-only lane:
+  NPU and multimodal execution are unsupported/unverified;
+  `compute_gate_on_attention=true`, pipeline parallelism, asynchronous and
+  multi-node execution are unsupported; quantization is unverified; no
+  performance claim is made.
 - PCP-based NPU model-runner-v1 deployments from v0.19.1rc1 are not supported
   on v0.26.
 
