@@ -390,22 +390,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             UBatchSlice(stage.request_slice, stage.token_slice) for stage in stages
         ]
 
-        logger.debug(
-            "AFD NPU async MoE ubatch split; num_reqs=%s num_tokens=%s "
-            "num_scheduled_tokens=%s split=%s sequence_parallel=%s "
-            "request_slices=%s token_slices=%s stage_input_tokens=%s "
-            "stage_actual_tokens=%s",
-            len(num_scheduled_tokens_np),
-            num_tokens,
-            num_scheduled_tokens_np.tolist(),
-            self.afd_async_extra_info.async_moe_split,
-            use_sequence_parallel,
-            [(stage.request_slice.start, stage.request_slice.stop) for stage in stages],
-            [(stage.token_slice.start, stage.token_slice.stop) for stage in stages],
-            [int(stage.input_tokens) for stage in stages],
-            [stage.actual_tokens for stage in stages],
-        )
-
         stage_attn_metadata, _ = self._build_attention_metadata_with_ubatches(
             num_tokens=num_tokens,
             num_reqs=num_reqs,
@@ -1528,14 +1512,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             input_ids_by_stage=input_ids_by_stage,
         )
         self.connector.control_plane.update_state_from_dp_metadata(payload)
-        logger.warning(
-            "AFD NPU Attention send_dp_metadata decision; world_rank=%d "
-            "key=%s is_graph_capturing=%s is_warmup=%s",
-            self.connector.world_rank,
-            _dp_metadata_debug_key(dp_metadata_list),
-            is_graph_capturing,
-            is_warmup,
-        )
         self.connector.control_plane.send_dp_metadata_list(payload)
 
     def _ensure_dp_metadata(
@@ -1926,18 +1902,6 @@ def _make_uniform_dp_metadata(dp_size: int, num_tokens: int) -> AFDDPMetadata:
         device="cpu",
     )
     return AFDDPMetadata(num_tokens_across_dp_cpu=num_tokens_across_dp_cpu)
-
-
-def _dp_metadata_debug_key(
-    dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
-) -> tuple[tuple[int, tuple]]:
-    key_parts: list[tuple[int, tuple]] = []
-    for stage_idx, metadata in sorted(dp_metadata_list.items()):
-        values_tuple = tuple(
-            int(value) for value in metadata.num_tokens_across_dp_cpu.tolist()
-        )
-        key_parts.append((int(stage_idx), values_tuple))
-    return tuple(key_parts)
 
 
 def _normalize_metadata_ubatch_slices(

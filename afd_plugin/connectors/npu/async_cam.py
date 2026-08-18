@@ -195,6 +195,8 @@ class AFDAsyncTopology:
 
     role: str
     role_rank: int
+    dp_group_index: int
+    num_dp_groups: int
     world_rank: int
     attn_size: int
     ffn_size: int
@@ -256,11 +258,13 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             afd_config,
             role_rank,
             num_routed_experts=self.num_routed_experts,
+            attn_ranks_per_dp=self.tp_size,
         )
         self.world_rank = self.topology.world_rank
         self.attn_size = self.topology.attn_size
         self.ffn_size = self.topology.ffn_size
         self.expert_per_rank = self.topology.expert_per_rank
+        self._process_group_name = _cam_process_group_name(self.topology)
         self.comm_args: Tensor | None = None
         self._placeholder: Tensor | None = None
         self._pending_attention_payloads: dict[
@@ -289,7 +293,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             init_method=f"tcp://{self.afd_config.host}:{self.afd_config.port}",
             world_size=self.topology.world_size,
             rank=self.world_rank,
-            group_name=AFD_ASYNC_CAM_GROUP_NAME,
+            group_name=self._process_group_name,
             timeout=timedelta(minutes=30),
         )
         backend = self.cam_pg._get_backend(torch.device("npu"))
@@ -754,36 +758,55 @@ def build_async_topology(
     role_rank: int,
     *,
     num_routed_experts: int | None = None,
+    attn_ranks_per_dp: int | None = None,
 ) -> AFDAsyncTopology:
-    """Validate role-local rank settings and derive the CAM HCCL world rank.
+    """Derive the DP-scoped CAM HCCL world for one role-local rank.
 
-    The world is Attention-first: Attention role rank ``i`` maps to world rank
-    ``i`` and FFN role rank ``j`` maps to
-    ``num_attention_ranks + j``. Routed experts are distributed across FFN
-    ranks using a ceiling division; production model layouts should keep the
-    routed-expert count divisible by the FFN rank count.
+    CAM does not carry a DP queue identifier.  Multiple Attention DP replicas
+    must therefore use independent HCCL communicators rather than sharing one
+    global CAM world.  Each local world is Attention-first:
+    ``[A(dp, 0), ..., A(dp, tp - 1), F(dp, 0), ..., F(dp, n - 1)]``.
     """
-    attn_size = afd_config.num_attention_ranks
-    ffn_size = afd_config.num_ffn_ranks
-    if attn_size <= 0 or ffn_size <= 0:
+    global_attn_size = afd_config.num_attention_ranks
+    global_ffn_size = afd_config.num_ffn_ranks
+    if global_attn_size <= 0 or global_ffn_size <= 0:
         raise ValueError("AFD async topology sizes must be positive")
     if role_rank < 0:
         raise ValueError(f"AFD async role rank must be non-negative, got {role_rank}")
 
+    attn_size = (
+        global_attn_size if attn_ranks_per_dp is None else attn_ranks_per_dp
+    )
+    if not isinstance(attn_size, int) or isinstance(attn_size, bool) or attn_size <= 0:
+        raise ValueError("attn_ranks_per_dp must be a positive integer")
+    if global_attn_size % attn_size != 0:
+        raise ValueError(
+            "num_attention_ranks must be divisible by attn_ranks_per_dp, got "
+            f"{global_attn_size} and {attn_size}"
+        )
+    num_dp_groups = global_attn_size // attn_size
+    if global_ffn_size % num_dp_groups != 0:
+        raise ValueError(
+            "num_ffn_ranks must be divisible by the CAM DP group count, got "
+            f"{global_ffn_size} and {num_dp_groups}"
+        )
+    ffn_size = global_ffn_size // num_dp_groups
+
     if afd_config.role == "attention":
-        if role_rank >= attn_size:
+        if role_rank >= global_attn_size:
             raise ValueError(
                 "Attention role rank must be within attention size "
-                f"(rank={role_rank}, size={attn_size})",
+                f"(rank={role_rank}, size={global_attn_size})",
             )
-        world_rank = role_rank
+        dp_group_index, world_rank = divmod(role_rank, attn_size)
     elif afd_config.role == "ffn":
-        if role_rank >= ffn_size:
+        if role_rank >= global_ffn_size:
             raise ValueError(
                 "FFN role rank must be within FFN size "
-                f"(rank={role_rank}, size={ffn_size})",
+                f"(rank={role_rank}, size={global_ffn_size})",
             )
-        world_rank = attn_size + role_rank
+        dp_group_index, local_ffn_rank = divmod(role_rank, ffn_size)
+        world_rank = attn_size + local_ffn_rank
     else:
         raise ValueError(f"unknown AFD role {afd_config.role!r}")
 
@@ -792,11 +815,21 @@ def build_async_topology(
     return AFDAsyncTopology(
         role=afd_config.role,
         role_rank=role_rank,
+        dp_group_index=dp_group_index,
+        num_dp_groups=num_dp_groups,
         world_rank=world_rank,
         attn_size=attn_size,
         ffn_size=ffn_size,
         expert_per_rank=expert_per_rank,
     )
+
+
+def _cam_process_group_name(topology: AFDAsyncTopology) -> str:
+    """Return the DP-scoped HCCL group name used by CAM operators."""
+
+    if topology.num_dp_groups == 1:
+        return AFD_ASYNC_CAM_GROUP_NAME
+    return f"{AFD_ASYNC_CAM_GROUP_NAME}_dp{topology.dp_group_index}"
 
 
 def _validate_topk_payload(
