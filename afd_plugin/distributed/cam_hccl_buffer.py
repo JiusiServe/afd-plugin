@@ -79,7 +79,9 @@ def derive_cam_hccl_buffer_plan(
     *,
     hidden_size: int,
     max_batch_tokens: int,
+    num_npus_per_dp_group: int,
     topk: int,
+    num_routed_experts: int,
     attention_rank_size: int,
     ffn_rank_size: int,
     compute_gate_on_attention: bool,
@@ -87,24 +89,26 @@ def derive_cam_hccl_buffer_plan(
 ) -> CAMHCCLBufferPlan:
     """Derive role-local one-slot CAM buffers with 10% headroom.
 
-    A slot keeps its dispatch activation and combine output regions. When the
-    gate runs on Attention, every source token can occupy ``topk`` routed rows
-    and one fused shared-expert row. An FFN rank reserves routed capacity from
-    every Attention rank plus shared rows from its statically paired sources.
-    When the gate runs on FFN, the cross-role slot carries one unexpanded row
-    in each direction.
+    A slot belongs to one Attention source rank. Its token capacity is the
+    scheduler capacity divided across the TP/SP ranks in that Attention DP
+    group. When the gate runs on Attention, the source slot reserves ``topk``
+    routed rows and one fused shared-expert row, while an FFN slot reserves one
+    fixed-length queue for every local routed expert. When the gate runs on
+    FFN, its role-local size covers both the unexpanded cross-role transfer and
+    the local-expert communication group.
 
     Dynamic quantization applies only to an Attention-gated dispatch row: its
     payload is INT8 hidden data plus one FP32 per-token scale. Combine output
-    remains BF16. ``max_batch_tokens`` is the capacity passed to the CAM op on
-    every source rank and is therefore not divided by TP/SP here.
+    remains BF16.
     """
     if dynamic_quant not in (0, 1):
         raise ValueError(f"dynamic_quant must be 0 or 1, got {dynamic_quant}")
     positive_dimensions = {
         "hidden_size": hidden_size,
         "max_batch_tokens": max_batch_tokens,
+        "num_npus_per_dp_group": num_npus_per_dp_group,
         "topk": topk,
+        "num_routed_experts": num_routed_experts,
         "attention_rank_size": attention_rank_size,
         "ffn_rank_size": ffn_rank_size,
     }
@@ -119,15 +123,24 @@ def derive_cam_hccl_buffer_plan(
         compute_gate_on_attention=compute_gate_on_attention,
         dynamic_quant=dynamic_quant,
     )
-    shared_source_rank_count = _ceil_div(attention_rank_size, ffn_rank_size)
+    tokens_per_attention_rank = _ceil_div(
+        max_batch_tokens,
+        num_npus_per_dp_group,
+    )
+    local_routed_experts = _ceil_div(num_routed_experts, ffn_rank_size)
     if compute_gate_on_attention:
-        attention_rows = max_batch_tokens * (topk + 1)
-        ffn_rows = max_batch_tokens * (
-            attention_rank_size * topk + shared_source_rank_count
-        )
+        attention_rows = tokens_per_attention_rank * (topk + 1)
+        ffn_rows = tokens_per_attention_rank * local_routed_experts
     else:
-        attention_rows = max_batch_tokens
-        ffn_rows = max_batch_tokens * shared_source_rank_count
+        attention_sources_per_ffn_rank = _ceil_div(
+            attention_rank_size,
+            ffn_rank_size,
+        )
+        attention_rows = tokens_per_attention_rank
+        ffn_rows = tokens_per_attention_rank * max(
+            attention_sources_per_ffn_rank,
+            local_routed_experts,
+        )
 
     attention_required_bytes = attention_rows * slot_row_size_bytes
     ffn_required_bytes = ffn_rows * slot_row_size_bytes
@@ -159,16 +172,27 @@ def derive_cam_hccl_buffer_plan_from_config(
         AFD_ASYNC_CONNECTOR,
         connector_extra_config_from_source,
     )
-    from afd_plugin.config_utils import coerce_extra_int
+    from afd_plugin.config_utils import (
+        coerce_extra_int,
+        coerce_extra_positive_int,
+    )
 
     extra_config = connector_extra_config_from_source(vllm_config)
     if afd_config.connector == AFD_ASYNC_CONNECTOR:
+        num_npus_per_dp_group = coerce_extra_positive_int(
+            extra_config.get("attn_ranks_per_dp", 1),
+            field_name="attn_ranks_per_dp",
+        )
         dynamic_quant = coerce_extra_int(
             extra_config.get("dynamicQuant", 0),
             field_name="dynamicQuant",
         )
         compute_gate_on_attention = True
     elif afd_config.connector == "CAMP2pAFDConnector":
+        # CAMP2P currently supports TP as the only intra-DP NPU dimension.
+        num_npus_per_dp_group = int(
+            vllm_config.parallel_config.tensor_parallel_size,
+        )
         dynamic_quant = 0
         compute_gate_on_attention = False
     else:
@@ -181,7 +205,9 @@ def derive_cam_hccl_buffer_plan_from_config(
     return derive_cam_hccl_buffer_plan(
         hidden_size=hf_config.hidden_size,
         max_batch_tokens=vllm_config.scheduler_config.max_num_batched_tokens,
+        num_npus_per_dp_group=num_npus_per_dp_group,
         topk=hf_config.num_experts_per_tok,
+        num_routed_experts=hf_config.n_routed_experts,
         attention_rank_size=afd_config.num_attention_ranks,
         ffn_rank_size=afd_config.num_ffn_ranks,
         compute_gate_on_attention=compute_gate_on_attention,
