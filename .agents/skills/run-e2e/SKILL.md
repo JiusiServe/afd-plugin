@@ -1,6 +1,6 @@
 ---
 name: run-e2e
-description: Use when the user asks to run, validate, or diagnose the AFD plugin's DeepSeek-V2-Lite GPU/NPU, Qwen3 MoE GPU, or Qwen3.5/3.6 MoE CUDA end-to-end tests, including PR-gate E2E, GSM8K-7 accuracy, graph, eager, DBO, or 2A2F scenarios.
+description: Use when the user asks to run, validate, or diagnose the AFD plugin's DeepSeek-V2-Lite GPU/NPU, Qwen3 MoE GPU, or Qwen3.6 MoE CUDA end-to-end tests through the Qwen3.5/3.6 adapter family, including PR-gate E2E, GSM8K-7 accuracy, graph, eager, DBO, or 2A2F scenarios.
 ---
 
 # Run AFD E2E Tests
@@ -11,7 +11,8 @@ Run one of the model suites:
 
 - `tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py` on GPU or NPU
 - `tests/e2e/models/qwen3_moe/test_qwen3_moe.py` on GPU
-- `tests/e2e/models/qwen3_6/test_qwen3_6.py` on CUDA (text-only)
+- `tests/e2e/models/qwen3_6/test_qwen3_6.py` on CUDA (text-only Qwen3.6
+  evidence for the Qwen3.5/3.6 adapter family)
 
 Each suite contains four default scenarios:
 

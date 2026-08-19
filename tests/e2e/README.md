@@ -1,7 +1,8 @@
 # End-to-End Tests
 
 These tests validate DeepSeek-V2-Lite on real GPU or Ascend NPU hardware,
-Qwen3 MoE on real GPU hardware, and Qwen3.5/3.6 MoE on real CUDA hardware.
+Qwen3 MoE on real GPU hardware, and Qwen3.6 MoE through the Qwen3.5/3.6
+adapter family on real CUDA hardware.
 Each default gate runs four scenarios:
 
 - `baseline-graph`
@@ -75,7 +76,8 @@ python -m pytest -q -s \
 
 Success means 4 passed and 0 skipped.
 
-The Qwen3.6 lane uses `Qwen/Qwen3.6-35B-A3B`, vLLM V1, and the
+The repository CUDA E2E evidence for the Qwen3.5/3.6 adapter family uses
+`Qwen/Qwen3.6-35B-A3B`, vLLM V1, and the
 `P2pNcclAFDConnector` on CUDA. Every scenario passes `--language-model-only`;
 multimodal execution is not covered. `baseline-graph` uses native DP4/TP1/EP4
 on four devices. The three AFD scenarios use synchronous 2A1F: Attention on

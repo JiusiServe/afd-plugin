@@ -6,11 +6,17 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import download_dataset, download_model, run_runner
+from tests.conftest import (
+    download_dataset,
+    download_model,
+    preserve_environment_variable,
+    run_runner,
+)
 
 GSM8K_DATASET_ID = "openai/gsm8k"
 GSM8K_DATASET_CONFIG = "main"
@@ -104,9 +110,11 @@ def build_runner_command(scenario: str, gsm8k_output_path: Path) -> list[str]:
 
 
 @pytest.fixture(scope="module", autouse=True)
-def _prepare_e2e_assets() -> None:
+def _prepare_e2e_assets() -> Iterator[None]:
     """Prepare shared E2E assets once for this test module."""
-    prepare_e2e_assets()
+    with preserve_environment_variable("AFD_GPU_E2E_MODEL"):
+        prepare_e2e_assets()
+        yield
 
 
 @pytest.mark.e2e

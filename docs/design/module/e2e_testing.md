@@ -35,9 +35,9 @@ verified_platform_refs:
   - "CUDA DeepSeek-V2-Lite"
   - "Ascend NPU DeepSeek-V2-Lite"
   - "CUDA Qwen3 MoE"
-  - "CUDA Qwen3.5/3.6 MoE"
+  - "CUDA Qwen3.6 MoE"
 related_issues: []
-last_reviewed: 2026-08-13
+last_reviewed: 2026-08-19
 ---
 
 # E2E testing
@@ -110,9 +110,10 @@ for Attention DP1/TP2 and FFN DP2/TP1/EP2. It is not part of the PR gate above.
 for Attention DP2/TP1 and FFN DP2/TP1/EP2 and runs GSM8K-7. The default gate
 selects only the four default cases by pytest node ID.
 
-The Qwen3.5/3.6 CUDA lane is text-only and uses the native Qwen3.5/3.6 model
-boundary with `--language-model-only`. Its default suite uses
-`Qwen/Qwen3.6-35B-A3B`, native DP4/TP1/EP4 for `baseline-graph`, and
+The Qwen3.5/3.6 adapter family has text-only CUDA E2E evidence through
+`Qwen/Qwen3.6-35B-A3B`, using the native Qwen3.5/3.6 model boundary with
+`--language-model-only`. Its default suite uses native DP4/TP1/EP4 for
+`baseline-graph`, and
 synchronous AFD 2A1F for `afd-eager`, `afd-graph`, and `afd-graph-dbo`.
 Multimodal, NPU, `compute_gate_on_attention=true`, pipeline-parallel,
 asynchronous, and multi-node execution are outside this case; quantization is

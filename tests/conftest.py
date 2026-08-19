@@ -7,7 +7,8 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from importlib.util import find_spec
 from pathlib import Path
 
@@ -24,6 +25,19 @@ RUNNER_CLEANUP_TIMEOUT_S = 90
 # package is installed, import and ABI failures must remain visible.
 if find_spec("vllm_ascend") is not None:  # pragma: no cover - environment-dependent
     import vllm_ascend.ops  # noqa: F401
+
+
+@contextmanager
+def preserve_environment_variable(name: str) -> Iterator[None]:
+    """Restore an environment variable after a temporary E2E asset override."""
+    original_value = os.environ.get(name)
+    try:
+        yield
+    finally:
+        if original_value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = original_value
 
 
 def run_runner(command: list[str], env: dict[str, str] | None = None) -> None:
