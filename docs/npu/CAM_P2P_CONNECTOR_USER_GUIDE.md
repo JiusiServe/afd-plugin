@@ -51,17 +51,23 @@ The connector creates these communication groups:
 
 The plugin derives independent Attention and FFN HCCL buffer sizes at startup
 and applies the role-local value to every CAMP2P-owned HCCL group. The metadata
-group uses Gloo and is unaffected. The current CAMP2P runtime supports only TP
-within a DP group, so the number of NPUs per DP group is its TP size:
+group uses Gloo and is unaffected. CAMP2P currently computes the gate on FFN,
+so its cross-role slot sends one unexpanded BF16 hidden row to FFN and returns
+one combined BF16 row to Attention. Define `M` as `max_num_batched_tokens`, `H`
+as hidden size, `A`/`F` as the Attention/FFN rank counts, and
+`R = ceil(A / F)`:
 
 ```text
-attention_bytes = 2 * hidden_size * ceil(max_num_batched_tokens / num_npus_per_dp_group) * (topk + 1)
-ffn_bytes = num_attention_ranks * 12288 * ceil(max_num_batched_tokens / num_npus_per_dp_group)
+slot_row_bytes = 4 * H
+attention_bytes = M * slot_row_bytes
+ffn_bytes = M * R * slot_row_bytes
 role_buffer_mb = ceil(1.1 * role_bytes / 1_MiB)
 ```
 
-The FFN formula intentionally has no `topk + 1` multiplier. Every rank logs its
-selected role and buffer size at INFO level. If the memory outside
+The top-k expansion stays within the FFN domain and therefore does not enlarge
+the cross-role slot. The formula does not divide `M` by Attention TP because
+`M` is the capacity passed to the CAM operation on each source rank. Every rank
+logs its selected role and buffer size at INFO level. If the memory outside
 `gpu_memory_utilization` is less than 2.5 times the role-local buffer, the
 worker warns and recommends a maximum utilization without changing the
 configured value.

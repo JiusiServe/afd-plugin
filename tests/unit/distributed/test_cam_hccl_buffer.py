@@ -16,7 +16,7 @@ from afd_plugin.distributed.cam_hccl_buffer import (
 def _vllm_config(
     *,
     connector: str = "CAMAsyncAFDConnector",
-    num_npus_per_dp_group: int = 8,
+    num_npus_per_dp_group: int = 2,
     dynamic_quant: int = 1,
     gpu_memory_utilization: float = 0.9,
 ):
@@ -33,14 +33,14 @@ def _vllm_config(
         parallel_config=SimpleNamespace(
             tensor_parallel_size=num_npus_per_dp_group,
         ),
-        scheduler_config=SimpleNamespace(max_num_batched_tokens=140000),
+        scheduler_config=SimpleNamespace(max_num_batched_tokens=8000),
         cache_config=SimpleNamespace(
             gpu_memory_utilization=gpu_memory_utilization,
         ),
         model_config=SimpleNamespace(
             hf_config=SimpleNamespace(
-                hidden_size=7168,
-                num_experts_per_tok=8,
+                hidden_size=2048,
+                num_experts_per_tok=6,
             ),
         ),
     )
@@ -50,65 +50,61 @@ def _afd_config(*, connector: str, role: str) -> AFDConfig:
     return AFDConfig(
         connector=connector,
         role=role,
-        num_attention_ranks=24,
-        num_ffn_ranks=8,
+        num_attention_ranks=2,
+        num_ffn_ranks=2,
+        compute_gate_on_attention=connector == "CAMAsyncAFDConnector",
     )
 
 
-def test_deepseek_v32_cam_buffers_are_derived_independently_by_role():
+def test_deepseek_v2_lite_attention_gate_slot_uses_full_cam_capacity():
     plan = derive_cam_hccl_buffer_plan(
-        hidden_size=7168,
-        max_batch_tokens=140000,
-        num_npus_per_dp_group=8,
-        topk=8,
-        attention_rank_size=24,
+        hidden_size=2048,
+        max_batch_tokens=8000,
+        topk=6,
+        attention_rank_size=2,
+        ffn_rank_size=2,
+        compute_gate_on_attention=True,
+        dynamic_quant=0,
+    )
+
+    assert plan.attention_required_bytes == 458_752_000
+    assert plan.ffn_required_bytes == 851_968_000
+    assert plan.attention_buffer_size_mb == 482
+    assert plan.ffn_buffer_size_mb == 894
+    assert plan.buffer_size_mb_for_role("attention") == 482
+    assert plan.buffer_size_mb_for_role("ffn") == 894
+
+
+def test_attention_gate_dynamic_quant_uses_int8_dispatch_and_bf16_combine():
+    plan = derive_cam_hccl_buffer_plan(
+        hidden_size=2048,
+        max_batch_tokens=8000,
+        topk=6,
+        attention_rank_size=2,
+        ffn_rank_size=2,
+        compute_gate_on_attention=True,
         dynamic_quant=1,
     )
 
-    assert plan.attention_required_bytes == 2_257_920_000
-    assert plan.moe_required_bytes == 2_593_920_000
-    assert plan.attention_buffer_size_mb == 2369
-    assert plan.ffn_buffer_size_mb == 2722
-    assert plan.buffer_size_mb_for_role("attention") == 2369
-    assert plan.buffer_size_mb_for_role("ffn") == 2722
+    assert plan.attention_required_bytes == 344_288_000
+    assert plan.ffn_required_bytes == 639_392_000
+    assert plan.attention_buffer_size_mb == 362
+    assert plan.ffn_buffer_size_mb == 671
 
 
-def test_moe_buffer_has_no_topk_multiplier_and_uses_non_quantized_width():
-    low_topk = derive_cam_hccl_buffer_plan(
-        hidden_size=7168,
-        max_batch_tokens=140000,
-        num_npus_per_dp_group=8,
-        topk=1,
-        attention_rank_size=24,
-        dynamic_quant=0,
-    )
-    high_topk = derive_cam_hccl_buffer_plan(
-        hidden_size=7168,
-        max_batch_tokens=140000,
-        num_npus_per_dp_group=8,
-        topk=8,
-        attention_rank_size=24,
-        dynamic_quant=0,
-    )
-
-    assert low_topk.moe_required_bytes == 5_160_960_000
-    assert high_topk.moe_required_bytes == low_topk.moe_required_bytes
-    assert high_topk.ffn_buffer_size_mb == 5415
-    assert high_topk.attention_required_bytes > low_topk.attention_required_bytes
-
-
-def test_cam_buffer_rounds_partial_per_npu_token_and_mb_up():
+def test_ffn_gate_slot_carries_one_unexpanded_row_in_each_direction():
     plan = derive_cam_hccl_buffer_plan(
         hidden_size=3,
         max_batch_tokens=5,
-        num_npus_per_dp_group=2,
-        topk=1,
-        attention_rank_size=1,
+        topk=2,
+        attention_rank_size=3,
+        ffn_rank_size=2,
+        compute_gate_on_attention=False,
         dynamic_quant=1,
     )
 
-    assert plan.attention_required_bytes == 36
-    assert plan.moe_required_bytes == 18_528
+    assert plan.attention_required_bytes == 60
+    assert plan.ffn_required_bytes == 120
     assert plan.attention_buffer_size_mb == 1
     assert plan.ffn_buffer_size_mb == 1
 
@@ -126,10 +122,10 @@ def test_buffer_plan_from_config_supports_async_and_camp2p():
         _afd_config(connector="CAMP2pAFDConnector", role="ffn"),
     )
 
-    assert async_plan.attention_buffer_size_mb == 2369
-    assert async_plan.ffn_buffer_size_mb == 2722
-    assert camp2p_plan.attention_buffer_size_mb == 2369
-    assert camp2p_plan.ffn_buffer_size_mb == 5415
+    assert async_plan.attention_buffer_size_mb == 362
+    assert async_plan.ffn_buffer_size_mb == 671
+    assert camp2p_plan.attention_buffer_size_mb == 69
+    assert camp2p_plan.ffn_buffer_size_mb == 69
 
 
 @pytest.mark.parametrize(
@@ -142,7 +138,7 @@ def test_cam_memory_headroom_warns_without_adjusting_utilization(
 ):
     vllm_config = _vllm_config(
         connector=connector,
-        gpu_memory_utilization=0.95,
+        gpu_memory_utilization=0.999,
     )
 
     with caplog.at_level(logging.WARNING):
@@ -152,9 +148,9 @@ def test_cam_memory_headroom_warns_without_adjusting_utilization(
             64 * 1024**3,
         )
 
-    assert vllm_config.cache_config.gpu_memory_utilization == 0.95
+    assert vllm_config.cache_config.gpu_memory_utilization == 0.999
     assert "consider setting gpu_memory_utilization" in caplog.text
-    assert "configured value 0.950000 is unchanged" in caplog.text
+    assert "configured value 0.999000 is unchanged" in caplog.text
 
 
 def test_cam_memory_headroom_does_not_warn_when_already_safe(caplog):
@@ -174,9 +170,10 @@ def test_cam_buffer_rejects_unsupported_role_and_dynamic_quant():
     plan = derive_cam_hccl_buffer_plan(
         hidden_size=16,
         max_batch_tokens=8,
-        num_npus_per_dp_group=1,
         topk=2,
         attention_rank_size=4,
+        ffn_rank_size=2,
+        compute_gate_on_attention=True,
         dynamic_quant=1,
     )
 
@@ -186,17 +183,19 @@ def test_cam_buffer_rejects_unsupported_role_and_dynamic_quant():
         derive_cam_hccl_buffer_plan(
             hidden_size=16,
             max_batch_tokens=8,
-            num_npus_per_dp_group=1,
             topk=2,
             attention_rank_size=4,
+            ffn_rank_size=2,
+            compute_gate_on_attention=True,
             dynamic_quant=2,
         )
-    with pytest.raises(ValueError, match="num_npus_per_dp_group must be positive"):
+    with pytest.raises(ValueError, match="ffn_rank_size must be positive"):
         derive_cam_hccl_buffer_plan(
             hidden_size=16,
             max_batch_tokens=8,
-            num_npus_per_dp_group=0,
             topk=2,
             attention_rank_size=4,
+            ffn_rank_size=0,
+            compute_gate_on_attention=True,
             dynamic_quant=1,
         )

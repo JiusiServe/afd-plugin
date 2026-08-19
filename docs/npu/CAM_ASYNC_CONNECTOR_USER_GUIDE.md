@@ -179,18 +179,32 @@ The plugin derives the CAM HCCL process-group buffer at startup for both CAM
 Async and synchronous CAMP2P. For CAM Async, the setting is applied only to the
 `afd_async_cam` process group, independently of the global `HCCL_BUFFSIZE`
 environment variable. Attention and FFN ranks use their own role-specific
-values:
+values. Define `M` as the `max_num_batched_tokens` capacity passed to each CAM
+call, `H` as hidden size, `K` as top-k, `A`/`F` as the Attention/FFN rank
+counts, and `R = ceil(A / F)` as the number of statically paired Attention
+sources per FFN rank:
 
 ```text
-attention_bytes = 2 * hidden_size * ceil(max_num_batched_tokens / attn_ranks_per_dp) * (topk + 1)
-ffn_bytes = num_attention_ranks * (6176 if dynamicQuant else 12288) * ceil(max_num_batched_tokens / attn_ranks_per_dp)
+dispatch_row_bytes = H + 4 if dynamicQuant else 2 * H
+combine_row_bytes = 2 * H
+slot_row_bytes = dispatch_row_bytes + combine_row_bytes
+attention_bytes = M * (K + 1) * slot_row_bytes
+ffn_bytes = M * (A * K + R) * slot_row_bytes
 role_buffer_mb = ceil(1.1 * role_bytes / 1_MiB)
 ```
 
-The MoE/FFN formula intentionally has no `topk + 1` multiplier. Every rank logs
-its selected role and buffer size at INFO level. This role-local configuration
-must be validated with the target torch-npu/HCCL stack because Attention and
-FFN ranks participate in the same CAM world with different buffer settings.
+One slot reserves both its dispatch activation and BF16 combine-output regions.
+Non-quantized dispatch stores BF16 hidden rows. Dynamic-quant dispatch stores
+one INT8 hidden row plus one FP32 per-token scale, while combine output remains
+BF16. `K` routed rows and one fused shared-expert row are reserved per Attention
+source token. The FFN side reserves worst-case routed rows from every Attention
+rank and shared rows from its paired sources. The formula deliberately does not
+divide `M` by TP/SP because `M` is the capacity passed to each CAM call.
+
+Every rank logs its selected role and buffer size at INFO level. This role-local
+configuration must be validated with the target torch-npu/HCCL stack because
+Attention and FFN ranks participate in the same CAM world with different buffer
+settings.
 
 Before model and KV-cache allocation, the worker checks whether the memory
 outside `gpu_memory_utilization` is at least 2.5 times its role-local buffer. If
