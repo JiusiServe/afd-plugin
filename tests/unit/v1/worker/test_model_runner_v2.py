@@ -42,6 +42,7 @@ from afd_plugin.v1.worker.attention_model_runner_v2 import (  # noqa: E402
 from afd_plugin.v1.worker.ffn_worker import AFDFFNWorker  # noqa: E402
 from afd_plugin.validation import (  # noqa: E402
     validate_gpu_model_runner_v2_config,
+    validate_npu_model_runner_v2_config,
 )
 
 TEST_MODEL_MAX_LEN = 163840
@@ -488,6 +489,42 @@ def test_v2_validator_rejects_non_cuda_device():
     with pytest.raises(RuntimeError, match="requires CUDA"):
         validate_gpu_model_runner_v2_config(
             _v2_config(),
+            expected_role="attention",
+            device_type="npu",
+        )
+
+
+@pytest.mark.parametrize(
+    "cudagraph_mode",
+    [CUDAGraphMode.FULL, CUDAGraphMode.FULL_DECODE_ONLY],
+)
+def test_npu_v2_validator_allows_full_acl_graph(cudagraph_mode):
+    config = _v2_config(
+        enforce_eager=False,
+        cudagraph_mode=cudagraph_mode,
+        cudagraph_capture_sizes=[TEST_CUDAGRAPH_CAPTURE_SIZE],
+        max_cudagraph_capture_size=TEST_CUDAGRAPH_CAPTURE_SIZE,
+    )
+    config.additional_config["afd"]["connector"] = "CAMP2pAFDConnector"
+
+    validate_npu_model_runner_v2_config(
+        config,
+        expected_role="attention",
+        device_type="npu",
+    )
+
+
+@pytest.mark.parametrize(
+    "cudagraph_mode",
+    [CUDAGraphMode.NONE, CUDAGraphMode.PIECEWISE, CUDAGraphMode.FULL_AND_PIECEWISE],
+)
+def test_npu_v2_validator_rejects_non_full_acl_graph(cudagraph_mode):
+    config = _v2_config(enforce_eager=False, cudagraph_mode=cudagraph_mode)
+    config.additional_config["afd"]["connector"] = "CAMP2pAFDConnector"
+
+    with pytest.raises(RuntimeError, match="ACL graph modes FULL"):
+        validate_npu_model_runner_v2_config(
+            config,
             expected_role="attention",
             device_type="npu",
         )
