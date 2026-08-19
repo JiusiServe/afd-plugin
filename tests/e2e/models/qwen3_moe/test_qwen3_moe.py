@@ -6,16 +6,26 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import download_dataset, download_model, run_runner
+from tests.conftest import (
+    download_dataset,
+    download_model,
+    preserve_environment_variable,
+    run_runner,
+)
 
 GSM8K_DATASET_ID = "openai/gsm8k"
 GSM8K_DATASET_CONFIG = "main"
 QWEN3_MOE_REPO_ID = "Qwen/Qwen3-30B-A3B"
 QWEN3_MOE_MAX_MODEL_LEN = 4096
+DEFAULT_DEVICE_IDS = ("0", "1", "2", "3")
+ATTENTION_DEVICE_COUNT = 2
+AFD_FFN_DEVICE_COUNT = 1
+BASELINE_DEVICE_COUNT = 4
 SCENARIOS = (
     "baseline-graph",
     "afd-eager",
@@ -58,10 +68,16 @@ def build_runner_command(scenario: str, gsm8k_output_path: Path) -> list[str]:
     devices = (
         [item.strip() for item in env_devices.split(",") if item.strip()]
         if env_devices
-        else ["0", "1", "2"]
+        else list(DEFAULT_DEVICE_IDS)
     )
-    attention_devices = devices[:2]
-    ffn_devices = devices[2:]
+    if scenario == "baseline-graph":
+        attention_devices = devices[:BASELINE_DEVICE_COUNT]
+        ffn_devices = []
+    else:
+        attention_devices = devices[:ATTENTION_DEVICE_COUNT]
+        ffn_devices = devices[
+            ATTENTION_DEVICE_COUNT : ATTENTION_DEVICE_COUNT + AFD_FFN_DEVICE_COUNT
+        ]
 
     command = [
         sys.executable,
@@ -93,9 +109,11 @@ def build_runner_command(scenario: str, gsm8k_output_path: Path) -> list[str]:
 
 
 @pytest.fixture(scope="module", autouse=True)
-def _prepare_e2e_assets() -> None:
+def _prepare_e2e_assets() -> Iterator[None]:
     """Prepare shared E2E assets once for this test module."""
-    prepare_e2e_assets()
+    with preserve_environment_variable("AFD_GPU_E2E_MODEL"):
+        prepare_e2e_assets()
+        yield
 
 
 @pytest.mark.e2e

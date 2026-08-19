@@ -26,6 +26,7 @@ validation_paths:
   - "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py"
   - "tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py"
   - "tests/e2e/models/qwen3_moe/test_qwen3_moe.py"
+  - "tests/e2e/models/qwen3_6/test_qwen3_6.py"
 upstream_refs:
   - "vLLM 0.26.0 serving and shutdown interfaces"
   - "lm-evaluation-harness GSM8K task and local-completions API"
@@ -34,8 +35,9 @@ verified_platform_refs:
   - "CUDA DeepSeek-V2-Lite"
   - "Ascend NPU DeepSeek-V2-Lite"
   - "CUDA Qwen3 MoE"
+  - "CUDA Qwen3.6 MoE"
 related_issues: []
-last_reviewed: 2026-08-13
+last_reviewed: 2026-08-19
 ---
 
 # E2E testing
@@ -107,6 +109,15 @@ for Attention DP1/TP2 and FFN DP2/TP1/EP2. It is not part of the PR gate above.
 `afd-graph-dbo-2a2f` is a separate GPU/NPU accuracy case. It uses four devices
 for Attention DP2/TP1 and FFN DP2/TP1/EP2 and runs GSM8K-7. The default gate
 selects only the four default cases by pytest node ID.
+
+The Qwen3.5/3.6 adapter family has text-only CUDA E2E evidence through
+`Qwen/Qwen3.6-35B-A3B`, using the native Qwen3.5/3.6 model boundary with
+`--language-model-only`. Its default suite uses native DP4/TP1/EP4 for
+`baseline-graph`, and
+synchronous AFD 2A1F for `afd-eager`, `afd-graph`, and `afd-graph-dbo`.
+Multimodal, NPU, `compute_gate_on_attention=true`, pipeline-parallel,
+asynchronous, and multi-node execution are outside this case; quantization is
+unverified.
 
 ## Accuracy gate
 

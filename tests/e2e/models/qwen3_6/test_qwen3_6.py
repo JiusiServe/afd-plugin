@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""Backend-neutral DeepSeek-V2-Lite E2E scenarios."""
+"""CUDA Qwen3.6 MoE E2E scenarios."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from tests.conftest import (
 
 GSM8K_DATASET_ID = "openai/gsm8k"
 GSM8K_DATASET_CONFIG = "main"
-DEEPSEEK_V2_LITE_REPO_ID = "deepseek-ai/DeepSeek-V2-Lite"
-DEEPSEEK_V2_LITE_MAX_MODEL_LEN = 4096
+QWEN3_6_REPO_ID = "Qwen/Qwen3.6-35B-A3B"
+QWEN3_6_MAX_MODEL_LEN = 4096
 DEFAULT_DEVICE_IDS = ("0", "1", "2", "3")
 ATTENTION_DEVICE_COUNT = 2
 AFD_FFN_DEVICE_COUNT = 1
@@ -31,7 +31,6 @@ SCENARIOS = (
     "afd-eager",
     "afd-graph",
     "afd-graph-dbo",
-    "afd-graph-dbo-2a2f",
 )
 
 
@@ -43,18 +42,13 @@ def _required_env(name: str) -> str:
 
 
 def prepare_e2e_assets() -> None:
-    """Ensure GSM8K and DeepSeek-V2-Lite are available for the runner."""
+    """Ensure GSM8K and Qwen3.6-35B-A3B are available for the runner."""
+    if _required_env("AFD_E2E_BACKEND") != "gpu":
+        raise RuntimeError("Qwen3.6 MoE E2E supports only the 'gpu' backend")
+
     download_dataset(GSM8K_DATASET_ID, GSM8K_DATASET_CONFIG)
 
-    backend = _required_env("AFD_E2E_BACKEND")
-    if backend == "gpu":
-        env_name = "AFD_GPU_E2E_MODEL"
-    elif backend == "npu":
-        env_name = "AFD_NPU_E2E_MODEL"
-    else:
-        raise RuntimeError("AFD_E2E_BACKEND must be 'gpu' or 'npu'")
-
-    existing = os.environ.get(env_name)
+    existing = os.environ.get("AFD_GPU_E2E_MODEL")
     if existing:
         print(
             f"[e2e] Using existing model path {Path(existing).expanduser()}",
@@ -62,20 +56,13 @@ def prepare_e2e_assets() -> None:
         )
         return
 
-    model_path = download_model(DEEPSEEK_V2_LITE_REPO_ID)
-    os.environ[env_name] = str(model_path)
+    os.environ["AFD_GPU_E2E_MODEL"] = str(download_model(QWEN3_6_REPO_ID))
 
 
 def build_runner_command(scenario: str, gsm8k_output_path: Path) -> list[str]:
     backend = _required_env("AFD_E2E_BACKEND")
-    if backend == "gpu":
-        model = _required_env("AFD_GPU_E2E_MODEL")
-        vllm_bin = os.environ.get("AFD_GPU_E2E_VLLM_BIN", "vllm")
-    elif backend == "npu":
-        model = _required_env("AFD_NPU_E2E_MODEL")
-        vllm_bin = os.environ.get("AFD_NPU_E2E_VLLM_BIN", "vllm")
-    else:
-        raise RuntimeError("AFD_E2E_BACKEND must be 'gpu' or 'npu'")
+    if backend != "gpu":
+        raise RuntimeError("Qwen3.6 MoE E2E supports only the 'gpu' backend")
 
     env_devices = os.environ.get("AFD_E2E_DEVICES")
     devices = (
@@ -88,24 +75,22 @@ def build_runner_command(scenario: str, gsm8k_output_path: Path) -> list[str]:
         ffn_devices = []
     else:
         attention_devices = devices[:ATTENTION_DEVICE_COUNT]
-        ffn_end = (
-            BASELINE_DEVICE_COUNT
-            if scenario == "afd-graph-dbo-2a2f"
-            else ATTENTION_DEVICE_COUNT + AFD_FFN_DEVICE_COUNT
-        )
-        ffn_devices = devices[ATTENTION_DEVICE_COUNT:ffn_end]
+        ffn_devices = devices[
+            ATTENTION_DEVICE_COUNT : ATTENTION_DEVICE_COUNT + AFD_FFN_DEVICE_COUNT
+        ]
 
     command = [
         sys.executable,
         "-m",
         "tests.e2e.runner",
         "--model",
-        model,
+        _required_env("AFD_GPU_E2E_MODEL"),
         "--vllm-bin",
-        vllm_bin,
+        os.environ.get("AFD_GPU_E2E_VLLM_BIN", "vllm"),
         "--device-backend",
         backend,
-        f"--common-vllm-arg=--max-model-len={DEEPSEEK_V2_LITE_MAX_MODEL_LEN}",
+        f"--common-vllm-arg=--max-model-len={QWEN3_6_MAX_MODEL_LEN}",
+        "--common-vllm-arg=--language-model-only",
         "--attention-devices",
         ",".join(attention_devices),
     ]
@@ -117,6 +102,8 @@ def build_runner_command(scenario: str, gsm8k_output_path: Path) -> list[str]:
             scenario,
             "--gsm8k-output-path",
             str(gsm8k_output_path),
+            "--served-model-name-prefix",
+            "qwen3-6-afd",
         ],
     )
     return command
@@ -125,21 +112,13 @@ def build_runner_command(scenario: str, gsm8k_output_path: Path) -> list[str]:
 @pytest.fixture(scope="module", autouse=True)
 def _prepare_e2e_assets() -> Iterator[None]:
     """Prepare shared E2E assets once for this test module."""
-    backend = _required_env("AFD_E2E_BACKEND")
-    if backend == "gpu":
-        model_env_name = "AFD_GPU_E2E_MODEL"
-    elif backend == "npu":
-        model_env_name = "AFD_NPU_E2E_MODEL"
-    else:
-        raise RuntimeError("AFD_E2E_BACKEND must be 'gpu' or 'npu'")
-
-    with preserve_environment_variable(model_env_name):
+    with preserve_environment_variable("AFD_GPU_E2E_MODEL"):
         prepare_e2e_assets()
         yield
 
 
 @pytest.mark.e2e
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=SCENARIOS)
-def test_deepseek_v2_lite(scenario: str, tmp_path: Path) -> None:
+def test_qwen3_6(scenario: str, tmp_path: Path) -> None:
     command = build_runner_command(scenario, tmp_path / scenario)
     run_runner(command)

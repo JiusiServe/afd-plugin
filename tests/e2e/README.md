@@ -1,7 +1,9 @@
 # End-to-End Tests
 
-These tests validate DeepSeek-V2-Lite on real GPU or Ascend NPU hardware and
-Qwen3 MoE on real GPU hardware. Each default gate runs four scenarios:
+These tests validate DeepSeek-V2-Lite on real GPU or Ascend NPU hardware,
+Qwen3 MoE on real GPU hardware, and Qwen3.6 MoE through the Qwen3.5/3.6
+adapter family on real CUDA hardware.
+Each default gate runs four scenarios:
 
 - `baseline-graph`
 - `afd-eager`
@@ -63,9 +65,27 @@ python -m pytest -q -s \
 # Qwen3 MoE
 python -m pytest -q -s \
   tests/e2e/models/qwen3_moe/test_qwen3_moe.py
+
+# Qwen3.6 MoE (text-only CUDA lane)
+export AFD_E2E_BACKEND=gpu
+export AFD_E2E_DEVICES=0,1,2,3
+export AFD_GPU_E2E_MODEL=/path/to/Qwen3.6-35B-A3B
+python -m pytest -q -s \
+  tests/e2e/models/qwen3_6/test_qwen3_6.py
 ```
 
 Success means 4 passed and 0 skipped.
+
+The repository CUDA E2E evidence for the Qwen3.5/3.6 adapter family uses
+`Qwen/Qwen3.6-35B-A3B`, vLLM V1, and the
+`P2pNcclAFDConnector` on CUDA. Every scenario passes `--language-model-only`;
+multimodal execution is not covered. `baseline-graph` uses native DP4/TP1/EP4
+on four devices. The three AFD scenarios use synchronous 2A1F: Attention on
+the first two devices and FFN on the third. The fourth device remains unused
+by AFD scenarios. The suite uses the same GSM8K-7, eight-shot, 4096-token,
+0.27 minimum exact-match gate as the other default suites. NPU, multimodal,
+`compute_gate_on_attention=true`, pipeline-parallel, asynchronous, and
+multi-node execution are not covered; quantization is unverified.
 
 ### Graph + DBO 2A2F
 
@@ -89,6 +109,10 @@ python -m pytest -q -s \
 # Qwen3 MoE
 python -m pytest -q -s \
   "tests/e2e/models/qwen3_moe/test_qwen3_moe.py::test_qwen3_moe[afd-graph-dbo]"
+
+# Qwen3.6 MoE
+python -m pytest -q -s \
+  "tests/e2e/models/qwen3_6/test_qwen3_6.py::test_qwen3_6[afd-graph-dbo]"
 ```
 
 This evaluates all 1319 GSM8K test samples. Without `AFD_GSM8K_LIMIT`, each

@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import signal
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +18,7 @@ from tests.e2e.accuracy import gsm8k as helpers_gsm8k
 from tests.e2e.models.deepseek_v2_lite import (
     test_deepseek_v2_lite as deepseek_v2_lite_e2e,
 )
+from tests.e2e.models.qwen3_6 import test_qwen3_6 as qwen3_6_e2e
 from tests.e2e.models.qwen3_moe import test_qwen3_moe as qwen3_moe_e2e
 
 
@@ -60,14 +63,14 @@ def test_deepseek_v2_lite_entrypoint_limits_context(
     assert "--common-vllm-arg=--max-model-len=4096" in command
 
 
-def test_qwen3_moe_baseline_entrypoint_uses_two_devices(monkeypatch, tmp_path):
+def test_qwen3_moe_baseline_entrypoint_uses_four_devices(monkeypatch, tmp_path):
     monkeypatch.setenv("AFD_E2E_BACKEND", "gpu")
-    monkeypatch.setenv("AFD_E2E_DEVICES", "2,4,6")
+    monkeypatch.setenv("AFD_E2E_DEVICES", "2,4,6,8")
     monkeypatch.setenv("AFD_GPU_E2E_MODEL", "model")
 
     command = qwen3_moe_e2e.build_runner_command("baseline-graph", tmp_path)
 
-    assert command[command.index("--attention-devices") + 1] == "2,4"
+    assert command[command.index("--attention-devices") + 1] == "2,4,6,8"
     assert "--ffn-devices" not in command
 
 
@@ -80,6 +83,146 @@ def test_qwen3_moe_entrypoint_limits_context(monkeypatch, tmp_path, scenario):
     command = qwen3_moe_e2e.build_runner_command(scenario, tmp_path)
 
     assert "--common-vllm-arg=--max-model-len=4096" in command
+
+
+@pytest.mark.parametrize("scenario", qwen3_moe_e2e.SCENARIOS[1:])
+def test_qwen3_moe_afd_entrypoint_uses_only_the_standard_2a1f_devices(
+    monkeypatch,
+    tmp_path,
+    scenario,
+):
+    monkeypatch.setenv("AFD_E2E_BACKEND", "gpu")
+    monkeypatch.setenv("AFD_E2E_DEVICES", "2,4,6,8")
+    monkeypatch.setenv("AFD_GPU_E2E_MODEL", "model")
+
+    command = qwen3_moe_e2e.build_runner_command(scenario, tmp_path)
+
+    assert command[command.index("--attention-devices") + 1] == "2,4"
+    assert command[command.index("--ffn-devices") + 1] == "6"
+
+
+def test_qwen3_6_baseline_entrypoint_uses_four_devices(monkeypatch, tmp_path):
+    monkeypatch.setenv("AFD_E2E_BACKEND", "gpu")
+    monkeypatch.setenv("AFD_E2E_DEVICES", "2,4,6,8")
+    monkeypatch.setenv("AFD_GPU_E2E_MODEL", "model")
+
+    command = qwen3_6_e2e.build_runner_command("baseline-graph", tmp_path)
+
+    assert command[command.index("--attention-devices") + 1] == "2,4,6,8"
+    assert "--ffn-devices" not in command
+    assert "--common-vllm-arg=--language-model-only" in command
+
+
+@pytest.mark.parametrize("scenario", qwen3_6_e2e.SCENARIOS[1:])
+def test_qwen3_6_afd_entrypoint_uses_standard_2a1f_text_only_commands(
+    monkeypatch,
+    tmp_path,
+    scenario,
+):
+    monkeypatch.setenv("AFD_E2E_BACKEND", "gpu")
+    monkeypatch.setenv("AFD_E2E_DEVICES", "2,4,6,8")
+    monkeypatch.setenv("AFD_GPU_E2E_MODEL", "model")
+
+    command = qwen3_6_e2e.build_runner_command(scenario, tmp_path)
+
+    assert command[command.index("--model") + 1] == "model"
+    assert command[command.index("--attention-devices") + 1] == "2,4"
+    assert command[command.index("--ffn-devices") + 1] == "6"
+    assert command[command.index("--served-model-name-prefix") + 1] == "qwen3-6-afd"
+    assert "--common-vllm-arg=--max-model-len=4096" in command
+    assert "--common-vllm-arg=--language-model-only" in command
+    assert "--compute-gate-on-attention" not in command
+
+
+def test_qwen3_6_entrypoint_rejects_non_gpu_backends(monkeypatch, tmp_path):
+    monkeypatch.setenv("AFD_E2E_BACKEND", "npu")
+    monkeypatch.setenv("AFD_GPU_E2E_MODEL", "model")
+
+    with pytest.raises(RuntimeError, match="supports only the 'gpu' backend"):
+        qwen3_6_e2e.build_runner_command("afd-eager", tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("first_suite", "first_model"),
+    [
+        (deepseek_v2_lite_e2e, "/models/deepseek-v2-lite"),
+        (qwen3_moe_e2e, "/models/qwen3-moe"),
+    ],
+)
+def test_generated_gpu_model_is_scoped_to_its_e2e_suite(
+    monkeypatch,
+    tmp_path,
+    first_suite,
+    first_model,
+):
+    monkeypatch.setenv("AFD_E2E_BACKEND", "gpu")
+    monkeypatch.delenv("AFD_GPU_E2E_MODEL", raising=False)
+    monkeypatch.setattr(first_suite, "download_dataset", lambda *_args: None)
+    monkeypatch.setattr(
+        first_suite,
+        "download_model",
+        lambda _repo_id: Path(first_model),
+    )
+
+    first_fixture = first_suite._prepare_e2e_assets.__wrapped__()
+    next(first_fixture)
+    assert os.environ["AFD_GPU_E2E_MODEL"] == first_model
+
+    with pytest.raises(StopIteration):
+        next(first_fixture)
+    assert "AFD_GPU_E2E_MODEL" not in os.environ
+
+    second_model = "/models/qwen3-6"
+    monkeypatch.setattr(qwen3_6_e2e, "download_dataset", lambda *_args: None)
+    monkeypatch.setattr(
+        qwen3_6_e2e,
+        "download_model",
+        lambda _repo_id: Path(second_model),
+    )
+    second_fixture = qwen3_6_e2e._prepare_e2e_assets.__wrapped__()
+    next(second_fixture)
+    try:
+        command = qwen3_6_e2e.build_runner_command("afd-eager", tmp_path)
+        assert command[command.index("--model") + 1] == second_model
+    finally:
+        with pytest.raises(StopIteration):
+            next(second_fixture)
+
+    assert "AFD_GPU_E2E_MODEL" not in os.environ
+
+
+@pytest.mark.parametrize(
+    ("suite", "backend", "model_env_name"),
+    [
+        (deepseek_v2_lite_e2e, "gpu", "AFD_GPU_E2E_MODEL"),
+        (deepseek_v2_lite_e2e, "npu", "AFD_NPU_E2E_MODEL"),
+        (qwen3_moe_e2e, "gpu", "AFD_GPU_E2E_MODEL"),
+        (qwen3_6_e2e, "gpu", "AFD_GPU_E2E_MODEL"),
+    ],
+)
+def test_e2e_fixture_restores_explicit_model_override(
+    monkeypatch,
+    suite,
+    backend,
+    model_env_name,
+):
+    explicit_model = "/models/user-selected"
+    monkeypatch.setenv("AFD_E2E_BACKEND", backend)
+    monkeypatch.setenv(model_env_name, explicit_model)
+    monkeypatch.setattr(suite, "download_dataset", lambda *_args: None)
+    monkeypatch.setattr(
+        suite,
+        "download_model",
+        lambda _repo_id: pytest.fail("explicit model must not download"),
+    )
+
+    fixture = suite._prepare_e2e_assets.__wrapped__()
+    next(fixture)
+    assert os.environ[model_env_name] == explicit_model
+
+    with pytest.raises(StopIteration):
+        next(fixture)
+    assert os.environ[model_env_name] == explicit_model
 
 
 def test_run_runner_forwards_cancellation_and_reaps(monkeypatch):
