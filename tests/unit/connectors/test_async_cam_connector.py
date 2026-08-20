@@ -25,6 +25,7 @@ from afd_plugin.connectors.npu.async_cam import (  # noqa: E402
     AFD_ASYNC_CAM_GROUP_NAME,
     CAM_COMM_ID,
     AFDAsyncExtraInfo,
+    AFDAsyncFFNWorkItem,
     AFDAsyncTransferState,
     CAMAsyncAFDConnector,
     build_async_topology,
@@ -124,6 +125,7 @@ class _FakeTorch:
         self.float32 = "fp32"
         self.int32 = "int32"
         self.int64 = "int64"
+        self.npu = SimpleNamespace(synchronize=lambda: None)
         self.ops = SimpleNamespace(umdk_cam_op_lib=_FakeCamOps())
 
     def device(self, name):
@@ -133,6 +135,9 @@ class _FakeTorch:
         return _FakeTensor(shape, dtype=dtype, device=device)
 
     def zeros(self, shape, *, dtype, device):
+        return _FakeTensor(shape, dtype=dtype, device=device)
+
+    def ones(self, shape, *, dtype, device):
         return _FakeTensor(shape, dtype=dtype, device=device)
 
 
@@ -151,6 +156,7 @@ def _vllm_config(*, tp_size: int = 1, pcp_size: int = 1, extra_config=None):
                 hidden_size=16,
                 num_experts_per_tok=2,
                 n_routed_experts=8,
+                num_hidden_layers=4,
             ),
         ),
     )
@@ -382,6 +388,74 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][14] == 3
     assert isinstance(context.states, AFDAsyncTransferState)
     assert isinstance(context.states, AFDTransferState)
+
+
+def test_async_shutdown_sentinel_round_trips_out_of_range_layer(monkeypatch):
+    fake_torch = _FakeTorch()
+    monkeypatch.setattr(async_cam_module, "torch", fake_torch)
+    connector = CAMAsyncAFDConnector(
+        0,
+        0,
+        _vllm_config(),
+        _afd_config(role="attention"),
+        0,
+    )
+    connector._initialized = True
+    connector.comm_args = _FakeTensor((1,), dtype="fp16")
+
+    connector.send_shutdown_sentinel()
+
+    calls = fake_torch.ops.umdk_cam_op_lib.calls
+    assert [name for name, _args in calls] == ["dispatch_send", "combine_recv"]
+    assert calls[0][1][13] == 4
+    assert connector.shutdown_sentinel_layer_idx == 4
+    assert connector._pending_attention_payloads == {}
+
+
+def test_async_ffn_acknowledges_shutdown_sentinel(monkeypatch):
+    fake_torch = _FakeTorch()
+    monkeypatch.setattr(async_cam_module, "torch", fake_torch)
+    connector = CAMAsyncAFDConnector(
+        0,
+        0,
+        _vllm_config(),
+        _afd_config(role="ffn"),
+        0,
+    )
+    metadata = AFDTransferMetadata.create_ffn_metadata(
+        layer_idx=connector.shutdown_sentinel_layer_idx,
+        stage_idx=0,
+        seq_lens=[1],
+    )
+    context = AFDTransferContext(metadata=metadata)
+    work_item = AFDAsyncFFNWorkItem(
+        hidden_states=_FakeTensor((0, 16)),
+        context=context,
+        recv_output=AFDA2FTransferPayload(
+            hidden_states=_FakeTensor((1, 16)),
+            context=context,
+        ),
+        layer_idx=connector.shutdown_sentinel_layer_idx,
+        stage_idx=0,
+        num_tokens=0,
+        total_num_tokens=1,
+        shared_num_tokens=0,
+    )
+    sent_outputs = []
+    monkeypatch.setattr(
+        connector,
+        "send_ffn_work_item_output",
+        lambda item, output: sent_outputs.append((item, output)),
+    )
+
+    assert connector.is_shutdown_sentinel(work_item)
+    connector.acknowledge_shutdown_sentinel(work_item)
+
+    assert sent_outputs[0][0] is work_item
+    assert sent_outputs[0][1].routed_output.shape == (1, 16)
+    assert sent_outputs[0][1].routed_output.dtype == fake_torch.bfloat16
+    assert sent_outputs[0][1].shared_output.shape == (1, 16)
+    assert sent_outputs[0][1].shared_output.dtype == fake_torch.bfloat16
 
 
 def test_async_ffn_side_dispatch_recv_and_combine_send(monkeypatch):

@@ -264,19 +264,28 @@ The daemon catches failures, stores the original exception, logs it, and makes
 the error visible through `raise_ffn_loop_error_if_any()`. Re-entering startup
 or completing shutdown therefore surfaces an earlier background failure.
 
-Shutdown ordering is:
+Control-plane connector shutdown ordering is:
 
 ```text
 signal daemon event
-  -> runner stops profiler and closes connector
+  -> close connector to interrupt the blocking control-plane receive
   -> join daemon thread with a bounded timeout
   -> surface stored loop error
   -> delegate remaining worker/runner shutdown upstream
 ```
 
-Connector receive calls may be blocking; the connector's `close()` behavior
-is responsible for releasing its communication resources so shutdown can
-complete.
+CAM async cannot destroy HCCL while `async_dispatch_recv` is pending. Its
+Attention runner therefore sends an out-of-range-layer shutdown sentinel and
+waits for a dummy combine acknowledgement. FFN keeps receiving even after its
+local shutdown event, acknowledges the sentinel, and exits its daemon. Only
+after that round trip completes does FFN join the daemon and close the
+connector. If the sentinel does not arrive within the bounded join, FFN
+defers connector and parent model cleanup instead of racing a live NPU thread
+or destroying a communicator with an in-flight receive. Attention likewise
+defers connector close if the shutdown round trip fails. The protocol adds one
+single-token CAM round trip at teardown and no serving-path synchronization.
+It should be removed once CAM exposes a supported cancellation or graceful
+close primitive for a pending async receive.
 
 ## Candidate invariants
 

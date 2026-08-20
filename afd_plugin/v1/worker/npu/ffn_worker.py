@@ -19,6 +19,7 @@ from afd_plugin.compat.npu import (
     fix_all2all_backend_for_afd,
     npu_afd_num_ubatches,
 )
+from afd_plugin.connectors.npu.async_cam import CAMAsyncAFDConnector
 from afd_plugin.model_executor.models.model_utils import get_afd_model_config
 from afd_plugin.v1.worker.npu.ffn_model_runner import AFDNPUFFNModelRunner
 from afd_plugin.validation import NPU_FFN_WORKER_FQCN, assert_compatible_afd_stack
@@ -112,7 +113,12 @@ class AFDNPUFFNWorker(NPUWorker):
                 self._run_ffn_server_loop()
             except Exception as exc:
                 shutdown_event = self._ffn_shutdown_event
-                if shutdown_event is not None and shutdown_event.is_set():
+                connector = self.model_runner.connector
+                if (
+                    shutdown_event is not None
+                    and shutdown_event.is_set()
+                    and not isinstance(connector, CAMAsyncAFDConnector)
+                ):
                     logger.debug(
                         "AFD NPU FFN receive loop stopped during shutdown",
                         exc_info=True,
@@ -134,13 +140,21 @@ class AFDNPUFFNWorker(NPUWorker):
             return
 
         torch.npu.set_device(self.device)
-        while not event.is_set():
-            if self.model_runner.connector.control_plane is None:
-                self.model_runner.execute_connector_driven_step()
+        connector = self.model_runner.connector
+        if connector.control_plane is None:
+            # A local event alone must not let CAM async FFN leave the HCCL
+            # world before Attention posts the dispatch that releases recv.
+            while True:
+                shutdown_received = self.model_runner.execute_connector_driven_step()
+                if shutdown_received:
+                    logger.debug(
+                        "AFD NPU FFN receive loop consumed shutdown sentinel",
+                    )
+                    return
                 torch.npu.synchronize()
-                continue
 
-            payload = self.model_runner.connector.control_plane.recv_dp_metadata_list()
+        while not event.is_set():
+            payload = connector.control_plane.recv_dp_metadata_list()
             dp_metadata_list = payload.dp_metadata_list
             is_attn_graph_capturing = payload.is_graph_capturing
             is_warmup = payload.is_warmup
@@ -158,31 +172,47 @@ class AFDNPUFFNWorker(NPUWorker):
             self._ffn_loop_error = None
             raise RuntimeError("AFD NPU FFN worker loop failed") from error
 
-    def stop_ffn_server_loop(self) -> None:
+    def stop_ffn_server_loop(self) -> bool:
+        """Stop the daemon and report whether owned resources can be released."""
         event = self._ffn_shutdown_event
         if event is not None:
             event.set()
-
-        # CAM recv blocks in the connector operator. Release the communicator
-        # first so the daemon can observe the shutdown event, then wait for it
-        # before the parent runner releases model tensors.
-        self.model_runner.connector.close()
+        connector = self.model_runner.connector
         thread = self._ffn_thread
-        if thread is not None:
-            thread.join(timeout=FFN_SHUTDOWN_TIMEOUT_SECONDS)
-            if thread.is_alive():
-                raise RuntimeError(
-                    "AFD NPU FFN worker loop did not stop after connector close",
+
+        if isinstance(connector, CAMAsyncAFDConnector):
+            # Attention waits for FFN's combine acknowledgement. Only close
+            # after that complete round trip has made the daemon leave CAM.
+            if thread is not None:
+                thread.join(timeout=FFN_SHUTDOWN_TIMEOUT_SECONDS)
+            if thread is not None and thread.is_alive():
+                logger.warning(
+                    "AFD async FFN stop: shutdown sentinel was not received; "
+                    "deferring connector and model cleanup",
                 )
+                return False
+            connector.close()
+        else:
+            # Control-plane connectors rely on close() to interrupt their
+            # blocking metadata receive, so preserve the original ordering.
+            connector.close()
+            if thread is not None:
+                thread.join(timeout=FFN_SHUTDOWN_TIMEOUT_SECONDS)
+                if thread.is_alive():
+                    raise RuntimeError(
+                        "AFD NPU FFN worker loop did not stop after connector close",
+                    )
+
         self._ffn_thread = None
         self._ffn_shutdown_event = None
         self.raise_ffn_loop_error_if_any()
+        return True
 
     def shutdown(self) -> None:
         # Stop the connector-driven daemon before NPUWorker releases the model
         # runner and its tensors.
-        self.stop_ffn_server_loop()
-        super().shutdown()
+        if self.stop_ffn_server_loop():
+            super().shutdown()
 
 
 __all__ = ["AFDNPUFFNWorker"]

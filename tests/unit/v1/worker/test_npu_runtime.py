@@ -1510,9 +1510,11 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
 
     runner.connector.recv_ffn_work_item = recv_ffn_work_item
     runner.connector.send_ffn_work_item_output = send_ffn_work_item_output
+    runner.connector.is_shutdown_sentinel = lambda _work_item: False
 
-    runner._ffn_forward_connector_driven()
+    shutdown_received = runner._ffn_forward_connector_driven()
 
+    assert shutdown_received is False
     assert runner.model.calls == [
         (
             "hidden[:5]",
@@ -1528,6 +1530,151 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
     assert sent_outputs == [(work_item, "npu-ffn(hidden[:5], layer=7)")]
     assert context_calls[0]["num_tokens"] == 5
     assert context_calls[0]["afd_metadata"].tokens_lens == [5]
+
+
+def test_npu_ffn_connector_driven_acknowledges_shutdown_sentinel(
+    monkeypatch,
+):
+    """The out-of-range sentinel is acknowledged without model execution."""
+    _require_npu_runtime()
+    from afd_plugin.connectors.npu.async_cam import (
+        AFDAsyncFFNWorkItem,
+        AFDAsyncTransferState,
+    )
+
+    _patch_ffn_forward_context(monkeypatch)
+    runner = _new_ffn_runner()
+    runner.vllm_config = _vllm_config(role="ffn")
+    shutdown_sentinel_layer_idx = 1
+    acknowledgements = []
+    runner.connector = SimpleNamespace(
+        control_plane=None,
+        is_shutdown_sentinel=lambda item: item.layer_idx == shutdown_sentinel_layer_idx,
+        acknowledge_shutdown_sentinel=acknowledgements.append,
+    )
+    runner.model = _RecordingFakeModel()
+    runner.num_layers = 1
+    runner.max_num_tokens = 16
+    # Layer 0 is a valid MoE layer. The sentinel instead uses num_layers,
+    # which is outside the model's valid layer-index range.
+    runner.model_config = SimpleNamespace(
+        hf_config=SimpleNamespace(
+            n_routed_experts=8,
+            first_k_dense_replace=0,
+            moe_layer_freq=1,
+        ),
+    )
+    metadata = AFDTransferMetadata.create_ffn_metadata(
+        layer_idx=shutdown_sentinel_layer_idx,
+        stage_idx=0,
+        seq_lens=[1],
+    )
+    states = AFDAsyncTransferState(
+        batch_size=1,
+        hidden_size=16,
+        topk=2,
+        layer_idx=shutdown_sentinel_layer_idx,
+    )
+    work_item = AFDAsyncFFNWorkItem(
+        hidden_states="sentinel-hidden",
+        context=AFDTransferContext(metadata=metadata, states=states),
+        recv_output=AFDA2FTransferPayload(
+            hidden_states="sentinel-hidden",
+            context=AFDTransferContext(metadata=metadata, states=states),
+        ),
+        layer_idx=shutdown_sentinel_layer_idx,
+        stage_idx=0,
+        num_tokens=1,
+        total_num_tokens=1,
+        shared_num_tokens=0,
+    )
+    runner.connector.recv_ffn_work_item = lambda **kwargs: work_item
+
+    shutdown_received = runner._ffn_forward_connector_driven()
+
+    assert shutdown_received is True
+    assert acknowledgements == [work_item]
+    assert runner.model.calls == []
+
+
+def test_npu_attention_shutdown_sends_sentinel_before_close(monkeypatch):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import attention_model_runner
+
+    runner = _new_attention_runner()
+    runner.prof = None
+    calls = []
+
+    class _AsyncConnector:
+        is_initialized = True
+
+        def send_shutdown_sentinel(self):
+            calls.append("sentinel")
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setattr(
+        attention_model_runner,
+        "CAMAsyncAFDConnector",
+        _AsyncConnector,
+    )
+    runner.connector = _AsyncConnector()
+    monkeypatch.setattr(
+        attention_model_runner.NPUModelRunner,
+        "shutdown",
+        lambda self: calls.append("parent"),
+    )
+    monkeypatch.setattr(
+        attention_model_runner,
+        "stop_afd_npu_profiler",
+        lambda _prof: None,
+    )
+
+    runner.shutdown()
+
+    assert calls == ["sentinel", "close", "parent"]
+
+
+def test_npu_attention_shutdown_defers_close_on_sentinel_failure(monkeypatch):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import attention_model_runner
+
+    runner = _new_attention_runner()
+    runner.prof = None
+    calls = []
+
+    def failing_sentinel():
+        raise RuntimeError("dispatch failed")
+
+    class _AsyncConnector:
+        is_initialized = True
+
+        send_shutdown_sentinel = staticmethod(failing_sentinel)
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setattr(
+        attention_model_runner,
+        "CAMAsyncAFDConnector",
+        _AsyncConnector,
+    )
+    runner.connector = _AsyncConnector()
+    monkeypatch.setattr(
+        attention_model_runner.NPUModelRunner,
+        "shutdown",
+        lambda self: calls.append("parent"),
+    )
+    monkeypatch.setattr(
+        attention_model_runner,
+        "stop_afd_npu_profiler",
+        lambda _prof: None,
+    )
+
+    runner.shutdown()
+
+    assert calls == ["parent"]
 
 
 def test_npu_ffn_runner_sends_structured_shared_output(monkeypatch):
@@ -1867,7 +2014,46 @@ def test_npu_ffn_worker_ignores_receive_error_during_shutdown(caplog):
     assert "AFD NPU FFN worker loop failed" not in caplog.text
 
 
-def test_npu_ffn_worker_stops_loop_before_parent_shutdown(monkeypatch):
+def test_npu_ffn_worker_preserves_async_error_during_shutdown(
+    monkeypatch,
+    caplog,
+):
+    from afd_plugin.v1.worker.npu import ffn_worker
+
+    worker = _new_ffn_worker()
+    worker._ffn_thread = None
+    worker._ffn_shutdown_event = None
+    worker._ffn_loop_error = None
+
+    class _AsyncConnector:
+        is_initialized = True
+
+    monkeypatch.setattr(ffn_worker, "CAMAsyncAFDConnector", _AsyncConnector)
+    worker.model_runner = SimpleNamespace(connector=_AsyncConnector())
+    expected_error = RuntimeError("sentinel acknowledgement failed")
+
+    def fail_shutdown_handshake():
+        worker._ffn_shutdown_event.set()
+        raise expected_error
+
+    worker._run_ffn_server_loop = fail_shutdown_handshake
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger="afd_plugin.v1.worker.npu.ffn_worker",
+    ):
+        worker.start_ffn_server_loop()
+        assert worker._ffn_thread is not None
+        worker._ffn_thread.join(timeout=5)
+
+    with pytest.raises(RuntimeError, match="AFD NPU FFN worker loop failed") as exc:
+        worker.raise_ffn_loop_error_if_any()
+
+    assert exc.value.__cause__ is expected_error
+    assert "AFD NPU FFN worker loop failed" in caplog.text
+
+
+def test_npu_ffn_worker_sync_shutdown_closes_before_join(monkeypatch):
     _require_npu_runtime()
     from afd_plugin.v1.worker.npu import ffn_worker
 
@@ -1900,7 +2086,46 @@ def test_npu_ffn_worker_stops_loop_before_parent_shutdown(monkeypatch):
     ]
 
 
-def test_npu_ffn_worker_preserves_live_thread_after_shutdown_timeout(monkeypatch):
+def test_npu_ffn_worker_async_shutdown_joins_before_close(monkeypatch):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import ffn_worker
+
+    worker = _new_ffn_worker()
+    worker._ffn_shutdown_event = threading.Event()
+    calls = []
+
+    class _StoppedThread:
+        def join(self, timeout):
+            calls.append(("join", timeout))
+
+        def is_alive(self):
+            return False
+
+    class _AsyncConnector:
+        control_plane = None
+
+        def close(self):
+            calls.append(("close", None))
+
+    monkeypatch.setattr(ffn_worker, "CAMAsyncAFDConnector", _AsyncConnector)
+    worker._ffn_thread = _StoppedThread()
+    worker.model_runner = SimpleNamespace(connector=_AsyncConnector())
+    monkeypatch.setattr(
+        ffn_worker.NPUWorker,
+        "shutdown",
+        lambda self: calls.append(("parent", None)),
+    )
+
+    worker.shutdown()
+
+    assert calls == [
+        ("join", ffn_worker.FFN_SHUTDOWN_TIMEOUT_SECONDS),
+        ("close", None),
+        ("parent", None),
+    ]
+
+
+def test_npu_ffn_worker_async_timeout_defers_all_cleanup(monkeypatch):
     _require_npu_runtime()
     from afd_plugin.v1.worker.npu import ffn_worker
 
@@ -1909,7 +2134,7 @@ def test_npu_ffn_worker_preserves_live_thread_after_shutdown_timeout(monkeypatch
     worker._ffn_shutdown_event = shutdown_event
     calls = []
 
-    class _StoppingThread:
+    class _WaitingThread:
         alive = True
 
         def join(self, timeout):
@@ -1918,35 +2143,40 @@ def test_npu_ffn_worker_preserves_live_thread_after_shutdown_timeout(monkeypatch
         def is_alive(self):
             return self.alive
 
-    thread = _StoppingThread()
+    class _AsyncConnector:
+        control_plane = None
+
+        def close(self):
+            calls.append(("close", None))
+
+    monkeypatch.setattr(ffn_worker, "CAMAsyncAFDConnector", _AsyncConnector)
+    thread = _WaitingThread()
     worker._ffn_thread = thread
-    worker.model_runner = SimpleNamespace(
-        connector=SimpleNamespace(close=lambda: calls.append(("close", None))),
-    )
+    worker.model_runner = SimpleNamespace(connector=_AsyncConnector())
     monkeypatch.setattr(
         ffn_worker.NPUWorker,
         "shutdown",
         lambda self: calls.append(("parent", None)),
     )
 
-    with pytest.raises(RuntimeError, match="did not stop"):
-        worker.shutdown()
+    # The sentinel has not arrived, so neither connector nor model resources
+    # are safe to release and the live thread remains observable for a retry.
+    worker.shutdown()
 
+    assert shutdown_event.is_set()
     assert worker._ffn_thread is thread
     assert worker._ffn_shutdown_event is shutdown_event
-    assert shutdown_event.is_set()
-    assert ("parent", None) not in calls
+    assert calls == [
+        ("join", ffn_worker.FFN_SHUTDOWN_TIMEOUT_SECONDS),
+    ]
 
     thread.alive = False
     worker.shutdown()
 
-    assert worker._ffn_thread is None
-    assert worker._ffn_shutdown_event is None
     assert calls == [
-        ("close", None),
+        ("join", ffn_worker.FFN_SHUTDOWN_TIMEOUT_SECONDS),
         ("join", ffn_worker.FFN_SHUTDOWN_TIMEOUT_SECONDS),
         ("close", None),
-        ("join", ffn_worker.FFN_SHUTDOWN_TIMEOUT_SECONDS),
         ("parent", None),
     ]
 
@@ -1958,7 +2188,7 @@ def test_npu_ffn_worker_uses_connector_driven_loop_for_async_connector():
 
     def execute_connector_driven_step():
         calls.append("step")
-        event.set()
+        return True
 
     worker._ffn_shutdown_event = event
     worker.device = SimpleNamespace(type="cpu")
@@ -1967,6 +2197,9 @@ def test_npu_ffn_worker_uses_connector_driven_loop_for_async_connector():
         execute_connector_driven_step=execute_connector_driven_step,
     )
 
+    # A local worker shutdown can race Attention shutdown. CAM async must
+    # still receive and acknowledge Attention's sentinel before leaving HCCL.
+    event.set()
     worker._run_ffn_server_loop()
 
     assert calls == ["step"]

@@ -84,7 +84,10 @@ from afd_plugin.connectors import (
     AFDDPMetadata,
     AFDForwardContextMetadata,
 )
-from afd_plugin.connectors.npu.async_cam import AFDAsyncExtraInfo
+from afd_plugin.connectors.npu.async_cam import (
+    AFDAsyncExtraInfo,
+    CAMAsyncAFDConnector,
+)
 from afd_plugin.model_executor.models.npu.async_cam_layout import (
     ASYNC_MOE_UBATCH_METADATA_KEY,
     AsyncMoeUbatchMetadata,
@@ -1901,7 +1904,25 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
     def shutdown(self) -> None:
         stop_afd_npu_profiler(self.prof)
-        self.connector.close()
+        # Release idle FFN ranks from their blocking CAM recv before the
+        # communicator is destroyed; without the sentinel the FFN driver
+        # wait never returns and the FFN process survives SIGKILL.
+        connector_can_close = True
+        if isinstance(self.connector, CAMAsyncAFDConnector) and (
+            self.connector.is_initialized
+        ):
+            try:
+                self.connector.send_shutdown_sentinel()
+            except Exception:
+                connector_can_close = False
+                logger.warning(
+                    "AFD attention shutdown handshake failed; deferring "
+                    "connector close to avoid destroying HCCL with an "
+                    "in-flight FFN receive",
+                    exc_info=True,
+                )
+        if connector_can_close:
+            self.connector.close()
         super().shutdown()
 
     def _next_afd_transaction_id(self) -> str:

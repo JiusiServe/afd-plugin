@@ -247,6 +247,10 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self.hidden_size = hf_config.hidden_size
         self.topk = hf_config.num_experts_per_tok
         self.num_routed_experts = hf_config.n_routed_experts
+        # Normal layer indices occupy [0, num_hidden_layers). Using the first
+        # out-of-range value gives shutdown an unambiguous wire marker without
+        # depending on a model having a dense layer 0.
+        self.shutdown_sentinel_layer_idx = int(hf_config.num_hidden_layers)
         self.dynamic_quant = self.extra_info.dynamic_quant
         self.group_name = ""
         self.max_seq_len = vllm_config.scheduler_config.max_num_batched_tokens
@@ -315,6 +319,78 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self._placeholder = None
         self._pending_attention_payloads.clear()
         self._initialized = False
+
+    def send_shutdown_sentinel(self) -> None:
+        """Round-trip one dummy dispatch to release blocked FFN ranks.
+
+        Idle FFN ranks block inside ``async_dispatch_recv`` and cannot be
+        killed while the driver wait is pending. The sentinel dispatch wakes
+        those ranks, and the matching dummy combine is an acknowledgement that
+        every FFN rank consumed it. Attention waits for that acknowledgement
+        before either role is allowed to destroy the HCCL communicator.
+        """
+        self._require_initialized()
+        device = f"npu:{self.local_rank}"
+        hidden_states = torch.zeros(
+            (1, self.hidden_size),
+            dtype=torch.bfloat16,
+            device=device,
+        )
+        topk_ids = torch.zeros((1, self.topk), dtype=torch.int32, device=device)
+        topk_weights = torch.ones(
+            (1, self.topk),
+            dtype=torch.float32,
+            device=device,
+        )
+        metadata = AFDTransferMetadata.create_attention_metadata(
+            layer_idx=self.shutdown_sentinel_layer_idx,
+            stage_idx=0,
+            seq_len=1,
+        )
+        context = AFDTransferContext(metadata=metadata)
+        self.send_attn_output(
+            hidden_states,
+            context,
+            topk_ids=topk_ids,
+            topk_weights=topk_weights,
+            queue_for_combine=False,
+        )
+        self.recv_ffn_output(
+            ref_tensor=hidden_states,
+            ubatch_idx=0,
+            context=context,
+            topk_ids=topk_ids,
+            topk_weights=topk_weights,
+        )
+        torch.npu.synchronize()
+
+    def is_shutdown_sentinel(self, work_item: AFDAsyncFFNWorkItem) -> bool:
+        """Return whether a received item is the out-of-range shutdown marker."""
+        return work_item.layer_idx == self.shutdown_sentinel_layer_idx
+
+    def acknowledge_shutdown_sentinel(
+        self,
+        work_item: AFDAsyncFFNWorkItem,
+    ) -> None:
+        """Complete the sentinel's combine half before leaving the FFN loop."""
+        routed_output = torch.zeros(
+            (max(work_item.num_tokens, 1), self.hidden_size),
+            dtype=torch.bfloat16,
+            device=work_item.hidden_states.device,
+        )
+        shared_output = torch.zeros(
+            (max(work_item.shared_num_tokens, 1), self.hidden_size),
+            dtype=torch.bfloat16,
+            device=work_item.hidden_states.device,
+        )
+        self.send_ffn_work_item_output(
+            work_item,
+            AFDF2ATransferPayload(
+                routed_output=routed_output,
+                shared_output=shared_output,
+            ),
+        )
+        torch.npu.synchronize()
 
     def select_experts(self, **kwargs: Any) -> tuple[Tensor, Tensor]:
         """Run the pinned vLLM-Ascend expert selector on Attention."""
@@ -472,7 +548,9 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
 
         The matching context and routing tensors are queued per async stage
         for ``recv_ffn_output``. The input token count and top-k tensor shapes
-        must match the transfer metadata and model configuration.
+        must match the transfer metadata and model configuration. Internal
+        control transfers may set ``queue_for_combine=False`` and provide the
+        same context/routing tensors explicitly to ``recv_ffn_output``.
         """
         self._require_initialized()
         metadata = context.metadata
@@ -500,11 +578,12 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             batch_size=states.batch_size,
             topk=states.topk,
         )
-        self._pending_attention_payloads.setdefault(
-            context.metadata.stage_idx, []
-        ).append(
-            (context, topk_ids, topk_weights),
-        )
+        if bool(kwargs.get("queue_for_combine", True)):
+            self._pending_attention_payloads.setdefault(
+                context.metadata.stage_idx, []
+            ).append(
+                (context, topk_ids, topk_weights),
+            )
 
         _log_cam_op_values(
             "async_dispatch_send",

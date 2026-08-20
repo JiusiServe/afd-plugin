@@ -130,15 +130,15 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         self.execute_model(dp_metadata_list=dp_metadata_list)
         return None
 
-    def execute_connector_driven_step(self) -> None:
+    def execute_connector_driven_step(self) -> bool:
+        """Run one CAM async step and report a consumed shutdown sentinel."""
         if self.connector.control_plane is not None:
             raise RuntimeError(
                 "execute_connector_driven_step requires a connector-driven "
                 "AFD connector",
             )
         step_afd_npu_profiler(self.prof)
-        self._ffn_forward_connector_driven()
-        return None
+        return self._ffn_forward_connector_driven()
 
     def execute_model(
         self,
@@ -279,9 +279,8 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
 
     def _ffn_forward_connector_driven(
         self,
-    ) -> torch.Tensor | AFDF2ATransferPayload | None:
+    ) -> bool:
         stage_idx = 0
-        rank_ffn_output = None
         connector = cast(CAMAsyncAFDConnector, self.connector)
 
         for _ in _ffn_layer_indices(self):
@@ -289,6 +288,12 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 stage_idx=stage_idx,
                 max_num_tokens=self.max_num_tokens,
             )
+            # Complete both halves of the CAM transaction before reporting
+            # shutdown. The acknowledgement lets Attention wait until every
+            # FFN rank consumed the sentinel before either role tears HCCL down.
+            if connector.is_shutdown_sentinel(work_item):
+                connector.acknowledge_shutdown_sentinel(work_item)
+                return True
             hidden_states = work_item.hidden_states
             metadata = work_item.context.metadata
             states = work_item.context.states
@@ -330,7 +335,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     work_item,
                     rank_ffn_output,
                 )
-        return rank_ffn_output
+        return False
 
     def capture_model(
         self,
