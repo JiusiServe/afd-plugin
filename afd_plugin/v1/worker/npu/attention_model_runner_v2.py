@@ -155,6 +155,7 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
                 )
             self._is_warmup = False
             self._afd_is_graph_capturing = False
+            self._afd_is_profile = False
             self._afd_pending_metadata: AFDForwardContextMetadata | None = None
             self._afd_suppress_metadata_send = False
             self._afd_transaction_counter = 0
@@ -350,6 +351,8 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
         previous_suppress_send = self._afd_suppress_metadata_send
         previous_is_warmup = self._is_warmup
         previous_is_graph_capturing = self._afd_is_graph_capturing
+        previous_is_profile = self._afd_is_profile
+        self._afd_is_profile = bool(is_profile)
 
         replay_scope = (
             _use_afd_fullgraph_replay_hook(
@@ -378,6 +381,7 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
             self._afd_suppress_metadata_send = previous_suppress_send
             self._is_warmup = previous_is_warmup
             self._afd_is_graph_capturing = previous_is_graph_capturing
+            self._afd_is_profile = previous_is_profile
         # ### PATCH END: scope AFD metadata provider/replay and profiler step.
 
     # Patch reason: native V2 shutdown does not know about AFD's profiler,

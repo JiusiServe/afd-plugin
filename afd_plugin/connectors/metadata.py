@@ -123,11 +123,15 @@ class AFDControlPayload:
         is_warmup: Whether the payload belongs to a warmup step. This is
             separate from graph capture because warmup may prepare state without
             representing a real serving step.
+        is_profile: Whether the payload belongs to an initial memory-profile
+            forward. NPU FFN workers use this to preserve Ascend's balanced
+            dummy MoE routing in the split-process AFD execution model.
     """
 
     dp_metadata_list: dict[int, AFDDPMetadata]
     is_graph_capturing: bool
     is_warmup: bool
+    is_profile: bool = False
 
     def __post_init__(self) -> None:
         self.dp_metadata_list = {
@@ -312,8 +316,8 @@ def encode_control_payload(payload: AFDControlPayload) -> bytes:
     """Serialize an ``AFDControlPayload`` to a compact JSON byte string.
 
     Only ``num_tokens_across_dp_cpu`` / ``max_tokens_across_dp_cpu`` per stage
-    and the graph-capturing / warmup flags are carried; these are the fields the
-    FFN-side connectors read back after decode. Serializing to a plugin-owned
+    and the graph-capturing, warmup, and profile flags are carried. These are the
+    fields the FFN-side connectors read back after decode. A plugin-owned
     minimal schema keeps the wire format decoupled from vLLM-internal DP
     metadata objects.
     """
@@ -328,6 +332,7 @@ def encode_control_payload(payload: AFDControlPayload) -> bytes:
         "dp_metadata_list": metadata_payload,
         "is_graph_capturing": bool(payload.is_graph_capturing),
         "is_warmup": bool(payload.is_warmup),
+        "is_profile": bool(payload.is_profile),
     }
     return json.dumps(wire_payload, separators=(",", ":"), sort_keys=True).encode(
         "utf-8",
@@ -356,6 +361,7 @@ def decode_control_payload(payload_bytes: bytes) -> AFDControlPayload:
         dp_metadata_list=dp_metadata_list,
         is_graph_capturing=bool(payload.get("is_graph_capturing", False)),
         is_warmup=bool(payload.get("is_warmup", False)),
+        is_profile=bool(payload.get("is_profile", False)),
     )
 
 

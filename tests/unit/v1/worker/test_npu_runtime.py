@@ -1390,9 +1390,11 @@ def test_npu_ffn_runner_builds_forward_context_for_each_dbo_stage(monkeypatch):
             0: _FakeDPMetadata([6]),
             1: _FakeDPMetadata([7]),
         },
+        is_profile=True,
     )
 
     assert [call["num_tokens"] for call in context_calls] == [6, 7]
+    assert [call["in_profile_run"] for call in context_calls] == [True, True]
     assert [call["num_tokens_across_dp"].tolist() for call in context_calls] == [
         [6],
         [7],

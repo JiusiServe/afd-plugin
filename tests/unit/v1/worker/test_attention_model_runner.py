@@ -70,14 +70,22 @@ class _RecordingConnector:
         assert isinstance(payload, AFDControlPayload)
         self.dp_metadata_updates.append(payload.dp_metadata_list)
         self.dp_metadata_update_flags.append(
-            (payload.is_graph_capturing, payload.is_warmup),
+            (
+                payload.is_graph_capturing,
+                payload.is_warmup,
+                payload.is_profile,
+            ),
         )
 
     def send_dp_metadata_list(self, payload):
         assert isinstance(payload, AFDControlPayload)
         self.sent_dp_metadata_lists.append(payload.dp_metadata_list)
         self.sent_dp_metadata_flags.append(
-            (payload.is_graph_capturing, payload.is_warmup),
+            (
+                payload.is_graph_capturing,
+                payload.is_warmup,
+                payload.is_profile,
+            ),
         )
 
     def close(self):
@@ -177,7 +185,7 @@ def test_attention_runner_installs_afd_metadata_on_forward_context():
     assert _tokens(runner.connector.dp_metadata_updates[0][0]) == [5]
     assert set(runner.connector.sent_dp_metadata_lists[0]) == {0}
     assert _tokens(runner.connector.sent_dp_metadata_lists[0][0]) == [5]
-    assert runner.connector.sent_dp_metadata_flags == [(False, False)]
+    assert runner.connector.sent_dp_metadata_flags == [(False, False, False)]
 
 
 def test_attention_runner_initializes_missing_forward_context_kwargs():
@@ -861,8 +869,27 @@ def test_attention_runner_forwards_capture_and_warmup_flags():
 
     runner.send_dp_metadata(_dp_metadata([1]), None)
 
-    assert runner.connector.dp_metadata_update_flags == [(True, True)]
-    assert runner.connector.sent_dp_metadata_flags == [(True, True)]
+    assert runner.connector.dp_metadata_update_flags == [(True, True, False)]
+    assert runner.connector.sent_dp_metadata_flags == [(True, True, False)]
+
+
+def test_attention_runner_forwards_profile_flag():
+    runner = object.__new__(AFDAttentionModelRunner)
+    runner.afd_config = AFDConfig(role="attention")
+    runner.vllm_config = SimpleNamespace(
+        parallel_config=_parallel_config(),
+    )
+    runner.connector = _RecordingConnector()
+    runner._is_warmup = False
+    runner._afd_is_graph_capturing = False
+    runner._afd_is_profile = True
+    runner._afd_transaction_counter = 0
+    runner._afd_pending_metadata = None
+
+    runner.send_dp_metadata(_dp_metadata([1]), None)
+
+    assert runner.connector.dp_metadata_update_flags == [(False, False, True)]
+    assert runner.connector.sent_dp_metadata_flags == [(False, False, True)]
 
 
 def test_attention_runner_builds_capture_dp_metadata_for_native_dp():
