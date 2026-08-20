@@ -120,7 +120,13 @@ class _FakeTorch:
 
 def _vllm_config(*, tp_size: int = 1, pcp_size: int = 1, extra_config=None):
     return SimpleNamespace(
-        additional_config={"afd": {"connector_extra_config": extra_config or {}}},
+        additional_config={
+            "afd": {
+                "connector_extra_config": extra_config
+                if extra_config is not None
+                else {"attn_ranks_per_dp": 4},
+            },
+        },
         parallel_config=SimpleNamespace(
             data_parallel_size=1,
             data_parallel_rank=0,
@@ -144,6 +150,15 @@ def _afd_config(*, role: str):
         role=role,
         num_attention_ranks=4,
         num_ffn_ranks=2,
+    )
+
+
+def _dp2_afd_config(*, role: str):
+    return AFDConfig(
+        connector="CAMAsyncAFDConnector",
+        role=role,
+        num_attention_ranks=8,
+        num_ffn_ranks=8,
     )
 
 
@@ -209,13 +224,13 @@ def test_async_connector_uses_attn_ranks_per_dp_for_cam_tp_size():
         _vllm_config(
             tp_size=4,
             pcp_size=2,
-            extra_config={"attn_ranks_per_dp": "3"},
+            extra_config={"attn_ranks_per_dp": "4"},
         ),
         _afd_config(role="attention"),
         0,
     )
 
-    assert connector.tp_size == 3
+    assert connector.tp_size == 4
 
 
 @pytest.mark.parametrize("value", [True, "bad"])
@@ -253,6 +268,64 @@ def test_async_topology_uses_cam_attention_first_rank_layout():
     assert ffn.world_rank == 5
     assert ffn.world_size == 6
     assert ffn.expert_per_rank == 4
+
+
+@pytest.mark.parametrize(
+    ("role", "role_rank", "expected_group", "expected_world_rank"),
+    [
+        ("attention", 3, 0, 3),
+        ("attention", 4, 1, 0),
+        ("ffn", 3, 0, 7),
+        ("ffn", 4, 1, 4),
+    ],
+)
+def test_async_topology_scopes_cam_world_to_each_dp_group(
+    role,
+    role_rank,
+    expected_group,
+    expected_world_rank,
+):
+    topology = build_async_topology(
+        _dp2_afd_config(role=role),
+        role_rank,
+        num_routed_experts=32,
+        attn_ranks_per_dp=4,
+    )
+
+    assert topology.dp_group_index == expected_group
+    assert topology.num_dp_groups == 2
+    assert topology.world_rank == expected_world_rank
+    assert topology.attn_size == 4
+    assert topology.ffn_size == 4
+    assert topology.world_size == 8
+    assert topology.expert_per_rank == 8
+
+
+@pytest.mark.parametrize("dp_group_index", [0, 1])
+def test_async_topology_allows_a_shared_ffn_ep_pool(dp_group_index):
+    topology = build_async_topology(
+        _dp2_afd_config(role="ffn"),
+        7,
+        num_routed_experts=256,
+        attn_ranks_per_dp=4,
+        shared_ffn_pool=True,
+        dp_group_index=dp_group_index,
+    )
+
+    assert topology.dp_group_index == dp_group_index
+    assert topology.num_dp_groups == 2
+    assert topology.world_rank == 11
+    assert topology.attn_size == 4
+    assert topology.ffn_size == 8
+    assert topology.world_size == 12
+    assert topology.expert_per_rank == 32
+
+
+def test_async_extra_info_parses_shared_ffn_pool():
+    extra_info = AFDAsyncExtraInfo.from_mapping({"shared_ffn_pool": "true"})
+
+    assert extra_info.shared_ffn_pool is True
+    assert extra_info.to_mapping()["shared_ffn_pool"] is True
 
 
 def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
@@ -307,6 +380,45 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
     assert connector._placeholder.shape == (1,)
 
 
+def test_async_connector_init_uses_a_distinct_hccl_group_for_each_dp(monkeypatch):
+    calls = []
+    fake_torch = _FakeTorch()
+    monkeypatch.setattr(async_cam_module, "torch", fake_torch)
+    monkeypatch.setattr(
+        async_cam_module,
+        "ensure_cam_async_ops_available",
+        lambda: None,
+    )
+
+    def fake_init_afd_process_group(**kwargs):
+        calls.append(kwargs)
+        backend = SimpleNamespace(
+            get_hccl_comm_name=lambda rank: f"hccl:{kwargs['group_name']}:{rank}",
+        )
+        return SimpleNamespace(_get_backend=lambda device: backend)
+
+    monkeypatch.setattr(
+        async_cam_module,
+        "init_afd_process_group",
+        fake_init_afd_process_group,
+    )
+    connector = CAMAsyncAFDConnector(
+        0,
+        0,
+        _vllm_config(extra_config={"attn_ranks_per_dp": 4}),
+        _dp2_afd_config(role="ffn"),
+        4,
+    )
+
+    connector.init_afd_connector()
+
+    assert calls[0]["world_size"] == 8
+    assert calls[0]["rank"] == 4
+    assert calls[0]["group_name"] == "afd_async_cam_dp1"
+    assert calls[0]["init_method"] == "tcp://127.0.0.1:1240"
+    assert connector.group_name == "hccl:afd_async_cam_dp1:4"
+
+
 def test_async_connector_disables_dp_metadata_control_plane():
     connector = CAMAsyncAFDConnector(
         0,
@@ -327,7 +439,7 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
         0,
         _vllm_config(
             pcp_size=3,
-            extra_config={"attn_ranks_per_dp": 3},
+            extra_config={"attn_ranks_per_dp": 4},
         ),
         _afd_config(role="attention"),
         0,
@@ -361,7 +473,7 @@ def test_async_connector_calls_cam_shaped_ops(monkeypatch):
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][4] == CAM_COMM_ID
     assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][5:11] == (3, 16, 2, 2, 4, 4)
     assert fake_torch.ops.umdk_cam_op_lib.calls[1][1][5:11] == (3, 16, 2, 2, 4, 4)
-    assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][14] == 3
+    assert fake_torch.ops.umdk_cam_op_lib.calls[0][1][14] == 4
     assert isinstance(context.states, AFDAsyncTransferState)
     assert isinstance(context.states, AFDTransferState)
 
@@ -473,7 +585,11 @@ def test_async_ffn_work_item_uses_cam_layer_and_token_metadata(monkeypatch):
 
     monkeypatch.setattr(connector, "recv_attn_output", fake_recv_attn_output)
 
-    work_item = connector.recv_ffn_work_item(stage_idx=0, max_num_tokens=16)
+    work_item = connector.recv_ffn_work_item(
+        stage_idx=0,
+        max_num_tokens=16,
+        expected_layer_idx=0,
+    )
 
     states = work_item.context.states
     assert work_item.layer_idx == 11
@@ -536,7 +652,11 @@ def test_async_ffn_work_item_uses_expert_counts_for_routed_tokens(monkeypatch):
 
     monkeypatch.setattr(connector, "recv_attn_output", fake_recv_attn_output)
 
-    work_item = connector.recv_ffn_work_item(stage_idx=0, max_num_tokens=16)
+    work_item = connector.recv_ffn_work_item(
+        stage_idx=0,
+        max_num_tokens=16,
+        expected_layer_idx=0,
+    )
 
     states = work_item.context.states
     assert work_item.layer_idx == 23
@@ -596,7 +716,11 @@ def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
 
     monkeypatch.setattr(connector, "recv_attn_output", fake_recv_attn_output)
 
-    work_item = connector.recv_ffn_work_item(stage_idx=0, max_num_tokens=16)
+    work_item = connector.recv_ffn_work_item(
+        stage_idx=0,
+        max_num_tokens=16,
+        expected_layer_idx=0,
+    )
     sent_output = connector.send_ffn_work_item_output(
         work_item,
         AFDF2ATransferPayload(

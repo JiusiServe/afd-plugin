@@ -389,12 +389,21 @@ def _is_target_vllm_compatible() -> bool:
     return version_text.startswith(TARGET_VLLM_VERSION)
 
 
-if _is_target_vllm_compatible():
+def apply_async_dp_engine_patch() -> bool:
+    """Install the async-DP patches against the current vLLM bindings."""
+
+    if not _is_target_vllm_compatible():
+        return False
+
     EngineCoreProc.run_engine_core = staticmethod(run_engine_core)
     engine_utils_module.launch_core_engines = launch_core_engines
     core_client_module.launch_core_engines = launch_core_engines
     DPAsyncMPClient.add_request_async = add_request_async
     engine_core_module.logger.debug("AFD async-DP engine patch applied")
+    return True
 
 
-__all__: list[str] = []
+apply_async_dp_engine_patch()
+
+
+__all__ = ["apply_async_dp_engine_patch"]

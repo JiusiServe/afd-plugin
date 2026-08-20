@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import multiprocessing
+import os
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -43,6 +45,51 @@ except PackageNotFoundError:
 
 _logger = logging.getLogger(__name__)
 _registered = False
+
+
+def _force_spawn_multiprocessing_if_requested() -> None:
+    """Pin Python's default context for the A3 Python 3.12 runtime.
+
+    ``VLLM_WORKER_MULTIPROC_METHOD`` controls vLLM's explicit context only.
+    Some NPU runtime helpers use Python's default context and otherwise retain
+    the task's inherited ``forkserver`` setting, which cannot restore the
+    signal-handler state in this environment.  Keep the override opt-in so it
+    remains isolated to the affected CAM async recipe.
+    """
+    if os.environ.get("AFD_FORCE_SPAWN_MULTIPROCESSING") != "1":
+        return
+    multiprocessing.set_start_method("spawn", force=True)
+
+    # A few optional runtime helpers request ``forkserver`` explicitly instead
+    # of consulting the default start method.  On the A3 Python 3.12 image the
+    # forkserver cannot restore its inherited signal-handler state, so every
+    # child it starts exits before running user code.  Keep this narrowly
+    # opt-in with the recipe environment variable above: callers requesting a
+    # forkserver receive the equivalent spawn context instead.
+    contexts = multiprocessing.context._concrete_contexts
+    contexts["forkserver"] = contexts["spawn"]
+
+    # TE Fusion keeps a module reference to ``multiprocessing`` and calls its
+    # public ``get_context("forkserver")`` API directly inside each model
+    # worker.  Replacing the registry alone is not sufficient for all Python
+    # 3.12 context instances, so redirect that explicit request as well.
+    if not getattr(multiprocessing, "_afd_spawn_context_redirect", False):
+        original_get_context = multiprocessing.get_context
+
+        def get_spawn_context(method: str | None = None):
+            if method == "forkserver":
+                method = "spawn"
+            return original_get_context(method)
+
+        multiprocessing.get_context = get_spawn_context
+        multiprocessing._afd_spawn_context_redirect = True
+
+
+# vLLM model workers import the configured worker class directly in spawned
+# child interpreters; they do not invoke the general-plugin entry point below.
+# Apply the opt-in setting at package import time so it is also in effect before
+# Ascend TE Fusion initializes its compilation workers.
+_force_spawn_multiprocessing_if_requested()
 
 _DEEPSEEK_MODEL_REGISTRATIONS = {
     "DeepseekForCausalLM": (
@@ -90,6 +137,7 @@ def register_afd() -> None:
         _logger.debug("AFD plugin: register_afd() already completed")
         return
 
+    _force_spawn_multiprocessing_if_requested()
     _logger.debug("AFD plugin: register_afd() called")
     if importlib.util.find_spec("vllm") is None:
         _logger.debug("AFD plugin: vLLM not found, skipping runtime registration")

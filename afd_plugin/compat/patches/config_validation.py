@@ -92,6 +92,17 @@ def create_engine_config(
     if worker_cls_was_auto:
         _select_afd_worker_for_auto(config)
     # ### PATCH END: AFD automatic worker selection
+    # Ascend installs its process wrapper after general plugins. Rebind AFD's
+    # async Attention entry point after the final config is built, before vLLM
+    # captures the subprocess target.
+    from vllm.platforms import current_platform
+
+    if current_platform.device_type == "npu":
+        from afd_plugin.compat.npu import (
+            apply_afd_async_dp_engine_patch_if_needed,
+        )
+
+        apply_afd_async_dp_engine_patch_if_needed(config)
     return config
 
 

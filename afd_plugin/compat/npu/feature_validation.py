@@ -187,7 +187,7 @@ def _validate_cam_dp_topology(
             "by attn_ranks_per_dp",
         )
     cam_dp_size = afd_config.num_attention_ranks // attn_ranks_per_dp
-    if afd_config.num_ffn_ranks % cam_dp_size != 0:
+    if not extra_info.shared_ffn_pool and afd_config.num_ffn_ranks % cam_dp_size != 0:
         raise RuntimeError(
             "CAMAsyncAFDConnector requires num_ffn_ranks to be divisible by "
             "the CAM DP group count",
@@ -202,6 +202,17 @@ def _validate_cam_dp_topology(
             raise RuntimeError(
                 "CAMAsyncAFDConnector Attention tensor_parallel_size must equal "
                 "attn_ranks_per_dp",
+            )
+    elif extra_info.shared_ffn_pool:
+        if int(parallel_config.data_parallel_size) != 1:
+            raise RuntimeError(
+                "CAMAsyncAFDConnector shared_ffn_pool requires FFN "
+                "data_parallel_size=1",
+            )
+        if int(parallel_config.tensor_parallel_size) != afd_config.num_ffn_ranks:
+            raise RuntimeError(
+                "CAMAsyncAFDConnector shared_ffn_pool requires FFN "
+                "tensor_parallel_size to equal num_ffn_ranks",
             )
     elif cam_dp_size > 1 and (
         int(parallel_config.data_parallel_size) != cam_dp_size
