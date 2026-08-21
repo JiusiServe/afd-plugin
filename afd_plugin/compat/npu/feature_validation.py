@@ -120,11 +120,9 @@ def _fail_if_unsupported_dsv4_async_features(
         raise RuntimeError(
             "DSV4 Flash-INT8 CAMAsyncAFDConnector requires dynamicQuant=1",
         )
-    if extra_info.async_moe_ubatching:
-        raise RuntimeError(
-            "DSV4 CAMAsyncAFDConnector target baseline does not support "
-            "async_moe_ubatching yet",
-        )
+    # async_moe_ubatching is validated by
+    # _fail_if_unsupported_npu_async_moe_ubatching_features for all async CAM
+    # targets, so DSV4 no longer needs a bespoke rejection here.
 
 
 def _fail_if_unsupported_npu_afd_async_features(
@@ -204,15 +202,18 @@ def _validate_cam_dp_topology(
                 "attn_ranks_per_dp",
             )
     elif extra_info.shared_ffn_pool:
-        if int(parallel_config.data_parallel_size) != 1:
+        # A CAM FFN endpoint is an EP rank, rather than a TP shard.  The
+        # shared pool is reused by each Attention DP group, but retains its
+        # eight independent FFN processes as DP8 x TP1 x EP8.
+        if int(parallel_config.data_parallel_size) != afd_config.num_ffn_ranks:
             raise RuntimeError(
                 "CAMAsyncAFDConnector shared_ffn_pool requires FFN "
-                "data_parallel_size=1",
+                "data_parallel_size to equal num_ffn_ranks",
             )
-        if int(parallel_config.tensor_parallel_size) != afd_config.num_ffn_ranks:
+        if int(parallel_config.tensor_parallel_size) != 1:
             raise RuntimeError(
                 "CAMAsyncAFDConnector shared_ffn_pool requires FFN "
-                "tensor_parallel_size to equal num_ffn_ranks",
+                "tensor_parallel_size=1",
             )
     elif cam_dp_size > 1 and (
         int(parallel_config.data_parallel_size) != cam_dp_size

@@ -157,7 +157,15 @@ class AscendUBatchWrapper(UBatchWrapper):
         self.vllm_config = vllm_config
         self.compilation_config = vllm_config.compilation_config
         self.comm_stream = torch.npu.Stream(device=device)
-        assert self.vllm_config.parallel_config.num_ubatches == AFD_NPU_NUM_UBATCHES
+        # vLLM native ubatching/DBO is rejected for CAMAsyncAFDConnector by
+        # fail_if_unsupported_npu_afd_features; the AFD async MoE ubatching
+        # path drives stage counts through connector_extra_config
+        # (async_moe_num_ubatches), which is validated there as well.
+        if self.vllm_config.parallel_config.use_ubatching:
+            raise RuntimeError(
+                "AscendUBatchWrapper does not support vLLM native "
+                "ubatching/DBO; use the AFD async MoE ubatching path.",
+            )
         self.ready_barrier = threading.Barrier(_READY_BARRIER_PARTIES)
         self.cudagraphs: dict[AscendNPUGraphKey, AscendNPUGraphMetaData] = {}
         self.cudagraph_wrapper = None

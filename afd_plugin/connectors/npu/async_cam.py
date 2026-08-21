@@ -311,7 +311,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
 
         In shared-pool mode an Attention rank joins only its own DP group, but
         every FFN rank joins every group.  This preserves independent Attention
-        queues while keeping one TP8/EP8 FFN expert partition.
+        queues while keeping one DP8/TP1/EP8 FFN expert partition.
         """
         group_indices = [self.topology.dp_group_index]
         if self.extra_info.shared_ffn_pool and self.afd_config.role == "ffn":

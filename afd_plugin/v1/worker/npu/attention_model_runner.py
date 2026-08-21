@@ -275,8 +275,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             num_reqs_padded,
         )
         if self.afd_async_extra_info.async_moe_ubatching:
-            self.ubatch_slices = None
-            return self._build_attention_metadata_with_async_moe_ubatches(
+            result = self._build_attention_metadata_with_async_moe_ubatches(
                 num_tokens=num_tokens,
                 num_reqs=num_reqs,
                 max_query_len=max_query_len,
@@ -290,6 +289,20 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 num_scheduled_tokens_np=num_scheduled_tokens_np,
                 cascade_attn_prefix_lens=cascade_attn_prefix_lens,
             )
+            if (
+                self._is_dsv4_model()
+                and self._afd_async_moe_ubatch_metadata is not None
+            ):
+                self.ubatch_slices = [
+                    UBatchSlice(stage.request_slice, stage.token_slice)
+                    for stage in self._afd_async_moe_ubatch_metadata.stages
+                ]
+                return (
+                    self._afd_async_moe_ubatch_metadata.attn_metadata,
+                    None,
+                )
+            self.ubatch_slices = None
+            return result
         self._afd_pending_metadata = self._build_afd_metadata(
             ubatch_slices,
             num_tokens,
@@ -1536,8 +1549,16 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
 
     def load_model(self) -> None:
         super().load_model()
-        if bool(self.vllm_config.parallel_config.use_ubatching):
+        if (
+            bool(self.vllm_config.parallel_config.use_ubatching)
+            or self.afd_async_extra_info.async_moe_ubatching
+        ):
             self._install_ascend_ubatch_wrapper()
+
+    def _is_dsv4_model(self) -> bool:
+        from afd_plugin.compat.npu.feature_validation import _is_dsv4_target
+
+        return _is_dsv4_target(self.vllm_config)
 
     def _install_ascend_ubatch_wrapper(self) -> None:
         if isinstance(self.model, AscendUBatchWrapper):
