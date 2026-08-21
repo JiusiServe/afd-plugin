@@ -5,7 +5,9 @@ import ast
 from pathlib import Path
 
 
-def _method_parameters(source_path: Path, class_name: str, method_name: str) -> list[str]:
+def _method_parameters(
+    source_path: Path, class_name: str, method_name: str
+) -> list[str]:
     module = ast.parse(source_path.read_text())
     class_node = next(
         node
@@ -27,9 +29,7 @@ def _method_parameters(source_path: Path, class_name: str, method_name: str) -> 
 
 def test_npu_runner_overrides_match_ascend_gdn_dummy_run_contract():
     afd_source = Path("afd_plugin/v1/worker/npu/attention_model_runner.py")
-    ascend_source = Path(
-        "../vllm-ascend/vllm_ascend/worker/model_runner_v1.py"
-    )
+    ascend_source = Path("../vllm-ascend/vllm_ascend/worker/model_runner_v1.py")
 
     for method_name in ("_dummy_run", "_build_attention_metadata"):
         assert _method_parameters(
@@ -45,9 +45,7 @@ def test_npu_v2_profile_state_reaches_ffn_ascend_context():
         "afd_plugin/v1/worker/npu/attention_model_runner_v2.py"
     ).read_text()
     ffn_worker_source = Path("afd_plugin/v1/worker/npu/ffn_worker.py").read_text()
-    ffn_runner_source = Path(
-        "afd_plugin/v1/worker/npu/ffn_model_runner.py"
-    ).read_text()
+    ffn_runner_source = Path("afd_plugin/v1/worker/npu/ffn_model_runner.py").read_text()
     forward_context_source = Path(
         "afd_plugin/compat/npu/forward_context.py"
     ).read_text()
