@@ -1,0 +1,69 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: deepseek-v2-lite-downloader
+  labels:
+    app: afd-recipe
+    role: model-downloader
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: afd-recipe
+        role: model-downloader
+    spec:
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 1003810000
+      volumes:
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: deepseek-v2-lite-pvc
+      containers:
+        - name: model-downloader
+          image: vllm/vllm-openai-cpu:v0.23.0
+          command:
+            - python3
+            - -c
+            - |
+              import os
+              from huggingface_hub import snapshot_download
+
+              model_id = os.environ["MODEL_ID"]
+              save_dir = os.environ["SAVE_DIR"]
+
+              if os.path.isfile(os.path.join(save_dir, "config.json")):
+                  print(f"{model_id} already present at {save_dir}, skipping", flush=True)
+              else:
+                  print(f"Downloading {model_id} to {save_dir}", flush=True)
+                  snapshot_download(
+                      repo_id=model_id,
+                      local_dir=save_dir,
+                      token=os.environ.get("HF_TOKEN"),
+                  )
+                  print("Download complete", flush=True)
+          env:
+            - name: MODEL_ID
+              value: "deepseek-ai/DeepSeek-V2-Lite"
+            - name: SAVE_DIR
+              value: "/models/DeepSeek-V2-Lite"
+            - name: HF_HOME
+              value: "/models/.hf_home"
+            - name: HF_XET_CACHE
+              value: "/models/.hf_xet"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token-secret
+                  key: token
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+            limits:
+              cpu: "4"
+              memory: 16Gi
+          volumeMounts:
+            - name: model-storage
+              mountPath: /models

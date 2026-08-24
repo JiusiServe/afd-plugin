@@ -1,0 +1,158 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: afd-deepseek-v2-lite-serve-bench
+  labels:
+    app: afd-recipe
+    role: serve-bench
+spec:
+  restartPolicy: Never
+  securityContext:
+    fsGroup: 1003810000
+  volumes:
+    - name: model-storage
+      persistentVolumeClaim:
+        claimName: deepseek-v2-lite-pvc
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 16Gi
+    - name: work
+      emptyDir: {}
+  containers:
+    - name: afd
+      image: vllm/vllm-openai:v0.26.0
+      command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+          RESULT_DIR=/models/results
+          RATES="10 20 40 80 inf"
+          LADDER_MAX_CONCURRENCY=256
+          DONE=/work/BENCH_DONE
+          REPO=/work/afd-plugin
+          RECIPE_DIR="$REPO/tools/benchmarks/kubernetes/deepSeek-v2-lite-decode"
+          rm -rf "$RESULT_DIR"
+          mkdir -p "$RESULT_DIR"
+
+          echo "=== [1/4] waiting for afd-plugin repo to be copied in (/work/afd-plugin/REPO_READY) ==="
+          for i in $(seq 1 240); do
+            [ -f "$REPO/REPO_READY" ] && break
+            sleep 5
+          done
+          if [ ! -f "$REPO/REPO_READY" ]; then
+            echo "ERROR: repo was not copied in within timeout"; touch "$DONE"; sleep infinity
+          fi
+          cd "$REPO"
+
+          echo "=== [2/4] create venv + run recipe-specific setup ==="
+          # System site-packages are read-only under OpenShift's arbitrary UID,
+          # so build a venv that inherits the image's vLLM/torch; recipe-specific
+          # extra installs (e.g. nixl + afd-plugin) happen in setup_recipe below.
+          uv venv --system-site-packages /work/venv
+          source /work/venv/bin/activate
+          source "$RECIPE_DIR/${TEMPLATE_RECIPE_CONFIG}"
+          setup_recipe
+          # Recipe/bench scripts call `uv run vllm ...`, which would try to
+          # re-sync a project venv; use the activated venv's vllm directly.
+          sed -i 's/uv run vllm/vllm/g' \
+            "$RECIPE_DIR"/decode_bench_server.sh \
+            "$REPO"/tools/benchmarks/request_generator.sh
+
+          echo "=== fetch dcgmi client (must match cluster DCGM host-engine 4.4.2) ==="
+          mkdir -p /work/dcgm
+          if curl -fsSL -o /work/dcgm/dcgm.deb \
+            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/datacenter-gpu-manager-4-core_4.4.2-1_amd64.deb"; then
+            dpkg-deb -x /work/dcgm/dcgm.deb /work/dcgm/extract
+            export PATH="/work/dcgm/extract/usr/bin:$PATH"
+            export LD_LIBRARY_PATH="/work/dcgm/extract/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+          else
+            echo "WARNING: could not fetch dcgmi client; DCGM profiling will be skipped"
+          fi
+
+          echo "=== [3/4] launch recipe ==="
+          export MODEL_PATH=/models/DeepSeek-V2-Lite
+          export VLLM_USE_V2_MODEL_RUNNER=0
+          bash "$RECIPE_DIR"/decode_bench_server.sh "$RECIPE_DIR/${TEMPLATE_RECIPE_CONFIG}" &
+          RECIPE_PID=$!
+
+          echo "=== waiting for server startup (attn.log) ==="
+          for i in $(seq 1 120); do
+            if [ -f attn.log ] && grep -q "Application startup complete" attn.log; then
+              echo "server ready"
+              break
+            fi
+            if ! kill -0 "$RECIPE_PID" 2>/dev/null; then
+              echo "ERROR: recipe process exited before startup"
+              tail -n 200 attn.log ffn.log 2>/dev/null || true
+              touch "$DONE"
+              sleep infinity
+            fi
+            sleep 10
+          done
+
+          echo "=== [4/4] run benchmark rate ladder (request_generator.sh) ==="
+          set +e
+          BENCH_RC=0
+          for RATE in $RATES; do
+            RESULT_FILENAME="${RESULT_PREFIX}_rate${RATE}.json"
+            echo "--- rate=${RATE} concurrency=${LADDER_MAX_CONCURRENCY} -> ${RESULT_FILENAME} ---"
+            MODEL_PATH=/models/DeepSeek-V2-Lite \
+            HOST=127.0.0.1 PORT=18305 \
+            REQUEST_RATE="$RATE" MAX_CONCURRENCY="$LADDER_MAX_CONCURRENCY" \
+            RESULT_DIR="$RESULT_DIR" RESULT_FILENAME="$RESULT_FILENAME" \
+            bash tools/benchmarks/request_generator.sh
+            RC=$?
+            [ "$RC" -ne 0 ] && BENCH_RC=$RC
+          done
+          set -e
+          echo "benchmark exited rc=$BENCH_RC"
+          cp -f attn.log ffn.log dcgm.log "$RESULT_DIR"/ 2>/dev/null || true
+          echo "$BENCH_RC" > "$RESULT_DIR/bench_rc.txt"
+
+          echo "=== benchmark finished; results in $RESULT_DIR ==="
+          ls -la "$RESULT_DIR"
+          touch "$DONE"
+          echo "=== pod staying alive for result copy; delete pod when done ==="
+          sleep infinity
+      env:
+        - name: USER
+          value: "vllm"
+        - name: HOME
+          value: "/work/home"
+        - name: HF_HOME
+          value: "/models/.hf_home"
+        - name: XDG_CACHE_HOME
+          value: "/work/xdg"
+        - name: TORCHINDUCTOR_CACHE_DIR
+          value: "/work/inductor"
+        - name: TRITON_CACHE_DIR
+          value: "/work/triton"
+        - name: VLLM_CACHE_ROOT
+          value: "/work/vllm"
+        - name: UV_CACHE_DIR
+          value: "/work/uv"
+        - name: VLLM_LOGGING_LEVEL
+          value: "INFO"
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: token
+      resources:
+        requests:
+          nvidia.com/gpu: "4"
+          cpu: "16"
+          memory: 128Gi
+        limits:
+          nvidia.com/gpu: "4"
+          cpu: "32"
+          memory: 200Gi
+      volumeMounts:
+        - name: model-storage
+          mountPath: /models
+        - name: dshm
+          mountPath: /dev/shm
+        - name: work
+          mountPath: /work
