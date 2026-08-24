@@ -69,11 +69,18 @@ def apply_afd_ascend_patches_if_needed() -> None:
     from afd_plugin.compat.patches.npu.mla_graph import (
         apply_afd_mla_graph_patch,
     )
+    from afd_plugin.compat.patches.npu.modelslim_dsv4 import (
+        apply_dsv4_modelslim_patch,
+    )
 
     apply_afd_ascend_config_patch_if_needed()
     if not apply_afd_mla_graph_patch():
         raise RuntimeError(
             "AFD NPU MLA graph patch requires the vLLM-Ascend MLA resolver",
+        )
+    if not apply_dsv4_modelslim_patch():
+        raise RuntimeError(
+            "AFD NPU DSV4 ModelSlim patch requires vLLM-Ascend ModelSlim",
         )
     _PATCHES_APPLIED = True
 

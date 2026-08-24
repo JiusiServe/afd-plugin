@@ -40,6 +40,8 @@ def fail_if_unsupported_npu_afd_features(
             afd_config,
             extra_info,
         )
+        if _is_dsv4_target(vllm_config):
+            _fail_if_unsupported_dsv4_async_features(afd_config, extra_info)
         return
 
     if afd_config.compute_gate_on_attention:
@@ -84,6 +86,45 @@ def fail_if_unsupported_npu_afd_features(
         )
 
 
+def _is_dsv4_target(vllm_config: VllmConfig) -> bool:
+    """Return whether the target model is DeepSeek V4."""
+    model_config = vllm_config.model_config
+    hf_config = getattr(model_config, "hf_config", None)
+    if hf_config is None:
+        hf_config = getattr(model_config, "hf_text_config", None)
+    if hf_config is None:
+        return False
+    if getattr(hf_config, "model_type", None) == "deepseek_v4":
+        return True
+    architectures = getattr(hf_config, "architectures", ()) or ()
+    return any("DeepseekV4" in str(architecture) for architecture in architectures)
+
+
+def _fail_if_unsupported_dsv4_async_features(
+    afd_config: AFDConfig,
+    extra_info: ConnectorExtraInfo,
+) -> None:
+    """Keep the initial DSV4 Async CAM target path deliberately narrow."""
+    from afd_plugin.connectors.npu.async_cam import AFDAsyncExtraInfo
+
+    if not afd_config.compute_gate_on_attention:
+        raise RuntimeError(
+            "DSV4 CAMAsyncAFDConnector requires compute_gate_on_attention=true",
+        )
+    if not isinstance(extra_info, AFDAsyncExtraInfo):
+        raise TypeError(
+            "DSV4 CAMAsyncAFDConnector requires AFDAsyncExtraInfo, got "
+            f"{type(extra_info).__name__}",
+        )
+    if extra_info.dynamic_quant != 1:
+        raise RuntimeError(
+            "DSV4 Flash-INT8 CAMAsyncAFDConnector requires dynamicQuant=1",
+        )
+    # async_moe_ubatching is validated by
+    # _fail_if_unsupported_npu_async_moe_ubatching_features for all async CAM
+    # targets, so DSV4 no longer needs a bespoke rejection here.
+
+
 def _fail_if_unsupported_npu_afd_async_features(
     vllm_config: VllmConfig,
     afd_config: AFDConfig,
@@ -122,6 +163,65 @@ def _fail_if_unsupported_npu_afd_async_features(
     if extra_info.dynamic_quant not in (0, 1):
         raise RuntimeError(
             "CAMAsyncAFDConnector currently supports only dynamicQuant 0 or 1",
+        )
+    _validate_cam_dp_topology(vllm_config, afd_config, extra_info)
+
+
+def _validate_cam_dp_topology(
+    vllm_config: VllmConfig,
+    afd_config: AFDConfig,
+    extra_info: ConnectorExtraInfo,
+) -> None:
+    """Require a DP-scoped CAM world to match each role's parallel layout."""
+    from afd_plugin.connectors.npu.async_cam import AFDAsyncExtraInfo
+
+    if not isinstance(extra_info, AFDAsyncExtraInfo):
+        return
+    parallel_config = vllm_config.parallel_config
+    attn_ranks_per_dp = int(extra_info.attn_ranks_per_dp)
+    if afd_config.num_attention_ranks % attn_ranks_per_dp != 0:
+        raise RuntimeError(
+            "CAMAsyncAFDConnector requires num_attention_ranks to be divisible "
+            "by attn_ranks_per_dp",
+        )
+    cam_dp_size = afd_config.num_attention_ranks // attn_ranks_per_dp
+    if not extra_info.shared_ffn_pool and afd_config.num_ffn_ranks % cam_dp_size != 0:
+        raise RuntimeError(
+            "CAMAsyncAFDConnector requires num_ffn_ranks to be divisible by "
+            "the CAM DP group count",
+        )
+    if afd_config.role == "attention":
+        if int(parallel_config.data_parallel_size) != cam_dp_size:
+            raise RuntimeError(
+                "CAMAsyncAFDConnector Attention data_parallel_size must equal "
+                "the CAM DP group count",
+            )
+        if int(parallel_config.tensor_parallel_size) != attn_ranks_per_dp:
+            raise RuntimeError(
+                "CAMAsyncAFDConnector Attention tensor_parallel_size must equal "
+                "attn_ranks_per_dp",
+            )
+    elif extra_info.shared_ffn_pool:
+        # A CAM FFN endpoint is an EP rank, rather than a TP shard.  The
+        # shared pool is reused by each Attention DP group, but retains its
+        # eight independent FFN processes as DP8 x TP1 x EP8.
+        if int(parallel_config.data_parallel_size) != afd_config.num_ffn_ranks:
+            raise RuntimeError(
+                "CAMAsyncAFDConnector shared_ffn_pool requires FFN "
+                "data_parallel_size to equal num_ffn_ranks",
+            )
+        if int(parallel_config.tensor_parallel_size) != 1:
+            raise RuntimeError(
+                "CAMAsyncAFDConnector shared_ffn_pool requires FFN "
+                "tensor_parallel_size=1",
+            )
+    elif cam_dp_size > 1 and (
+        int(parallel_config.data_parallel_size) != cam_dp_size
+        or int(parallel_config.tensor_parallel_size) != attn_ranks_per_dp
+    ):
+        raise RuntimeError(
+            "CAMAsyncAFDConnector FFN must use the same DPxTP partition as "
+            "Attention when CAM has multiple DP groups",
         )
 
 

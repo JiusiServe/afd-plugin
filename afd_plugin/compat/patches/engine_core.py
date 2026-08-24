@@ -42,6 +42,14 @@ def __init__(
     executor_fail_callback: Callable | None = None,
     include_finished_set: bool = False,
 ):
+    # Install DSV4's Ascend KV grouping compatibility before an EngineCore can
+    # ask vLLM to construct its cache configuration.
+    from afd_plugin.compat.patches.npu.deepseek_v4_kv_cache import (
+        apply_deepseek_v4_kv_cache_patches,
+    )
+
+    apply_deepseek_v4_kv_cache_patches()
+
     # ### PATCH START: AFD FFN EngineCore daemon initialization
     # FFN ranks are connector daemons, so stop EngineCore initialization after
     # executor construction instead of setting up KV cache and scheduler state.
@@ -239,6 +247,14 @@ def _initialize_kv_caches(self, vllm_config: VllmConfig) -> KVCacheConfig:
         _prepare_late_loaded_ffn_engine_core(self, vllm_config)
         return _AFDFFNKVCacheConfig()
     # ### PATCH END: AFD FFN late-loaded KV cache bypass
+
+    # vLLM-Ascend can rebind its grouping helper while worker modules import.
+    # Reinstall at the call site used to build the target cache configuration.
+    from afd_plugin.compat.patches.npu.deepseek_v4_kv_cache import (
+        apply_deepseek_v4_kv_cache_patches,
+    )
+
+    apply_deepseek_v4_kv_cache_patches()
 
     start = time.time()
 

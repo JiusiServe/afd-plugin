@@ -12,6 +12,8 @@ pytest.importorskip("torch_npu")
 from afd_plugin.config import AFDConfig
 from afd_plugin.connectors import (
     AFDConnectorFactory,
+    AFDControlPayload,
+    AFDDPMetadata,
     AFDTransferContext,
     AFDTransferMetadata,
     AFDTransferState,
@@ -84,7 +86,7 @@ def test_camp2p_factory_creates_connector():
     assert connector.extra_info.core_num == 12
 
 
-def test_camp2p_topology_matches_original_rank_layout():
+def test_camp2p_topology_maps_every_attention_rank_to_its_ffn_group():
     attn0 = build_camp2p_topology(_afd_config(role="attention"), 0)
     attn1 = build_camp2p_topology(_afd_config(role="attention"), 1)
     attn2 = build_camp2p_topology(_afd_config(role="attention"), 2)
@@ -98,10 +100,50 @@ def test_camp2p_topology_matches_original_rank_layout():
     assert (attn1.world_rank, attn1.p2p_rank, attn1.dp_metadata_destinations) == (
         3,
         3,
+        (0,),
+    )
+    assert (attn2.world_rank, attn2.p2p_rank, attn2.dp_metadata_destinations) == (
+        4,
+        4,
         (1,),
     )
-    assert not attn2.participates_in_p2p_group
+    assert attn2.participates_in_p2p_group
     assert (ffn1.world_rank, ffn1.p2p_rank) == (1, 1)
+    assert ffn1.dp_metadata_sources == (4, 5)
+    assert ffn1.p2p_world_size == 6
+
+
+def test_camp2p_control_payload_aggregates_input_ids_per_stage():
+    torch = pytest.importorskip("torch")
+    dp_metadata_list = {
+        0: AFDDPMetadata(torch.tensor([2, 3, 5, 7], dtype=torch.int32)),
+        1: AFDDPMetadata(torch.tensor([11, 13, 17, 19], dtype=torch.int32)),
+    }
+    payload0 = AFDControlPayload(
+        dp_metadata_list=dp_metadata_list,
+        is_graph_capturing=False,
+        is_warmup=False,
+        input_ids_by_stage={0: [10, 11], 1: [12]},
+    )
+    payload1 = AFDControlPayload(
+        dp_metadata_list=dp_metadata_list,
+        is_graph_capturing=False,
+        is_warmup=False,
+        input_ids_by_stage={0: [20, 21, 22], 1: [23, 24]},
+    )
+
+    merged = camp2p_module._aggregate_camp2p_control_payloads(
+        (payload0, payload1)
+    )
+
+    assert merged.input_ids_by_stage == {
+        0: [10, 11, 20, 21, 22],
+        1: [12, 23, 24],
+    }
+    assert torch.equal(
+        merged.dp_metadata_list[0].num_tokens_across_dp_cpu,
+        payload0.dp_metadata_list[0].num_tokens_across_dp_cpu,
+    )
 
 
 def _init_ffn_connector(rank, vllm_config):

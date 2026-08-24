@@ -89,12 +89,15 @@ class _RecordingConnector:
     def __init__(self):
         self.dp_metadata_updates = []
         self.sent_dp_metadata_lists = []
+        self.dp_metadata_payloads = []
+        self.sent_dp_metadata_payloads = []
         # The runners reach the control plane through connector.control_plane;
         # the fake serves as both.
         self.control_plane = self
 
     def update_state_from_dp_metadata(self, payload):
         assert isinstance(payload, AFDControlPayload)
+        self.dp_metadata_payloads.append(payload)
         self.dp_metadata_updates.append(
             (
                 payload.dp_metadata_list,
@@ -105,6 +108,7 @@ class _RecordingConnector:
 
     def send_dp_metadata_list(self, payload):
         assert isinstance(payload, AFDControlPayload)
+        self.sent_dp_metadata_payloads.append(payload)
         self.sent_dp_metadata_lists.append(
             (
                 payload.dp_metadata_list,
@@ -477,9 +481,10 @@ def test_npu_attention_runner_skips_outer_update_only_for_owned_graph(
     updates = []
     runner._update_full_graph_params_if_needed = lambda *args: updates.append(args)
 
+    input_ids = object()
     result = runner._model_forward(
         8,
-        input_ids=None,
+        input_ids=input_ids,
         positions=object(),
         intermediate_tensors=None,
         inputs_embeds=None,
@@ -487,6 +492,7 @@ def test_npu_attention_runner_skips_outer_update_only_for_owned_graph(
 
     assert result == "hidden_states"
     assert len(updates) == expected_updates
+    assert forward_context.input_ids is input_ids
 
 
 def test_npu_attention_runner_installs_mla_graph_wrapper(monkeypatch):
@@ -641,7 +647,12 @@ def test_npu_attention_runner_sends_per_ubatch_dp_metadata():
         ),
     ]
 
-    runner._send_dp_metadata(None, ubatch_slices)
+    torch = pytest.importorskip("torch")
+    runner._send_dp_metadata(
+        None,
+        ubatch_slices,
+        input_ids=torch.tensor([10, 11, 12, 13, 20, 21, 22]),
+    )
 
     dp_metadata_list = runner.connector.dp_metadata_updates[0][0]
     assert sorted(dp_metadata_list) == [0, 1]
@@ -651,6 +662,10 @@ def test_npu_attention_runner_sends_per_ubatch_dp_metadata():
     assert sorted(sent_dp_metadata_list) == [0, 1]
     assert _tokens(sent_dp_metadata_list[0]) == [4]
     assert _tokens(sent_dp_metadata_list[1]) == [3]
+    assert runner.connector.sent_dp_metadata_payloads[0].input_ids_by_stage == {
+        0: [10, 11, 12, 13],
+        1: [20, 21, 22],
+    }
 
 
 def test_npu_attention_capture_microbatch_also_captures_single_stage():
@@ -1349,6 +1364,37 @@ def test_npu_ffn_runner_executes_eager_ffn_step(monkeypatch):
     ]
 
 
+def test_npu_ffn_input_ids_require_exact_hidden_state_alignment():
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu.ffn_model_runner import _install_ffn_input_ids
+
+    torch = pytest.importorskip("torch")
+    forward_context = SimpleNamespace()
+    _install_ffn_input_ids(
+        forward_context,
+        [10, 11],
+        num_tokens=2,
+        device=torch.device("cpu"),
+    )
+    assert forward_context.input_ids.tolist() == [10, 11]
+
+    with pytest.raises(RuntimeError, match="must align"):
+        _install_ffn_input_ids(
+            forward_context,
+            [12],
+            num_tokens=2,
+            device=torch.device("cpu"),
+        )
+
+    _install_ffn_input_ids(
+        forward_context,
+        None,
+        num_tokens=2,
+        device=torch.device("cpu"),
+    )
+    assert forward_context.input_ids is None
+
+
 def test_npu_ffn_runner_builds_forward_context_for_each_dbo_stage(monkeypatch):
     _require_npu_runtime()
     from afd_plugin.v1.worker.npu import ffn_model_runner
@@ -1499,7 +1545,7 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
         shared_num_tokens=2,
     )
 
-    def recv_ffn_work_item(*, stage_idx, max_num_tokens):
+    def recv_ffn_work_item(*, stage_idx, max_num_tokens, expected_layer_idx):
         assert stage_idx == 0
         assert max_num_tokens == 16
         return work_item

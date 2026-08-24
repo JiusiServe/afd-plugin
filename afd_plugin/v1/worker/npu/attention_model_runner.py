@@ -49,7 +49,6 @@ from vllm_ascend.compilation.acl_graph import ACLGraphWrapper
 from vllm_ascend.ops.rotary_embedding import update_cos_sin
 from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
 from vllm_ascend.spec_decode.draft_proposer import AscendDraftModelProposer
-from vllm_ascend.spec_decode.dspark_proposer import AscendDSparkProposer
 from vllm_ascend.spec_decode.eagle_proposer import AscendEagleProposer
 from vllm_ascend.spec_decode.step3p5 import AscendStep3p5MTPProposer
 from vllm_ascend.utils import (
@@ -205,6 +204,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
     ):
         forward_context = get_forward_context()
         # ### PATCH START: AFD forward-context metadata
+        forward_context.input_ids = input_ids
         if self.ubatch_slices is not None:
             forward_context.ubatch_slices = self.ubatch_slices
         forward_context.dbo_enabled = False
@@ -276,8 +276,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             num_reqs_padded,
         )
         if self.afd_async_extra_info.async_moe_ubatching:
-            self.ubatch_slices = None
-            return self._build_attention_metadata_with_async_moe_ubatches(
+            result = self._build_attention_metadata_with_async_moe_ubatches(
                 num_tokens=num_tokens,
                 num_reqs=num_reqs,
                 max_query_len=max_query_len,
@@ -291,6 +290,20 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 num_scheduled_tokens_np=num_scheduled_tokens_np,
                 cascade_attn_prefix_lens=cascade_attn_prefix_lens,
             )
+            if (
+                self._is_dsv4_model()
+                and self._afd_async_moe_ubatch_metadata is not None
+            ):
+                self.ubatch_slices = [
+                    UBatchSlice(stage.request_slice, stage.token_slice)
+                    for stage in self._afd_async_moe_ubatch_metadata.stages
+                ]
+                return (
+                    self._afd_async_moe_ubatch_metadata.attn_metadata,
+                    None,
+                )
+            self.ubatch_slices = None
+            return result
         self._afd_pending_metadata = self._build_afd_metadata(
             ubatch_slices,
             num_tokens,
@@ -390,22 +403,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         stage_slices = [
             UBatchSlice(stage.request_slice, stage.token_slice) for stage in stages
         ]
-
-        logger.debug(
-            "AFD NPU async MoE ubatch split; num_reqs=%s num_tokens=%s "
-            "num_scheduled_tokens=%s split=%s sequence_parallel=%s "
-            "request_slices=%s token_slices=%s stage_input_tokens=%s "
-            "stage_actual_tokens=%s",
-            len(num_scheduled_tokens_np),
-            num_tokens,
-            num_scheduled_tokens_np.tolist(),
-            self.afd_async_extra_info.async_moe_split,
-            use_sequence_parallel,
-            [(stage.request_slice.start, stage.request_slice.stop) for stage in stages],
-            [(stage.token_slice.start, stage.token_slice.stop) for stage in stages],
-            [int(stage.input_tokens) for stage in stages],
-            [stage.actual_tokens for stage in stages],
-        )
 
         stage_attn_metadata, _ = self._build_attention_metadata_with_ubatches(
             num_tokens=num_tokens,
@@ -754,7 +751,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 )
             if self.speculative_config and isinstance(
                 self.drafter,
-                AscendStep3p5MTPProposer | AscendDSparkProposer,
+                AscendStep3p5MTPProposer,
             ):
                 self.drafter.set_per_group_attn_metadata(
                     kv_cache_gid,
@@ -766,8 +763,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                     self.drafter,
                     AscendEagleProposer
                     | AscendDraftModelProposer
-                    | AscendDflashProposer
-                    | AscendDSparkProposer,
+                    | AscendDflashProposer,
                 ):
                     if self.drafter.attn_layer_names[0] in kv_cache_group.layer_names:
                         spec_decode_common_attn_metadata = cm
@@ -1441,7 +1437,11 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         padded_graph_tokens = _full_cudagraph_padded_tokens(forward_context)
         if padded_graph_tokens is not None and not ubatch_slices:
             dp_metadata = self._build_capture_dp_metadata(padded_graph_tokens)
-        self._send_dp_metadata(dp_metadata, ubatch_slices)
+        self._send_dp_metadata(
+            dp_metadata,
+            ubatch_slices,
+            input_ids=getattr(forward_context, "input_ids", None),
+        )
 
     def _install_async_moe_ubatch_metadata_on_forward_context(
         self,
@@ -1482,6 +1482,8 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         self,
         dp_metadata: DPMetadata | AFDDPMetadata | None,
         ubatch_slices: UBatchSlices | None,
+        *,
+        input_ids: torch.Tensor | None = None,
     ) -> None:
         assert self.connector.control_plane is not None, (
             "_send_dp_metadata needs control plane driven connectors"
@@ -1497,22 +1499,33 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         else:
             dp_metadata = self._ensure_dp_metadata(dp_metadata)
             dp_metadata_list = {0: dp_metadata}
+        input_ids_by_stage: dict[int, list[int]] = {}
+        if input_ids is not None:
+            if ubatch_slices and len(ubatch_slices) > 1:
+                for idx, ubatch in enumerate(ubatch_slices):
+                    input_ids_by_stage[idx] = (
+                        input_ids[ubatch.token_slice]
+                        .detach()
+                        .to(device="cpu", dtype=torch.int64)
+                        .flatten()
+                        .tolist()
+                    )
+            else:
+                input_ids_by_stage[0] = (
+                    input_ids.detach()
+                    .to(device="cpu", dtype=torch.int64)
+                    .flatten()
+                    .tolist()
+                )
         is_warmup = bool(self._is_warmup)
         is_graph_capturing = bool(self._afd_is_graph_capturing)
         payload = AFDControlPayload(
             dp_metadata_list=dp_metadata_list,
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,
+            input_ids_by_stage=input_ids_by_stage,
         )
         self.connector.control_plane.update_state_from_dp_metadata(payload)
-        logger.warning(
-            "AFD NPU Attention send_dp_metadata decision; world_rank=%d "
-            "key=%s is_graph_capturing=%s is_warmup=%s",
-            self.connector.world_rank,
-            _dp_metadata_debug_key(dp_metadata_list),
-            is_graph_capturing,
-            is_warmup,
-        )
         self.connector.control_plane.send_dp_metadata_list(payload)
 
     def _ensure_dp_metadata(
@@ -1546,7 +1559,10 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
     # Signature: matches upstream; no added parameters.
     def load_model(self) -> None:
         super().load_model()
-        if bool(self.vllm_config.parallel_config.use_ubatching):
+        if (
+            bool(self.vllm_config.parallel_config.use_ubatching)
+            or self.afd_async_extra_info.async_moe_ubatching
+        ):
             self._install_ascend_ubatch_wrapper()
         # Wrapper installation is local and non-blocking; the connector
         # rendezvous is the blocking cross-role collective, so it is
@@ -1554,6 +1570,11 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         # weights" barrier before memory profiling.
         if not self.connector.is_initialized:
             self.connector.init_afd_connector()
+
+    def _is_dsv4_model(self) -> bool:
+        from afd_plugin.compat.npu.feature_validation import _is_dsv4_target
+
+        return _is_dsv4_target(self.vllm_config)
 
     def _install_ascend_ubatch_wrapper(self) -> None:
         if isinstance(self.model, AscendUBatchWrapper):
@@ -1918,18 +1939,6 @@ def _make_uniform_dp_metadata(dp_size: int, num_tokens: int) -> AFDDPMetadata:
         device="cpu",
     )
     return AFDDPMetadata(num_tokens_across_dp_cpu=num_tokens_across_dp_cpu)
-
-
-def _dp_metadata_debug_key(
-    dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
-) -> tuple[tuple[int, tuple]]:
-    key_parts: list[tuple[int, tuple]] = []
-    for stage_idx, metadata in sorted(dp_metadata_list.items()):
-        values_tuple = tuple(
-            int(value) for value in metadata.num_tokens_across_dp_cpu.tolist()
-        )
-        key_parts.append((int(stage_idx), values_tuple))
-    return tuple(key_parts)
 
 
 def _normalize_metadata_ubatch_slices(
