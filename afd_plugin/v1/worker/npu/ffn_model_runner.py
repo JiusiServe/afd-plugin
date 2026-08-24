@@ -36,7 +36,7 @@ from afd_plugin.connectors.npu.async_cam import (
     AFDAsyncTransferState,
     CAMAsyncAFDConnector,
 )
-from afd_plugin.v1.worker.attention_model_runner import (
+from afd_plugin.v1.worker.attention_metadata import (
     _resolve_world_ranks,
 )
 from afd_plugin.v1.worker.cuda_graph import (

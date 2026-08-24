@@ -98,10 +98,11 @@ from afd_plugin.model_executor.npu.async_cam_ubatching import (
     AsyncMoeStage,
     plan_async_moe_stages,
 )
-from afd_plugin.v1.worker.attention_model_runner import (
+from afd_plugin.v1.worker.attention_metadata import (
     _forward_context_num_tokens,
     _full_cudagraph_padded_tokens,
     _resolve_world_ranks,
+    build_ubatch_dp_metadata_list,
 )
 from afd_plugin.v1.worker.npu.npu_ubatch_wrapper import AscendUBatchWrapper
 from afd_plugin.v1.worker.npu.ubatch_utils import (
@@ -110,7 +111,6 @@ from afd_plugin.v1.worker.npu.ubatch_utils import (
     pad_out_ubatch_slices,
     split_attn_metadata,
 )
-from afd_plugin.v1.worker.ubatch_wrapper import build_ubatch_dp_metadata_list
 
 logger = init_logger(__name__)
 

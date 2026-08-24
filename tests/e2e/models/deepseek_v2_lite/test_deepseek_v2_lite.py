@@ -17,6 +17,7 @@ from tests.conftest import (
     preserve_environment_variable,
     run_runner,
 )
+from tests.e2e.runner import V2_SCENARIOS, V2_SINGLE_RANK_SCENARIOS
 
 GSM8K_DATASET_ID = "openai/gsm8k"
 GSM8K_DATASET_CONFIG = "main"
@@ -32,6 +33,7 @@ SCENARIOS = (
     "afd-graph",
     "afd-graph-dbo",
     "afd-graph-dbo-2a2f",
+    *V2_SCENARIOS,
 )
 
 
@@ -78,22 +80,28 @@ def build_runner_command(scenario: str, gsm8k_output_path: Path) -> list[str]:
         raise RuntimeError("AFD_E2E_BACKEND must be 'gpu' or 'npu'")
 
     env_devices = os.environ.get("AFD_E2E_DEVICES")
-    devices = (
-        [item.strip() for item in env_devices.split(",") if item.strip()]
-        if env_devices
-        else list(DEFAULT_DEVICE_IDS)
-    )
+    if env_devices:
+        devices = [item.strip() for item in env_devices.split(",") if item.strip()]
+    elif scenario in V2_SINGLE_RANK_SCENARIOS:
+        devices = ["0", "1"]
+    else:
+        devices = list(DEFAULT_DEVICE_IDS)
     if scenario == "baseline-graph":
         attention_devices = devices[:BASELINE_DEVICE_COUNT]
         ffn_devices = []
+    elif scenario in V2_SINGLE_RANK_SCENARIOS:
+        attention_devices = devices[:1]
+        ffn_devices = devices[1:2]
     else:
         attention_devices = devices[:ATTENTION_DEVICE_COUNT]
-        ffn_end = (
-            BASELINE_DEVICE_COUNT
-            if scenario == "afd-graph-dbo-2a2f"
-            else ATTENTION_DEVICE_COUNT + AFD_FFN_DEVICE_COUNT
+        ffn_count = (
+            2
+            if scenario == "afd-graph-dbo-2a2f" or scenario in V2_SCENARIOS
+            else AFD_FFN_DEVICE_COUNT
         )
-        ffn_devices = devices[ATTENTION_DEVICE_COUNT:ffn_end]
+        ffn_devices = devices[
+            ATTENTION_DEVICE_COUNT : ATTENTION_DEVICE_COUNT + ffn_count
+        ]
 
     command = [
         sys.executable,

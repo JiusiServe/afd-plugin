@@ -98,6 +98,26 @@ python -m pytest -q -s \
   "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-graph-dbo-2a2f]"
 ```
 
+### GPU ModelRunnerV2 evidence matrix
+
+The GPU-only ModelRunnerV2 regression matrix contains six representative
+scenarios:
+
+- `afd-v2-eager-1a1f` and `afd-v2-graph-1a1f`
+- `afd-v2-eager-dp2` and `afd-v2-graph-dp2`
+- `afd-v2-eager-tp2` and `afd-v2-graph-tp2`
+
+The 1A1F scenarios use two devices. DP2 and TP2 use four devices, split evenly
+between Attention and FFN. These rows record hardware-tested coverage; they are
+not a production topology allowlist. Other valid DP/TP topologies use the same
+AFD and native vLLM topology contracts.
+
+```bash
+python -m pytest -q -s \
+  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py" \
+  -k 'afd-v2'
+```
+
 For the weekly full GSM8K test, run only `afd-graph-dbo`:
 
 ```bash
