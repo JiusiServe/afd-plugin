@@ -211,9 +211,11 @@ def parse_args() -> argparse.Namespace:
         "--scenario",
         choices=[
             "baseline-graph",
-            "afd-eager",
-            "afd-graph",
-            "afd-graph-dbo",
+            "afd-eager-2a1f",
+            "afd-graph-2a1f",
+            "afd-graph-dbo-2a1f",
+            "afd-eager-2a2f",
+            "afd-graph-2a2f",
             "afd-graph-dbo-2a2f",
             ASYNC_CAM_SCENARIO,
             ASYNC_UBATCH_SCENARIO,
@@ -322,9 +324,11 @@ def configure_scenario(args: argparse.Namespace) -> None:
     is_async_ubatch = args.scenario == ASYNC_UBATCH_SCENARIO
     scenario_settings = {
         "baseline-graph": (True, True, False, 4, 0),
-        "afd-eager": (False, False, False, 2, 1),
-        "afd-graph": (False, True, False, 2, 1),
-        "afd-graph-dbo": (False, True, True, 2, 1),
+        "afd-eager-2a1f": (False, False, False, 2, 1),
+        "afd-graph-2a1f": (False, True, False, 2, 1),
+        "afd-graph-dbo-2a1f": (False, True, True, 2, 1),
+        "afd-eager-2a2f": (False, False, False, 2, 2),
+        "afd-graph-2a2f": (False, True, False, 2, 2),
         "afd-graph-dbo-2a2f": (False, True, True, 2, 2),
         ASYNC_CAM_SCENARIO: (
             False,

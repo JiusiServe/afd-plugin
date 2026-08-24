@@ -17,6 +17,7 @@ mirror_hardwares:
           shm-size: "8gb"
           environment:
             - HF_HOME=/fsx/hf_cache
+            - HF_HUB_DISABLE_XET=1
             - HF_TOKEN
           volumes:
             - /fsx/hf_cache:/fsx/hf_cache
@@ -32,6 +33,7 @@ mirror_hardwares:
           shm-size: "8gb"
           environment:
             - HF_HOME=/fsx/hf_cache
+            - HF_HUB_DISABLE_XET=1
             - HF_TOKEN
           volumes:
             - /fsx/hf_cache:/fsx/hf_cache
@@ -55,6 +57,8 @@ mirror_hardwares:
                 env:
                   - name: HF_HOME
                     value: /root/.cache/huggingface
+                  - name: HF_HUB_DISABLE_XET
+                    value: "1"
                   - name: HF_TOKEN
                     valueFrom:
                       secretKeyRef:
