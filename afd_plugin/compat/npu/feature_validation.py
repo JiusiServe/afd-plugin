@@ -191,7 +191,21 @@ def _validate_cam_dp_topology(
             "the CAM DP group count",
         )
     if afd_config.role == "attention":
-        if int(parallel_config.data_parallel_size) != cam_dp_size:
+        uses_independent_dp_instance = (
+            int(parallel_config.data_parallel_size) == 1 and cam_dp_size > 1
+        )
+        if uses_independent_dp_instance:
+            if int(parallel_config.data_parallel_size) != 1:
+                raise RuntimeError(
+                    "CAMAsyncAFDConnector independent Attention instances "
+                    "require data_parallel_size=1",
+                )
+            if afd_config.role_rank_offset % attn_ranks_per_dp != 0:
+                raise RuntimeError(
+                    "CAMAsyncAFDConnector Attention role_rank_offset must be "
+                    "aligned to attn_ranks_per_dp",
+                )
+        elif int(parallel_config.data_parallel_size) != cam_dp_size:
             raise RuntimeError(
                 "CAMAsyncAFDConnector Attention data_parallel_size must equal "
                 "the CAM DP group count",

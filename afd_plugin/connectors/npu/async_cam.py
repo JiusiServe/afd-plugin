@@ -75,6 +75,8 @@ _AFD_ASYNC_EXTRA_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
         "dynamicQuant",
         "attn_ranks_per_dp",
         "shared_ffn_pool",
+        "cam_rendezvous_hosts",
+        "scheduler_host",
         "async_moe_ubatching",
         "async_moe_num_ubatches",
         "async_moe_split",
@@ -82,6 +84,29 @@ _AFD_ASYNC_EXTRA_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
 )
 
 logger = init_logger(__name__)
+
+
+def _coerce_host(
+    value: object,
+    *,
+    field_name: str,
+    allow_empty: bool = False,
+) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string, got {value!r}")
+    host = value.strip()
+    if not host and not allow_empty:
+        raise ValueError(f"{field_name} must not be empty")
+    return host
+
+
+def _coerce_hosts(value: object, *, field_name: str) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"{field_name} must be a list of host strings, got {value!r}")
+    return tuple(
+        _coerce_host(host, field_name=f"{field_name}[{index}]")
+        for index, host in enumerate(value)
+    )
 
 
 @dataclass(frozen=True)
@@ -100,6 +125,8 @@ class AFDAsyncExtraInfo(ConnectorExtraInfo):
     dynamic_quant: int = 0
     attn_ranks_per_dp: int = 1
     shared_ffn_pool: bool = False
+    cam_rendezvous_hosts: tuple[str, ...] = ()
+    scheduler_host: str = ""
     async_moe_ubatching: bool = False
     async_moe_num_ubatches: int = ASYNC_MOE_NUM_STAGES
     async_moe_split: str = ASYNC_MOE_REQUEST_SPLIT
@@ -135,6 +162,15 @@ class AFDAsyncExtraInfo(ConnectorExtraInfo):
                 raw.get(SHARED_FFN_POOL_CONFIG_KEY, False),
                 field_name=SHARED_FFN_POOL_CONFIG_KEY,
             ),
+            cam_rendezvous_hosts=_coerce_hosts(
+                raw.get("cam_rendezvous_hosts", ()),
+                field_name="cam_rendezvous_hosts",
+            ),
+            scheduler_host=_coerce_host(
+                raw.get("scheduler_host", ""),
+                field_name="scheduler_host",
+                allow_empty=True,
+            ),
             async_moe_ubatching=coerce_extra_bool(
                 raw.get("async_moe_ubatching", False),
                 field_name="async_moe_ubatching",
@@ -154,6 +190,8 @@ class AFDAsyncExtraInfo(ConnectorExtraInfo):
             "dynamicQuant": self.dynamic_quant,
             "attn_ranks_per_dp": self.attn_ranks_per_dp,
             SHARED_FFN_POOL_CONFIG_KEY: self.shared_ffn_pool,
+            "cam_rendezvous_hosts": list(self.cam_rendezvous_hosts),
+            "scheduler_host": self.scheduler_host,
             "async_moe_ubatching": self.async_moe_ubatching,
             "async_moe_num_ubatches": self.async_moe_num_ubatches,
             "async_moe_split": self.async_moe_split,
@@ -227,6 +265,7 @@ class _CAMGroupContext:
     topology: AFDAsyncTopology
     process_group_name: str
     rendezvous_port: int
+    rendezvous_host: str
     cam_pg: ProcessGroup | None = None
     group_name: str = ""
     comm_args: Tensor | None = None
@@ -278,6 +317,13 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self.max_seq_len = vllm_config.scheduler_config.max_num_batched_tokens
         self.comm_id = CAM_COMM_ID
         self.tp_size = self.extra_info.attn_ranks_per_dp
+        rendezvous_hosts = self.extra_info.cam_rendezvous_hosts
+        num_dp_groups = afd_config.num_attention_ranks // self.tp_size
+        if rendezvous_hosts and len(rendezvous_hosts) != num_dp_groups:
+            raise ValueError(
+                "cam_rendezvous_hosts must contain one host per Attention DP "
+                f"group, got {len(rendezvous_hosts)} hosts for {num_dp_groups} groups"
+            )
         self.cam_pg: ProcessGroup | None = None
         self.topology = build_async_topology(
             afd_config,
@@ -331,8 +377,15 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
                 topology=topology,
                 process_group_name=_cam_process_group_name(topology),
                 rendezvous_port=_cam_rendezvous_port(self.afd_config.port, topology),
+                rendezvous_host=self._rendezvous_host(dp_group_index),
             )
         return contexts
+
+    def _rendezvous_host(self, dp_group_index: int) -> str:
+        hosts = self.extra_info.cam_rendezvous_hosts
+        if hosts:
+            return hosts[dp_group_index]
+        return self.afd_config.host
 
     def _cam_context(self, dp_group_index: int | None = None) -> _CAMGroupContext:
         if dp_group_index is None:
@@ -379,7 +432,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             )
         is_server = self.afd_config.role == "ffn" and self.role_rank == 0
         self._scheduler_store = dist.TCPStore(
-            self.afd_config.host,
+            self.extra_info.scheduler_host or self.afd_config.host,
             port,
             world_size=1,
             is_master=is_server,
@@ -454,7 +507,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             topology = context.topology
             context.cam_pg = init_afd_process_group(
                 backend="hccl",
-                init_method=f"tcp://{self.afd_config.host}:{context.rendezvous_port}",
+                init_method=f"tcp://{context.rendezvous_host}:{context.rendezvous_port}",
                 world_size=topology.world_size,
                 rank=topology.world_rank,
                 group_name=context.process_group_name,

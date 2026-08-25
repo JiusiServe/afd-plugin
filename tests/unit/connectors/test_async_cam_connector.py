@@ -346,6 +346,30 @@ def test_async_extra_info_parses_shared_ffn_pool():
     assert extra_info.to_mapping()["shared_ffn_pool"] is True
 
 
+def test_async_extra_info_parses_cross_host_rendezvous_settings():
+    extra_info = AFDAsyncExtraInfo.from_mapping(
+        {
+            "cam_rendezvous_hosts": ["10.0.0.1", "10.0.0.2"],
+            "scheduler_host": "10.0.0.1",
+        },
+    )
+
+    assert extra_info.cam_rendezvous_hosts == ("10.0.0.1", "10.0.0.2")
+    assert extra_info.scheduler_host == "10.0.0.1"
+
+
+def test_async_connector_rejects_wrong_cross_host_group_count():
+    with pytest.raises(ValueError, match="one host per Attention DP group"):
+        CAMAsyncAFDConnector(
+            0,
+            0,
+            _vllm_config(extra_config={"attn_ranks_per_dp": 4,
+                                       "cam_rendezvous_hosts": ["10.0.0.1"]}),
+            _dp2_afd_config(role="attention"),
+            0,
+        )
+
+
 def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
     calls = []
     fake_torch = _FakeTorch()
@@ -435,6 +459,32 @@ def test_async_connector_init_uses_a_distinct_hccl_group_for_each_dp(monkeypatch
     assert calls[0]["group_name"] == "afd_async_cam_dp1"
     assert calls[0]["init_method"] == "tcp://127.0.0.1:1240"
     assert connector.group_name == "hccl:afd_async_cam_dp1:4"
+
+
+def test_async_connector_uses_group_specific_cross_host_rendezvous(monkeypatch):
+    calls = []
+    fake_torch = _FakeTorch()
+    monkeypatch.setattr(async_cam_module, "torch", fake_torch)
+    monkeypatch.setattr(async_cam_module, "ensure_cam_async_ops_available", lambda: None)
+    monkeypatch.setattr(
+        async_cam_module,
+        "init_afd_process_group",
+        lambda **kwargs: calls.append(kwargs) or SimpleNamespace(
+            _get_backend=lambda device: SimpleNamespace(
+                get_hccl_comm_name=lambda rank: "hccl")),
+    )
+    connector = CAMAsyncAFDConnector(
+        0,
+        0,
+        _vllm_config(extra_config={"attn_ranks_per_dp": 4,
+                                   "cam_rendezvous_hosts": ["10.0.0.1", "10.0.0.2"]}),
+        _dp2_afd_config(role="ffn"),
+        4,
+    )
+
+    connector.init_afd_connector()
+
+    assert calls[0]["init_method"] == "tcp://10.0.0.2:1240"
 
 
 def test_async_connector_disables_dp_metadata_control_plane():

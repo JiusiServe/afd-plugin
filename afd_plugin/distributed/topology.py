@@ -96,7 +96,11 @@ def resolve_role_rank(vllm_config: VllmConfig, config: AFDConfig) -> int:
     else:
         tp_rank = 0
 
-    role_rank = (dp_rank * pcp_size + pcp_rank) * tp_size + tp_rank
+    role_rank = (
+        int(config.role_rank_offset)
+        + (dp_rank * pcp_size + pcp_rank) * tp_size
+        + tp_rank
+    )
     if config.role == "attention":
         role_size = config.num_attention_ranks
     elif config.role == "ffn":
