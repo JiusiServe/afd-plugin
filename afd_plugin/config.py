@@ -61,9 +61,6 @@ class AFDConfig:
     num_ffn_ranks: int = 1
     # Whether Attention computes MoE gate outputs before sending to FFN.
     compute_gate_on_attention: bool = False
-    # Optional offset for independent role-local vLLM instances.  This keeps
-    # AFD rank assignment independent from vLLM's own DP coordinator.
-    role_rank_offset: int = 0
 
     @property
     def afd_connector(self) -> str:
@@ -142,7 +139,6 @@ def _normalize_mapping(
         "port",
         "num_attention_ranks",
         "num_ffn_ranks",
-        "role_rank_offset",
     ):
         if field_name in normalized:
             normalized[field_name] = _coerce_int(
@@ -331,12 +327,6 @@ def validate_afd_config(
         raise ValueError(
             f"num_ffn_ranks must be positive, got {config.num_ffn_ranks}",
         )
-    if config.role_rank_offset < 0:
-        raise ValueError(
-            "role_rank_offset must be non-negative, got "
-            f"{config.role_rank_offset}",
-        )
-
 
 __all__ = [
     "AFDConfig",
