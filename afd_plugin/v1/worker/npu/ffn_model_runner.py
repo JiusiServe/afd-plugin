@@ -404,9 +404,16 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         graph_key = self._make_graph_key(dp_metadata_list)
         if graph_key in self._acl_graphs:
             logger.debug(
-                "AFD NPU FFN ACL graph capture skipped for existing key=%s",
+                "AFD NPU FFN replaying existing ACL graph for capture key=%s",
                 graph_key,
             )
+            self.connector.control_plane.update_state_from_dp_metadata(
+                _make_dp_metadata_payload(
+                    dp_metadata_list,
+                    is_graph_capturing=is_attn_graph_capturing,
+                ),
+            )
+            self._acl_graphs[graph_key]["graph"].replay()
             return
 
         logger.debug("AFD NPU FFN capturing ACL graph for key=%s", graph_key)

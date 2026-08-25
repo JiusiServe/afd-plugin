@@ -151,12 +151,14 @@ def validate_npu_model_runner_v2_config(
     if dbo_enabled:
         if parallel.data_parallel_size <= 1 or int(parallel.num_ubatches) != 2:
             raise RuntimeError(
-                "AFD NPU ModelRunnerV2 eager DBO requires DP > 1 and exactly "
-                "two ubatches",
+                "AFD NPU ModelRunnerV2 DBO requires DP > 1 and exactly two ubatches",
             )
-        if not vllm_config.model_config.enforce_eager:
+        if (
+            not vllm_config.model_config.enforce_eager
+            and cudagraph_mode_name(vllm_config) != "FULL_DECODE_ONLY"
+        ):
             raise RuntimeError(
-                "AFD NPU ModelRunnerV2 DBO currently supports eager execution only",
+                "AFD NPU ModelRunnerV2 DBO ACL graph requires FULL_DECODE_ONLY",
             )
         if (
             vllm_config.speculative_config is not None

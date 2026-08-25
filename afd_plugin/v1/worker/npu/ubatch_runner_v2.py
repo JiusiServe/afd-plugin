@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""Ascend eager DBO runner for vLLM 0.26 ModelRunnerV2."""
+"""Ascend eager and capture-time DBO runner for vLLM 0.26 ModelRunnerV2."""
 
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from typing import Any
@@ -41,10 +42,12 @@ AFD_NPU_MRV2_NUM_UBATCHES = 2
 
 @dataclass
 class AFDAscendUBatchState:
-    """Prepared inputs and forward contexts for one eager DBO step."""
+    """Prepared inputs for one eager or FULL graph DBO step."""
 
     slices: UBatchSlices
-    forward_contexts: list[ForwardContext]
+    attn_metadata: list[dict[str, Any]]
+    forward_contexts: list[ForwardContext] | None
+    real_token_counts: list[int]
 
 
 class AFDAscendUBatchRunnerV2:
@@ -69,6 +72,7 @@ class AFDAscendUBatchRunnerV2:
         self.attn_groups = attn_groups
         self.kv_cache_config = kv_cache_config
         self.ready_barrier = threading.Barrier(self.num_ubatches + 1)
+        self.capture_stream = torch.npu.Stream(device=device)
         self.query_start_loc_buffers = [
             torch.zeros(max_num_reqs + 2, dtype=torch.int32, device=device)
             for _ in range(self.num_ubatches)
@@ -84,9 +88,18 @@ class AFDAscendUBatchRunnerV2:
         block_tables: tuple[torch.Tensor, ...],
         slot_mappings: torch.Tensor,
         slices: UBatchSlices,
-        parent_context: ForwardContext,
+        parent_context: ForwardContext | None,
+        *,
+        cg_mode: CUDAGraphMode = CUDAGraphMode.NONE,
+        context_cg_mode: CUDAGraphMode | None = None,
+        for_capture: bool = False,
+        mla_graph_params: tuple[Any, Any] | None = None,
     ) -> AFDAscendUBatchState:
+        attn_metadata_list: list[dict[str, Any]] = []
         forward_contexts: list[ForwardContext] = []
+        real_token_counts: list[int] = []
+        if context_cg_mode is None:
+            context_cg_mode = cg_mode
         dp_size = int(self.parallel_config.data_parallel_size)
         for stage_index, stage in enumerate(slices):
             child_batch = slice_input_batch(
@@ -108,7 +121,13 @@ class AFDAscendUBatchRunnerV2:
                 self.attn_groups,
                 self.kv_cache_config,
                 stage_index,
+                cg_mode=cg_mode,
+                for_capture=for_capture,
             )
+            attn_metadata_list.append(attn_metadata)
+            real_token_counts.append(int(child_batch.num_tokens))
+            if parent_context is None:
+                continue
             stage_tokens = int(stage.num_tokens)
             counts = torch.full(
                 (dp_size,), stage_tokens, dtype=torch.int32, device="cpu"
@@ -125,8 +144,11 @@ class AFDAscendUBatchRunnerV2:
                 slices,
                 ubatch_num=stage_index,
                 dp_metadata=dp_metadata,
-                cudagraph_runtime_mode=CUDAGraphMode.NONE,
+                cudagraph_runtime_mode=context_cg_mode,
                 skip_compiled=parent_context.skip_compiled,
+                mla_graph_params=(
+                    None if mla_graph_params is None else mla_graph_params[stage_index]
+                ),
             )
             context.slot_mapping = build_slot_mappings_by_layer(
                 stage_slot_mappings,
@@ -136,7 +158,9 @@ class AFDAscendUBatchRunnerV2:
 
         return AFDAscendUBatchState(
             slices=slices,
-            forward_contexts=forward_contexts,
+            attn_metadata=attn_metadata_list,
+            forward_contexts=forward_contexts or None,
+            real_token_counts=real_token_counts,
         )
 
     @staticmethod
@@ -164,11 +188,28 @@ class AFDAscendUBatchRunnerV2:
         model_inputs: dict[str, Any],
         state: AFDAscendUBatchState,
     ) -> Any:
-        compute_stream = torch.npu.current_stream()
+        return self.begin_capturable_run(model, model_inputs, state)()
+
+    def begin_capturable_run(
+        self,
+        model: Any,
+        model_inputs: dict[str, Any],
+        state: AFDAscendUBatchState,
+        *,
+        for_capture: bool = False,
+    ) -> Callable[[], Any]:
+        """Start both stages outside capture and return a one-shot finisher."""
+
+        forward_contexts = state.forward_contexts
+        if forward_contexts is None:
+            raise RuntimeError("uBatch execution requires prepared forward contexts")
+        compute_stream = (
+            self.capture_stream if for_capture else torch.npu.current_stream()
+        )
         contexts = make_ubatch_contexts(
             self.num_ubatches,
             compute_stream,
-            state.forward_contexts,
+            forward_contexts,
             self.ready_barrier,
         )
         outputs: dict[int, Any] = {}
@@ -194,32 +235,41 @@ class AFDAscendUBatchRunnerV2:
             threads.append(thread)
             thread.start()
         self.ready_barrier.wait()
-        try:
-            contexts[0].cpu_wait_event.set()
-            for thread in threads:
-                thread.join()
-        finally:
-            stack.close()
+        finished = False
 
-        if errors:
-            failed_stage = min(errors)
-            raise RuntimeError(
-                f"AFD NPU microbatch {failed_stage} failed",
-            ) from errors[failed_stage]
-        ordered_outputs = [outputs[index] for index in range(self.num_ubatches)]
-        if state.forward_contexts[0].additional_kwargs["flash_comm_v1_enabled"]:
-            ordered_outputs = [
-                _all_gather_ubatch_output(
-                    output,
-                    context.additional_kwargs["pad_size"],
-                )
-                for output, context in zip(
-                    ordered_outputs,
-                    state.forward_contexts,
-                    strict=True,
-                )
-            ]
-        return merge_ubatch_outputs(ordered_outputs)
+        def finish() -> Any:
+            nonlocal finished
+            if finished:
+                raise RuntimeError("uBatch finisher may only be called once")
+            finished = True
+            try:
+                contexts[0].cpu_wait_event.set()
+                for thread in threads:
+                    thread.join()
+            finally:
+                stack.close()
+
+            if errors:
+                failed_stage = min(errors)
+                raise RuntimeError(
+                    f"AFD NPU microbatch {failed_stage} failed",
+                ) from errors[failed_stage]
+            ordered_outputs = [outputs[index] for index in range(self.num_ubatches)]
+            if forward_contexts[0].additional_kwargs["flash_comm_v1_enabled"]:
+                ordered_outputs = [
+                    _all_gather_ubatch_output(
+                        output,
+                        context.additional_kwargs["pad_size"],
+                    )
+                    for output, context in zip(
+                        ordered_outputs,
+                        forward_contexts,
+                        strict=True,
+                    )
+                ]
+            return merge_ubatch_outputs(ordered_outputs)
+
+        return finish
 
 
 __all__ = [

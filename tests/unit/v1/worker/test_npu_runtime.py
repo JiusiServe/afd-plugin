@@ -1728,6 +1728,29 @@ def test_npu_ffn_runner_skips_replay_when_attention_is_eager(monkeypatch):
     ]
 
 
+def test_npu_ffn_capture_event_replays_existing_acl_graph():
+    from vllm.config import CUDAGraphMode
+
+    runner = _new_ffn_runner()
+    runner.vllm_config = _vllm_config(role="ffn")
+    runner.connector = _FakeFFNConnector()
+    runner.max_num_tokens = 1
+    dp_metadata = {0: _FakeDPMetadata([1])}
+    graph = _FakeGraph()
+    runner._acl_graphs = {runner._make_graph_key(dp_metadata): {"graph": graph}}
+
+    runner._capture_graphs(
+        aclgraph_runtime_mode=CUDAGraphMode.FULL,
+        dp_metadata_list=dp_metadata,
+    )
+
+    assert graph.replay_count == 1
+    assert runner.connector.updates[0][1] == {
+        "is_graph_capturing": True,
+        "is_warmup": False,
+    }
+
+
 def test_npu_ffn_runner_graph_key_uses_ffn_aggregated_token_counts():
     runner = _new_ffn_runner()
     runner.connector = _FakeFFNConnector(attn_size=8, ffn_size=4)

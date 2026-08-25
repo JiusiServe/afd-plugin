@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""Runtime pieces missing from vLLM 0.26 ModelRunnerV2 eager DBO.
+"""Runtime pieces missing from vLLM 0.26 ModelRunnerV2 DBO.
 
 The behavior is adapted from ``specture724/vllm`` branch
 ``feat/v2/dbo-fullcg`` at ``626fee7831``. The target ABI is vLLM
@@ -62,28 +62,51 @@ def dispatch_afd_dbo_and_sync_dp(
     parallel_config: ParallelConfig,
     decode_query_len: int,
     allow_ubatching: bool,
+    cudagraph_manager: Any | None = None,
+    need_eager: bool = False,
 ) -> tuple[BatchExecutionDescriptor, torch.Tensor | None]:
-    """Select eager DBO consistently across all DP ranks.
+    """Select DBO and FULL graph execution consistently across DP ranks.
 
     The minimum rank token count controls the threshold, while all ranks run
     the maximum token count when DBO is selected. This matches the final
     upstream inference rule and avoids a separate per-rank DBO vote.
     """
 
-    if dp_size == 1:
-        return (
-            BatchExecutionDescriptor(
+    def dispatch(
+        tokens: int,
+        ubatches: int,
+        uniform_tokens: int | None = uniform_token_count,
+    ) -> BatchExecutionDescriptor:
+        if need_eager or cudagraph_manager is None:
+            if ubatches > 1:
+                return AFDBatchExecutionDescriptor(
+                    cg_mode=CUDAGraphMode.NONE,
+                    num_tokens=tokens,
+                    num_reqs=num_reqs,
+                    num_ubatches=ubatches,
+                )
+            return BatchExecutionDescriptor(
                 cg_mode=CUDAGraphMode.NONE,
-                num_tokens=num_tokens,
+                num_tokens=tokens,
                 num_reqs=num_reqs,
-            ),
-            None,
+            )
+        return cudagraph_manager.dispatch(
+            num_reqs,
+            tokens,
+            uniform_tokens,
+            num_active_loras=0,
+            num_ubatches=ubatches,
         )
 
-    tensor = torch.zeros(3, dp_size, dtype=torch.int32, device="cpu")
+    if dp_size == 1:
+        return dispatch(num_tokens, 1), None
+
+    desired_single = dispatch(num_tokens, 1)
+    tensor = torch.zeros(4, dp_size, dtype=torch.int32, device="cpu")
     tensor[0][dp_rank] = num_tokens
     tensor[1][dp_rank] = uniform_token_count or 0
     tensor[2][dp_rank] = int(allow_ubatching)
+    tensor[3][dp_rank] = int(desired_single.cg_mode.value)
     dist.all_reduce(tensor, group=get_dp_group().cpu_group)
 
     num_tokens_across_dp = tensor[0]
@@ -97,13 +120,16 @@ def dispatch_afd_dbo_and_sync_dp(
             None,
         )
 
-    uniform_decode = bool(
-        torch.all(tensor[1] == int(decode_query_len)).item()
-    )
+    uniform_decode = bool(torch.all(tensor[1] == int(decode_query_len)).item())
+    synced_uniform_token_count: int | None = int(tensor[1][0].item())
+    if (
+        synced_uniform_token_count == 0
+        or not torch.all(tensor[1] == synced_uniform_token_count).item()
+    ):
+        synced_uniform_token_count = None
     should_ubatch = (
         bool(torch.all(tensor[2] == 1).item())
-        and int(num_tokens_across_dp.max().item())
-        >= int(parallel_config.num_ubatches)
+        and int(num_tokens_across_dp.max().item()) >= int(parallel_config.num_ubatches)
         and check_ubatch_thresholds(
             parallel_config,
             int(num_tokens_across_dp.min().item()),
@@ -111,26 +137,28 @@ def dispatch_afd_dbo_and_sync_dp(
         )
     )
     if not should_ubatch:
-        return (
-            BatchExecutionDescriptor(
-                cg_mode=CUDAGraphMode.NONE,
-                num_tokens=num_tokens,
-                num_reqs=num_reqs,
-            ),
-            num_tokens_across_dp,
-        )
+        synced_mode = CUDAGraphMode(int(tensor[3].min().item()))
+        if synced_mode == CUDAGraphMode.NONE:
+            return (
+                BatchExecutionDescriptor(
+                    cg_mode=CUDAGraphMode.NONE,
+                    num_tokens=num_tokens,
+                    num_reqs=num_reqs,
+                ),
+                num_tokens_across_dp,
+            )
+        padded_tokens = int(num_tokens_across_dp.max().item())
+        synced = dispatch(padded_tokens, 1, synced_uniform_token_count)
+        num_tokens_across_dp.fill_(synced.num_tokens)
+        return synced, num_tokens_across_dp
 
     padded_tokens = int(num_tokens_across_dp.max().item())
     num_tokens_across_dp.fill_(padded_tokens)
-    return (
-        AFDBatchExecutionDescriptor(
-            cg_mode=CUDAGraphMode.NONE,
-            num_tokens=padded_tokens,
-            num_reqs=num_reqs,
-            num_ubatches=int(parallel_config.num_ubatches),
-        ),
-        num_tokens_across_dp,
-    )
+    return dispatch(
+        padded_tokens,
+        int(parallel_config.num_ubatches),
+        synced_uniform_token_count,
+    ), num_tokens_across_dp
 
 
 def create_ubatch_slices(input_batch: InputBatch, num_ubatches: int) -> UBatchSlices:
@@ -191,9 +219,7 @@ def slice_input_batch(
     seq_lens = seq_lens_buffer[:num_reqs_after_padding]
     seq_lens.copy_(input_batch.seq_lens[req_start:req_stop])
     last = num_reqs_after_padding - 1
-    seq_lens[last] -= (
-        input_batch.query_start_loc[req_stop] - tok_stop
-    ).clamp_(min=0)
+    seq_lens[last] -= (input_batch.query_start_loc[req_stop] - tok_stop).clamp_(min=0)
 
     seq_lens_cpu_upper_bound = input_batch.seq_lens_cpu_upper_bound[
         req_start:req_stop
@@ -221,9 +247,7 @@ def slice_input_batch(
         seq_lens=seq_lens,
         seq_lens_cpu_upper_bound=seq_lens_cpu_upper_bound,
         dcp_local_seq_lens=dcp_local_seq_lens,
-        num_computed_tokens_np=input_batch.num_computed_tokens_np[
-            req_start:req_stop
-        ],
+        num_computed_tokens_np=input_batch.num_computed_tokens_np[req_start:req_stop],
         prefill_len_np=input_batch.prefill_len_np[req_start:req_stop],
         num_computed_prefill_tokens_np=input_batch.num_computed_prefill_tokens_np[
             req_start:req_stop
@@ -338,17 +362,20 @@ def prepare_attn_for_ubatch(
     attn_groups: list[list[AttentionGroup]],
     kv_cache_config: KVCacheConfig,
     ubatch_index: int,
+    cg_mode: CUDAGraphMode = CUDAGraphMode.NONE,
+    for_capture: bool = False,
 ) -> dict[str, Any]:
     """Select one of the two builders without changing upstream signatures."""
 
     if ubatch_index == 0:
         return model_state.prepare_attn(
             input_batch,
-            CUDAGraphMode.NONE,
+            cg_mode,
             block_tables,
             slot_mappings,
             attn_groups,
             kv_cache_config,
+            for_capture=for_capture,
         )
 
     swapped: list[AttentionGroup] = []
@@ -362,11 +389,12 @@ def prepare_attn_for_ubatch(
     try:
         return model_state.prepare_attn(
             input_batch,
-            CUDAGraphMode.NONE,
+            cg_mode,
             block_tables,
             slot_mappings,
             attn_groups,
             kv_cache_config,
+            for_capture=for_capture,
         )
     finally:
         for group in reversed(swapped):

@@ -10,6 +10,9 @@ torch = pytest.importorskip("torch", exc_type=ImportError)
 pytest.importorskip("vllm", exc_type=ImportError)
 
 from vllm.config import CUDAGraphMode  # noqa: E402
+from vllm.v1.worker.gpu.cudagraph_utils import (  # noqa: E402
+    BatchExecutionDescriptor,
+)
 from vllm.v1.worker.gpu.input_batch import InputBatch, InputBuffers  # noqa: E402
 
 from afd_plugin.compat.backports.vllm_v026_mrv2_dbo import (  # noqa: E402
@@ -132,7 +135,7 @@ def test_prepare_attn_for_second_ubatch_restores_builder_order():
     group = Group()
 
     class ModelState:
-        def prepare_attn(self, *_args):
+        def prepare_attn(self, *_args, **_kwargs):
             return group.metadata_builders[0]
 
     selected = prepare_attn_for_ubatch(
@@ -147,6 +150,60 @@ def test_prepare_attn_for_second_ubatch_restores_builder_order():
 
     assert selected is second_builder
     assert group.metadata_builders == [first_builder, second_builder]
+
+
+def test_dispatch_requests_captured_two_ubatch_descriptor(monkeypatch):
+    descriptor = AFDBatchExecutionDescriptor(
+        cg_mode=CUDAGraphMode.FULL,
+        num_tokens=12,
+        num_reqs=8,
+        num_ubatches=2,
+    )
+    dispatch_calls = []
+
+    class Manager:
+        def dispatch(self, *args, **kwargs):
+            dispatch_calls.append((args, kwargs))
+            if kwargs["num_ubatches"] == 1:
+                return BatchExecutionDescriptor(
+                    cg_mode=CUDAGraphMode.FULL,
+                    num_tokens=args[1],
+                    num_reqs=args[0],
+                    uniform_token_count=args[2],
+                )
+            return descriptor
+
+    def all_reduce(tensor, group):
+        del group
+        tensor[0] = torch.tensor([8, 12], dtype=torch.int32)
+        tensor[1] = torch.tensor([1, 1], dtype=torch.int32)
+        tensor[2] = torch.tensor([1, 1], dtype=torch.int32)
+
+    monkeypatch.setattr(runtime.dist, "all_reduce", all_reduce)
+    monkeypatch.setattr(
+        runtime,
+        "get_dp_group",
+        lambda: SimpleNamespace(cpu_group=None),
+    )
+
+    selected, counts = dispatch_afd_dbo_and_sync_dp(
+        num_reqs=8,
+        num_tokens=8,
+        uniform_token_count=1,
+        dp_size=2,
+        dp_rank=0,
+        parallel_config=_parallel_config(),
+        decode_query_len=1,
+        allow_ubatching=True,
+        cudagraph_manager=Manager(),
+    )
+
+    assert selected is descriptor
+    assert counts.tolist() == [12, 12]
+    assert dispatch_calls == [
+        ((8, 8, 1), {"num_active_loras": 0, "num_ubatches": 1}),
+        ((8, 12, 1), {"num_active_loras": 0, "num_ubatches": 2}),
+    ]
 
 
 def test_merge_ubatch_outputs_preserves_ascend_auxiliary_structure():

@@ -548,6 +548,28 @@ def test_npu_v2_validator_allows_eager_dbo_dp2():
     )
 
 
+def test_npu_v2_validator_allows_full_decode_only_dbo_dp2():
+    config = _v2_config(
+        num_attention_ranks=2,
+        num_ffn_ranks=2,
+        data_parallel_size=2,
+        enforce_eager=False,
+        cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY,
+        cudagraph_capture_sizes=[TEST_CUDAGRAPH_CAPTURE_SIZE],
+        max_cudagraph_capture_size=TEST_CUDAGRAPH_CAPTURE_SIZE,
+    )
+    config.additional_config["afd"]["connector"] = "CAMP2pAFDConnector"
+    config.parallel_config.enable_dbo = True
+    config.parallel_config.use_ubatching = True
+    config.parallel_config.num_ubatches = 2
+
+    validate_npu_model_runner_v2_config(
+        config,
+        expected_role="attention",
+        device_type="npu",
+    )
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
@@ -562,7 +584,10 @@ def test_npu_v2_validator_allows_eager_dbo_dp2():
             "DP > 1",
         ),
         (lambda c: setattr(c.parallel_config, "num_ubatches", 4), "two ubatches"),
-        (lambda c: setattr(c.model_config, "enforce_eager", False), "eager"),
+        (
+            lambda c: setattr(c.model_config, "enforce_eager", False),
+            "FULL_DECODE_ONLY",
+        ),
         (
             lambda c: setattr(c, "speculative_config", SimpleNamespace()),
             "speculative decode",

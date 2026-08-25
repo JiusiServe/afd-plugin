@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""Temporary vLLM 0.26 ModelRunnerV2 eager DBO backport."""
+"""Temporary vLLM 0.26 ModelRunnerV2 DBO backport."""
 
 from .runtime import (
     AFDBatchExecutionDescriptor,

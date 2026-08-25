@@ -22,6 +22,9 @@ from vllm.v1.worker.gpu.input_batch import InputBuffers
 from vllm.v1.worker.gpu.model_states.interface import ModelState
 from vllm_ascend.worker.v2.model_runner import NPUModelRunner as NPUModelRunnerV2
 
+from afd_plugin.compat.backports.vllm_v026_mrv2_dbo import (
+    AFDBatchExecutionDescriptor,
+)
 from afd_plugin.compat.npu import fail_if_unsupported_npu_afd_features
 from afd_plugin.compat.npu.profiler import (
     create_afd_npu_profiler,
@@ -38,6 +41,9 @@ from afd_plugin.model_executor.models.forward_context import use_afd_metadata_pr
 from afd_plugin.v1.worker.attention_metadata import (
     AFDMetadataProviderMixin,
     _resolve_world_ranks,
+)
+from afd_plugin.v1.worker.npu.aclgraph_manager_v2 import (
+    AFDModelAclGraphManagerV2,
 )
 from afd_plugin.validation import validate_npu_model_runner_v2_config
 
@@ -81,6 +87,10 @@ def _use_afd_fullgraph_replay_hook(
         self: v2_cudagraph_utils.ModelCudaGraphManager,
         desc: v2_cudagraph_utils.BatchExecutionDescriptor,
     ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]] | IntermediateTensors:
+        # ### PATCH START: bypass native replay metadata for AFD DBO graphs.
+        if isinstance(desc, AFDBatchExecutionDescriptor):
+            return original_run_fullgraph(desc)
+        # ### PATCH END: bypass native replay metadata for AFD DBO graphs.
         # ### PATCH START: publish one AFD pre-replay payload.
         previous_is_graph_replaying = getattr(
             runner,
@@ -221,25 +231,20 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
 
         from afd_plugin.compat.backports.vllm_v026_mrv2_dbo import (
             assert_backport_required,
-            share_metadata_builder_workspaces,
             use_two_metadata_builders,
         )
-        from afd_plugin.v1.worker.npu.ubatch_runner_v2 import (
-            AFDAscendUBatchRunnerV2,
+        from afd_plugin.compat.patches.npu.model_runner_v2_dbo import (
+            use_afd_mrv2_dbo_graph_manager,
         )
 
         assert_backport_required()
-        with use_two_metadata_builders():
+        with (
+            use_two_metadata_builders(),
+            use_afd_mrv2_dbo_graph_manager(self),
+        ):
             super().initialize_kv_cache(kv_cache_config)
-        share_metadata_builder_workspaces(self.attn_groups)
-        self.ubatch_runner = AFDAscendUBatchRunnerV2(
-            self.vllm_config,
-            self.device,
-            self.model_state,
-            self.attn_groups,
-            self.kv_cache_config,
-            self.max_num_reqs,
-        )
+        if self.ubatch_runner is None:
+            raise RuntimeError("AFD MRV2 DBO graph manager was not initialized")
 
     # Patch reason: vLLM v0.26.0 prepares FULL graph inputs before each warmup
     # and formal capture forward, outside torch.cuda.graph, but does not expose
@@ -458,6 +463,11 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
             stop_afd_npu_profiler(self.prof)
         finally:
             try:
+                if isinstance(
+                    self.cudagraph_manager,
+                    AFDModelAclGraphManagerV2,
+                ):
+                    self.cudagraph_manager.clear_afd_graphs()
                 super().shutdown()
             finally:
                 self._afd_pending_metadata = None

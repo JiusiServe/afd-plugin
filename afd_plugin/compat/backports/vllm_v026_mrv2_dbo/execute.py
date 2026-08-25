@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""vLLM 0.26 ModelRunnerV2 execute path with the eager DBO seams added."""
+"""vLLM 0.26 ModelRunnerV2 execute path with DBO dispatch and replay seams."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def execute_model_v026_eager_dbo(
     skip_attn_for_dummy_run: bool = False,
     is_profile: bool = False,
 ) -> ModelRunnerOutput | IntermediateTensors | None:
-    """Execute the supported plain-decoder subset with eager DBO."""
+    """Execute the supported plain-decoder subset with eager or FULL DBO."""
 
     if not dummy_run:
         runner.update_pp_decode_requests()
@@ -69,6 +69,8 @@ def execute_model_v026_eager_dbo(
         parallel_config=runner.parallel_config,
         decode_query_len=runner.decode_query_len,
         allow_ubatching=not skip_attn_for_dummy_run,
+        cudagraph_manager=runner.cudagraph_manager,
+        need_eager=is_profile or skip_attn_for_dummy_run,
     )
     if batch_desc.num_tokens == 0:
         return runner.kv_connector.no_forward(scheduler_output)
@@ -80,9 +82,7 @@ def execute_model_v026_eager_dbo(
     )
     if not dummy_run:
         runner.input_buffers.is_padding[:num_tokens].fill_(False)
-        runner.input_buffers.is_padding[
-            num_tokens : batch_desc.num_tokens
-        ].fill_(True)
+        runner.input_buffers.is_padding[num_tokens : batch_desc.num_tokens].fill_(True)
         input_batch = runner.prepare_inputs(scheduler_output, batch_desc)
         block_tables, slot_mappings = runner.prepare_attn(input_batch)
         runner.model_state.preprocess_state(
@@ -119,7 +119,7 @@ def execute_model_v026_eager_dbo(
         )
         attn_metadata = runner.model_state.prepare_attn(
             input_batch,
-            CUDAGraphMode.NONE,
+            batch_desc.cg_mode,
             block_tables,
             slot_mappings,
             runner.attn_groups,
@@ -139,7 +139,20 @@ def execute_model_v026_eager_dbo(
         ubatch_slices,
     )
 
-    if ubatch_slices is not None:
+    if ubatch_slices is not None and batch_desc.cg_mode == CUDAGraphMode.FULL:
+        assert isinstance(batch_desc, AFDBatchExecutionDescriptor)
+        ubatch_state = runner.ubatch_runner.prepare(
+            input_batch,
+            block_tables,
+            slot_mappings,
+            ubatch_slices,
+            None,
+            cg_mode=CUDAGraphMode.FULL,
+        )
+        runner.cudagraph_manager.stage_replay(batch_desc, ubatch_state)
+        runner.kv_connector.pre_forward(scheduler_output)
+        model_output = runner.cudagraph_manager.run_fullgraph(batch_desc)
+    elif ubatch_slices is not None:
         batch_descriptor = BatchDescriptor(
             num_tokens=input_batch.num_tokens_after_padding,
             has_lora=False,
@@ -178,6 +191,10 @@ def execute_model_v026_eager_dbo(
                 model_inputs,
                 ubatch_state,
             )
+    elif batch_desc.cg_mode == CUDAGraphMode.FULL:
+        assert runner.cudagraph_manager is not None
+        runner.kv_connector.pre_forward(scheduler_output)
+        model_output = runner.cudagraph_manager.run_fullgraph(batch_desc)
     else:
         batch_descriptor = BatchDescriptor(
             num_tokens=input_batch.num_tokens_after_padding,
@@ -188,7 +205,7 @@ def execute_model_v026_eager_dbo(
             attn_metadata,
             runner.vllm_config,
             num_tokens=input_batch.num_tokens_after_padding,
-            cudagraph_runtime_mode=CUDAGraphMode.NONE,
+            cudagraph_runtime_mode=batch_desc.cg_mode,
             num_tokens_across_dp=num_tokens_across_dp,
             batch_descriptor=batch_descriptor,
             slot_mapping=slot_mappings_by_layer,
