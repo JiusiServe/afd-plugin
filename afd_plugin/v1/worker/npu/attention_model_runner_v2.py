@@ -169,6 +169,7 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
             self._afd_pending_metadata: AFDForwardContextMetadata | None = None
             self._afd_suppress_metadata_send = False
             self._afd_transaction_counter = 0
+            self.ubatch_runner = None
             self.prof = create_afd_npu_profiler("attention")
         except BaseException:
             try:
@@ -210,6 +211,35 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
         super().load_model(load_dummy_weights, *args, **kwargs)
         if not self.connector.is_initialized:
             self.connector.init_afd_connector()
+
+    def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
+        """Initialize native state and the temporary v0.26 eager DBO runner."""
+
+        if not self.vllm_config.parallel_config.use_ubatching:
+            super().initialize_kv_cache(kv_cache_config)
+            return
+
+        from afd_plugin.compat.backports.vllm_v026_mrv2_dbo import (
+            assert_backport_required,
+            share_metadata_builder_workspaces,
+            use_two_metadata_builders,
+        )
+        from afd_plugin.v1.worker.npu.ubatch_runner_v2 import (
+            AFDAscendUBatchRunnerV2,
+        )
+
+        assert_backport_required()
+        with use_two_metadata_builders():
+            super().initialize_kv_cache(kv_cache_config)
+        share_metadata_builder_workspaces(self.attn_groups)
+        self.ubatch_runner = AFDAscendUBatchRunnerV2(
+            self.vllm_config,
+            self.device,
+            self.model_state,
+            self.attn_groups,
+            self.kv_cache_config,
+            self.max_num_reqs,
+        )
 
     # Patch reason: vLLM v0.26.0 prepares FULL graph inputs before each warmup
     # and formal capture forward, outside torch.cuda.graph, but does not expose
@@ -381,6 +411,19 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
                     self.install_afd_metadata_on_forward_context,
                 ),
             ):
+                if self.vllm_config.parallel_config.use_ubatching:
+                    from afd_plugin.compat.backports.vllm_v026_mrv2_dbo.execute import (
+                        execute_model_v026_eager_dbo,
+                    )
+
+                    return execute_model_v026_eager_dbo(
+                        self,
+                        scheduler_output,
+                        intermediate_tensors,
+                        dummy_run=dummy_run,
+                        skip_attn_for_dummy_run=skip_attn_for_dummy_run,
+                        is_profile=is_profile,
+                    )
                 return super().execute_model(
                     scheduler_output,
                     intermediate_tensors,

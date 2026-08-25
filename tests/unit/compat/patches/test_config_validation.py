@@ -58,6 +58,7 @@ def _install_fake_vllm_config(monkeypatch):
                 }, "native all2all backend assertion"
             cfg = VllmConfig()
             cfg.additional_config = self.additional_config
+            cfg.use_v2_model_runner = self.use_v2_model_runner
             cfg.parallel_config = SimpleNamespace(
                 use_ubatching=self.enable_dbo or self.ubatch_size > 1,
                 all2all_backend=self.all2all_backend,
@@ -93,6 +94,7 @@ def _engine_args(*, active, role="attention", worker_cls="auto"):
     args.ubatch_size = 0
     args.all2all_backend = "allgather_reducescatter"
     args.worker_cls = worker_cls
+    args.use_v2_model_runner = False
     return args
 
 
@@ -184,6 +186,7 @@ def _install_fake_npu_config(monkeypatch):
         del usage_context, headless
         config = config_module.VllmConfig()
         config.additional_config = engine_args.additional_config
+        config.use_v2_model_runner = engine_args.use_v2_model_runner
         config.parallel_config = FakeParallelConfig(
             enable_dbo=engine_args.enable_dbo,
             ubatch_size=engine_args.ubatch_size,
@@ -401,6 +404,24 @@ def test_config_validation_preserves_npu_dbo_off_behavior(monkeypatch):
     assert cfg.parallel_config.ubatch_size == 0
     assert cfg.parallel_config.all2all_backend == "flashinfer_all2allv"
     assert cfg.parallel_config.worker_cls == NPU_FFN_WORKER_FQCN
+
+
+def test_config_validation_relaxes_only_afd_npu_v2_dbo_gate(monkeypatch):
+    arg_utils_module, _npu_platform, events = _install_fake_npu_config(monkeypatch)
+    _load_patch_module()
+    args = _engine_args(active=True)
+    args.additional_config["afd"]["connector"] = "CAMP2pAFDConnector"
+    args.use_v2_model_runner = True
+    args.ubatch_size = 2
+    args.enable_sp = False
+    args.fail_update = False
+
+    cfg = arg_utils_module.EngineArgs.create_engine_config(args)
+
+    assert ("fix_incompatible_config", False, 0) in events
+    assert cfg.parallel_config.enable_dbo is True
+    assert cfg.parallel_config.ubatch_size == 2
+    assert cfg.parallel_config.use_ubatching is True
 
 
 @pytest.mark.parametrize(

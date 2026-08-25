@@ -1337,6 +1337,7 @@ def test_npu_create_ascend_forward_context_marks_current_ubatch(monkeypatch):
     ]
     vllm_config = SimpleNamespace(
         compilation_config=SimpleNamespace(static_forward_context={}),
+        use_v2_model_runner=False,
     )
 
     new_forward_context = forward_context_module.create_ascend_forward_context(
@@ -1352,6 +1353,63 @@ def test_npu_create_ascend_forward_context_marks_current_ubatch(monkeypatch):
     assert new_forward_context.num_ubatches == 2
     assert new_forward_context.num_tokens == 3
     assert child_metadata.stage_idx == 1
+
+
+def test_npu_create_ascend_forward_context_uses_v2_extra_kwargs(monkeypatch):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import forward_context as forward_context_module
+
+    monkeypatch.setattr(
+        forward_context_module,
+        "get_tensor_model_parallel_world_size",
+        lambda: 1,
+    )
+    monkeypatch.setattr(
+        forward_context_module,
+        "get_dp_group",
+        lambda: SimpleNamespace(world_size=1),
+    )
+    monkeypatch.setattr(
+        forward_context_module,
+        "get_moe_comm_method",
+        lambda moe_comm_type: f"method:{moe_comm_type}",
+    )
+    parent = SimpleNamespace(
+        additional_kwargs={
+            "moe_comm_type": "alltoall",
+            "in_profile_run": False,
+            "capturing": False,
+            "mmrs_fusion": False,
+            "flash_comm_v1_enabled": False,
+            "is_draft_model": False,
+            "is_draft_model_prefill": False,
+            "sinks": False,
+            "mc2_mask": None,
+        },
+        all_moe_layers={},
+        is_padding=None,
+    )
+    slices = [
+        SimpleNamespace(token_slice=slice(0, 4), num_tokens=4),
+        SimpleNamespace(token_slice=slice(4, 7), num_tokens=3),
+    ]
+    config = SimpleNamespace(
+        compilation_config=SimpleNamespace(static_forward_context={}),
+        use_v2_model_runner=True,
+    )
+
+    child = forward_context_module.create_ascend_forward_context(
+        parent,
+        attn_metadata=None,
+        vllm_config=config,
+        ubatch_slices=slices,
+        ubatch_num=1,
+    )
+
+    assert child.ubatch_idx == 1
+    assert child.additional_kwargs["moe_comm_type"] == "alltoall"
+    assert child.additional_kwargs["moe_comm_method"] == "method:alltoall"
+    assert child.additional_kwargs["num_tokens"] == 3
 
 
 def test_npu_ffn_runner_executes_eager_ffn_step(monkeypatch):

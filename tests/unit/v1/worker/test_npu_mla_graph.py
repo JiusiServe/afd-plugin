@@ -557,6 +557,7 @@ def test_child_forward_context_installs_mla_capture_registry(monkeypatch):
         attn_metadata=None,
         vllm_config=SimpleNamespace(
             compilation_config=SimpleNamespace(static_forward_context={}),
+            use_v2_model_runner=False,
         ),
         ubatch_slices=_two_slices(4, 4),
         ubatch_num=1,
