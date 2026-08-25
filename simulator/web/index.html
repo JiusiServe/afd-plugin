@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSV4-Flash Prefill 仿真器</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: light-dark(#f5f7fb, #11151d);
+      --panel: light-dark(#ffffff, #1a202b);
+      --panel-2: light-dark(#f1f4f9, #232b38);
+      --text: light-dark(#172033, #edf2fa);
+      --muted: light-dark(#637087, #a5b0c3);
+      --border: light-dark(#d9e0ea, #364154);
+      --blue: #4c7dff;
+      --orange: #e78a35;
+      --green: #34a978;
+      --red: #d85b68;
+      --purple: #8a69d4;
+      --shadow: 0 12px 28px rgb(20 31 50 / 10%);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    .shell { width: min(1480px, 100%); margin: auto; padding: 24px; }
+    header { display: flex; justify-content: space-between; gap: 20px; align-items: end; margin-bottom: 18px; }
+    h1 { font-size: 26px; margin: 0 0 4px; }
+    h2 { font-size: 17px; margin: 0 0 14px; }
+    p { margin: 0; }
+    .muted { color: var(--muted); }
+    .profile { text-align: right; max-width: 520px; font-size: 12px; }
+    .layout { display: grid; grid-template-columns: minmax(320px, 390px) 1fr; gap: 18px; align-items: start; }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); }
+    .controls { padding: 18px; position: sticky; top: 14px; max-height: calc(100vh - 28px); overflow: auto; }
+    .results { padding: 18px; min-width: 0; }
+    fieldset { border: 0; border-top: 1px solid var(--border); padding: 14px 0 0; margin: 14px 0 0; }
+    legend { padding: 0 8px 0 0; font-weight: 700; color: var(--text); }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .span-2 { grid-column: 1 / -1; }
+    label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+    input, select, textarea, button {
+      font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+    }
+    input, select { width: 100%; min-height: 36px; padding: 6px 9px; }
+    input[type="checkbox"] { width: 18px; min-height: 18px; accent-color: var(--blue); }
+    textarea { width: 100%; min-height: 76px; resize: vertical; padding: 8px; font-family: ui-monospace, monospace; }
+    .check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
+    button { min-height: 40px; padding: 8px 12px; cursor: pointer; background: var(--blue); color: white; border-color: transparent; font-weight: 700; }
+    button.secondary { background: var(--panel-2); color: var(--text); border-color: var(--border); }
+    button:disabled { opacity: .55; cursor: wait; }
+    details { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 12px; }
+    summary { cursor: pointer; font-weight: 700; }
+    .notice { padding: 10px 12px; border-radius: 9px; background: color-mix(in srgb, var(--orange) 12%, transparent); color: var(--muted); margin-top: 12px; }
+    .error { display: none; background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red); padding: 10px; border-radius: 8px; margin-top: 12px; white-space: pre-wrap; }
+    .kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+    .kpi { background: var(--panel-2); border-radius: 11px; padding: 12px; }
+    .kpi .value { font-size: 21px; font-weight: 800; margin-top: 3px; }
+    .table-wrap { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; min-width: 720px; }
+    th, td { border-bottom: 1px solid var(--border); padding: 9px 8px; text-align: right; white-space: nowrap; }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: var(--muted); font-size: 12px; }
+    .chart-block { margin-top: 22px; }
+    .chart-title { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+    svg { width: 100%; display: block; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; }
+    .legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
+    .timeline-tools { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 8px 0; color: var(--muted); font-size: 12px; }
+    .timeline-tools kbd { padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel-2); color: var(--text); font: inherit; font-weight: 700; }
+    .timeline-tools button { min-height: 28px; padding: 3px 9px; background: var(--panel-2); color: var(--text); border-color: var(--border); font-size: 12px; }
+    #timeline { cursor: grab; user-select: none; touch-action: none; outline: none; }
+    #timeline.dragging { cursor: grabbing; }
+    #timeline:focus-visible { border-color: var(--blue); box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 28%, transparent); }
+    .timeline-event-label { font-size: 10px; font-weight: 700; pointer-events: none; }
+    .timeline-comm-arrow { pointer-events: none; }
+    .timeline-comm-arrow path { fill: none; stroke: #7c3aed; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+    .timeline-comm-arrow circle { fill: #7c3aed; stroke: #fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .timeline-comm-arrow text { fill: #6d28d9; stroke: var(--panel-2); stroke-width: 3px; paint-order: stroke; font-size: 10px; font-weight: 800; text-anchor: middle; }
+    .timeline-tooltip { position: fixed; z-index: 20; min-width: 220px; max-width: 320px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: color-mix(in srgb, var(--panel) 96%, transparent); color: var(--text); box-shadow: 0 8px 28px rgba(15,23,42,.18); pointer-events: none; font-size: 12px; }
+    .timeline-tooltip strong { display: block; margin-bottom: 3px; font-size: 13px; }
+    .timeline-tooltip .tooltip-resource { margin-bottom: 8px; color: var(--muted); }
+    .timeline-tooltip dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
+    .timeline-tooltip dt { color: var(--muted); }
+    .timeline-tooltip dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+    .dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; }
+    #empty { min-height: 520px; display: grid; place-items: center; text-align: center; color: var(--muted); }
+    #content { display: none; }
+    @media (max-width: 920px) {
+      .layout { grid-template-columns: 1fr; }
+      .controls { position: static; max-height: none; }
+      .kpis { grid-template-columns: 1fr; }
+      header { align-items: start; flex-direction: column; }
+      .profile { text-align: left; }
+    }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div>
+      <h1>DSV4-Flash Prefill 仿真器</h1>
+      <p class="muted">相同 16-die 预算下比较 CAMAsync AFD 与 DP4×TP4/EP16 合并部署</p>
+    </div>
+    <div id="profile" class="profile muted">正在读取 profile…</div>
+  </header>
+
+  <div class="layout">
+    <aside class="panel controls">
+      <h2>仿真参数</h2>
+      <div class="grid">
+        <label>模式<select id="mode"><option value="fixed">固定请求集</option><option value="continuous">持续负载</option></select></label>
+        <label>到达过程<select id="arrival-kind"><option value="constant">固定间隔</option><option value="poisson">泊松</option><option value="trace">CSV 时间戳</option></select></label>
+        <label>QPS<input id="qps" type="number" min="0.01" step="0.1" value="4"></label>
+        <label>随机种子<input id="seed" type="number" step="1" value="1024"></label>
+        <label>统计时长（秒）<input id="duration" type="number" min="1" value="60"></label>
+        <label>Warmup（秒）<input id="warmup" type="number" min="0" value="10"></label>
+        <label class="span-2">固定长度列表（逗号分隔）<textarea id="fixed-lengths">512,8192,2048,6144</textarea></label>
+        <label class="span-2">持续长度分布（每行 tokens,weight）<textarea id="length-mix">512,0.4
+2048,0.2
+8192,0.3
+32768,0.1</textarea></label>
+        <label class="span-2">线上 CSV<input id="csv-file" type="file" accept=".csv,text/csv"></label>
+        <label>CSV 长度采样<select id="csv-sampling"><option value="cycle">按行循环</option><option value="sample">随机采样</option></select></label>
+        <div id="csv-status" class="muted" style="align-self:end">未加载 CSV</div>
+      </div>
+
+      <fieldset>
+        <legend>Scheduler</legend>
+        <div class="grid">
+          <label class="span-2">DP 调度策略<select id="dp-policy"><option value="round_robin">Round Robin</option><option value="vllm_queue_aware">vLLM Queue Aware</option></select></label>
+          <label>max_num_seqs<input id="max-seqs" type="number" min="1" value="64"></label>
+          <label>max batched tokens<input id="max-tokens" type="number" min="1" value="8192"></label>
+          <label class="check span-2"><input id="chunked" type="checkbox">启用 chunked prefill（AFD 路径属于假设分析）</label>
+          <label>Chunk 大小<input id="chunk-size" type="number" min="1" value="8192"></label>
+          <label>AFD uBatch<select id="ubatch"><option value="request">请求边界均衡</option><option value="token">Token 均衡</option></select></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Prefix Cache</legend>
+        <div class="grid">
+          <label class="check span-2"><input id="cache-enabled" type="checkbox">启用 Prefix Cache</label>
+          <label>请求命中率<input id="cache-hit" type="number" min="0" max="1" step="0.01" value="0.5"></label>
+          <label>命中前缀比例<input id="cache-ratio" type="number" min="0" max="1" step="0.01" value="0.75"></label>
+          <label>Block size<input id="cache-block" type="number" min="1" value="32"></label>
+          <label>固定查询开销 ms<input id="cache-fixed" type="number" min="0" step="0.001" value="0"></label>
+          <label>每 block 开销 ms<input id="cache-block-ms" type="number" min="0" step="0.0001" value="0"></label>
+          <label>Cache 随机种子<input id="cache-seed" type="number" value="1024"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>TTFT / SLO</legend>
+        <div class="grid">
+          <label>TTFT 上限 ms<input id="slo-limit" type="number" min="1" value="1000"></label>
+          <label>目标达标率<input id="slo-ratio" type="number" min="0.01" max="1" step="0.01" value="0.99"></label>
+          <label>固定服务开销 ms<input id="fixed-overhead" type="number" min="0" step="0.1" value="0"></label>
+        </div>
+      </fieldset>
+
+      <details>
+        <summary>QPS 扫描与 CAM 参数</summary>
+        <div class="grid" style="margin-top:12px">
+          <label>扫描最小 QPS<input id="sweep-min" type="number" min="0.01" value="0.5"></label>
+          <label>扫描最大 QPS<input id="sweep-max" type="number" min="0.02" value="64"></label>
+          <label>粗扫点数<input id="sweep-points" type="number" min="2" value="10"></label>
+          <label>二分轮数<input id="sweep-refine" type="number" min="0" value="7"></label>
+          <label>吞吐稳定阈值<input id="throughput-tolerance" type="number" min="0.01" max="1" step="0.01" value="0.99"></label>
+          <label class="check"><input id="cam-calibrated" type="checkbox">CAM 参数已校准</label>
+          <label>Dispatch send α<input id="ds-a" type="number" step="0.001" value="0.11"></label>
+          <label>Dispatch send β<input id="ds-b" type="number" step="0.000001" value="0.0000192308"></label>
+          <label>Dispatch recv α<input id="dr-a" type="number" step="0.001" value="0.10"></label>
+          <label>Dispatch recv β<input id="dr-b" type="number" step="0.000001" value="0.0000147059"></label>
+          <label>Combine send α<input id="cs-a" type="number" step="0.001" value="0.10"></label>
+          <label>Combine send β<input id="cs-b" type="number" step="0.000001" value="0.0000142857"></label>
+          <label>Combine recv α<input id="cr-a" type="number" step="0.001" value="0.12"></label>
+          <label>Combine recv β<input id="cr-b" type="number" step="0.000001" value="0.0000172414"></label>
+        </div>
+      </details>
+
+      <div class="notice">TTFT 是 arrival → Prefill 完成的代理值，不包含首个 Decode。未勾选校准时，CAM 参数仅用于敏感性分析。</div>
+      <div class="actions"><button id="simulate">运行仿真</button><button id="sweep" class="secondary">扫描 QPS</button></div>
+      <div id="error" class="error"></div>
+    </aside>
+
+    <main class="panel results">
+      <div id="empty"><div><h2>配置 workload 后运行仿真</h2><p>页面只负责输入和展示；所有调度、流水、指标均由 Python 后端计算。</p></div></div>
+      <div id="content">
+        <div class="kpis">
+          <div class="kpi"><div class="muted">AFD 吞吐提升</div><div id="speedup" class="value">—</div></div>
+          <div class="kpi"><div class="muted">AFD / 合并 p99 TTFT</div><div id="p99-ratio" class="value">—</div></div>
+          <div class="kpi"><div class="muted">AFD SLO Goodput 提升</div><div id="goodput-speedup" class="value">—</div></div>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>架构</th><th>吞吐 req/s</th><th>输入 tok/s</th><th>计算 tok/s</th><th>TTFT p50</th><th>p90</th><th>p99</th><th>SLO 达标率</th><th>SLO goodput</th></tr></thead><tbody id="metrics"></tbody></table></div>
+
+        <section class="chart-block">
+          <div class="chart-title"><h2>逐层关键路径时间线</h2><span id="timeline-range" class="muted">显示后端返回的有限事件窗口</span></div>
+          <div class="legend"><span><i class="dot" style="background:var(--blue)"></i>Attention</span><span><i class="dot" style="background:var(--orange)"></i>通信</span><span><i class="dot" style="background:var(--green)"></i>FFN</span><span><i class="dot" style="background:var(--red)"></i>等待/屏障</span></div>
+          <div class="timeline-tools"><span><kbd>W</kbd>/<kbd>S</kbd> 长按缩放 · <kbd>A</kbd>/<kbd>D</kbd> 长按平移 · 滚轮缩放 · 拖拽平移 · 双击复位</span><button id="timeline-reset" type="button">复位 <kbd>R</kbd></button></div>
+          <svg id="timeline" viewBox="0 0 1000 440" role="img" tabindex="0" aria-label="AFD 和合并流水时间线；W S 缩放，A D 平移，R 复位"></svg>
+        </section>
+
+        <section id="sweep-section" class="chart-block" style="display:none">
+          <div class="chart-title"><h2>QPS — p99 TTFT / SLO 容量</h2><span id="capacity" class="muted"></span></div>
+          <svg id="sweep-chart" viewBox="0 0 1000 360" role="img" aria-label="QPS 与 p99 TTFT 曲线"></svg>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<div id="timeline-tooltip" class="timeline-tooltip" role="tooltip" hidden>
+  <strong id="tooltip-phase"></strong>
+  <div id="tooltip-resource" class="tooltip-resource"></div>
+  <dl id="tooltip-details"></dl>
+</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  let csvText = null;
+  const timelineView = {
+    events: [], resources: [], fullStart: 0, fullEnd: 1,
+    start: 0, end: 1, pointerInside: false, pointerX: null,
+    dragX: null, dragStart: 0, frame: null,
+    keys: new Set(), keyStarts: new Map(), keyTimers: new Map(),
+    keyFrame: null, keyTime: null
+  };
+  const TIMELINE_LEFT = 155, TIMELINE_RIGHT = 20;
+  const TIMELINE_WIDTH = 1000 - TIMELINE_LEFT - TIMELINE_RIGHT;
+  const TIMELINE_KEY_PAN_SPEED = 1.25;
+  const TIMELINE_KEY_ZOOM_SPEED = 2.5;
+  const TIMELINE_KEY_TAP_MS = 120;
+  const AFD_COMMUNICATION_PAIRS = {
+    dispatch_send: ['dispatch_send','dispatch_recv','Dispatch'],
+    dispatch_recv: ['dispatch_send','dispatch_recv','Dispatch'],
+    combine_send: ['combine_send','combine_recv_post','Combine'],
+    combine_recv_post: ['combine_send','combine_recv_post','Combine']
+  };
+  const TIMELINE_PHASE_LABELS = {
+    attention_router: ['Attention + Router','Attention'],
+    barrier: ['Barrier','Barrier'],
+    merged_dispatch: ['Dispatch','Dispatch'],
+    routed_experts: ['Routed Experts','Experts'],
+    merged_combine: ['Combine','Combine'],
+    merged_combine_local: ['Combine','Combine'],
+    shared_expert: ['Shared Expert','Shared'],
+    merged_sp_post: ['TP AllGather + HC Post','TP AllGather'],
+    dispatch_send: ['Dispatch Send','Dispatch'],
+    dispatch_recv: ['Dispatch Recv','Dispatch'],
+    ffn_compute: ['FFN Compute','FFN'],
+    combine_send: ['Combine Send','Combine'],
+    wait_ffn: ['Wait FFN','Wait'],
+    combine_recv_post: ['Combine Recv + Post','Combine']
+  };
+
+  fetch('/api/defaults').then(r => r.json()).then(data => {
+    const m = data.profile.metadata || {};
+    $('profile').textContent = `${m.model || 'DSV4-Flash'} · ${m.device || 'device unknown'} · ${m.performance_model || 'profile'} · ${data.profile.layer_count} 层`;
+  }).catch(err => showError(err.message));
+
+  $('csv-file').addEventListener('change', async event => {
+    const file = event.target.files[0];
+    csvText = file ? await file.text() : null;
+    $('csv-status').textContent = file ? `${file.name} · ${(file.size / 1024).toFixed(1)} KiB` : '未加载 CSV';
+  });
+
+  $('mode').addEventListener('change', updateControlState);
+  $('arrival-kind').addEventListener('change', updateControlState);
+  $('chunked').addEventListener('change', updateControlState);
+  updateControlState();
+
+  function updateControlState() {
+    const continuous = $('mode').value === 'continuous';
+    if (!continuous && $('arrival-kind').value === 'trace') {
+      $('arrival-kind').value = 'constant';
+    }
+    const trace = $('arrival-kind').value === 'trace';
+    ['arrival-kind','qps','duration','warmup','length-mix'].forEach(id => $(id).disabled = !continuous);
+    $('chunk-size').disabled = !$('chunked').checked;
+    if (trace) $('qps').disabled = true;
+    $('sweep').disabled = !continuous || trace;
+  }
+
+  function num(id) { return Number($(id).value); }
+  function parseList(text) { return text.split(/[\s,]+/).filter(Boolean).map(Number); }
+  function parseMix(text) {
+    return text.split(/\n+/).filter(line => line.trim()).map(line => {
+      const [tokens, weight = '1'] = line.split(',').map(v => v.trim());
+      return {tokens: Number(tokens), weight: Number(weight)};
+    });
+  }
+  function leg(prefix) { return {fixed_ms: num(`${prefix}-a`), per_token_ms: num(`${prefix}-b`)}; }
+
+  function config() {
+    return {
+      mode: $('mode').value,
+      fixed_lengths: parseList($('fixed-lengths').value),
+      length_mix: parseMix($('length-mix').value),
+      csv_text: csvText,
+      csv_sampling: $('csv-sampling').value,
+      arrival: {kind: $('arrival-kind').value, qps: num('qps'), duration_s: num('duration'), warmup_s: num('warmup'), seed: num('seed')},
+      scheduler: {policy: $('dp-policy').value, max_num_seqs: num('max-seqs'), max_num_batched_tokens: num('max-tokens'), chunked_prefill: $('chunked').checked, chunk_size: num('chunk-size')},
+      prefix_cache: {enabled: $('cache-enabled').checked, request_hit_rate: num('cache-hit'), matched_prefix_ratio: num('cache-ratio'), block_size: num('cache-block'), lookup_fixed_ms: num('cache-fixed'), lookup_per_block_ms: num('cache-block-ms'), seed: num('cache-seed')},
+      afd: {ubatch_split: $('ubatch').value},
+      cam: {calibrated: $('cam-calibrated').checked, dispatch_send: leg('ds'), dispatch_recv: leg('dr'), combine_send: leg('cs'), combine_recv: leg('cr')},
+      slo: {ttft_limit_ms: num('slo-limit'), target_ratio: num('slo-ratio')},
+      sweep: {min_qps: num('sweep-min'), max_qps: num('sweep-max'), coarse_points: num('sweep-points'), refinement_steps: num('sweep-refine'), throughput_tolerance_ratio: num('throughput-tolerance')},
+      output: {include_timeline: true, timeline_max_events: 20000, include_requests: true},
+      fixed_ttft_overhead_ms: num('fixed-overhead')
+    };
+  }
+
+  $('simulate').addEventListener('click', () => run('/api/simulate', renderSimulation));
+  $('sweep').addEventListener('click', () => run('/api/sweep', renderSweep));
+
+  async function run(endpoint, render) {
+    showError('');
+    ['simulate','sweep'].forEach(id => $(id).disabled = true);
+    try {
+      const response = await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(config())});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      render(data);
+    } catch (err) { showError(err.message); }
+    finally { $('simulate').disabled = false; updateControlState(); }
+  }
+
+  function showError(message) { $('error').textContent = message; $('error').style.display = message ? 'block' : 'none'; }
+  function fmt(value, digits=2) { return Number.isFinite(value) ? value.toFixed(digits) : '—'; }
+
+  function renderSimulation(data) {
+    $('empty').style.display = 'none'; $('content').style.display = 'block';
+    $('speedup').textContent = `${fmt(data.comparison.throughput_speedup)}×`;
+    $('p99-ratio').textContent = `${fmt(data.comparison.p99_ttft_ratio)}×`;
+    $('goodput-speedup').textContent = data.comparison.slo_goodput_speedup == null ? '—' : `${fmt(data.comparison.slo_goodput_speedup)}×`;
+    $('metrics').innerHTML = [['AFD',data.afd.summary],['合并',data.merged.summary]].map(([name,s]) => `<tr><td>${name}</td><td>${fmt(s.throughput_rps)}</td><td>${fmt(s.input_tokens_per_s,0)}</td><td>${fmt(s.compute_tokens_per_s,0)}</td><td>${fmt(s.ttft_p50_ms)} ms</td><td>${fmt(s.ttft_p90_ms)} ms</td><td>${fmt(s.ttft_p99_ms)} ms</td><td>${fmt(s.slo_attainment*100,1)}%</td><td>${fmt(s.slo_goodput_rps)}</td></tr>`).join('');
+    setTimeline([...data.afd.timeline, ...data.merged.timeline]);
+  }
+
+  function setTimeline(events) {
+    const phaseEvents=[];
+    events.forEach(event => {
+      const previous=phaseEvents.at(-1);
+      if (event.phase==='merged_combine_local' && previous?.phase==='merged_combine' && previous.architecture===event.architecture && previous.resource===event.resource && previous.layer===event.layer && previous.end_ms===event.start_ms) {
+        phaseEvents[phaseEvents.length-1]={...previous,end_ms:event.end_ms};
+      } else phaseEvents.push(event);
+    });
+    const mergedDpResources=[...new Set(phaseEvents.filter(event => event.architecture==='merged' && event.resource.endsWith(' Attention')).map(event => event.resource))];
+    const displayEvents=phaseEvents.flatMap(event => {
+      if (event.architecture==='afd' && /^DP\d+ (Attention|CAM)$/.test(event.resource)) {
+        return [{...event,lane:event.resource.replace(/ (Attention|CAM)$/,' Attention/CAM')}];
+      }
+      if (event.architecture==='merged' && event.resource.endsWith(' Attention')) {
+        return [{...event,lane:event.resource.replace(/ Attention$/,' Attention/FFN')}];
+      }
+      if (event.architecture==='merged' && event.resource==='Global EP16') {
+        return mergedDpResources.map(resource => ({...event,lane:resource.replace(/ Attention$/,' Attention/FFN')}));
+      }
+      return [{...event,lane:event.resource}];
+    });
+    timelineView.events = displayEvents;
+    timelineView.resources = [...new Set(displayEvents.map(event => `${event.architecture}:${event.lane}`))];
+    timelineView.fullStart = events.length ? Math.min(...events.map(e => e.start_ms)) : 0;
+    timelineView.fullEnd = events.length ? Math.max(...events.map(e => e.end_ms)) : 1;
+    resetTimeline();
+  }
+
+  function resetTimeline() {
+    timelineView.start = timelineView.fullStart;
+    timelineView.end = timelineView.fullEnd;
+    scheduleTimelineRender();
+  }
+
+  function scheduleTimelineRender() {
+    if (timelineView.frame !== null) return;
+    timelineView.frame = requestAnimationFrame(() => {
+      timelineView.frame = null;
+      drawTimeline();
+    });
+  }
+
+  function drawTimeline() {
+    hideTimelineTooltip();
+    const svg = $('timeline'); svg.innerHTML = '';
+    const {events, resources, start, end, fullStart, fullEnd} = timelineView;
+    if (!events.length) { $('timeline-range').textContent = '没有时间线事件'; return; }
+    const span = end - start, fullSpan = fullEnd - fullStart;
+    const top = 24, row = Math.min(36, 370 / resources.length);
+    const ns = 'http://www.w3.org/2000/svg';
+    const defs=document.createElementNS(ns,'defs'), marker=document.createElementNS(ns,'marker'), arrowhead=document.createElementNS(ns,'path');
+    marker.setAttribute('id','timeline-arrowhead'); marker.setAttribute('viewBox','0 0 10 10'); marker.setAttribute('refX','9'); marker.setAttribute('refY','5'); marker.setAttribute('markerWidth','7'); marker.setAttribute('markerHeight','7'); marker.setAttribute('orient','auto-start-reverse');
+    arrowhead.setAttribute('d','M 0 0 L 10 5 L 0 10 z'); arrowhead.setAttribute('fill','#7c3aed'); marker.appendChild(arrowhead); defs.appendChild(marker); svg.appendChild(defs);
+    resources.forEach((resource,i) => {
+      const y = top+i*row;
+      const label = document.createElementNS(ns,'text'); label.setAttribute('x','8'); label.setAttribute('y',String(y+row*.65)); label.setAttribute('fill','currentColor'); label.setAttribute('font-size','11'); label.textContent=resource; svg.appendChild(label);
+    });
+    const colors = phase => phase.includes('attention') ? 'var(--blue)' : phase.includes('wait') || phase.includes('barrier') ? 'var(--red)' : phase.includes('ffn') || phase.includes('expert') ? 'var(--green)' : 'var(--orange)';
+    events.forEach(event => {
+      if (event.end_ms < start || event.start_ms > end) return;
+      const i = resources.indexOf(`${event.architecture}:${event.lane}`), y=top+i*row+4;
+      const visibleStart = Math.max(start,event.start_ms), visibleEnd = Math.min(end,event.end_ms);
+      const eventX=TIMELINE_LEFT+(visibleStart-start)/span*TIMELINE_WIDTH;
+      const eventWidth=Math.max(1,(visibleEnd-visibleStart)/span*TIMELINE_WIDTH);
+      const rect=document.createElementNS(ns,'rect');
+      rect.setAttribute('x',String(eventX)); rect.setAttribute('y',String(y)); rect.setAttribute('width',String(eventWidth)); rect.setAttribute('height',String(Math.max(5,row-8))); rect.setAttribute('fill',colors(event.phase)); rect.setAttribute('opacity',event.stage===1?'.58':'.9');
+      rect.addEventListener('pointerenter', pointer => { showTimelineTooltip(pointer,event); showCommunicationArrow(event); });
+      rect.addEventListener('pointermove', pointer => positionTimelineTooltip(pointer));
+      rect.addEventListener('pointerleave', () => { hideTimelineTooltip(); hideCommunicationArrow(); });
+      svg.appendChild(rect);
+      const eventLabel=timelinePhaseLabel(event.phase,eventWidth);
+      if (eventLabel) {
+        const label=document.createElementNS(ns,'text');
+        label.setAttribute('class','timeline-event-label'); label.setAttribute('x',String(eventX+eventWidth/2)); label.setAttribute('y',String(y+Math.max(5,row-8)/2)); label.setAttribute('text-anchor','middle'); label.setAttribute('dominant-baseline','middle');
+        label.setAttribute('fill',colors(event.phase)==='var(--orange)' ? '#17223b' : '#fff');
+        label.textContent=eventLabel; svg.appendChild(label);
+      }
+    });
+    const axis=document.createElementNS(ns,'text'); axis.setAttribute('x',String(TIMELINE_LEFT)); axis.setAttribute('y','426'); axis.setAttribute('fill','currentColor'); axis.setAttribute('font-size','11'); axis.textContent=`${fmt(start)} → ${fmt(end)} ms`; svg.appendChild(axis);
+    const zoom = fullSpan / span;
+    $('timeline-range').textContent = `可见 ${fmt(start)}–${fmt(end)} ms · ${fmt(zoom,1)}×`;
+  }
+
+  function clampTimeline(start, end) {
+    const fullSpan = timelineView.fullEnd - timelineView.fullStart;
+    const span = Math.min(end - start, fullSpan);
+    const clampedStart = Math.max(timelineView.fullStart, Math.min(start, timelineView.fullEnd - span));
+    timelineView.start = clampedStart;
+    timelineView.end = clampedStart + span;
+    scheduleTimelineRender();
+  }
+
+  function timelineTimeAt(clientX) {
+    const bounds = $('timeline').getBoundingClientRect();
+    const svgX = (clientX - bounds.left) / bounds.width * 1000;
+    const ratio = Math.max(0,Math.min(1,(svgX-TIMELINE_LEFT)/TIMELINE_WIDTH));
+    return timelineView.start + ratio * (timelineView.end-timelineView.start);
+  }
+
+  function zoomTimeline(factor, anchor) {
+    const fullSpan = timelineView.fullEnd - timelineView.fullStart;
+    const span = timelineView.end - timelineView.start;
+    const nextSpan = Math.max(fullSpan/1e6,Math.min(fullSpan,span*factor));
+    const ratio = (anchor-timelineView.start)/span;
+    clampTimeline(anchor-ratio*nextSpan,anchor+(1-ratio)*nextSpan);
+  }
+
+  function panTimeline(ratio) {
+    const delta = (timelineView.end-timelineView.start)*ratio;
+    clampTimeline(timelineView.start+delta,timelineView.end+delta);
+  }
+
+  function timelinePhaseLabel(phase, width) {
+    const labels=TIMELINE_PHASE_LABELS[phase];
+    if (!labels) return '';
+    if (width >= labels[0].length*6+10) return labels[0];
+    if (width >= labels[1].length*6+10) return labels[1];
+    return '';
+  }
+
+  function showCommunicationArrow(event) {
+    hideCommunicationArrow();
+    const phases=event.architecture==='afd' ? AFD_COMMUNICATION_PAIRS[event.phase] : null;
+    if (!phases) return;
+    const matches=candidate => candidate.architecture==='afd' && candidate.layer===event.layer && candidate.batch===event.batch && candidate.stage===event.stage;
+    const source=timelineView.events.find(candidate => matches(candidate) && candidate.phase===phases[0]);
+    const target=timelineView.events.find(candidate => matches(candidate) && candidate.phase===phases[1]);
+    if (!source || !target) return;
+
+    const {resources,start,end}=timelineView, span=end-start;
+    const row=Math.min(36,370/resources.length), eventHeight=Math.max(5,row-8);
+    const centerY=candidate => 24+resources.indexOf(`${candidate.architecture}:${candidate.lane}`)*row+4+eventHeight/2;
+    const xAt=time => Math.max(TIMELINE_LEFT,Math.min(TIMELINE_LEFT+TIMELINE_WIDTH,TIMELINE_LEFT+(time-start)/span*TIMELINE_WIDTH));
+    const sourceCenterY=centerY(source), targetCenterY=centerY(target), direction=Math.sign(targetCenterY-sourceCenterY);
+    const sourceX=xAt(source.end_ms), targetX=xAt(target.start_ms);
+    const sourceY=sourceCenterY, targetY=targetCenterY;
+    const bend=Math.abs(targetY-sourceY)*.35;
+    const ns='http://www.w3.org/2000/svg', group=document.createElementNS(ns,'g');
+    const path=document.createElementNS(ns,'path'), origin=document.createElementNS(ns,'circle'), label=document.createElementNS(ns,'text');
+    group.setAttribute('class','timeline-comm-arrow');
+    path.setAttribute('d',`M ${sourceX} ${sourceY} C ${sourceX} ${sourceY+direction*bend}, ${targetX} ${targetY-direction*bend}, ${targetX} ${targetY}`); path.setAttribute('marker-end','url(#timeline-arrowhead)');
+    origin.setAttribute('cx',String(sourceX)); origin.setAttribute('cy',String(sourceY)); origin.setAttribute('r','3');
+    const labelX=(sourceX+targetX)/2, labelOnLeft=labelX>TIMELINE_LEFT+TIMELINE_WIDTH-80;
+    label.setAttribute('x',String(labelX+(labelOnLeft?-7:7))); label.setAttribute('y',String((sourceY+targetY)/2+3)); label.setAttribute('text-anchor',labelOnLeft?'end':'start'); label.textContent=phases[2];
+    group.append(path,origin,label); $('timeline').appendChild(group);
+  }
+
+  function hideCommunicationArrow() { $('timeline').querySelector('.timeline-comm-arrow')?.remove(); }
+
+  function showTimelineTooltip(pointer, event) {
+    const duration = event.end_ms-event.start_ms;
+    const details = [
+      ['层', `L${event.layer}`],
+      ['时间', `${fmt(event.start_ms)}–${fmt(event.end_ms)} ms`],
+      ['持续时间', duration < 1 ? `${fmt(duration,3)} ms` : `${fmt(duration)} ms`],
+      ['Token 数', Number(event.tokens).toLocaleString()]
+    ];
+    if (event.profile_query_tokens != null) {
+      details.push(['Profile Query', Number(event.profile_query_tokens).toLocaleString()]);
+    }
+    if (event.sampled_input_shapes) {
+      details.push(
+        ['TopK 数', event.top_k == null ? '不适用（共享专家）' : String(event.top_k)],
+        ['EP 数', String(event.ep_size)]
+      );
+      if (!event.sampled_input_shapes.length) {
+        details.push(['Expert 实采 Shape', '当前 profile 未记录']);
+      } else {
+        event.sampled_input_shapes.forEach((sample,index) => {
+          const shape=`[${sample.shape.map(Number).map(value => value.toLocaleString()).join(', ')}]`;
+          const suffix=event.sampled_input_shapes.length > 1 ? ` ${index+1}` : '';
+          details.push([`EP Rank 输入 Shape${suffix}`, shape]);
+          if (sample.expert_shapes?.length) {
+            const expertShapes=sample.expert_shapes.map(item => {
+              const itemShape=`[${item.shape.map(Number).map(value => value.toLocaleString()).join(', ')}]`;
+              return `${Number(item.count).toLocaleString()} × ${itemShape}`;
+            }).join(' + ');
+            details.push([`Expert GMM 实采 Shape${suffix}`, expertShapes]);
+          }
+          details.push(
+            [`采样 Query / 权重${suffix}`, `${Number(sample.query_tokens).toLocaleString()} / ${(Number(sample.weight)*100).toFixed(1)}%`]
+          );
+        });
+      }
+    }
+    if (event.batch != null) details.push(['批次', String(event.batch)]);
+    if (event.stage != null) details.push(['uBatch', String(event.stage)]);
+    $('tooltip-phase').textContent=TIMELINE_PHASE_LABELS[event.phase]?.[0] || event.phase;
+    $('tooltip-resource').textContent=`${event.architecture.toUpperCase()} · ${event.resource}`;
+    $('tooltip-details').replaceChildren(...details.flatMap(([label,value]) => {
+      const term=document.createElement('dt'), description=document.createElement('dd');
+      term.textContent=label; description.textContent=value;
+      return [term,description];
+    }));
+    $('timeline-tooltip').hidden=false;
+    positionTimelineTooltip(pointer);
+  }
+
+  function positionTimelineTooltip(pointer) {
+    const tooltip=$('timeline-tooltip');
+    if (tooltip.hidden) return;
+    const bounds=tooltip.getBoundingClientRect();
+    const left=Math.max(8,Math.min(pointer.clientX+14,window.innerWidth-bounds.width-8));
+    const below=pointer.clientY+14;
+    const top=below+bounds.height <= window.innerHeight-8 ? below : pointer.clientY-bounds.height-14;
+    tooltip.style.left=`${left}px`; tooltip.style.top=`${Math.max(8,top)}px`;
+  }
+
+  function hideTimelineTooltip() { $('timeline-tooltip').hidden=true; }
+
+  function applyTimelineKeys(seconds) {
+    const panDirection=Number(timelineView.keys.has('d'))-Number(timelineView.keys.has('a'));
+    if (panDirection) panTimeline(panDirection*TIMELINE_KEY_PAN_SPEED*seconds);
+    const zoomDirection=Number(timelineView.keys.has('s'))-Number(timelineView.keys.has('w'));
+    if (zoomDirection) {
+      const anchor=timelineView.pointerX === null ? (timelineView.start+timelineView.end)/2 : timelineTimeAt(timelineView.pointerX);
+      zoomTimeline(Math.exp(zoomDirection*TIMELINE_KEY_ZOOM_SPEED*seconds),anchor);
+    }
+  }
+
+  function animateTimelineKeys(now) {
+    if (!timelineView.keys.size) { timelineView.keyFrame=null; timelineView.keyTime=null; return; }
+    const seconds=Math.min((now-timelineView.keyTime)/1000,.05);
+    timelineView.keyTime=now;
+    applyTimelineKeys(seconds);
+    timelineView.keyFrame=requestAnimationFrame(animateTimelineKeys);
+  }
+
+  function stopTimelineKeys() {
+    timelineView.keys.clear();
+    timelineView.keyStarts.clear();
+    timelineView.keyTimers.forEach(clearTimeout);
+    timelineView.keyTimers.clear();
+    timelineView.keyTime=null;
+    if (timelineView.keyFrame !== null) cancelAnimationFrame(timelineView.keyFrame);
+    timelineView.keyFrame=null;
+  }
+
+  function releaseTimelineKey(key) {
+    timelineView.keys.delete(key);
+    timelineView.keyStarts.delete(key);
+    timelineView.keyTimers.delete(key);
+  }
+
+  $('timeline').addEventListener('pointerenter', event => { timelineView.pointerInside=true; timelineView.pointerX=event.clientX; });
+  $('timeline').addEventListener('pointerleave', () => { timelineView.pointerInside=false; timelineView.pointerX=null; });
+  $('timeline').addEventListener('pointermove', event => {
+    timelineView.pointerX=event.clientX;
+    if (timelineView.dragX === null) return;
+    const bounds=$('timeline').getBoundingClientRect();
+    const delta=-(event.clientX-timelineView.dragX)/(bounds.width*TIMELINE_WIDTH/1000)*(timelineView.end-timelineView.start);
+    clampTimeline(timelineView.dragStart+delta,timelineView.dragStart+delta+(timelineView.end-timelineView.start));
+  });
+  $('timeline').addEventListener('pointerdown', event => { timelineView.dragX=event.clientX; timelineView.dragStart=timelineView.start; $('timeline').setPointerCapture(event.pointerId); $('timeline').classList.add('dragging'); $('timeline').focus(); });
+  $('timeline').addEventListener('pointerup', event => { timelineView.dragX=null; $('timeline').releasePointerCapture(event.pointerId); $('timeline').classList.remove('dragging'); });
+  $('timeline').addEventListener('pointercancel', () => { timelineView.dragX=null; $('timeline').classList.remove('dragging'); });
+  $('timeline').addEventListener('wheel', event => { event.preventDefault(); zoomTimeline(Math.exp(event.deltaY*.0015),timelineTimeAt(event.clientX)); }, {passive:false});
+  $('timeline').addEventListener('dblclick', resetTimeline);
+  $('timeline-reset').addEventListener('click', resetTimeline);
+  document.addEventListener('keydown', event => {
+    if (!timelineView.events.length || (!timelineView.pointerInside && document.activeElement !== $('timeline'))) return;
+    if (['INPUT','SELECT','TEXTAREA'].includes(event.target.tagName)) return;
+    const key=event.key.toLowerCase();
+    if (key==='r') { resetTimeline(); event.preventDefault(); return; }
+    if (!['w','s','a','d'].includes(key)) return;
+    if (!timelineView.keys.has(key)) {
+      timelineView.keys.add(key);
+      timelineView.keyStarts.set(key,performance.now());
+    }
+    if (timelineView.keyTimers.has(key)) clearTimeout(timelineView.keyTimers.get(key));
+    timelineView.keyTimers.delete(key);
+    if (timelineView.keyFrame === null) {
+      timelineView.keyTime=performance.now();
+      timelineView.keyFrame=requestAnimationFrame(animateTimelineKeys);
+    }
+    event.preventDefault();
+  });
+  document.addEventListener('keyup', event => {
+    const key=event.key.toLowerCase();
+    if (!timelineView.keys.has(key)) return;
+    const elapsed=performance.now()-timelineView.keyStarts.get(key);
+    const delay=Math.max(0,TIMELINE_KEY_TAP_MS-elapsed);
+    if (delay) timelineView.keyTimers.set(key,setTimeout(() => releaseTimelineKey(key),delay));
+    else releaseTimelineKey(key);
+    event.preventDefault();
+  });
+  window.addEventListener('blur', stopTimelineKeys);
+
+  function renderSweep(data) {
+    $('empty').style.display = 'none'; $('content').style.display = 'block'; $('sweep-section').style.display = 'block';
+    $('capacity').textContent = `SLO 最大 QPS：AFD ${fmt(data.capacity_qps.afd)} · 合并 ${fmt(data.capacity_qps.merged)}`;
+    drawSweep(data);
+  }
+
+  function drawSweep(data) {
+    const svg=$('sweep-chart'); svg.innerHTML=''; const ns='http://www.w3.org/2000/svg';
+    const all=[...data.series.afd,...data.series.merged], left=64,right=24,top=24,bottom=48,w=1000-left-right,h=360-top-bottom;
+    const xmax=Math.max(...all.map(p=>p.qps)), ymax=Math.max(data.slo.ttft_limit_ms,...all.map(p=>p.ttft_p99_ms));
+    const x=v=>left+v/xmax*w, y=v=>top+h-v/ymax*h;
+    const slo=document.createElementNS(ns,'line'); slo.setAttribute('x1',left); slo.setAttribute('x2',left+w); slo.setAttribute('y1',y(data.slo.ttft_limit_ms)); slo.setAttribute('y2',y(data.slo.ttft_limit_ms)); slo.setAttribute('stroke','var(--red)'); slo.setAttribute('stroke-dasharray','6 5'); svg.appendChild(slo);
+    [['afd','var(--blue)'],['merged','var(--orange)']].forEach(([name,color])=>{
+      const points=data.series[name].sort((a,b)=>a.qps-b.qps); const path=document.createElementNS(ns,'path'); path.setAttribute('d',points.map((p,i)=>`${i?'L':'M'}${x(p.qps)},${y(p.ttft_p99_ms)}`).join(' ')); path.setAttribute('fill','none'); path.setAttribute('stroke',color); path.setAttribute('stroke-width','3'); svg.appendChild(path);
+      points.forEach(p=>{const c=document.createElementNS(ns,'circle');c.setAttribute('cx',x(p.qps));c.setAttribute('cy',y(p.ttft_p99_ms));c.setAttribute('r','4');c.setAttribute('fill',p.passed?color:'var(--red)');const t=document.createElementNS(ns,'title');t.textContent=`${name} · ${fmt(p.qps)} QPS · p99 ${fmt(p.ttft_p99_ms)} ms · ${p.passed?'PASS':'FAIL'}`;c.appendChild(t);svg.appendChild(c);});
+    });
+    const label=document.createElementNS(ns,'text');label.setAttribute('x',left);label.setAttribute('y','344');label.setAttribute('fill','currentColor');label.setAttribute('font-size','11');label.textContent=`QPS 0–${fmt(xmax)} · p99 TTFT 0–${fmt(ymax)} ms`;svg.appendChild(label);
+  }
+</script>
+</body>
+</html>

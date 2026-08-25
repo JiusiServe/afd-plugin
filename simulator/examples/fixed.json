@@ -1,0 +1,40 @@
+{
+  "mode": "fixed",
+  "fixed_lengths": [512, 8192, 2048, 16384],
+  "arrival": {
+    "kind": "constant",
+    "qps": 4,
+    "duration_s": 60,
+    "warmup_s": 0,
+    "seed": 1024
+  },
+  "scheduler": {
+    "policy": "round_robin",
+    "max_num_seqs": 64,
+    "max_num_batched_tokens": 32768,
+    "chunked_prefill": false,
+    "chunk_size": 8192
+  },
+  "prefix_cache": {
+    "enabled": false,
+    "request_hit_rate": 0,
+    "matched_prefix_ratio": 0,
+    "block_size": 32,
+    "lookup_fixed_ms": 0,
+    "lookup_per_block_ms": 0,
+    "seed": 1024
+  },
+  "afd": {
+    "ubatch_split": "request"
+  },
+  "slo": {
+    "ttft_limit_ms": 1000,
+    "target_ratio": 0.99
+  },
+  "fixed_ttft_overhead_ms": 0,
+  "output": {
+    "include_timeline": true,
+    "timeline_max_events": 20000,
+    "include_requests": true
+  }
+}
