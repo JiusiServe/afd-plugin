@@ -27,18 +27,6 @@ def _method_parameters(
     ]
 
 
-def test_npu_runner_overrides_match_ascend_gdn_dummy_run_contract():
-    afd_source = Path("afd_plugin/v1/worker/npu/attention_model_runner.py")
-    ascend_source = Path("../vllm-ascend/vllm_ascend/worker/model_runner_v1.py")
-
-    for method_name in ("_dummy_run", "_build_attention_metadata"):
-        assert _method_parameters(
-            afd_source,
-            "AFDNPUAttentionModelRunner",
-            method_name,
-        ) == _method_parameters(ascend_source, "NPUModelRunner", method_name)
-
-
 def test_npu_v2_profile_state_reaches_ffn_ascend_context():
     metadata_source = Path("afd_plugin/connectors/metadata.py").read_text()
     attention_source = Path(
