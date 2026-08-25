@@ -7,10 +7,10 @@ Bootstrap mode (``bootstrap-upload-steps.yml``):
   - Hook uploads the entry YAML (``pipeline.yml``) with one step that runs
     ``upload_pipeline.py --upload .buildkite/cuda/bootstrap-upload-steps.yml``.
   - Injects ``if`` by step ``key`` from skip-ci and uploads child steps
-    (image build, L2/L3).
+    (image build, L2/L3/weekly).
   - Detect docs-only, pytest skip-mark-only, or combined skip-ci from git diff.
   - When only CI level YAML changes, enable **L2/L3** upload steps for
-    affected levels only.
+    affected levels only. Weekly uses ``WEEKLY`` or the ``weekly-test`` PR label.
 
 Test pipeline mode (e.g. test-merge.yml):
   - Drop steps whose ``source_file_dependencies`` do not match changed files.
@@ -55,9 +55,17 @@ BOOTSTRAP_IMAGE_BUILD_KEYS = frozenset({"image-build"})
 BOOTSTRAP_UPLOAD_IF_KEYS = {
     "upload-ready-pipeline": "ready",
     "upload-merge-pipeline": "merge",
+    "upload-weekly-pipeline": "weekly",
 }
 E2E_GROUP_MARKER = "E2E Test"
 CI_MIRROR_HARDWARES_PATH = ROOT / ".buildkite/common/ci_mirror_hardwares.yml"
+
+# Weekly schedule (aligned with vllm-omni): main + WEEKLY, or PR label.
+WEEKLY_MAIN_IF = 'build.branch == "main" && build.env("WEEKLY") == "1"'
+WEEKLY_LABEL_IF = (
+    f"({WEEKLY_MAIN_IF}) || "
+    '(build.branch != "main" && build.pull_request.labels includes "weekly-test")'
+)
 
 
 # --- Logging ---
@@ -94,40 +102,48 @@ def _format_bootstrap_if(expr: str) -> str:
 def _compute_bootstrap_if_exprs(*, decision, platform: str) -> dict[str, str]:
     disabled = "false"
     ready_pr = 'build.branch != "main" && build.pull_request.labels includes "ready"'
-    merge_main = 'build.branch == "main"'
+    # Skip regular main merge when a weekly schedule is running.
+    merge_main = 'build.branch == "main" && build.env("WEEKLY") != "1"'
     merge_pr = (
         'build.branch != "main" && build.pull_request.labels includes "merge-test"'
     )
     ready_base = ready_pr
     merge_base = f"({merge_main}) || ({merge_pr})"
+    weekly_base = WEEKLY_LABEL_IF if platform == "cuda" else disabled
 
     if decision.skip_all:
-        # Docs / skip-mark only: suppress image + ready/merge uploads.
-        image_expr = disabled
+        # Docs / skip-mark only: suppress ready/merge; weekly schedule still runs.
+        image_expr = weekly_base if platform == "cuda" else disabled
         ready_expr = disabled
         merge_expr = disabled
+        weekly_expr = weekly_base
     elif decision.skip_l2_l3:
         l2_enabled = decision.is_run(platform, "l2")
         l3_enabled = decision.is_run(platform, "l3")
 
         ready_expr = ready_base if l2_enabled else disabled
         merge_expr = merge_base if l3_enabled else disabled
+        weekly_expr = weekly_base
 
         image_parts: list[str] = []
         if l2_enabled:
             image_parts.append(ready_base)
         if l3_enabled:
             image_parts.append(merge_base)
+        if platform == "cuda":
+            image_parts.append(f"({weekly_base})")
         image_expr = " || ".join(image_parts) if image_parts else disabled
     else:
         image_expr = "true"
         ready_expr = ready_base
         merge_expr = merge_base
+        weekly_expr = weekly_base
 
     return {
         "image": _format_bootstrap_if(image_expr),
         "ready": _format_bootstrap_if(ready_expr),
         "merge": _format_bootstrap_if(merge_expr),
+        "weekly": _format_bootstrap_if(weekly_expr),
     }
 
 
