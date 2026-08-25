@@ -1,6 +1,7 @@
 # Weekly — Simple Test + full GSM8K E2E. Uploaded by cuda/bootstrap-upload-steps.yml.
 # Trigger: main + WEEKLY=1, or PR label weekly-test.
 # Job layout mirrors test-ready.yml; E2E uses AFD_GSM8K_LIMIT=all (see e2e_testing.md).
+# debug for test
 steps:
     - label: "DeepSeekV2-Lite Test"
       timeout_in_minutes: 120
