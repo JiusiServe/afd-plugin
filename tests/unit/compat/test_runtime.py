@@ -188,9 +188,7 @@ def test_ascend_forward_context_uses_native_mrv2_layout(monkeypatch):
     fake_ascend_forward_context.override_mrv2_in_profile_run = (
         override_mrv2_in_profile_run
     )
-    fake_ascend_forward_context.set_ascend_forward_context = (
-        unexpected_legacy_context
-    )
+    fake_ascend_forward_context.set_ascend_forward_context = unexpected_legacy_context
     monkeypatch.setitem(sys.modules, "vllm", fake_vllm)
     monkeypatch.setitem(sys.modules, "vllm.config", fake_config)
     monkeypatch.setitem(
