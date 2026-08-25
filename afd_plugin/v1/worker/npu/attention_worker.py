@@ -19,7 +19,6 @@ from afd_plugin.model_executor.models.model_utils import get_afd_model_config
 from afd_plugin.v1.worker.npu.attention_model_runner import (
     AFDNPUAttentionModelRunner,
 )
-
 from afd_plugin.validation import (
     NPU_ATTENTION_WORKER_FQCN,
     assert_compatible_afd_stack,
