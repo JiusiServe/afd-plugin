@@ -7,8 +7,6 @@ metadata:
     role: serve-bench
 spec:
   restartPolicy: Never
-  securityContext:
-    fsGroup: 1003810000
   volumes:
     - name: model-storage
       persistentVolumeClaim:
