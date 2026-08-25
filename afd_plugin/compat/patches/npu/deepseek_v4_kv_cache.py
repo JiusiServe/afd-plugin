@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import importlib
 import logging
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import replace
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +44,8 @@ def apply_deepseek_v4_hybrid_kv_cache_group_patch() -> bool:
     except (ImportError, ModuleNotFoundError):
         return True
 
-    try:
+    with suppress(ImportError, ModuleNotFoundError):
         importlib.import_module("vllm_ascend.patch.platform.patch_kv_cache_utils")
-    except (ImportError, ModuleNotFoundError):
-        pass
 
     original = getattr(kv_cache_utils, "_get_kv_cache_groups_uniform_groups", None)
     if original is None:
@@ -89,7 +89,9 @@ def apply_deepseek_v4_hybrid_kv_cache_group_patch() -> bool:
         return _original(patched_specs)
 
     get_kv_cache_groups_uniform_groups._afd_dsv4_page_size_patch = True  # type: ignore[attr-defined]
-    kv_cache_utils._get_kv_cache_groups_uniform_groups = get_kv_cache_groups_uniform_groups
+    kv_cache_utils._get_kv_cache_groups_uniform_groups = (
+        get_kv_cache_groups_uniform_groups
+    )
     _GROUPING_PATCHED = True
     return True
 
@@ -127,26 +129,44 @@ def apply_deepseek_v4_ascend_allocator_patch() -> bool:
             if specs is None:
                 continue
             for name, spec in specs.items():
-                if type(spec).__name__ == "AscendSlidingWindowMLASpec" and "attn" not in name:
+                if (
+                    type(spec).__name__ == "AscendSlidingWindowMLASpec"
+                    and "attn" not in name
+                ):
                     state_names.add(name)
         if not state_names:
             return _original(self, kv_cache_config)
 
         aliases = {name: f"{name}.afd_attn_cache" for name in state_names}
-        alias = lambda name: aliases.get(name, name)
+        def alias(name: str) -> str:
+            return aliases.get(name, name)
+
         patched_groups = []
         for group in kv_cache_config.kv_cache_groups:
             spec = group.kv_cache_spec
             specs = getattr(spec, "kv_cache_specs", None)
             if specs is not None:
-                spec = replace(spec, kv_cache_specs={alias(name): value for name, value in specs.items()})
-            patched_groups.append(replace(group, layer_names=[alias(name) for name in group.layer_names], kv_cache_spec=spec))
+                spec = replace(
+                    spec,
+                    kv_cache_specs={
+                        alias(name): value for name, value in specs.items()
+                    },
+                )
+            patched_groups.append(
+                replace(
+                    group,
+                    layer_names=[alias(name) for name in group.layer_names],
+                    kv_cache_spec=spec,
+                )
+            )
         patched_tensors = [
             replace(tensor, shared_by=[alias(name) for name in tensor.shared_by])
             for tensor in kv_cache_config.kv_cache_tensors
         ]
         patched_config = replace(
-            kv_cache_config, kv_cache_groups=patched_groups, kv_cache_tensors=patched_tensors
+            kv_cache_config,
+            kv_cache_groups=patched_groups,
+            kv_cache_tensors=patched_tensors,
         )
         raw_tensors = _original(self, patched_config)
         return {aliases.get(name, name): tensor for name, tensor in raw_tensors.items()}

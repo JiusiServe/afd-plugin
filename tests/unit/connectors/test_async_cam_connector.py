@@ -363,8 +363,12 @@ def test_async_connector_rejects_wrong_cross_host_group_count():
         CAMAsyncAFDConnector(
             0,
             0,
-            _vllm_config(extra_config={"attn_ranks_per_dp": 4,
-                                       "cam_rendezvous_hosts": ["10.0.0.1"]}),
+            _vllm_config(
+                extra_config={
+                    "attn_ranks_per_dp": 4,
+                    "cam_rendezvous_hosts": ["10.0.0.1"],
+                }
+            ),
             _dp2_afd_config(role="attention"),
             0,
         )
@@ -465,19 +469,30 @@ def test_async_connector_uses_group_specific_cross_host_rendezvous(monkeypatch):
     calls = []
     fake_torch = _FakeTorch()
     monkeypatch.setattr(async_cam_module, "torch", fake_torch)
-    monkeypatch.setattr(async_cam_module, "ensure_cam_async_ops_available", lambda: None)
+    monkeypatch.setattr(
+        async_cam_module, "ensure_cam_async_ops_available", lambda: None
+    )
     monkeypatch.setattr(
         async_cam_module,
         "init_afd_process_group",
-        lambda **kwargs: calls.append(kwargs) or SimpleNamespace(
-            _get_backend=lambda device: SimpleNamespace(
-                get_hccl_comm_name=lambda rank: "hccl")),
+        lambda **kwargs: (
+            calls.append(kwargs)
+            or SimpleNamespace(
+                _get_backend=lambda device: SimpleNamespace(
+                    get_hccl_comm_name=lambda rank: "hccl"
+                )
+            )
+        ),
     )
     connector = CAMAsyncAFDConnector(
         0,
         0,
-        _vllm_config(extra_config={"attn_ranks_per_dp": 4,
-                                   "cam_rendezvous_hosts": ["10.0.0.1", "10.0.0.2"]}),
+        _vllm_config(
+            extra_config={
+                "attn_ranks_per_dp": 4,
+                "cam_rendezvous_hosts": ["10.0.0.1", "10.0.0.2"],
+            }
+        ),
         _dp2_afd_config(role="ffn"),
         4,
     )

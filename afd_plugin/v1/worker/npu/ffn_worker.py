@@ -19,9 +19,7 @@ from afd_plugin.compat.npu import (
     fix_all2all_backend_for_afd,
     npu_afd_num_ubatches,
 )
-
 from afd_plugin.model_executor.models.model_utils import get_afd_model_config
-
 from afd_plugin.v1.worker.npu.ffn_model_runner import AFDNPUFFNModelRunner
 
 from afd_plugin.validation import NPU_FFN_WORKER_FQCN, assert_compatible_afd_stack
