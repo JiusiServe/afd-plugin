@@ -27,6 +27,8 @@ class AFDMetadataProviderMixin:
     remain in each vLLM base class.
     """
 
+    _afd_is_profile: bool = False
+
     def build_afd_metadata(
         self,
         ubatch_slices: UBatchSlices | None,
@@ -101,6 +103,7 @@ class AFDMetadataProviderMixin:
             dp_metadata_list=dp_metadata_list,
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,
+            is_profile=self._afd_is_profile,
         )
         self.connector.control_plane.update_state_from_dp_metadata(payload)
         self.connector.control_plane.send_dp_metadata_list(payload)

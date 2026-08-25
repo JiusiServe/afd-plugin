@@ -6,6 +6,9 @@ from importlib import import_module
 
 _RUNTIME_EXPORTS = {
     "AFDNPUAttentionModelRunner": "afd_plugin.v1.worker.npu.attention_model_runner",
+    "AFDNPUAttentionModelRunnerV2": (
+        "afd_plugin.v1.worker.npu.attention_model_runner_v2"
+    ),
     "AFDNPUAttentionWorker": "afd_plugin.v1.worker.npu.attention_worker",
     "AFDNPUFFNModelRunner": "afd_plugin.v1.worker.npu.ffn_model_runner",
     "AFDNPUFFNWorker": "afd_plugin.v1.worker.npu.ffn_worker",
@@ -24,6 +27,7 @@ def __getattr__(name: str):
 
 __all__ = [
     "AFDNPUAttentionModelRunner",
+    "AFDNPUAttentionModelRunnerV2",
     "AFDNPUAttentionWorker",
     "AFDNPUFFNModelRunner",
     "AFDNPUFFNWorker",

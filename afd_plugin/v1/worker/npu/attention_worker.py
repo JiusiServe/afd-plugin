@@ -19,9 +19,13 @@ from afd_plugin.model_executor.models.model_utils import get_afd_model_config
 from afd_plugin.v1.worker.npu.attention_model_runner import (
     AFDNPUAttentionModelRunner,
 )
+from afd_plugin.v1.worker.npu.attention_model_runner_v2 import (
+    AFDNPUAttentionModelRunnerV2,
+)
 from afd_plugin.validation import (
     NPU_ATTENTION_WORKER_FQCN,
     assert_compatible_afd_stack,
+    validate_npu_model_runner_v2_config,
 )
 
 
@@ -44,8 +48,10 @@ class AFDNPUAttentionWorker(NPUWorker):
         fail_if_unsupported_npu_afd_features(self.vllm_config)
         fix_all2all_backend_for_afd(self.vllm_config)
         if self.use_v2_model_runner:
-            raise RuntimeError(
-                "AFD NPU Attention supports only vllm-ascend model runner v1",
+            validate_npu_model_runner_v2_config(
+                self.vllm_config,
+                expected_role="attention",
+                device_type="npu",
             )
 
         self.device = self._init_device()
@@ -57,7 +63,12 @@ class AFDNPUAttentionWorker(NPUWorker):
             self.vllm_config.model_config,
             device_type="npu",
         )
-        self.model_runner = AFDNPUAttentionModelRunner(
+        runner_cls = (
+            AFDNPUAttentionModelRunnerV2
+            if self.use_v2_model_runner
+            else AFDNPUAttentionModelRunner
+        )
+        self.model_runner = runner_cls(
             self.vllm_config,
             self.device,
         )

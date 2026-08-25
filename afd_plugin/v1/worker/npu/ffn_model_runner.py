@@ -110,6 +110,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
+        is_profile: bool = False,
     ) -> None:
         if dp_metadata_list is None:
             raise RuntimeError("AFD NPU FFN requires dp_metadata_list")
@@ -127,7 +128,10 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 is_attn_graph_capturing=is_graph_capturing,
             )
             return None
-        self.execute_model(dp_metadata_list=dp_metadata_list)
+        self.execute_model(
+            dp_metadata_list=dp_metadata_list,
+            is_profile=is_profile,
+        )
         return None
 
     def execute_connector_driven_step(self) -> None:
@@ -148,6 +152,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata] | None = None,
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
+        is_profile: bool = False,
     ) -> None:
         step_afd_npu_profiler(self.prof)
         if dp_metadata_list is None:
@@ -177,7 +182,10 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 is_warmup=is_warmup,
             )
 
-        self._ffn_forward(dp_metadata_list=dp_metadata_list)
+        self._ffn_forward(
+            dp_metadata_list=dp_metadata_list,
+            is_profile=is_profile,
+        )
         return None
 
     def _make_graph_key(
@@ -198,6 +206,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         aclgraph_runtime_mode: CUDAGraphMode | None = None,
         is_graph_capturing: bool = False,
         update_connector_state: bool = True,
+        is_profile: bool = False,
     ) -> torch.Tensor | None:
         if update_connector_state:
             assert self.connector.control_plane, (
@@ -247,6 +256,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     model_instance=self.model,
                     num_tokens=num_tokens,
                     num_tokens_across_dp=dp_num_tokens_across_dp,
+                    in_profile_run=is_profile,
                     aclgraph_runtime_mode=aclgraph_runtime_mode,
                 ) as forward_context:
                     payload = self.connector.recv_attn_output(

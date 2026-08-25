@@ -21,7 +21,11 @@ from afd_plugin.compat.npu import (
 )
 from afd_plugin.model_executor.models.model_utils import get_afd_model_config
 from afd_plugin.v1.worker.npu.ffn_model_runner import AFDNPUFFNModelRunner
-from afd_plugin.validation import NPU_FFN_WORKER_FQCN, assert_compatible_afd_stack
+from afd_plugin.validation import (
+    NPU_FFN_WORKER_FQCN,
+    assert_compatible_afd_stack,
+    validate_npu_model_runner_v2_config,
+)
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
@@ -60,7 +64,11 @@ class AFDNPUFFNWorker(NPUWorker):
         fail_if_unsupported_npu_afd_features(self.vllm_config)
         fix_all2all_backend_for_afd(self.vllm_config)
         if self.use_v2_model_runner:
-            raise RuntimeError("AFD NPU FFN supports only vllm-ascend MRv1")
+            validate_npu_model_runner_v2_config(
+                self.vllm_config,
+                expected_role="ffn",
+                device_type="npu",
+            )
 
         self.device = self._init_device()
         init_workspace_manager(
@@ -144,11 +152,13 @@ class AFDNPUFFNWorker(NPUWorker):
             dp_metadata_list = payload.dp_metadata_list
             is_attn_graph_capturing = payload.is_graph_capturing
             is_warmup = payload.is_warmup
+            is_profile = payload.is_profile
 
             self.model_runner.execute_ffn_step(
                 dp_metadata_list=dp_metadata_list,
                 is_graph_capturing=is_attn_graph_capturing,
                 is_warmup=is_warmup,
+                is_profile=is_profile,
             )
             torch.npu.synchronize()
 
