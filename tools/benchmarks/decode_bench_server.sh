@@ -27,6 +27,9 @@
 #   MODEL_PATH=/path/to/DeepSeek-V2-Lite tools/benchmarks/2a2f_graph_dbo_dp2tp1_decode_bench.sh
 # then, once both instances are ready, drive load against the attention port:
 #   MODEL_PATH=/path/to/DeepSeek-V2-Lite tools/benchmarks/vllm_bench.sh
+#
+# Set RECIPE=baseline to skip the 2A2F instances above and instead launch the
+# non-disaggregated baseline recipe for comparison; defaults to 2a2f (AFD on).
 set -euo pipefail
 
 # --- make tools.benchmarks.decode_bench importable in vLLM subprocesses -------
@@ -35,6 +38,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
 MODEL_PATH=${MODEL_PATH:-/path/model_weights/DeepSeek-V2-Lite}
+RECIPE=${RECIPE:-2a2f}
+LOG_DIR=${LOG_DIR:-.}
 
 # dummy-KV fill params for the decode-bench connector
 FILL_MEAN=${FILL_MEAN:-0.015}
@@ -44,61 +49,79 @@ DECODE_BENCH_KV_CONFIG=$(cat <<JSON
 JSON
 )
 
-# --- attention instance (decode-bench connector attached here) ----------------
-CUDA_VISIBLE_DEVICES=0,1 uv run vllm serve "$MODEL_PATH" \
-    --data-parallel-size 2 \
-    --tensor-parallel-size 1 \
-    --enable-expert-parallel \
-    --additional-config '{
-        "afd": {
-            "role": "attention",
-            "connector": "P2pNcclAFDConnector",
-            "host": "127.0.0.1",
-            "port": 6269,
-            "num_attention_ranks": 2,
-            "num_ffn_ranks": 2
-        }
-    }' \
-    --kv-transfer-config "$DECODE_BENCH_KV_CONFIG" \
-    --max-num-seqs 64 \
-    --max-num-batched-tokens 64 \
-    --enable-dbo \
-    --dbo-decode-token-threshold 2 \
-    --dbo-prefill-token-threshold 12 \
-    --max-cudagraph-capture-size 64 \
-    --compilation-config '{
-        "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes":[64]
-    }' \
-    --host 127.0.0.1 \
-    --port 18305 \
-    --trust-remote-code > attn.log 2>&1 &
+if [ "$RECIPE" = "2a2f" ]; then
+  # --- attention instance (decode-bench connector attached here) --------------
+  CUDA_VISIBLE_DEVICES=0,1 uv run vllm serve "$MODEL_PATH" \
+      --data-parallel-size 2 \
+      --tensor-parallel-size 1 \
+      --enable-expert-parallel \
+      --additional-config '{
+          "afd": {
+              "role": "attention",
+              "connector": "P2pNcclAFDConnector",
+              "host": "127.0.0.1",
+              "port": 6269,
+              "num_attention_ranks": 2,
+              "num_ffn_ranks": 2
+          }
+      }' \
+      --kv-transfer-config "$DECODE_BENCH_KV_CONFIG" \
+      --max-num-seqs 64 \
+      --max-num-batched-tokens 64 \
+      --enable-dbo \
+      --dbo-decode-token-threshold 2 \
+      --dbo-prefill-token-threshold 12 \
+      --max-cudagraph-capture-size 64 \
+      --compilation-config '{
+          "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes":[64]
+      }' \
+      --host 127.0.0.1 \
+      --port 18305 \
+      --trust-remote-code > "${LOG_DIR}/attn.log" 2>&1 &
 
-# --- ffn instance (no decode-bench connector) ---------------------------------
-CUDA_VISIBLE_DEVICES=2,3 uv run vllm serve "$MODEL_PATH" \
-    --data-parallel-size 2 \
-    --tensor-parallel-size 1 \
-    --enable-expert-parallel \
-    --additional-config '{
-        "afd": {
-            "role": "ffn",
-            "connector": "P2pNcclAFDConnector",
-            "host": "127.0.0.1",
-            "port": 6269,
-            "num_attention_ranks": 2,
-            "num_ffn_ranks": 2
-        }
-    }' \
-    --max-num-seqs 64 \
-    --enable-dbo \
-    --dbo-decode-token-threshold 2 \
-    --dbo-prefill-token-threshold 12 \
-    --max-num-batched-tokens 64 \
-    --max-cudagraph-capture-size 64 \
-    --compilation-config '{
-        "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes":[64]
-    }' \
-    --host 127.0.0.1 \
-    --port 18305 \
-    --trust-remote-code > ffn.log 2>&1 &
+  # --- ffn instance (no decode-bench connector) --------------------------------
+  CUDA_VISIBLE_DEVICES=2,3 uv run vllm serve "$MODEL_PATH" \
+      --data-parallel-size 2 \
+      --tensor-parallel-size 1 \
+      --enable-expert-parallel \
+      --additional-config '{
+          "afd": {
+              "role": "ffn",
+              "connector": "P2pNcclAFDConnector",
+              "host": "127.0.0.1",
+              "port": 6269,
+              "num_attention_ranks": 2,
+              "num_ffn_ranks": 2
+          }
+      }' \
+      --max-num-seqs 64 \
+      --enable-dbo \
+      --dbo-decode-token-threshold 2 \
+      --dbo-prefill-token-threshold 12 \
+      --max-num-batched-tokens 64 \
+      --max-cudagraph-capture-size 64 \
+      --compilation-config '{
+          "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes":[64]
+      }' \
+      --host 127.0.0.1 \
+      --port 18305 \
+      --trust-remote-code > "${LOG_DIR}/ffn.log" 2>&1 &
+else
+  # --- AFD disabled: non-disaggregated baseline (no AFD, no DBO) ---------------
+  CUDA_VISIBLE_DEVICES=0,1,2,3 uv run vllm serve "$MODEL_PATH" \
+      --data-parallel-size 4 \
+      --tensor-parallel-size 1 \
+      --enable-expert-parallel \
+      --kv-transfer-config "$DECODE_BENCH_KV_CONFIG" \
+      --max-num-seqs 64 \
+      --max-num-batched-tokens 64 \
+      --max-cudagraph-capture-size 64 \
+      --compilation-config '{
+          "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes":[64]
+      }' \
+      --host 127.0.0.1 \
+      --port 18305 \
+      --trust-remote-code > "${LOG_DIR}/attn.log" 2>&1 &
+fi
 
 wait

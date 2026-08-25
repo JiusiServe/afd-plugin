@@ -12,7 +12,7 @@ Both variants use the `AFDDecodeBenchConnector` to fabricate KV for every
 prompt token except the last, so requests skip prefill and go straight into
 decode. Throughput/latency numbers are meaningful; generated text is
 garbage. See the header comments in
-[decode_bench_server.sh](decode_bench_server.sh) for details.
+[decode_bench_server.sh](../../decode_bench_server.sh) for details.
 
 ## Prerequisites
 
@@ -21,6 +21,21 @@ garbage. See the header comments in
 - `envsubst` (part of `gettext`) installed locally -- used to render
   [serve-bench-pod.yaml](serve-bench-pod.yaml) for the requested recipe
   before `kubectl apply`.
+- A benchmark image built from
+  [docker/Dockerfile.k8s-bench](../../../../docker/Dockerfile.k8s-bench)
+  (base `vllm/vllm-openai:v0.26.0` with `nixl` and an editable `afd-plugin`
+  install, repo sources baked in) and pushed somewhere the cluster can pull
+  it from. Set `AFD_PLUGIN_IMAGE` to that image ref when running `run.sh`.
+  Build and push it from the afd-plugin repo root:
+
+  ```bash
+  IMAGE=<registry>/<repo>:<tag>
+  docker build -f docker/Dockerfile.k8s-bench -t "$IMAGE" .
+  docker push "$IMAGE"
+  ```
+
+  Use a registry your cluster's nodes can pull from (and `docker login` to it
+  first if it requires auth).
 - A `hf-token-secret` Secret in the namespace with a `token` key holding a
   Hugging Face access token (used both by the model-download Job and the
   serve+bench Pod):
@@ -30,21 +45,16 @@ garbage. See the header comments in
   ```
 
 - Cluster nodes with 4 GPUs available (both recipes request
-  `nvidia.com/gpu: "4"`) and a storage class matching
-  [pvc.yaml](pvc.yaml)'s `storageClassName` (`ibm-spectrum-scale-fileset` by
-  default -- adjust if your cluster uses a different one).
+  `nvidia.com/gpu: "4"`).
 - Optional: an NVIDIA DCGM host-engine DaemonSet in the `nvidia-gpu-operator`
   namespace, for per-GPU profiling during the run. If it isn't found,
   `run.sh` prints a warning and profiling is skipped -- the benchmark still
   runs.
-- The `afd-plugin` repo checked out locally; `run.sh` tars up the repo root
-  (excluding `.git` and `runs/results`) and streams it into the pod, so run
-  it from a clean/relevant checkout.
 
 ## Usage
 
 ```bash
-./run.sh <baseline|2a2f>
+AFD_PLUGIN_IMAGE=<image> ./run.sh <baseline|2a2f>
 ```
 
 This:
@@ -53,12 +63,11 @@ This:
    [download-job.yaml](download-job.yaml) to fetch `deepseek-ai/DeepSeek-V2-Lite`
    onto it (skipped on subsequent runs once the PVC is populated).
 2. Renders [serve-bench-pod.yaml](serve-bench-pod.yaml) for the requested
-   recipe (via `decode_bench_config_<recipe>.sh`) and applies it.
-3. Waits for the pod to reach `Running`, copies the local repo in, and
-   signals readiness.
+   recipe and applies it.
+3. Waits for the pod to reach `Running`.
 4. Streams pod logs, waits for the vLLM server(s) to start, then runs the
    request-rate ladder (`10 20 40 80 inf` req/s) via `request_generator.sh`.
-5. Copies `/models/results` from the pod to `./results/<recipe>/` locally,
+5. Copies `/models/results` from the pod to a local `results` folder,
    then deletes the pod (freeing the GPUs).
 
 The downloader Job and PVC are left in place for reuse across runs. Delete
@@ -79,14 +88,15 @@ pod won't come up until the first one's is deleted at the end of its stage:
 Set `LOCAL_RESULTS` to change where results land locally (default:
 `./results`).
 
-## Recipe-specific files
+## Recipe selection
 
-Both recipes share [decode_bench_server.sh](decode_bench_server.sh) (the
+Both recipes share [decode_bench_server.sh](../../decode_bench_server.sh) (the
 in-pod server launcher) and [serve-bench-pod.yaml](serve-bench-pod.yaml) (the
-pod template). What differs per recipe lives in
-`decode_bench_config_<recipe>.sh`:
+pod template) -- there are no more per-recipe config files. `run.sh` maps the
+`<baseline|2a2f>` argument to two values, rendered into the pod template via
+`envsubst`.
 
-- `RESULT_PREFIX` -- filename prefix for benchmark result JSON files.
-- `setup_recipe()` -- recipe-specific venv setup (e.g. installing `nixl` and
-  an editable `afd-plugin` for 2a2f; a no-op for baseline).
-- `launch_servers()` -- the `vllm serve` invocation(s) for the recipe.
+`nixl` and an editable `afd-plugin` install are not conditional on the
+recipe: they're baked into the `AFD_PLUGIN_IMAGE` image at build time (see
+[docker/Dockerfile.k8s-bench](../../../../docker/Dockerfile.k8s-bench)), so
+every recipe run uses the same image.

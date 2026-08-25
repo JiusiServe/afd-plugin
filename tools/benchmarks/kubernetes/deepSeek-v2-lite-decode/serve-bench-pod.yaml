@@ -21,44 +21,18 @@ spec:
       emptyDir: {}
   containers:
     - name: afd
-      image: vllm/vllm-openai:v0.26.0
+      image: ${TEMPLATE_IMAGE}
       command:
         - /bin/bash
         - -c
         - |
           set -euo pipefail
           RESULT_DIR=/models/results
-          RATES="10 20 40 80 inf"
-          LADDER_MAX_CONCURRENCY=256
           DONE=/work/BENCH_DONE
-          REPO=/work/afd-plugin
-          RECIPE_DIR="$REPO/tools/benchmarks/kubernetes/deepSeek-v2-lite-decode"
+          REPO=/opt/afd-plugin
           rm -rf "$RESULT_DIR"
           mkdir -p "$RESULT_DIR"
-
-          echo "=== [1/4] waiting for afd-plugin repo to be copied in (/work/afd-plugin/REPO_READY) ==="
-          for i in $(seq 1 240); do
-            [ -f "$REPO/REPO_READY" ] && break
-            sleep 5
-          done
-          if [ ! -f "$REPO/REPO_READY" ]; then
-            echo "ERROR: repo was not copied in within timeout"; touch "$DONE"; sleep infinity
-          fi
           cd "$REPO"
-
-          echo "=== [2/4] create venv + run recipe-specific setup ==="
-          # System site-packages are read-only under OpenShift's arbitrary UID,
-          # so build a venv that inherits the image's vLLM/torch; recipe-specific
-          # extra installs (e.g. nixl + afd-plugin) happen in setup_recipe below.
-          uv venv --system-site-packages /work/venv
-          source /work/venv/bin/activate
-          source "$RECIPE_DIR/${TEMPLATE_RECIPE_CONFIG}"
-          setup_recipe
-          # Recipe/bench scripts call `uv run vllm ...`, which would try to
-          # re-sync a project venv; use the activated venv's vllm directly.
-          sed -i 's/uv run vllm/vllm/g' \
-            "$RECIPE_DIR"/decode_bench_server.sh \
-            "$REPO"/tools/benchmarks/request_generator.sh
 
           echo "=== fetch dcgmi client (must match cluster DCGM host-engine 4.4.2) ==="
           mkdir -p /work/dcgm
@@ -71,44 +45,63 @@ spec:
             echo "WARNING: could not fetch dcgmi client; DCGM profiling will be skipped"
           fi
 
-          echo "=== [3/4] launch recipe ==="
+          echo "=== per-GPU DCGM profiling (tensor core / SM / DRAM activity) ==="
+          # 1002 SM_ACTIVE, 1003 SM_OCCUPANCY, 1004 PIPE_TENSOR_ACTIVE, 1005
+          # DRAM_ACTIVE, 1013/1014/1015 tensor core INT8/FP16/FP64 active. The
+          # cluster's DCGM host-engine pods aren't on hostNetwork, so they're
+          # only reachable at their own pod IP (not the node's hostIP); run.sh
+          # resolves the host-engine pod on our node and drops its IP in
+          # /work/DCGM_HOST_IP right after the pod reaches Running; wait
+          # briefly here in case that write hasn't landed yet.
+          for i in $(seq 1 30); do
+            [ -f /work/DCGM_HOST_IP ] && break
+            sleep 1
+          done
+          DCGM_HOST_ARGS=()
+          [ -f /work/DCGM_HOST_IP ] && DCGM_HOST_ARGS=(--host "$(cat /work/DCGM_HOST_IP)")
+          if command -v dcgmi >/dev/null 2>&1 && [ "${#DCGM_HOST_ARGS[@]}" -gt 0 ]; then
+            dcgmi dmon "${DCGM_HOST_ARGS[@]}" -e 1002,1003,1004,1005,1013,1014,1015 -d 1000 > /work/dcgm.log 2>&1 &
+            DCGM_PID=$!
+          else
+            echo "dcgmi not found or DCGM host-engine unresolved; skipping DCGM profiling" > /work/dcgm.log
+          fi
+
+          echo "=== [1/2] launch recipe ==="
           export MODEL_PATH=/models/DeepSeek-V2-Lite
           export VLLM_USE_V2_MODEL_RUNNER=0
-          bash "$RECIPE_DIR"/decode_bench_server.sh "$RECIPE_DIR/${TEMPLATE_RECIPE_CONFIG}" &
+          export LOG_DIR=/work
+          RECIPE="${TEMPLATE_RECIPE}" bash "$REPO"/tools/benchmarks/decode_bench_server.sh &
           RECIPE_PID=$!
 
-          echo "=== waiting for server startup (attn.log) ==="
+          echo "=== waiting for server startup (/work/attn.log) ==="
           for i in $(seq 1 120); do
-            if [ -f attn.log ] && grep -q "Application startup complete" attn.log; then
+            if [ -f /work/attn.log ] && grep -q "Application startup complete" /work/attn.log; then
               echo "server ready"
               break
             fi
             if ! kill -0 "$RECIPE_PID" 2>/dev/null; then
               echo "ERROR: recipe process exited before startup"
-              tail -n 200 attn.log ffn.log 2>/dev/null || true
+              tail -n 200 /work/attn.log /work/ffn.log 2>/dev/null || true
               touch "$DONE"
               sleep infinity
             fi
             sleep 10
           done
 
-          echo "=== [4/4] run benchmark rate ladder (request_generator.sh) ==="
+          echo "=== [2/2] run benchmark rate ladder (request_generator.sh) ==="
           set +e
           BENCH_RC=0
-          for RATE in $RATES; do
-            RESULT_FILENAME="${RESULT_PREFIX}_rate${RATE}.json"
-            echo "--- rate=${RATE} concurrency=${LADDER_MAX_CONCURRENCY} -> ${RESULT_FILENAME} ---"
-            MODEL_PATH=/models/DeepSeek-V2-Lite \
-            HOST=127.0.0.1 PORT=18305 \
-            REQUEST_RATE="$RATE" MAX_CONCURRENCY="$LADDER_MAX_CONCURRENCY" \
-            RESULT_DIR="$RESULT_DIR" RESULT_FILENAME="$RESULT_FILENAME" \
-            bash tools/benchmarks/request_generator.sh
-            RC=$?
-            [ "$RC" -ne 0 ] && BENCH_RC=$RC
-          done
+          RESULT_FILENAME="${TEMPLATE_RESULT_PREFIX}.json"
+          MODEL_PATH=/models/DeepSeek-V2-Lite \
+          HOST=127.0.0.1 PORT=18305 \
+          RESULT_DIR="$RESULT_DIR" RESULT_FILENAME="$RESULT_FILENAME" \
+          bash tools/benchmarks/request_generator.sh
+          RC=$?
+          [ "$RC" -ne 0 ] && BENCH_RC=$RC
           set -e
           echo "benchmark exited rc=$BENCH_RC"
-          cp -f attn.log ffn.log dcgm.log "$RESULT_DIR"/ 2>/dev/null || true
+          [ -n "${DCGM_PID:-}" ] && kill "$DCGM_PID" 2>/dev/null || true
+          cp -f /work/attn.log /work/ffn.log /work/dcgm.log "$RESULT_DIR"/ 2>/dev/null || true
           echo "$BENCH_RC" > "$RESULT_DIR/bench_rc.txt"
 
           echo "=== benchmark finished; results in $RESULT_DIR ==="

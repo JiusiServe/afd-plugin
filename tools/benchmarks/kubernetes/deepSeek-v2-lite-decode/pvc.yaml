@@ -7,7 +7,6 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: ibm-spectrum-scale-fileset
   resources:
     requests:
       storage: 100Gi
