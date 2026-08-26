@@ -1,0 +1,5 @@
+request_id,arrival_time_ms,input_length,cached_prefix_tokens
+r001,0,8192,4096
+r002,17,512,0
+r003,21,32768,24576
+r004,44,2048,0

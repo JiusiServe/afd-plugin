@@ -1,0 +1,60 @@
+{
+  "mode": "continuous",
+  "length_mix": [
+    {"tokens": 512, "weight": 0.4},
+    {"tokens": 2048, "weight": 0.2},
+    {"tokens": 8192, "weight": 0.3},
+    {"tokens": 32768, "weight": 0.1}
+  ],
+  "csv_sampling": "cycle",
+  "arrival": {
+    "kind": "poisson",
+    "qps": 8,
+    "duration_s": 60,
+    "warmup_s": 10,
+    "seed": 1024
+  },
+  "scheduler": {
+    "policy": "round_robin",
+    "max_num_seqs": 64,
+    "max_num_batched_tokens": 8192,
+    "chunked_prefill": true,
+    "chunk_size": 8192
+  },
+  "prefix_cache": {
+    "enabled": true,
+    "request_hit_rate": 0.6,
+    "matched_prefix_ratio": 0.75,
+    "block_size": 32,
+    "lookup_fixed_ms": 0,
+    "lookup_per_block_ms": 0,
+    "seed": 1024
+  },
+  "afd": {
+    "ubatch_split": "request"
+  },
+  "cam": {
+    "calibrated": false,
+    "dispatch_send": {"fixed_ms": 0.11, "per_token_ms": 0.000019230769},
+    "dispatch_recv": {"fixed_ms": 0.10, "per_token_ms": 0.000014705882},
+    "combine_send": {"fixed_ms": 0.10, "per_token_ms": 0.000014285714},
+    "combine_recv": {"fixed_ms": 0.12, "per_token_ms": 0.000017241379}
+  },
+  "slo": {
+    "ttft_limit_ms": 1000,
+    "target_ratio": 0.99
+  },
+  "sweep": {
+    "min_qps": 0.5,
+    "max_qps": 64,
+    "coarse_points": 10,
+    "refinement_steps": 7,
+    "throughput_tolerance_ratio": 0.99
+  },
+  "fixed_ttft_overhead_ms": 0,
+  "output": {
+    "include_timeline": true,
+    "timeline_max_events": 20000,
+    "include_requests": true
+  }
+}
