@@ -1,17 +1,130 @@
 # SPDX-License-Identifier: Apache-2.0
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+exclude: ^(afd_plugin/connectors/npu/bin/.*\.(run|whl))$
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-merge-conflict
+      - id: debug-statements
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Keep in sync with the ruff version pinned in uv.lock
     rev: v0.15.13
     hooks:
       - id: ruff-check
-        args: [--fix]
+        args: [--output-format, github, --fix]
       - id: ruff-format
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.49.0
     hooks:
-      - id: check-yaml
-        args: [--allow-multiple-documents]
-      - id: end-of-file-fixer
-      - id: trailing-whitespace
-      - id: check-merge-conflict
+      - id: typos
+
+  - repo: https://github.com/rhysd/actionlint
+    # v1.7.8+ sets `go 1.24.0` in go.mod, which older Go toolchains (and most
+    # current CI images) cannot parse. Pin to v1.7.7 until actionlint fixes the
+    # go.mod directive.
+    rev: v1.7.7
+    hooks:
+      - id: actionlint
+        files: ^\.github/workflows/.*\.ya?ml$
+
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.23.2
+    hooks:
+      - id: markdownlint-cli2
+        language_version: lts
+        args: [--fix]
+        files: (^docs/|^recipe/|(^|/)README\.md$)
+        # Agent skill docs and CLAUDE.md are not user-facing docs/READMEs.
+        exclude: (^|/)CLAUDE\.md$|^\.claude/|^\.cursor/|^\.agents/
+
+  # Keep `local` last so `suggestion` stays the final hook. Autofix repos
+  # (ruff, typos, markdownlint, trailing-whitespace, etc.) must run first;
+  # otherwise their "files were modified" output displaces the SKIP tip.
+  - repo: local
+    hooks:
+      - id: signoff-commit
+        name: Sign-off Commit
+        entry: bash
+        args:
+          - -c
+          - |
+            if ! grep -q "^Signed-off-by: $(git config user.name) <$(git config user.email)>" "$(git rev-parse --git-path COMMIT_EDITMSG)"; then
+              printf "\nSigned-off-by: $(git config user.name) <$(git config user.email)>\n" >> "$(git rev-parse --git-path COMMIT_EDITMSG)"
+            fi
+        language: system
+        verbose: true
+        stages: [commit-msg]
+
+      # mypy-3.10 runs on git commit / CI for changed files only.
+      # Extra versions are manual-stage only (not in default `pre-commit run`):
+      #   pre-commit run --hook-stage manual mypy-3.12
+      - id: mypy-3.10
+        name: Run mypy for Python 3.10
+        entry: python tools/pre_commit/mypy.py "3.10"
+        <<: &mypy_common
+          language: python
+          types_or: [python, pyi]
+          require_serial: true
+          additional_dependencies:
+            - mypy==1.11.1
+            - regex
+            - types-PyYAML
+            - types-requests
+            - types-setuptools
+      - id: mypy-3.11
+        name: Run mypy for Python 3.11
+        entry: python tools/pre_commit/mypy.py "3.11"
+        <<: *mypy_common
+        stages: [manual]
+      - id: mypy-3.12
+        name: Run mypy for Python 3.12
+        entry: python tools/pre_commit/mypy.py "3.12"
+        <<: *mypy_common
+        stages: [manual]
+      - id: mypy-3.13
+        name: Run mypy for Python 3.13
+        entry: python tools/pre_commit/mypy.py "3.13"
+        <<: *mypy_common
+        stages: [manual]
+
+      - id: shellcheck
+        name: Lint shell scripts
+        # language: script breaks on Windows (shebang path loses slashes).
+        # Invoke the wrapper with bash so Linux CI and Win/Git Bash work.
+        entry: bash
+        args: [tools/pre_commit/shellcheck.sh]
+        language: system
+        types: [shell]
+
+      - id: check-spdx-header
+        name: Check SPDX headers
+        entry: python tools/pre_commit/check_spdx_header.py
+        language: python
+        types_or: [python, pyi, rust, proto, shell]
+        files: \.(py|pyi|rs|proto|sh)$
+
+      - id: check-buildkite
+        name: Validate Buildkite Pipelines
+        entry: python tools/pre_commit/check_buildkite.py
+        language: python
+        files: ^\.buildkite/.*\.ya?ml$
+        additional_dependencies: [pyyaml, check-jsonschema==0.38.0]
+
+      - id: suggestion
+        name: Suggestion
+        entry: bash -c 'echo "To bypass all the pre-commit hooks, add --no-verify to git commit. To skip a specific hook, prefix the commit command with SKIP=<hook-id>."'
+        language: system
+        verbose: true
+        pass_filenames: false

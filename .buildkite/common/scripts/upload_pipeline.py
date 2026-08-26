@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """Render and optionally upload Buildkite pipeline YAML with diff-aware logic.
 
 Bootstrap mode (``bootstrap-upload-steps.yml``):
@@ -322,7 +323,7 @@ def _select_e2e_group_steps(steps: list[Any]) -> list[Any]:
     return selected
 
 
-def _render_test_pipeline(
+def render_test_pipeline(
     doc: dict[str, Any],
     changed_files: list[str] | None,
     *,
@@ -364,7 +365,7 @@ def _render_pipeline(
     if not isinstance(doc, dict):
         raise ValueError(f"invalid pipeline YAML: {path}")
 
-    doc = _render_test_pipeline(doc, changed_files, e2e_only=e2e_only)
+    doc = render_test_pipeline(doc, changed_files, e2e_only=e2e_only)
     return yaml.safe_dump(doc, sort_keys=False)
 
 
