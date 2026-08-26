@@ -111,6 +111,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
         is_profile: bool = False,
+        is_graph_replaying: bool = False,
     ) -> None:
         if dp_metadata_list is None:
             raise RuntimeError("AFD NPU FFN requires dp_metadata_list")
@@ -131,6 +132,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         self.execute_model(
             dp_metadata_list=dp_metadata_list,
             is_profile=is_profile,
+            is_graph_replaying=is_graph_replaying,
         )
         return None
 
@@ -153,6 +155,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
         is_profile: bool = False,
+        is_graph_replaying: bool = False,
     ) -> None:
         step_afd_npu_profiler(self.prof)
         if dp_metadata_list is None:
@@ -164,6 +167,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         run_mode = graph_run_mode(
             is_warmup=is_warmup and graph_enabled,
             is_graph_capturing=is_graph_capturing and graph_enabled,
+            is_graph_replaying=is_graph_replaying,
             graph_enabled=graph_enabled,
             graph_exists=graph_info is not None,
         )

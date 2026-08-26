@@ -181,18 +181,27 @@ def _use_afd_fullgraph_replay_hook(
         desc: v2_cudagraph_utils.BatchExecutionDescriptor,
     ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]] | IntermediateTensors:
         # ### PATCH START: publish one AFD pre-replay payload.
-        padded_tokens = int(desc.num_tokens)
-        metadata = runner.build_afd_metadata(None, real_tokens)
-        metadata.tokens_lens = [padded_tokens]
-        runner._afd_pending_metadata = metadata
-        runner._afd_suppress_metadata_send = True
-        runner._is_warmup = False
-        runner._afd_is_graph_capturing = False
-        runner.send_dp_metadata(
-            runner.build_capture_dp_metadata(padded_tokens),
-            None,
+        previous_is_graph_replaying = getattr(
+            runner,
+            "_afd_is_graph_replaying",
+            False,
         )
-        result = original_run_fullgraph(desc)
+        try:
+            padded_tokens = int(desc.num_tokens)
+            metadata = runner.build_afd_metadata(None, real_tokens)
+            metadata.tokens_lens = [padded_tokens]
+            runner._afd_pending_metadata = metadata
+            runner._afd_suppress_metadata_send = True
+            runner._is_warmup = False
+            runner._afd_is_graph_capturing = False
+            runner._afd_is_graph_replaying = True
+            runner.send_dp_metadata(
+                runner.build_capture_dp_metadata(padded_tokens),
+                None,
+            )
+            result = original_run_fullgraph(desc)
+        finally:
+            runner._afd_is_graph_replaying = previous_is_graph_replaying
         # ### PATCH END: publish one AFD pre-replay payload.
         return result
 
@@ -223,6 +232,8 @@ def _use_afd_execution_context(
     previous_suppress_send = runner._afd_suppress_metadata_send
     previous_is_warmup = runner._is_warmup
     previous_is_graph_capturing = runner._afd_is_graph_capturing
+    previous_is_graph_replaying = getattr(runner, "_afd_is_graph_replaying", False)
+    runner._afd_is_graph_replaying = False
 
     replay_scope = (
         _use_afd_fullgraph_replay_hook(runner, real_tokens)
@@ -242,6 +253,7 @@ def _use_afd_execution_context(
         runner._afd_suppress_metadata_send = previous_suppress_send
         runner._is_warmup = previous_is_warmup
         runner._afd_is_graph_capturing = previous_is_graph_capturing
+        runner._afd_is_graph_replaying = previous_is_graph_replaying
 
 
 class AFDAttentionModelRunnerV2(AFDMetadataProviderMixin, GPUModelRunnerV2):
@@ -286,6 +298,7 @@ class AFDAttentionModelRunnerV2(AFDMetadataProviderMixin, GPUModelRunnerV2):
                 )
             self._is_warmup = False
             self._afd_is_graph_capturing = False
+            self._afd_is_graph_replaying = False
             self._afd_pending_metadata: AFDForwardContextMetadata | None = None
             self._afd_suppress_metadata_send = False
             self._afd_transaction_counter = 0

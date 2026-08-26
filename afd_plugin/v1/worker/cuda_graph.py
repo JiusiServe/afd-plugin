@@ -137,6 +137,7 @@ def graph_run_mode(
     *,
     is_warmup: bool,
     is_graph_capturing: bool,
+    is_graph_replaying: bool,
     graph_enabled: bool,
     graph_exists: bool,
 ) -> AFDGraphRunMode:
@@ -144,7 +145,7 @@ def graph_run_mode(
         return AFDGraphRunMode.WARMUP
     if is_graph_capturing:
         return AFDGraphRunMode.CAPTURE
-    if graph_enabled and graph_exists:
+    if is_graph_replaying and graph_enabled and graph_exists:
         return AFDGraphRunMode.REPLAY
     return AFDGraphRunMode.EAGER
 

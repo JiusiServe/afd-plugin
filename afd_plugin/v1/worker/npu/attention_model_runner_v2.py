@@ -82,18 +82,27 @@ def _use_afd_fullgraph_replay_hook(
         desc: v2_cudagraph_utils.BatchExecutionDescriptor,
     ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]] | IntermediateTensors:
         # ### PATCH START: publish one AFD pre-replay payload.
-        padded_tokens = int(desc.num_tokens)
-        metadata = runner.build_afd_metadata(None, real_tokens)
-        metadata.tokens_lens = [padded_tokens]
-        runner._afd_pending_metadata = metadata
-        runner._afd_suppress_metadata_send = True
-        runner._is_warmup = False
-        runner._afd_is_graph_capturing = False
-        runner.send_dp_metadata(
-            runner.build_capture_dp_metadata(padded_tokens),
-            None,
+        previous_is_graph_replaying = getattr(
+            runner,
+            "_afd_is_graph_replaying",
+            False,
         )
-        result = original_run_fullgraph(desc)
+        try:
+            padded_tokens = int(desc.num_tokens)
+            metadata = runner.build_afd_metadata(None, real_tokens)
+            metadata.tokens_lens = [padded_tokens]
+            runner._afd_pending_metadata = metadata
+            runner._afd_suppress_metadata_send = True
+            runner._is_warmup = False
+            runner._afd_is_graph_capturing = False
+            runner._afd_is_graph_replaying = True
+            runner.send_dp_metadata(
+                runner.build_capture_dp_metadata(padded_tokens),
+                None,
+            )
+            result = original_run_fullgraph(desc)
+        finally:
+            runner._afd_is_graph_replaying = previous_is_graph_replaying
         # ### PATCH END: publish one AFD pre-replay payload.
         return result
 
@@ -156,6 +165,7 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
             self._is_warmup = False
             self._afd_is_graph_capturing = False
             self._afd_is_profile = False
+            self._afd_is_graph_replaying = False
             self._afd_pending_metadata: AFDForwardContextMetadata | None = None
             self._afd_suppress_metadata_send = False
             self._afd_transaction_counter = 0
@@ -351,8 +361,10 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
         previous_suppress_send = self._afd_suppress_metadata_send
         previous_is_warmup = self._is_warmup
         previous_is_graph_capturing = self._afd_is_graph_capturing
+        previous_is_graph_replaying = getattr(self, "_afd_is_graph_replaying", False)
         previous_is_profile = self._afd_is_profile
         self._afd_is_profile = bool(is_profile)
+        self._afd_is_graph_replaying = False
 
         replay_scope = (
             _use_afd_fullgraph_replay_hook(
@@ -381,6 +393,7 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
             self._afd_suppress_metadata_send = previous_suppress_send
             self._is_warmup = previous_is_warmup
             self._afd_is_graph_capturing = previous_is_graph_capturing
+            self._afd_is_graph_replaying = previous_is_graph_replaying
             self._afd_is_profile = previous_is_profile
         # ### PATCH END: scope AFD metadata provider/replay and profiler step.
 
