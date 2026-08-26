@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: Apache-2.0
+name: pre-commit
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Resolve changed-files range
+        id: range
+        shell: bash
+        run: |
+          zero=0000000000000000000000000000000000000000
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            from_ref="${{ github.event.pull_request.base.sha }}"
+            to_ref="${{ github.event.pull_request.head.sha }}"
+          elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "$zero" ]; then
+            from_ref="${{ github.event.before }}"
+            to_ref="${{ github.sha }}"
+          else
+            from_ref="$(git rev-parse HEAD~1)"
+            to_ref="${{ github.sha }}"
+          fi
+          echo "from_ref=${from_ref}" >> "$GITHUB_OUTPUT"
+          echo "to_ref=${to_ref}" >> "$GITHUB_OUTPUT"
+      # Only check files changed in this push/PR; do not scan the whole tree.
+      - uses: pre-commit/action@v3.0.1
+        with:
+          extra_args: --from-ref ${{ steps.range.outputs.from_ref }} --to-ref ${{ steps.range.outputs.to_ref }}
