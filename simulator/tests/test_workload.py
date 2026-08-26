@@ -22,7 +22,6 @@ class WorkloadTests(unittest.TestCase):
                     "b,125,2048,0\n"
                 ),
                 "arrival": {"kind": "trace", "duration_s": 1, "warmup_s": 0},
-                "scheduler": {"max_num_batched_tokens": 4096},
                 "prefix_cache": {"enabled": True},
             }
         )
@@ -52,11 +51,63 @@ class WorkloadTests(unittest.TestCase):
 
         self.assertEqual([item.arrival_ms for item in workload], [0.0, 25.0])
 
+    def test_scaled_trace_preserves_bursts_and_repeats_at_target_qps(self) -> None:
+        config = SimulationConfig.from_mapping(
+            {
+                "mode": "continuous",
+                "csv_text": (
+                    "arrival_time_ms,input_length\n"
+                    "100,128\n"
+                    "200,256\n"
+                    "500,512\n"
+                ),
+                "arrival": {
+                    "kind": "scaled_trace",
+                    "qps": 2,
+                    "duration_s": 3,
+                    "warmup_s": 0,
+                },
+            }
+        )
+
+        workload = generate_workload(config)
+
+        self.assertEqual(
+            [request.arrival_ms for request in workload],
+            [0.0, 250.0, 1_000.0, 1_500.0, 1_750.0, 2_500.0],
+        )
+        self.assertEqual(
+            [request.input_tokens for request in workload],
+            [128, 256, 512, 128, 256, 512],
+        )
+
+    def test_scaled_trace_keeps_zero_gap_arrivals_simultaneous(self) -> None:
+        config = SimulationConfig.from_mapping(
+            {
+                "mode": "continuous",
+                "csv_text": (
+                    "arrival_time_ms,input_length\n"
+                    "0,128\n"
+                    "0,256\n"
+                    "1000,512\n"
+                ),
+                "arrival": {
+                    "kind": "scaled_trace",
+                    "qps": 2,
+                    "duration_s": 1,
+                    "warmup_s": 0,
+                },
+            }
+        )
+
+        workload = generate_workload(config)
+
+        self.assertEqual([request.arrival_ms for request in workload], [0.0, 0.0])
+
     def test_prefix_cache_sampling_is_deterministic_and_block_aligned(self) -> None:
         raw = {
             "mode": "fixed",
             "fixed_lengths": [1024, 1024, 1024],
-            "scheduler": {"max_num_batched_tokens": 4096},
             "prefix_cache": {
                 "enabled": True,
                 "request_hit_rate": 1.0,

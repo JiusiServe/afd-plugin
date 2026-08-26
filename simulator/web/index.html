@@ -68,19 +68,15 @@
     th { color: var(--muted); font-size: 12px; }
     .chart-block { margin-top: 22px; }
     .chart-title { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
-    svg { width: 100%; display: block; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; }
+    svg, canvas.chart { width: 100%; display: block; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; }
     .legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
     .timeline-tools { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 8px 0; color: var(--muted); font-size: 12px; }
     .timeline-tools kbd { padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel-2); color: var(--text); font: inherit; font-weight: 700; }
     .timeline-tools button { min-height: 28px; padding: 3px 9px; background: var(--panel-2); color: var(--text); border-color: var(--border); font-size: 12px; }
     #timeline { cursor: grab; user-select: none; touch-action: none; outline: none; }
+    canvas#timeline { aspect-ratio: 1000 / 440; height: auto; }
     #timeline.dragging { cursor: grabbing; }
     #timeline:focus-visible { border-color: var(--blue); box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 28%, transparent); }
-    .timeline-event-label { font-size: 10px; font-weight: 700; pointer-events: none; }
-    .timeline-comm-arrow { pointer-events: none; }
-    .timeline-comm-arrow path { fill: none; stroke: #7c3aed; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
-    .timeline-comm-arrow circle { fill: #7c3aed; stroke: #fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-    .timeline-comm-arrow text { fill: #6d28d9; stroke: var(--panel-2); stroke-width: 3px; paint-order: stroke; font-size: 10px; font-weight: 800; text-anchor: middle; }
     .timeline-tooltip { position: fixed; z-index: 20; min-width: 220px; max-width: 320px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: color-mix(in srgb, var(--panel) 96%, transparent); color: var(--text); box-shadow: 0 8px 28px rgba(15,23,42,.18); pointer-events: none; font-size: 12px; }
     .timeline-tooltip strong { display: block; margin-bottom: 3px; font-size: 13px; }
     .timeline-tooltip .tooltip-resource { margin-bottom: 8px; color: var(--muted); }
@@ -104,7 +100,7 @@
   <header>
     <div>
       <h1>DSV4-Flash Prefill 仿真器</h1>
-      <p class="muted">相同 16-die 预算下比较 CAMAsync AFD 与 DP4×TP4/EP16 合并部署</p>
+      <p class="muted">按所选等 die profile 比较 CAMAsync AFD 与 merged 部署</p>
     </div>
     <div id="profile" class="profile muted">正在读取 profile…</div>
   </header>
@@ -113,8 +109,10 @@
     <aside class="panel controls">
       <h2>仿真参数</h2>
       <div class="grid">
+        <label class="span-2">AFD 拓扑<select id="afd-topology-select" disabled><option>正在读取拓扑…</option></select></label>
+        <label class="span-2">merged 拓扑（自动按 die 筛选）<select id="merged-topology-select" disabled><option>请先选择 AFD 拓扑</option></select></label>
         <label>模式<select id="mode"><option value="fixed">固定请求集</option><option value="continuous">持续负载</option></select></label>
-        <label>到达过程<select id="arrival-kind"><option value="constant">固定间隔</option><option value="poisson">泊松</option><option value="trace">CSV 时间戳</option></select></label>
+        <label>到达过程<select id="arrival-kind"><option value="constant">固定间隔</option><option value="poisson">泊松</option><option value="scaled_trace">Trace 形状 · QPS 缩放</option><option value="trace">CSV 原始时间戳</option></select></label>
         <label>QPS<input id="qps" type="number" min="0.01" step="0.1" value="4"></label>
         <label>随机种子<input id="seed" type="number" step="1" value="1024"></label>
         <label>统计时长（秒）<input id="duration" type="number" min="1" value="60"></label>
@@ -124,7 +122,8 @@
 2048,0.2
 8192,0.3
 32768,0.1</textarea></label>
-        <label class="span-2">线上 CSV<input id="csv-file" type="file" accept=".csv,text/csv"></label>
+        <label class="span-2">内置长度数据集（不含到达时间）<select id="length-dataset"><option value="">不使用内置数据集</option></select></label>
+        <label class="span-2">自定义长度 / Trace CSV<input id="csv-file" type="file" accept=".csv,text/csv"></label>
         <label>CSV 长度采样<select id="csv-sampling"><option value="cycle">按行循环</option><option value="sample">随机采样</option></select></label>
         <div id="csv-status" class="muted" style="align-self:end">未加载 CSV</div>
       </div>
@@ -132,11 +131,14 @@
       <fieldset>
         <legend>Scheduler</legend>
         <div class="grid">
-          <label class="span-2">DP 调度策略<select id="dp-policy"><option value="round_robin">Round Robin</option><option value="vllm_queue_aware">vLLM Queue Aware</option></select></label>
-          <label>max_num_seqs<input id="max-seqs" type="number" min="1" value="64"></label>
-          <label>max batched tokens<input id="max-tokens" type="number" min="1" value="8192"></label>
+          <label>AFD DPLB<select id="afd-policy"><option value="current_runtime">当前运行时（RR）</option><option value="afd_wave_token_sum">Wave ΣToken</option><option value="afd_wave_token_square_sum">Wave ΣToken²</option><option value="prefill_token_greedy">Outstanding ΣToken</option><option value="prefill_token_square_greedy">Outstanding ΣToken²</option><option value="vllm_queue_aware">vLLM DPLB</option><option value="round_robin">Round Robin</option></select></label>
+          <label>merged DPLB<select id="merged-policy"><option value="current_runtime">当前运行时（vLLM DPLB）</option><option value="merged_wave_token_sum">Wave ΣToken</option><option value="merged_wave_token_square_sum">Wave ΣToken²</option><option value="prefill_token_greedy">Outstanding ΣToken</option><option value="prefill_token_square_greedy">Outstanding ΣToken²</option><option value="vllm_queue_aware">vLLM DPLB</option><option value="round_robin">Round Robin</option></select></label>
+          <label class="span-2">max_num_seqs<input id="max-seqs" type="number" min="1" value="64"></label>
+          <label>AFD max batched tokens<input id="afd-max-tokens" type="number" min="1" value="8192"></label>
+          <label>merged max batched tokens<input id="merged-max-tokens" type="number" min="1" value="8192"></label>
           <label class="check span-2"><input id="chunked" type="checkbox">启用 chunked prefill（AFD 路径属于假设分析）</label>
-          <label>Chunk 大小<input id="chunk-size" type="number" min="1" value="8192"></label>
+          <label>AFD 每请求每 wave Chunk 上限<input id="afd-chunk-size" type="number" min="1" value="8192"></label>
+          <label>merged 每请求每 wave Chunk 上限<input id="merged-chunk-size" type="number" min="1" value="8192"></label>
           <label>AFD uBatch<select id="ubatch"><option value="request">请求边界均衡</option><option value="token">Token 均衡</option></select></label>
         </div>
       </fieldset>
@@ -184,7 +186,7 @@
       </details>
 
       <div class="notice">TTFT 是 arrival → Prefill 完成的代理值，不包含首个 Decode。未勾选校准时，CAM 参数仅用于敏感性分析。</div>
-      <div class="actions"><button id="simulate">运行仿真</button><button id="sweep" class="secondary">扫描 QPS</button></div>
+      <div class="actions"><button id="simulate" disabled>运行仿真</button><button id="sweep" class="secondary" disabled>扫描 QPS</button></div>
       <div id="error" class="error"></div>
     </aside>
 
@@ -202,7 +204,7 @@
           <div class="chart-title"><h2>逐层关键路径时间线</h2><span id="timeline-range" class="muted">显示后端返回的有限事件窗口</span></div>
           <div class="legend"><span><i class="dot" style="background:var(--blue)"></i>Attention</span><span><i class="dot" style="background:var(--orange)"></i>通信</span><span><i class="dot" style="background:var(--green)"></i>FFN</span><span><i class="dot" style="background:var(--red)"></i>等待/屏障</span></div>
           <div class="timeline-tools"><span><kbd>W</kbd>/<kbd>S</kbd> 长按缩放 · <kbd>A</kbd>/<kbd>D</kbd> 长按平移 · 滚轮缩放 · 拖拽平移 · 双击复位</span><button id="timeline-reset" type="button">复位 <kbd>R</kbd></button></div>
-          <svg id="timeline" viewBox="0 0 1000 440" role="img" tabindex="0" aria-label="AFD 和合并流水时间线；W S 缩放，A D 平移，R 复位"></svg>
+          <canvas id="timeline" class="chart" width="1000" height="440" role="img" tabindex="0" aria-label="AFD 和合并流水时间线；W S 缩放，A D 平移，R 复位">浏览器不支持 Canvas 时间线。</canvas>
         </section>
 
         <section id="sweep-section" class="chart-block" style="display:none">
@@ -222,15 +224,25 @@
 <script>
   const $ = id => document.getElementById(id);
   let csvText = null;
+  let topologiesLoaded = false;
+  const afdTopologyChoices = new Map();
+  const mergedTopologyChoices = new Map();
+  const lengthDatasetChoices = new Map();
   const timelineView = {
-    events: [], resources: [], fullStart: 0, fullEnd: 1,
+    events: [], resources: [], resourceIndex: new Map(),
+    eventsByResource: new Map(), maxEndsByResource: new Map(), eventIndex: new Map(),
+    fullStart: 0, fullEnd: 1,
     start: 0, end: 1, pointerInside: false, pointerX: null,
-    dragX: null, dragStart: 0, frame: null,
+    dragX: null, dragStart: 0, frame: null, hoveredEvent: null,
     keys: new Set(), keyStarts: new Map(), keyTimers: new Map(),
     keyFrame: null, keyTime: null
   };
   const TIMELINE_LEFT = 155, TIMELINE_RIGHT = 20;
   const TIMELINE_WIDTH = 1000 - TIMELINE_LEFT - TIMELINE_RIGHT;
+  const TIMELINE_HEIGHT = 440;
+  const TIMELINE_TOP = 24;
+  const TIMELINE_ROWS_HEIGHT = 370;
+  const TIMELINE_LOD_EVENT_THRESHOLD = 8000;
   const TIMELINE_KEY_PAN_SPEED = 1.25;
   const TIMELINE_KEY_ZOOM_SPEED = 2.5;
   const TIMELINE_KEY_TAP_MS = 120;
@@ -258,31 +270,124 @@
   };
 
   fetch('/api/defaults').then(r => r.json()).then(data => {
-    const m = data.profile.metadata || {};
-    $('profile').textContent = `${m.model || 'DSV4-Flash'} · ${m.device || 'device unknown'} · ${m.performance_model || 'profile'} · ${data.profile.layer_count} 层`;
+    const afdSelector = $('afd-topology-select');
+    afdSelector.innerHTML = '';
+    data.afd_topologies.forEach(item => {
+      afdTopologyChoices.set(item.id,item);
+      const option = document.createElement('option');
+      const attention = item.spec.attention;
+      const ffn = item.spec.ffn;
+      option.value = item.id;
+      option.textContent = `${item.num_devices} die：Attention DP${attention.dp_size}×TP${attention.tp_size} (${attention.num_devices}) + FFN DP${ffn.dp_size}×TP${ffn.tp_size}×EP${ffn.ep_size} (${ffn.num_devices})`;
+      afdSelector.appendChild(option);
+    });
+    data.merged_topologies.forEach(item => mergedTopologyChoices.set(item.id,item));
+    const lengthDatasetSelector = $('length-dataset');
+    data.length_datasets.forEach(item => {
+      lengthDatasetChoices.set(item.id,item);
+      const option = document.createElement('option');
+      option.value = item.id;
+      option.textContent = `${item.label} · ${item.request_count} 请求 · 原始 ${item.source_mean_qps.toFixed(2)} QPS · ${item.zero_gap_count} 零间隔 · p95 ${item.p95_input_length}`;
+      lengthDatasetSelector.appendChild(option);
+    });
+    afdSelector.value = data.default_afd_topology_id;
+    afdSelector.disabled = false;
+    topologiesLoaded = true;
+    updateMergedTopologyOptions();
+    updateControlState();
   }).catch(err => showError(err.message));
+
+  function updateMergedTopologyOptions() {
+    const afd = afdTopologyChoices.get($('afd-topology-select').value);
+    const selector = $('merged-topology-select');
+    selector.innerHTML = '';
+    if (!afd) { selector.disabled=true; return; }
+    const compatible = [...mergedTopologyChoices.values()].filter(item => item.num_devices===afd.num_devices);
+    compatible.forEach(item => {
+      const spec = item.spec;
+      const option = document.createElement('option');
+      option.value = item.id;
+      option.textContent = `${item.num_devices} die：DP${spec.dp_size}×TP${spec.tp_size}×EP${spec.ep_size}`;
+      selector.appendChild(option);
+    });
+    const preferred = compatible.find(item => item.id===afd.default_merged_topology_id) || compatible[0];
+    if (!preferred) {
+      selector.disabled=true;
+      topologiesLoaded=false;
+      showError(`没有与所选 AFD ${afd.num_devices} die 匹配的 merged 拓扑`);
+      updateControlState();
+      return;
+    }
+    selector.value=preferred.id;
+    selector.disabled=false;
+    topologiesLoaded=true;
+    showError('');
+    updateTopologyHeader();
+    updateControlState();
+  }
+
+  function updateTopologyHeader() {
+    const afd = afdTopologyChoices.get($('afd-topology-select').value);
+    const merged = mergedTopologyChoices.get($('merged-topology-select').value);
+    if (!afd || !merged) return;
+    const metadata = afd.metadata || {};
+    $('profile').textContent = `${metadata.model || 'DSV4-Flash'} · ${metadata.device || 'device unknown'} · ${afd.num_devices} die · ${afd.layer_count} 层`;
+  }
 
   $('csv-file').addEventListener('change', async event => {
     const file = event.target.files[0];
     csvText = file ? await file.text() : null;
+    $('length-dataset').value = '';
     $('csv-status').textContent = file ? `${file.name} · ${(file.size / 1024).toFixed(1)} KiB` : '未加载 CSV';
   });
 
+  $('length-dataset').addEventListener('change', async event => {
+    const datasetId = event.target.value;
+    $('csv-file').value = '';
+    if (!datasetId) {
+      csvText = null;
+      $('csv-status').textContent = '未加载 CSV';
+      return;
+    }
+    const dataset = lengthDatasetChoices.get(datasetId);
+    event.target.disabled = true;
+    $('csv-status').textContent = '正在加载内置长度…';
+    try {
+      const response = await fetch(`/api/length-datasets/${encodeURIComponent(datasetId)}`);
+      if (!response.ok) throw new Error(`加载长度数据集失败：HTTP ${response.status}`);
+      csvText = await response.text();
+      $('mode').value = 'continuous';
+      $('arrival-kind').value = 'scaled_trace';
+      $('csv-status').textContent = `${dataset.label} · ${dataset.request_count} 条 · ${(csvText.length / 1024).toFixed(1)} KiB`;
+      updateControlState();
+    } catch (error) {
+      csvText = null;
+      event.target.value = '';
+      $('csv-status').textContent = '内置长度加载失败';
+      showError(error.message);
+    } finally {
+      event.target.disabled = false;
+    }
+  });
+
   $('mode').addEventListener('change', updateControlState);
+  $('afd-topology-select').addEventListener('change', updateMergedTopologyOptions);
+  $('merged-topology-select').addEventListener('change', updateTopologyHeader);
   $('arrival-kind').addEventListener('change', updateControlState);
   $('chunked').addEventListener('change', updateControlState);
   updateControlState();
 
   function updateControlState() {
     const continuous = $('mode').value === 'continuous';
-    if (!continuous && $('arrival-kind').value === 'trace') {
+    if (!continuous && ['trace','scaled_trace'].includes($('arrival-kind').value)) {
       $('arrival-kind').value = 'constant';
     }
-    const trace = $('arrival-kind').value === 'trace';
+    const exactTrace = $('arrival-kind').value === 'trace';
     ['arrival-kind','qps','duration','warmup','length-mix'].forEach(id => $(id).disabled = !continuous);
-    $('chunk-size').disabled = !$('chunked').checked;
-    if (trace) $('qps').disabled = true;
-    $('sweep').disabled = !continuous || trace;
+    ['afd-chunk-size','merged-chunk-size'].forEach(id => $(id).disabled = !$('chunked').checked);
+    if (exactTrace) $('qps').disabled = true;
+    $('simulate').disabled = !topologiesLoaded;
+    $('sweep').disabled = !topologiesLoaded || !continuous || exactTrace;
   }
 
   function num(id) { return Number($(id).value); }
@@ -297,19 +402,21 @@
 
   function config() {
     return {
+      afd_topology_id: $('afd-topology-select').value,
+      merged_topology_id: $('merged-topology-select').value,
       mode: $('mode').value,
       fixed_lengths: parseList($('fixed-lengths').value),
       length_mix: parseMix($('length-mix').value),
       csv_text: csvText,
       csv_sampling: $('csv-sampling').value,
       arrival: {kind: $('arrival-kind').value, qps: num('qps'), duration_s: num('duration'), warmup_s: num('warmup'), seed: num('seed')},
-      scheduler: {policy: $('dp-policy').value, max_num_seqs: num('max-seqs'), max_num_batched_tokens: num('max-tokens'), chunked_prefill: $('chunked').checked, chunk_size: num('chunk-size')},
+      scheduler: {afd_policy: $('afd-policy').value, merged_policy: $('merged-policy').value, max_num_seqs: num('max-seqs'), chunked_prefill: $('chunked').checked, afd: {max_num_batched_tokens: num('afd-max-tokens'), chunk_size: num('afd-chunk-size')}, merged: {max_num_batched_tokens: num('merged-max-tokens'), chunk_size: num('merged-chunk-size')}},
       prefix_cache: {enabled: $('cache-enabled').checked, request_hit_rate: num('cache-hit'), matched_prefix_ratio: num('cache-ratio'), block_size: num('cache-block'), lookup_fixed_ms: num('cache-fixed'), lookup_per_block_ms: num('cache-block-ms'), seed: num('cache-seed')},
       afd: {ubatch_split: $('ubatch').value},
       cam: {calibrated: $('cam-calibrated').checked, dispatch_send: leg('ds'), dispatch_recv: leg('dr'), combine_send: leg('cs'), combine_recv: leg('cr')},
       slo: {ttft_limit_ms: num('slo-limit'), target_ratio: num('slo-ratio')},
       sweep: {min_qps: num('sweep-min'), max_qps: num('sweep-max'), coarse_points: num('sweep-points'), refinement_steps: num('sweep-refine'), throughput_tolerance_ratio: num('throughput-tolerance')},
-      output: {include_timeline: true, timeline_max_events: 20000, include_requests: true},
+      output: {include_timeline: true, timeline_max_events: null, include_requests: true},
       fixed_ttft_overhead_ms: num('fixed-overhead')
     };
   }
@@ -322,7 +429,13 @@
     ['simulate','sweep'].forEach(id => $(id).disabled = true);
     try {
       const response = await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(config())});
-      const data = await response.json();
+      const body = await response.text();
+      let data;
+      try { data = JSON.parse(body); }
+      catch (_) {
+        const detail = body.trim() || response.statusText || 'empty response';
+        throw new Error(`HTTP ${response.status}: ${detail}`);
+      }
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       render(data);
     } catch (err) { showError(err.message); }
@@ -337,8 +450,13 @@
     $('speedup').textContent = `${fmt(data.comparison.throughput_speedup)}×`;
     $('p99-ratio').textContent = `${fmt(data.comparison.p99_ttft_ratio)}×`;
     $('goodput-speedup').textContent = data.comparison.slo_goodput_speedup == null ? '—' : `${fmt(data.comparison.slo_goodput_speedup)}×`;
-    $('metrics').innerHTML = [['AFD',data.afd.summary],['合并',data.merged.summary]].map(([name,s]) => `<tr><td>${name}</td><td>${fmt(s.throughput_rps)}</td><td>${fmt(s.input_tokens_per_s,0)}</td><td>${fmt(s.compute_tokens_per_s,0)}</td><td>${fmt(s.ttft_p50_ms)} ms</td><td>${fmt(s.ttft_p90_ms)} ms</td><td>${fmt(s.ttft_p99_ms)} ms</td><td>${fmt(s.slo_attainment*100,1)}%</td><td>${fmt(s.slo_goodput_rps)}</td></tr>`).join('');
-    setTimeline([...data.afd.timeline, ...data.merged.timeline]);
+    const policyNames={round_robin:'Round Robin',afd_wave_token_sum:'AFD Wave ΣToken',afd_wave_token_square_sum:'AFD Wave ΣToken²',merged_wave_token_sum:'merged Wave ΣToken',merged_wave_token_square_sum:'merged Wave ΣToken²',prefill_token_greedy:'Prefill Token Greedy',prefill_token_square_greedy:'Prefill Token² Greedy',vllm_queue_aware:'vLLM DPLB'};
+    const afdTopology=data.afd.summary.topology;
+    const mergedTopology=data.merged.summary.topology;
+    const afdName=`AFD DP${afdTopology.dp_size}×TP${afdTopology.tp_size} + EP${afdTopology.ep_size}`;
+    const mergedName=`合并 DP${mergedTopology.dp_size}×TP${mergedTopology.tp_size}`;
+    $('metrics').innerHTML = [[afdName,data.afd.summary],[mergedName,data.merged.summary]].map(([name,s]) => `<tr><td>${name}<br><span class="muted">${policyNames[s.scheduler_policy] || s.scheduler_policy}</span></td><td>${fmt(s.throughput_rps)}</td><td>${fmt(s.input_tokens_per_s,0)}</td><td>${fmt(s.compute_tokens_per_s,0)}</td><td>${fmt(s.ttft_p50_ms)} ms</td><td>${fmt(s.ttft_p90_ms)} ms</td><td>${fmt(s.ttft_p99_ms)} ms</td><td>${fmt(s.slo_attainment*100,1)}%</td><td>${fmt(s.slo_goodput_rps)}</td></tr>`).join('');
+    setTimeline(data.afd.timeline.concat(data.merged.timeline));
   }
 
   function setTimeline(events) {
@@ -349,7 +467,7 @@
         phaseEvents[phaseEvents.length-1]={...previous,end_ms:event.end_ms};
       } else phaseEvents.push(event);
     });
-    const mergedDpResources=[...new Set(phaseEvents.filter(event => event.architecture==='merged' && event.resource.endsWith(' Attention')).map(event => event.resource))];
+    const mergedDpResources=Array.from(new Set(phaseEvents.filter(event => event.architecture==='merged' && event.resource.endsWith(' Attention')).map(event => event.resource)));
     const displayEvents=phaseEvents.flatMap(event => {
       if (event.architecture==='afd' && /^DP\d+ (Attention|CAM)$/.test(event.resource)) {
         return [{...event,lane:event.resource.replace(/ (Attention|CAM)$/,' Attention/CAM')}];
@@ -357,19 +475,43 @@
       if (event.architecture==='merged' && event.resource.endsWith(' Attention')) {
         return [{...event,lane:event.resource.replace(/ Attention$/,' Attention/FFN')}];
       }
-      if (event.architecture==='merged' && event.resource==='Global EP16') {
+      if (event.architecture==='merged' && /^Global EP\d+$/.test(event.resource)) {
         return mergedDpResources.map(resource => ({...event,lane:resource.replace(/ Attention$/,' Attention/FFN')}));
       }
       return [{...event,lane:event.resource}];
     });
     timelineView.events = displayEvents;
-    timelineView.resources = [...new Set(displayEvents.map(event => `${event.architecture}:${event.lane}`))];
-    timelineView.fullStart = events.length ? Math.min(...events.map(e => e.start_ms)) : 0;
-    timelineView.fullEnd = events.length ? Math.max(...events.map(e => e.end_ms)) : 1;
+    timelineView.resources = Array.from(new Set(displayEvents.map(event => `${event.architecture}:${event.lane}`)));
+    timelineView.resourceIndex = new Map(timelineView.resources.map((resource,index) => [resource,index]));
+    timelineView.eventsByResource = new Map(timelineView.resources.map(resource => [resource, []]));
+    timelineView.eventIndex = new Map();
+    displayEvents.forEach(event => {
+      const resource = `${event.architecture}:${event.lane}`;
+      timelineView.eventsByResource.get(resource).push(event);
+      timelineView.eventIndex.set(timelineEventKey(event), event);
+    });
+    timelineView.eventsByResource.forEach(laneEvents => laneEvents.sort((a,b) => a.start_ms-b.start_ms));
+    timelineView.maxEndsByResource = new Map();
+    timelineView.eventsByResource.forEach((laneEvents,resource) => {
+      let maximumEnd=-Infinity;
+      timelineView.maxEndsByResource.set(resource,laneEvents.map(event => {
+        maximumEnd=Math.max(maximumEnd,event.end_ms);
+        return maximumEnd;
+      }));
+    });
+    let fullStart=Infinity,fullEnd=-Infinity;
+    events.forEach(event => {
+      fullStart=Math.min(fullStart,event.start_ms);
+      fullEnd=Math.max(fullEnd,event.end_ms);
+    });
+    timelineView.fullStart = events.length ? fullStart : 0;
+    timelineView.fullEnd = events.length ? fullEnd : 1;
+    clearTimelineHover();
     resetTimeline();
   }
 
   function resetTimeline() {
+    clearTimelineHover();
     timelineView.start = timelineView.fullStart;
     timelineView.end = timelineView.fullEnd;
     scheduleTimelineRender();
@@ -384,44 +526,120 @@
   }
 
   function drawTimeline() {
-    hideTimelineTooltip();
-    const svg = $('timeline'); svg.innerHTML = '';
+    const canvas = $('timeline');
+    const context = prepareTimelineCanvas(canvas);
+    context.clearRect(0,0,1000,TIMELINE_HEIGHT);
     const {events, resources, start, end, fullStart, fullEnd} = timelineView;
     if (!events.length) { $('timeline-range').textContent = '没有时间线事件'; return; }
     const span = end - start, fullSpan = fullEnd - fullStart;
-    const top = 24, row = Math.min(36, 370 / resources.length);
-    const ns = 'http://www.w3.org/2000/svg';
-    const defs=document.createElementNS(ns,'defs'), marker=document.createElementNS(ns,'marker'), arrowhead=document.createElementNS(ns,'path');
-    marker.setAttribute('id','timeline-arrowhead'); marker.setAttribute('viewBox','0 0 10 10'); marker.setAttribute('refX','9'); marker.setAttribute('refY','5'); marker.setAttribute('markerWidth','7'); marker.setAttribute('markerHeight','7'); marker.setAttribute('orient','auto-start-reverse');
-    arrowhead.setAttribute('d','M 0 0 L 10 5 L 0 10 z'); arrowhead.setAttribute('fill','#7c3aed'); marker.appendChild(arrowhead); defs.appendChild(marker); svg.appendChild(defs);
+    const row = Math.min(36,TIMELINE_ROWS_HEIGHT/resources.length);
+    const textColor = getComputedStyle(canvas).color;
+    const mutedColor = getComputedStyle($('timeline-range')).color;
+    const phaseColors = {
+      blue: timelineCssColor('--blue'),
+      orange: timelineCssColor('--orange'),
+      green: timelineCssColor('--green'),
+      red: timelineCssColor('--red')
+    };
+    context.textBaseline='alphabetic'; context.textAlign='left';
+    context.font='11px Inter, ui-sans-serif, system-ui, sans-serif';
+    context.fillStyle=textColor;
     resources.forEach((resource,i) => {
-      const y = top+i*row;
-      const label = document.createElementNS(ns,'text'); label.setAttribute('x','8'); label.setAttribute('y',String(y+row*.65)); label.setAttribute('fill','currentColor'); label.setAttribute('font-size','11'); label.textContent=resource; svg.appendChild(label);
+      const y=TIMELINE_TOP+i*row;
+      context.fillText(resource,8,y+row*.65);
     });
-    const colors = phase => phase.includes('attention') ? 'var(--blue)' : phase.includes('wait') || phase.includes('barrier') ? 'var(--red)' : phase.includes('ffn') || phase.includes('expert') ? 'var(--green)' : 'var(--orange)';
-    events.forEach(event => {
-      if (event.end_ms < start || event.start_ms > end) return;
-      const i = resources.indexOf(`${event.architecture}:${event.lane}`), y=top+i*row+4;
-      const visibleStart = Math.max(start,event.start_ms), visibleEnd = Math.min(end,event.end_ms);
-      const eventX=TIMELINE_LEFT+(visibleStart-start)/span*TIMELINE_WIDTH;
-      const eventWidth=Math.max(1,(visibleEnd-visibleStart)/span*TIMELINE_WIDTH);
-      const rect=document.createElementNS(ns,'rect');
-      rect.setAttribute('x',String(eventX)); rect.setAttribute('y',String(y)); rect.setAttribute('width',String(eventWidth)); rect.setAttribute('height',String(Math.max(5,row-8))); rect.setAttribute('fill',colors(event.phase)); rect.setAttribute('opacity',event.stage===1?'.58':'.9');
-      rect.addEventListener('pointerenter', pointer => { showTimelineTooltip(pointer,event); showCommunicationArrow(event); });
-      rect.addEventListener('pointermove', pointer => positionTimelineTooltip(pointer));
-      rect.addEventListener('pointerleave', () => { hideTimelineTooltip(); hideCommunicationArrow(); });
-      svg.appendChild(rect);
+    const visibleEvents=visibleTimelineEvents(start,end);
+    const drawEvents=timelineDrawEvents(visibleEvents,start,span);
+    drawEvents.forEach(item => {
+      const event=item.event;
+      const i=timelineView.resourceIndex.get(`${event.architecture}:${event.lane}`);
+      const y=TIMELINE_TOP+i*row+4;
+      const visibleStart=Math.max(start,event.start_ms), visibleEnd=Math.min(end,event.end_ms);
+      const eventX=item.x ?? TIMELINE_LEFT+(visibleStart-start)/span*TIMELINE_WIDTH;
+      const eventWidth=item.width ?? Math.max(1,(visibleEnd-visibleStart)/span*TIMELINE_WIDTH);
+      const eventHeight=Math.max(5,row-8);
+      context.globalAlpha=event.stage===1?.58:.9;
+      const colorName=timelinePhaseColorName(event.phase);
+      context.fillStyle=phaseColors[colorName];
+      context.fillRect(eventX,y,eventWidth,eventHeight);
+      context.globalAlpha=1;
       const eventLabel=timelinePhaseLabel(event.phase,eventWidth);
       if (eventLabel) {
-        const label=document.createElementNS(ns,'text');
-        label.setAttribute('class','timeline-event-label'); label.setAttribute('x',String(eventX+eventWidth/2)); label.setAttribute('y',String(y+Math.max(5,row-8)/2)); label.setAttribute('text-anchor','middle'); label.setAttribute('dominant-baseline','middle');
-        label.setAttribute('fill',colors(event.phase)==='var(--orange)' ? '#17223b' : '#fff');
-        label.textContent=eventLabel; svg.appendChild(label);
+        context.font='700 10px Inter, ui-sans-serif, system-ui, sans-serif';
+        context.textAlign='center'; context.textBaseline='middle';
+        context.fillStyle=colorName==='orange' ? '#17223b' : '#fff';
+        context.fillText(eventLabel,eventX+eventWidth/2,y+eventHeight/2,eventWidth-4);
       }
     });
-    const axis=document.createElementNS(ns,'text'); axis.setAttribute('x',String(TIMELINE_LEFT)); axis.setAttribute('y','426'); axis.setAttribute('fill','currentColor'); axis.setAttribute('font-size','11'); axis.textContent=`${fmt(start)} → ${fmt(end)} ms`; svg.appendChild(axis);
+    if (timelineView.hoveredEvent) drawCommunicationArrow(context,timelineView.hoveredEvent,row,start,end);
+    context.globalAlpha=1; context.textAlign='left'; context.textBaseline='alphabetic';
+    context.font='11px Inter, ui-sans-serif, system-ui, sans-serif'; context.fillStyle=mutedColor;
+    context.fillText(`${fmt(start)} → ${fmt(end)} ms`,TIMELINE_LEFT,426);
     const zoom = fullSpan / span;
-    $('timeline-range').textContent = `可见 ${fmt(start)}–${fmt(end)} ms · ${fmt(zoom,1)}×`;
+    const drawStatus=drawEvents.length<visibleEvents.length ? ` · LOD ${drawEvents.length.toLocaleString()}/${visibleEvents.length.toLocaleString()}` : ` · ${drawEvents.length.toLocaleString()} events`;
+    $('timeline-range').textContent = `可见 ${fmt(start)}–${fmt(end)} ms · ${fmt(zoom,1)}×${drawStatus}`;
+  }
+
+  function prepareTimelineCanvas(canvas) {
+    const bounds=canvas.getBoundingClientRect(), ratio=window.devicePixelRatio || 1;
+    const width=Math.max(1,Math.round(bounds.width*ratio));
+    const height=Math.max(1,Math.round(bounds.height*ratio));
+    if (canvas.width!==width || canvas.height!==height) { canvas.width=width; canvas.height=height; }
+    const context=canvas.getContext('2d');
+    context.setTransform(width/1000,0,0,height/TIMELINE_HEIGHT,0,0);
+    return context;
+  }
+
+  function timelineCssColor(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function timelinePhaseColorName(phase) {
+    if (phase.includes('attention')) return 'blue';
+    if (phase.includes('wait') || phase.includes('barrier')) return 'red';
+    if (phase.includes('ffn') || phase.includes('expert')) return 'green';
+    return 'orange';
+  }
+
+  function visibleTimelineEvents(start,end) {
+    const visible=[];
+    timelineView.eventsByResource.forEach((laneEvents,resource) => {
+      const maximumEnds=timelineView.maxEndsByResource.get(resource);
+      let low=0,high=laneEvents.length;
+      while (low<high) {
+        const middle=(low+high)>>1;
+        if (maximumEnds[middle]<start) low=middle+1; else high=middle;
+      }
+      let index=low;
+      while (index<laneEvents.length && laneEvents[index].start_ms<=end) {
+        if (laneEvents[index].end_ms>=start) visible.push(laneEvents[index]);
+        index+=1;
+      }
+    });
+    return visible;
+  }
+
+  function timelineDrawEvents(events,start,span) {
+    if (events.length<=TIMELINE_LOD_EVENT_THRESHOLD) return events.map(event => ({event}));
+    const exact=[],bins=new Map();
+    events.forEach(event => {
+      const visibleStart=Math.max(start,event.start_ms), visibleEnd=Math.min(start+span,event.end_ms);
+      const eventX=TIMELINE_LEFT+(visibleStart-start)/span*TIMELINE_WIDTH;
+      const width=(visibleEnd-visibleStart)/span*TIMELINE_WIDTH;
+      if (width>=1) { exact.push({event}); return; }
+      const resource=`${event.architecture}:${event.lane}`;
+      const pixel=Math.max(0,Math.min(TIMELINE_WIDTH-1,Math.floor(eventX-TIMELINE_LEFT)));
+      const key=`${resource}:${pixel}`;
+      const current=bins.get(key);
+      if (!current || event.end_ms-event.start_ms>current.duration) {
+        bins.set(key,{event,x:TIMELINE_LEFT+pixel,width:1,duration:event.end_ms-event.start_ms});
+      }
+    });
+    return exact.concat(Array.from(bins.values(),({event,x,width}) => ({event,x,width})));
+  }
+
+  function timelineEventKey(event,phase=event.phase) {
+    return `${event.architecture}:${event.layer}:${event.batch}:${event.stage}:${phase}`;
   }
 
   function clampTimeline(start, end) {
@@ -430,13 +648,14 @@
     const clampedStart = Math.max(timelineView.fullStart, Math.min(start, timelineView.fullEnd - span));
     timelineView.start = clampedStart;
     timelineView.end = clampedStart + span;
+    clearTimelineHover();
     scheduleTimelineRender();
   }
 
   function timelineTimeAt(clientX) {
     const bounds = $('timeline').getBoundingClientRect();
-    const svgX = (clientX - bounds.left) / bounds.width * 1000;
-    const ratio = Math.max(0,Math.min(1,(svgX-TIMELINE_LEFT)/TIMELINE_WIDTH));
+    const canvasX = (clientX - bounds.left) / bounds.width * 1000;
+    const ratio = Math.max(0,Math.min(1,(canvasX-TIMELINE_LEFT)/TIMELINE_WIDTH));
     return timelineView.start + ratio * (timelineView.end-timelineView.start);
   }
 
@@ -461,34 +680,87 @@
     return '';
   }
 
-  function showCommunicationArrow(event) {
-    hideCommunicationArrow();
+  function drawCommunicationArrow(context,event,row,start,end) {
     const phases=event.architecture==='afd' ? AFD_COMMUNICATION_PAIRS[event.phase] : null;
     if (!phases) return;
-    const matches=candidate => candidate.architecture==='afd' && candidate.layer===event.layer && candidate.batch===event.batch && candidate.stage===event.stage;
-    const source=timelineView.events.find(candidate => matches(candidate) && candidate.phase===phases[0]);
-    const target=timelineView.events.find(candidate => matches(candidate) && candidate.phase===phases[1]);
+    const source=timelineView.eventIndex.get(timelineEventKey(event,phases[0]));
+    const target=timelineView.eventIndex.get(timelineEventKey(event,phases[1]));
     if (!source || !target) return;
 
-    const {resources,start,end}=timelineView, span=end-start;
-    const row=Math.min(36,370/resources.length), eventHeight=Math.max(5,row-8);
-    const centerY=candidate => 24+resources.indexOf(`${candidate.architecture}:${candidate.lane}`)*row+4+eventHeight/2;
+    const span=end-start, eventHeight=Math.max(5,row-8);
+    const centerY=candidate => TIMELINE_TOP+timelineView.resourceIndex.get(`${candidate.architecture}:${candidate.lane}`)*row+4+eventHeight/2;
     const xAt=time => Math.max(TIMELINE_LEFT,Math.min(TIMELINE_LEFT+TIMELINE_WIDTH,TIMELINE_LEFT+(time-start)/span*TIMELINE_WIDTH));
-    const sourceCenterY=centerY(source), targetCenterY=centerY(target), direction=Math.sign(targetCenterY-sourceCenterY);
+    const sourceCenterY=centerY(source), targetCenterY=centerY(target), direction=Math.sign(targetCenterY-sourceCenterY) || 1;
     const sourceX=xAt(source.end_ms), targetX=xAt(target.start_ms);
     const sourceY=sourceCenterY, targetY=targetCenterY;
     const bend=Math.abs(targetY-sourceY)*.35;
-    const ns='http://www.w3.org/2000/svg', group=document.createElementNS(ns,'g');
-    const path=document.createElementNS(ns,'path'), origin=document.createElementNS(ns,'circle'), label=document.createElementNS(ns,'text');
-    group.setAttribute('class','timeline-comm-arrow');
-    path.setAttribute('d',`M ${sourceX} ${sourceY} C ${sourceX} ${sourceY+direction*bend}, ${targetX} ${targetY-direction*bend}, ${targetX} ${targetY}`); path.setAttribute('marker-end','url(#timeline-arrowhead)');
-    origin.setAttribute('cx',String(sourceX)); origin.setAttribute('cy',String(sourceY)); origin.setAttribute('r','3');
-    const labelX=(sourceX+targetX)/2, labelOnLeft=labelX>TIMELINE_LEFT+TIMELINE_WIDTH-80;
-    label.setAttribute('x',String(labelX+(labelOnLeft?-7:7))); label.setAttribute('y',String((sourceY+targetY)/2+3)); label.setAttribute('text-anchor',labelOnLeft?'end':'start'); label.textContent=phases[2];
-    group.append(path,origin,label); $('timeline').appendChild(group);
+    const arrowColor=timelineCssColor('--purple');
+    const canvasBackground=getComputedStyle($('timeline')).backgroundColor;
+    context.save();
+    context.strokeStyle=arrowColor; context.fillStyle=arrowColor; context.lineWidth=2;
+    context.beginPath(); context.moveTo(sourceX,sourceY);
+    context.bezierCurveTo(sourceX,sourceY+direction*bend,targetX,targetY-direction*bend,targetX,targetY);
+    context.stroke();
+    context.beginPath(); context.arc(sourceX,sourceY,3,0,Math.PI*2); context.fill();
+    context.strokeStyle=canvasBackground; context.lineWidth=1; context.stroke();
+    context.beginPath(); context.moveTo(targetX,targetY);
+    context.lineTo(targetX-4,targetY-direction*7); context.lineTo(targetX+4,targetY-direction*7);
+    context.closePath(); context.fill();
+    const labelX=(sourceX+targetX)/2, labelY=(sourceY+targetY)/2+3;
+    context.font='700 10px Inter, ui-sans-serif, system-ui, sans-serif';
+    context.textAlign='center'; context.textBaseline='alphabetic'; context.lineWidth=3;
+    context.strokeStyle=canvasBackground; context.strokeText(phases[2],labelX,labelY);
+    context.fillStyle=arrowColor; context.fillText(phases[2],labelX,labelY);
+    context.restore();
   }
 
-  function hideCommunicationArrow() { $('timeline').querySelector('.timeline-comm-arrow')?.remove(); }
+  function timelinePointerCoordinates(pointer) {
+    const bounds=$('timeline').getBoundingClientRect();
+    return {
+      x:(pointer.clientX-bounds.left)/bounds.width*1000,
+      y:(pointer.clientY-bounds.top)/bounds.height*TIMELINE_HEIGHT
+    };
+  }
+
+  function timelineEventAt(pointer) {
+    if (!timelineView.events.length) return null;
+    const {x,y}=timelinePointerCoordinates(pointer);
+    const row=Math.min(36,TIMELINE_ROWS_HEIGHT/timelineView.resources.length);
+    const resourceIndex=Math.floor((y-TIMELINE_TOP)/row);
+    if (x<TIMELINE_LEFT || x>TIMELINE_LEFT+TIMELINE_WIDTH || resourceIndex<0 || resourceIndex>=timelineView.resources.length) return null;
+    const laneEvents=timelineView.eventsByResource.get(timelineView.resources[resourceIndex]);
+    const time=timelineView.start+(x-TIMELINE_LEFT)/TIMELINE_WIDTH*(timelineView.end-timelineView.start);
+    const tolerance=(timelineView.end-timelineView.start)/TIMELINE_WIDTH;
+    const maximumEnds=timelineView.maxEndsByResource.get(timelineView.resources[resourceIndex]);
+    let low=0,high=laneEvents.length;
+    while (low<high) {
+      const middle=(low+high)>>1;
+      if (maximumEnds[middle]<time-tolerance) low=middle+1; else high=middle;
+    }
+    let closest=null,closestDistance=Infinity;
+    for (let index=low;index<laneEvents.length && laneEvents[index].start_ms<=time+tolerance;index+=1) {
+      const event=laneEvents[index];
+      const distance=time<event.start_ms ? event.start_ms-time : time>event.end_ms ? time-event.end_ms : 0;
+      if (distance<=tolerance && distance<=closestDistance) { closest=event; closestDistance=distance; }
+    }
+    return closest;
+  }
+
+  function clearTimelineHover() {
+    if (!timelineView.hoveredEvent && $('timeline-tooltip').hidden) return false;
+    timelineView.hoveredEvent=null;
+    hideTimelineTooltip();
+    return true;
+  }
+
+  function updateTimelineHover(pointer) {
+    const event=timelineEventAt(pointer);
+    if (event!==timelineView.hoveredEvent) {
+      timelineView.hoveredEvent=event;
+      if (event) showTimelineTooltip(pointer,event); else hideTimelineTooltip();
+      scheduleTimelineRender();
+    } else if (event) positionTimelineTooltip(pointer);
+  }
 
   function showTimelineTooltip(pointer, event) {
     const duration = event.end_ms-event.start_ms;
@@ -585,18 +857,37 @@
     timelineView.keyTimers.delete(key);
   }
 
-  $('timeline').addEventListener('pointerenter', event => { timelineView.pointerInside=true; timelineView.pointerX=event.clientX; });
-  $('timeline').addEventListener('pointerleave', () => { timelineView.pointerInside=false; timelineView.pointerX=null; });
+  $('timeline').addEventListener('pointerenter', event => {
+    timelineView.pointerInside=true; timelineView.pointerX=event.clientX;
+    if (timelineView.dragX===null) updateTimelineHover(event);
+  });
+  $('timeline').addEventListener('pointerleave', () => {
+    timelineView.pointerInside=false; timelineView.pointerX=null;
+    if (clearTimelineHover()) scheduleTimelineRender();
+  });
   $('timeline').addEventListener('pointermove', event => {
     timelineView.pointerX=event.clientX;
-    if (timelineView.dragX === null) return;
-    const bounds=$('timeline').getBoundingClientRect();
-    const delta=-(event.clientX-timelineView.dragX)/(bounds.width*TIMELINE_WIDTH/1000)*(timelineView.end-timelineView.start);
-    clampTimeline(timelineView.dragStart+delta,timelineView.dragStart+delta+(timelineView.end-timelineView.start));
+    if (timelineView.dragX !== null) {
+      const bounds=$('timeline').getBoundingClientRect();
+      const delta=-(event.clientX-timelineView.dragX)/(bounds.width*TIMELINE_WIDTH/1000)*(timelineView.end-timelineView.start);
+      clampTimeline(timelineView.dragStart+delta,timelineView.dragStart+delta+(timelineView.end-timelineView.start));
+      return;
+    }
+    updateTimelineHover(event);
   });
-  $('timeline').addEventListener('pointerdown', event => { timelineView.dragX=event.clientX; timelineView.dragStart=timelineView.start; $('timeline').setPointerCapture(event.pointerId); $('timeline').classList.add('dragging'); $('timeline').focus(); });
-  $('timeline').addEventListener('pointerup', event => { timelineView.dragX=null; $('timeline').releasePointerCapture(event.pointerId); $('timeline').classList.remove('dragging'); });
-  $('timeline').addEventListener('pointercancel', () => { timelineView.dragX=null; $('timeline').classList.remove('dragging'); });
+  $('timeline').addEventListener('pointerdown', event => {
+    timelineView.dragX=event.clientX; timelineView.dragStart=timelineView.start;
+    clearTimelineHover(); scheduleTimelineRender();
+    $('timeline').setPointerCapture(event.pointerId); $('timeline').classList.add('dragging'); $('timeline').focus();
+  });
+  $('timeline').addEventListener('pointerup', event => {
+    timelineView.dragX=null; $('timeline').releasePointerCapture(event.pointerId); $('timeline').classList.remove('dragging');
+    if (timelineView.pointerInside) updateTimelineHover(event);
+  });
+  $('timeline').addEventListener('pointercancel', () => {
+    timelineView.dragX=null; $('timeline').classList.remove('dragging');
+    if (clearTimelineHover()) scheduleTimelineRender();
+  });
   $('timeline').addEventListener('wheel', event => { event.preventDefault(); zoomTimeline(Math.exp(event.deltaY*.0015),timelineTimeAt(event.clientX)); }, {passive:false});
   $('timeline').addEventListener('dblclick', resetTimeline);
   $('timeline-reset').addEventListener('click', resetTimeline);
@@ -628,6 +919,10 @@
     event.preventDefault();
   });
   window.addEventListener('blur', stopTimelineKeys);
+  if ('ResizeObserver' in window) {
+    const timelineResizeObserver=new ResizeObserver(scheduleTimelineRender);
+    timelineResizeObserver.observe($('timeline'));
+  } else window.addEventListener('resize',scheduleTimelineRender);
 
   function renderSweep(data) {
     $('empty').style.display = 'none'; $('content').style.display = 'block'; $('sweep-section').style.display = 'block';

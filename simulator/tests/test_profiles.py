@@ -1,20 +1,154 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from simulator.profile_builder import (
     DEFAULT_AFD_FFN_TOPOLOGY,
+    DEFAULT_AFD_TOPOLOGY,
+    DEFAULT_MERGED_TOPOLOGY,
     ROUTED_EXPERT_SAMPLE_SHAPES,
     ROUTED_EXPERT_SHAPE,
     SHARED_EXPERT_SHAPE,
+    TopologySpec,
     _anchor_grid,
     _compose_afd_layers,
+    _msmodeling_command,
+    compose_retargeted_afd_profile,
 )
 from simulator.profiles import PROFILE_PHASES, ProfileBundle
 from simulator.tests.helpers import make_profile
 
 
 class ProfileTests(unittest.TestCase):
+    def test_compose_retargets_only_afd_dp_replication(self) -> None:
+        layer = {phase: 1.0 for phase in PROFILE_PHASES}
+        point = {"prefix_tokens": 0, "query_tokens": 1, "layers": [layer]}
+        afd_source = {
+            "schema_version": 1,
+            "layer_count": 1,
+            "metadata": {},
+            "topologies": {
+                "afd": {
+                    "spec": {
+                        "attention": {
+                            "num_devices": 24,
+                            "dp_size": 3,
+                            "tp_size": 8,
+                            "ep_size": 8,
+                        },
+                        "ffn": {
+                            "num_devices": 8,
+                            "dp_size": 8,
+                            "tp_size": 1,
+                            "ep_size": 8,
+                        },
+                    },
+                    "points": [point],
+                },
+                "merged": {
+                    "spec": {
+                        "num_devices": 32,
+                        "dp_size": 4,
+                        "tp_size": 8,
+                        "ep_size": 32,
+                    },
+                    "points": [point],
+                },
+            },
+        }
+        merged_source = {
+            "schema_version": 1,
+            "layer_count": 1,
+            "metadata": {"commands": [["msmodeling", "merged"]]},
+            "topologies": {
+                "merged": {
+                    "spec": {
+                        "num_devices": 48,
+                        "dp_size": 6,
+                        "tp_size": 8,
+                        "ep_size": 48,
+                    },
+                    "points": [point],
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            afd_path = root / "afd.json"
+            merged_path = root / "merged.json"
+            output_path = root / "combined.json"
+            afd_path.write_text(json.dumps(afd_source), encoding="utf-8")
+            merged_path.write_text(json.dumps(merged_source), encoding="utf-8")
+
+            payload = compose_retargeted_afd_profile(
+                afd_profile_path=afd_path,
+                merged_profile_path=merged_path,
+                output_path=output_path,
+                afd_dp_size=5,
+            )
+
+            attention = payload["topologies"]["afd"]["spec"]["attention"]
+            self.assertEqual(attention["dp_size"], 5)
+            self.assertEqual(attention["num_devices"], 40)
+            self.assertEqual(
+                payload["topologies"]["afd"]["points"],
+                afd_source["topologies"]["afd"]["points"],
+            )
+            self.assertEqual(
+                payload["topologies"]["merged"]["spec"]["ep_size"],
+                48,
+            )
+            self.assertTrue(output_path.is_file())
+            ProfileBundle.load(output_path)
+
+    def test_device_budget_rejects_non_equal_die_comparison(self) -> None:
+        profile = make_profile(merged_dp_size=3, merged_tp_size=8)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "AFD uses 8 Attention \\+ 8 FFN = 16 dies, but merged uses 24 dies",
+        ):
+            profile.device_budget()
+
+    def test_msmodeling_command_uses_current_cli_flags(self) -> None:
+        command = _msmodeling_command(
+            python_executable="/opt/msmodeling/python",
+            model_id="deepseek-ai/DeepSeek-V4-Flash",
+            device="ATLAS_800_A3_752T_128G_DIE",
+            topology=TopologySpec(
+                "merged",
+                num_devices=16,
+                dp_size=4,
+                tp_size=4,
+                ep_size=16,
+            ),
+            prefix_tokens=128,
+            query_tokens=512,
+            trace_path=Path("/tmp/merged.json"),
+        )
+
+        self.assertIn(
+            ["--compilation-config", "enable_sequence_parallel"],
+            [command[index : index + 2] for index in range(len(command) - 1)],
+        )
+        self.assertIn("--chrome-trace-file", command)
+        self.assertNotIn("--enable-sequence-parallel", command)
+        self.assertNotIn("--chrome-trace", command)
+
+        ffn_command = _msmodeling_command(
+            python_executable="/opt/msmodeling/python",
+            model_id="deepseek-ai/DeepSeek-V4-Flash",
+            device="ATLAS_800_A3_752T_128G_DIE",
+            topology=DEFAULT_AFD_FFN_TOPOLOGY,
+            prefix_tokens=0,
+            query_tokens=64,
+            trace_path=Path("/tmp/afd-ffn.json"),
+        )
+        self.assertNotIn("--compilation-config", ffn_command)
+
     def test_profile_returns_anchor_and_interpolates_both_dimensions(self) -> None:
         profile = make_profile(layer_count=1)
         exact = profile.duration_ms("afd", 0, "attention_router", 0, 128)
@@ -121,3 +255,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(DEFAULT_AFD_FFN_TOPOLOGY.dp_size, 8)
         self.assertEqual(DEFAULT_AFD_FFN_TOPOLOGY.tp_size, 1)
         self.assertFalse(DEFAULT_AFD_FFN_TOPOLOGY.sequence_parallel)
+        self.assertEqual(DEFAULT_AFD_TOPOLOGY.dp_size, 2)
+        self.assertEqual(DEFAULT_AFD_TOPOLOGY.tp_size, 4)
+        self.assertEqual(DEFAULT_MERGED_TOPOLOGY.dp_size, 4)
+        self.assertEqual(DEFAULT_MERGED_TOPOLOGY.tp_size, 4)

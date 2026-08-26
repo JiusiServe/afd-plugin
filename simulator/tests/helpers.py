@@ -6,11 +6,24 @@ from simulator.profiles import PROFILE_PHASES, ProfileBundle
 
 QUERY_ANCHORS = (1, 64, 128, 256, 512, 1_024, 2_048, 8_192, 32_768)
 PREFIX_ANCHORS = (0, 256, 512, 4_096)
+AFD_FFN_DEVICE_COUNT = 8
 
 
-def make_profile(layer_count: int = 3) -> ProfileBundle:
+def make_profile(
+    layer_count: int = 3,
+    *,
+    afd_dp_size: int = 2,
+    afd_tp_size: int = 4,
+    merged_dp_size: int = 4,
+    merged_tp_size: int = 4,
+) -> ProfileBundle:
+    afd_attention_devices = afd_dp_size * afd_tp_size
+    merged_devices = merged_dp_size * merged_tp_size
     topologies = {}
     for topology, factor in (("afd", 0.9), ("merged", 1.0)):
+        expert_parallel_size = (
+            AFD_FFN_DEVICE_COUNT if topology == "afd" else merged_devices
+        )
         points = []
         for prefix in PREFIX_ANCHORS:
             for query in QUERY_ANCHORS:
@@ -42,8 +55,8 @@ def make_profile(layer_count: int = 3) -> ProfileBundle:
                             {
                                 **layer,
                                 "routed_expert_input_shape": [
-                                    (query * 6 + (8 if topology == "afd" else 16) - 1)
-                                    // (8 if topology == "afd" else 16),
+                                    (query * 6 + expert_parallel_size - 1)
+                                    // expert_parallel_size,
                                     4_096,
                                 ],
                                 "routed_expert_sample_shapes": [
@@ -51,10 +64,10 @@ def make_profile(layer_count: int = 3) -> ProfileBundle:
                                         "shape": [
                                             (
                                                 query * 6
-                                                + (8 if topology == "afd" else 16)
+                                                + expert_parallel_size
                                                 - 1
                                             )
-                                            // (8 if topology == "afd" else 16),
+                                            // expert_parallel_size,
                                             4_096,
                                         ],
                                         "count": 1,
@@ -79,11 +92,29 @@ def make_profile(layer_count: int = 3) -> ProfileBundle:
             "topologies": {
                 "afd": {
                     **topologies["afd"],
-                    "spec": {"ffn": {"ep_size": 8}},
+                    "spec": {
+                        "attention": {
+                            "num_devices": afd_attention_devices,
+                            "dp_size": afd_dp_size,
+                            "tp_size": afd_tp_size,
+                            "ep_size": AFD_FFN_DEVICE_COUNT,
+                        },
+                        "ffn": {
+                            "num_devices": AFD_FFN_DEVICE_COUNT,
+                            "dp_size": AFD_FFN_DEVICE_COUNT,
+                            "tp_size": 1,
+                            "ep_size": AFD_FFN_DEVICE_COUNT,
+                        },
+                    },
                 },
                 "merged": {
                     **topologies["merged"],
-                    "spec": {"ep_size": 16},
+                    "spec": {
+                        "num_devices": merged_devices,
+                        "dp_size": merged_dp_size,
+                        "tp_size": merged_tp_size,
+                        "ep_size": merged_devices,
+                    },
                 },
             },
         }

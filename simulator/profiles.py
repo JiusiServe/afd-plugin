@@ -310,6 +310,31 @@ class ProfileBundle:
             layer_idx, phase, query_tokens
         )
 
+    def device_budget(self) -> dict[str, int]:
+        """Return device counts and reject non-equal architecture budgets."""
+
+        afd_spec = self.topology_specs["afd"]
+        attention_devices = _topology_device_count(
+            afd_spec["attention"], "AFD Attention"
+        )
+        ffn_devices = _topology_device_count(afd_spec["ffn"], "AFD FFN")
+        merged_devices = _topology_device_count(
+            self.topology_specs["merged"], "merged"
+        )
+        afd_devices = attention_devices + ffn_devices
+        if afd_devices != merged_devices:
+            raise ValueError(
+                "profile device budget mismatch: "
+                f"AFD uses {attention_devices} Attention + {ffn_devices} FFN "
+                f"= {afd_devices} dies, but merged uses {merged_devices} dies"
+            )
+        return {
+            "afd_attention": attention_devices,
+            "afd_ffn": ffn_devices,
+            "afd_total": afd_devices,
+            "merged": merged_devices,
+        }
+
     def summary(self) -> dict[str, Any]:
         return {
             "metadata": self.metadata,
@@ -325,6 +350,20 @@ class ProfileBundle:
                 for name, profile in self.topologies.items()
             },
         }
+
+
+def _topology_device_count(spec: dict[str, Any], label: str) -> int:
+    num_devices = int(spec["num_devices"])
+    dp_size = int(spec["dp_size"])
+    tp_size = int(spec["tp_size"])
+    if min(num_devices, dp_size, tp_size) <= 0:
+        raise ValueError(f"{label} parallel sizes must be positive")
+    if dp_size * tp_size != num_devices:
+        raise ValueError(
+            f"{label} DP{dp_size} x TP{tp_size} requires "
+            f"{dp_size * tp_size} dies, not {num_devices}"
+        )
+    return num_devices
 
 
 def _bounds(

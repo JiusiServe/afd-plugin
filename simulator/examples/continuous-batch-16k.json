@@ -3,10 +3,9 @@
   "length_mix": [
     {"tokens": 512, "weight": 0.4},
     {"tokens": 2048, "weight": 0.2},
-    {"tokens": 8192, "weight": 0.3},
-    {"tokens": 32768, "weight": 0.1}
+    {"tokens": 4096, "weight": 0.3},
+    {"tokens": 8192, "weight": 0.1}
   ],
-  "csv_sampling": "cycle",
   "arrival": {
     "kind": "poisson",
     "qps": 8,
@@ -18,20 +17,20 @@
     "afd_policy": "current_runtime",
     "merged_policy": "current_runtime",
     "max_num_seqs": 64,
-    "chunked_prefill": true,
+    "chunked_prefill": false,
     "afd": {
-      "max_num_batched_tokens": 8192,
-      "chunk_size": 8192
+      "max_num_batched_tokens": 16384,
+      "chunk_size": 16384
     },
     "merged": {
-      "max_num_batched_tokens": 8192,
-      "chunk_size": 8192
+      "max_num_batched_tokens": 16384,
+      "chunk_size": 16384
     }
   },
   "prefix_cache": {
-    "enabled": true,
-    "request_hit_rate": 0.6,
-    "matched_prefix_ratio": 0.75,
+    "enabled": false,
+    "request_hit_rate": 0,
+    "matched_prefix_ratio": 0,
     "block_size": 32,
     "lookup_fixed_ms": 0,
     "lookup_per_block_ms": 0,
@@ -40,19 +39,12 @@
   "afd": {
     "ubatch_split": "request"
   },
-  "cam": {
-    "calibrated": false,
-    "dispatch_send": {"fixed_ms": 0.11, "per_token_ms": 0.000019230769},
-    "dispatch_recv": {"fixed_ms": 0.10, "per_token_ms": 0.000014705882},
-    "combine_send": {"fixed_ms": 0.10, "per_token_ms": 0.000014285714},
-    "combine_recv": {"fixed_ms": 0.12, "per_token_ms": 0.000017241379}
-  },
   "slo": {
-    "ttft_limit_ms": 1000,
+    "ttft_limit_ms": 2000,
     "target_ratio": 0.99
   },
   "sweep": {
-    "min_qps": 0.5,
+    "min_qps": 0.25,
     "max_qps": 64,
     "coarse_points": 10,
     "refinement_steps": 7,
@@ -60,8 +52,8 @@
   },
   "fixed_ttft_overhead_ms": 0,
   "output": {
-    "include_timeline": true,
+    "include_timeline": false,
     "timeline_max_events": 20000,
-    "include_requests": true
+    "include_requests": false
   }
 }

@@ -1,3 +1,5 @@
 tools/datasets/cp8sp50k_custom_dataset_text_matched_token_ids.jsonl filter=lfs diff=lfs merge=lfs -text
 afd_plugin/connectors/npu/bin/*.run binary
 afd_plugin/connectors/npu/bin/*.whl binary
+simulator/data/*.csv linguist-generated=true
+simulator/profiles/*.json linguist-generated=true

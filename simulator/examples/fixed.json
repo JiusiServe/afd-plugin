@@ -9,11 +9,18 @@
     "seed": 1024
   },
   "scheduler": {
-    "policy": "round_robin",
+    "afd_policy": "current_runtime",
+    "merged_policy": "current_runtime",
     "max_num_seqs": 64,
-    "max_num_batched_tokens": 32768,
     "chunked_prefill": false,
-    "chunk_size": 8192
+    "afd": {
+      "max_num_batched_tokens": 32768,
+      "chunk_size": 8192
+    },
+    "merged": {
+      "max_num_batched_tokens": 32768,
+      "chunk_size": 8192
+    }
   },
   "prefix_cache": {
     "enabled": false,

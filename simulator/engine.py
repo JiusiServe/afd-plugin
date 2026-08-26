@@ -3,17 +3,34 @@
 from __future__ import annotations
 
 import math
-from collections import deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from typing import Any
 
-from simulator.config import OutputConfig, SimulationConfig
+from simulator.config import OutputConfig, SchedulerBatchConfig, SimulationConfig
 from simulator.profiles import ProfileBundle
 from simulator.workload import RequestSpec, RuntimeRequest, generate_workload
 
-AFD_DP_COUNT = 2
-MERGED_DP_COUNT = 4
+AFD_WAVE_TOKEN_SUM_POLICY = "afd_wave_token_sum"
+AFD_WAVE_TOKEN_SQUARE_SUM_POLICY = "afd_wave_token_square_sum"
+AFD_WAVE_POLICIES = frozenset(
+    {AFD_WAVE_TOKEN_SUM_POLICY, AFD_WAVE_TOKEN_SQUARE_SUM_POLICY}
+)
+MERGED_WAVE_TOKEN_SUM_POLICY = "merged_wave_token_sum"
+MERGED_WAVE_TOKEN_SQUARE_SUM_POLICY = "merged_wave_token_square_sum"
+MERGED_WAVE_POLICIES = frozenset(
+    {MERGED_WAVE_TOKEN_SUM_POLICY, MERGED_WAVE_TOKEN_SQUARE_SUM_POLICY}
+)
+CURRENT_RUNTIME_POLICY = "current_runtime"
+PREFILL_TOKEN_GREEDY_POLICY = "prefill_token_greedy"
+PREFILL_TOKEN_SQUARE_GREEDY_POLICY = "prefill_token_square_greedy"
+ROUND_ROBIN_POLICY = "round_robin"
+VLLM_QUEUE_AWARE_POLICY = "vllm_queue_aware"
+VLLM_WAITING_REQUEST_WEIGHT = 4
+VLLM_DP_STATS_UPDATE_INTERVAL_MS = 100.0
+
+DpScore = tuple[float, ...]
+DpScoreProvider = Callable[[RuntimeRequest], tuple[DpScore, ...]]
 
 
 @dataclass(frozen=True)
@@ -21,6 +38,21 @@ class BatchSegment:
     request: RuntimeRequest
     prefix_tokens: int
     query_tokens: int
+
+
+@dataclass(frozen=True)
+class FifoRequestState:
+    request: RuntimeRequest
+    prefix_tokens: int
+    remaining_query_tokens: int
+
+
+@dataclass(frozen=True)
+class FifoWaveSegment:
+    request: RuntimeRequest
+    prefix_tokens: int
+    query_tokens: int
+    remaining_query_tokens: int
 
 
 @dataclass(frozen=True)
@@ -51,6 +83,10 @@ class AfdDpState:
     ops: list[tuple[str, int, int]]
     time_ms: float
     op_index: int = 0
+    last_op_type: str | None = None
+    last_op_stage: int = 0
+    last_op_start_ms: float = 0.0
+    last_op_end_ms: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -69,16 +105,18 @@ class PendingFfnJob:
 
 
 class RequestDispatcher:
-    """Route requests to DP queues when they arrive."""
+    """Route requests using the configured DP load-balancing policy."""
 
     def __init__(
         self,
         specs: tuple[RequestSpec, ...],
         dp_count: int,
         policy: str,
+        score_provider: DpScoreProvider | None = None,
     ) -> None:
         self.dp_count = dp_count
         self.policy = policy
+        self.score_provider = score_provider
         self.requests = [RuntimeRequest(spec=spec, assigned_dp=-1) for spec in specs]
         self.pending = sorted(
             enumerate(self.requests),
@@ -88,7 +126,11 @@ class RequestDispatcher:
         self.round_robin_index = 0
         self.tie_start_index = 0
         self.queues: list[list[RuntimeRequest]] = [[] for _ in range(dp_count)]
-        self.active: list[deque[RuntimeRequest]] = [deque() for _ in range(dp_count)]
+        self.running_request_ids: list[set[int]] = [set() for _ in range(dp_count)]
+        self.outstanding_query_tokens = [0 for _ in range(dp_count)]
+        self.outstanding_query_token_squares = [0 for _ in range(dp_count)]
+        self.reported_counts = [[0, 0] for _ in range(dp_count)]
+        self.next_stats_update_ms = VLLM_DP_STATS_UPDATE_INTERVAL_MS
 
     @property
     def has_pending(self) -> bool:
@@ -104,35 +146,111 @@ class RequestDispatcher:
         while self.next_arrival_ms <= time_ms:
             request = self.pending[self.pending_index][1]
             self.pending_index += 1
-            dp = self._select_dp(request.spec.arrival_ms)
+            self.advance_time(request.spec.arrival_ms)
+            dp = self._select_dp(request)
             request.assigned_dp = dp
             self.queues[dp].append(request)
-            if self.policy == "vllm_queue_aware":
-                self.active[dp].append(request)
+            self.outstanding_query_tokens[dp] += request.remaining_query_tokens
+            self.outstanding_query_token_squares[dp] += (
+                request.remaining_query_tokens**2
+            )
+            if self.policy == VLLM_QUEUE_AWARE_POLICY:
+                # vLLM increments its local waiting count immediately to balance
+                # requests arriving between coordinator updates.
+                self.reported_counts[dp][0] += 1
+        self.advance_time(time_ms)
 
-    def _select_dp(self, arrival_ms: float) -> int:
-        if self.policy == "round_robin":
+    def advance_time(self, time_ms: float) -> None:
+        """Publish engine request counts at vLLM's 100 ms update cadence."""
+
+        if (
+            self.policy != VLLM_QUEUE_AWARE_POLICY
+            or time_ms < self.next_stats_update_ms
+        ):
+            return
+        self.reported_counts = [
+            list(self.request_counts(dp)) for dp in range(self.dp_count)
+        ]
+        elapsed_intervals = math.floor(
+            (time_ms - self.next_stats_update_ms) / VLLM_DP_STATS_UPDATE_INTERVAL_MS
+        )
+        self.next_stats_update_ms += (
+            elapsed_intervals + 1
+        ) * VLLM_DP_STATS_UPDATE_INTERVAL_MS
+
+    def mark_batch_started(self, batch: SchedulerBatch) -> None:
+        running_ids = self.running_request_ids[batch.dp]
+        running_ids.update(id(segment.request) for segment in batch.segments)
+
+    def mark_batch_finished(self, batch: SchedulerBatch) -> None:
+        running_ids = self.running_request_ids[batch.dp]
+        for segment in batch.segments:
+            running_ids.discard(id(segment.request))
+        self.outstanding_query_tokens[batch.dp] -= batch.query_tokens
+        for segment in batch.segments:
+            remaining_after = segment.request.remaining_query_tokens
+            remaining_before = remaining_after + segment.query_tokens
+            self.outstanding_query_token_squares[batch.dp] -= (
+                remaining_before**2 - remaining_after**2
+            )
+
+    def request_counts(self, dp: int) -> tuple[int, int]:
+        """Return the engine's current ``(waiting, running)`` request counts."""
+
+        running_ids = self.running_request_ids[dp]
+        waiting = sum(id(request) not in running_ids for request in self.queues[dp])
+        return waiting, len(running_ids)
+
+    def _select_dp(self, request: RuntimeRequest) -> int:
+        if self.policy == ROUND_ROBIN_POLICY:
             dp = self.round_robin_index
             self.round_robin_index = (self.round_robin_index + 1) % self.dp_count
             return dp
 
-        loads = []
-        for dp in range(self.dp_count):
-            active = self.active[dp]
-            while (
-                active
-                and active[0].completion_ms is not None
-                and active[0].completion_ms <= arrival_ms
-            ):
-                active.popleft()
-            loads.append(len(active))
-        min_load = min(loads)
+        if self.policy in AFD_WAVE_POLICIES | MERGED_WAVE_POLICIES:
+            if self.score_provider is None:
+                raise RuntimeError(f"{self.policy} requires a wave score provider")
+            scores = self.score_provider(request)
+            if len(scores) != self.dp_count:
+                raise RuntimeError("wave score provider returned wrong DP count")
+        elif self.policy == PREFILL_TOKEN_GREEDY_POLICY:
+            scores = tuple((float(value),) for value in self.outstanding_query_tokens)
+        elif self.policy == PREFILL_TOKEN_SQUARE_GREEDY_POLICY:
+            scores = tuple(
+                (float(value),) for value in self.outstanding_query_token_squares
+            )
+        else:
+            scores = tuple(
+                (float(waiting * VLLM_WAITING_REQUEST_WEIGHT + running),)
+                for waiting, running in self.reported_counts
+            )
+        min_score = min(scores)
         for offset in range(self.dp_count):
             dp = (self.tie_start_index + offset) % self.dp_count
-            if loads[dp] == min_load:
+            if scores[dp] == min_score:
                 self.tie_start_index = (self.tie_start_index + 1) % self.dp_count
                 return dp
         raise RuntimeError("DP dispatcher failed to select an engine")
+
+
+def resolve_scheduler_policy(configured_policy: str, architecture: str) -> str:
+    """Resolve the architecture-specific policy used by today's runtime."""
+
+    if configured_policy in AFD_WAVE_POLICIES:
+        if architecture == "afd":
+            return configured_policy
+        raise ValueError(f"{configured_policy} is unavailable for {architecture}")
+    if configured_policy in MERGED_WAVE_POLICIES:
+        if architecture == "merged":
+            return configured_policy
+        raise ValueError(f"{configured_policy} is unavailable for {architecture}")
+    if configured_policy != CURRENT_RUNTIME_POLICY:
+        return configured_policy
+    if architecture == "afd":
+        return ROUND_ROBIN_POLICY
+    if architecture == "merged":
+        return VLLM_QUEUE_AWARE_POLICY
+    raise ValueError(f"unknown architecture: {architecture}")
 
 
 def compare_architectures(
@@ -142,6 +260,7 @@ def compare_architectures(
 ) -> dict[str, Any]:
     """Run one identical workload through AFD and merged architectures."""
 
+    profiles.device_budget()
     workload = requests if requests is not None else generate_workload(config)
     if not workload:
         raise ValueError("workload contains no requests")
@@ -167,14 +286,35 @@ def simulate_merged(
     profiles: ProfileBundle,
     specs: tuple[RequestSpec, ...],
 ) -> dict[str, Any]:
-    dispatcher = RequestDispatcher(specs, MERGED_DP_COUNT, config.scheduler.policy)
+    merged_spec = profiles.topology_specs["merged"]
+    merged_dp_count = int(merged_spec["dp_size"])
+    merged_tp_size = int(merged_spec["tp_size"])
+    merged_ep_size = int(merged_spec["ep_size"])
+    if min(merged_dp_count, merged_tp_size, merged_ep_size) <= 0:
+        raise ValueError("merged profile parallel sizes must be positive")
+    dispatcher: RequestDispatcher
+
+    def wave_score_provider(request: RuntimeRequest) -> tuple[DpScore, ...]:
+        return _merged_wave_completion_scores(
+            config,
+            request,
+            dispatcher.queues,
+            dispatcher.policy,
+        )
+
+    dispatcher = RequestDispatcher(
+        specs,
+        merged_dp_count,
+        resolve_scheduler_policy(config.scheduler.merged_policy, "merged"),
+        score_provider=wave_score_provider,
+    )
     requests = dispatcher.requests
     queues = dispatcher.queues
     timeline: list[dict[str, Any]] = []
     wave_start = 0.0
     batch_id = 0
     total_barrier_ms = 0.0
-    busy_ms = [0.0 for _ in range(MERGED_DP_COUNT)]
+    busy_ms = [0.0 for _ in range(merged_dp_count)]
     ep_busy_ms = 0.0
 
     while dispatcher.has_pending or any(queues):
@@ -193,6 +333,7 @@ def simulate_merged(
         for dp, queue in enumerate(queues):
             batch = _pack_batch(
                 config,
+                config.scheduler.merged,
                 queue,
                 dp=dp,
                 batch_id=batch_id,
@@ -204,6 +345,9 @@ def simulate_merged(
         if not any(batches):
             wave_start = next_ready
             continue
+        for batch in batches:
+            if batch is not None:
+                dispatcher.mark_batch_started(batch)
 
         layer_start = wave_start
         for layer_idx in range(profiles.layer_count):
@@ -256,7 +400,7 @@ def simulate_merged(
             global_ep_tokens = sum(
                 batch.query_tokens for batch in batches if batch is not None
             )
-            global_profile_query = max(1.0, global_ep_tokens / MERGED_DP_COUNT)
+            global_profile_query = max(1.0, global_ep_tokens / merged_dp_count)
             max_dp_tokens = max(
                 batch.query_tokens for batch in batches if batch is not None
             )
@@ -287,7 +431,7 @@ def simulate_merged(
                     timeline,
                     config,
                     architecture="merged",
-                    resource="Global EP16",
+                    resource=f"Global EP{merged_ep_size}",
                     phase=phase,
                     start_ms=cursor,
                     end_ms=end,
@@ -307,9 +451,11 @@ def simulate_merged(
             layer_start = cursor
 
         wave_start = layer_start
+        dispatcher.dispatch_until(wave_start)
         for batch in batches:
             if batch is not None:
                 _complete_batch(batch, wave_start)
+                dispatcher.mark_batch_finished(batch)
 
     makespan = max(request.completion_ms or 0.0 for request in requests)
     utilization = {
@@ -325,6 +471,12 @@ def simulate_merged(
         makespan,
         utilization,
     )
+    result["summary"]["topology"] = {
+        "dp_size": merged_dp_count,
+        "tp_size": merged_tp_size,
+        "ep_size": merged_ep_size,
+    }
+    result["summary"]["scheduler_policy"] = dispatcher.policy
     result["summary"]["barrier_wait_ms"] = total_barrier_ms
     return result
 
@@ -334,20 +486,45 @@ def simulate_afd(
     profiles: ProfileBundle,
     specs: tuple[RequestSpec, ...],
 ) -> dict[str, Any]:
-    dispatcher = RequestDispatcher(specs, AFD_DP_COUNT, config.scheduler.policy)
+    afd_spec = profiles.topology_specs["afd"]
+    attention_spec = afd_spec["attention"]
+    ffn_spec = afd_spec["ffn"]
+    afd_dp_count = int(attention_spec["dp_size"])
+    afd_tp_size = int(attention_spec["tp_size"])
+    afd_ep_size = int(ffn_spec["ep_size"])
+    if min(afd_dp_count, afd_tp_size, afd_ep_size) <= 0:
+        raise ValueError("AFD profile parallel sizes must be positive")
+    states: dict[int, AfdDpState] = {}
+    dispatcher: RequestDispatcher
+
+    def wave_score_provider(request: RuntimeRequest) -> tuple[DpScore, ...]:
+        return _afd_wave_completion_scores(
+            config,
+            request,
+            dispatcher.queues,
+            states,
+            profiles.layer_count,
+            dispatcher.policy,
+        )
+
+    dispatcher = RequestDispatcher(
+        specs,
+        afd_dp_count,
+        resolve_scheduler_policy(config.scheduler.afd_policy, "afd"),
+        score_provider=wave_score_provider,
+    )
     dispatcher.dispatch_until(0.0)
     requests = dispatcher.requests
     queues = dispatcher.queues
     timeline: list[dict[str, Any]] = []
-    states: dict[int, AfdDpState] = {}
     next_batch_id = 0
     jobs: dict[str, FfnJob] = {}
     pending_jobs: list[PendingFfnJob] = []
     ffn_available_ms = 0.0
     ffn_busy_ms = 0.0
-    attention_busy_ms = [0.0 for _ in range(AFD_DP_COUNT)]
+    attention_busy_ms = [0.0 for _ in range(afd_dp_count)]
     attention_wait_ms = 0.0
-    dp_available_ms = [0.0 for _ in range(AFD_DP_COUNT)]
+    dp_available_ms = [0.0 for _ in range(afd_dp_count)]
 
     while states or dispatcher.has_pending or any(queues):
         candidates = []
@@ -377,7 +554,7 @@ def simulate_afd(
                 max(dp_available_ms[dp], _request_ready_ms(queues[dp][0])),
                 dp,
             )
-            for dp in range(AFD_DP_COUNT)
+            for dp in range(afd_dp_count)
             if dp not in states and queues[dp]
         ]
         next_idle = min(idle_ready, default=(math.inf, -1))
@@ -388,6 +565,7 @@ def simulate_afd(
             continue
         if next_idle[0] <= min(next_state_ms, ffn_ready_ms):
             start_ms, idle_dp = next_idle
+            dispatcher.advance_time(start_ms)
             state, next_batch_id = _load_afd_state(
                 config,
                 queues[idle_dp],
@@ -398,6 +576,7 @@ def simulate_afd(
             )
             if state is None:
                 raise RuntimeError("AFD scheduler failed to load a ready batch")
+            dispatcher.mark_batch_started(state.batch)
             states[idle_dp] = state
             continue
         if next_ffn_job is not None and (
@@ -431,7 +610,7 @@ def simulate_afd(
                     timeline,
                     config,
                     architecture="afd",
-                    resource="FFN EP8",
+                    resource=f"FFN EP{afd_ep_size}",
                     phase=phase,
                     start_ms=start,
                     end_ms=end,
@@ -558,9 +737,15 @@ def simulate_afd(
             )
             state.time_ms = recv_end
 
+        state.last_op_type = op_type
+        state.last_op_stage = stage_idx
+        state.last_op_start_ms = start if op_type == "attention" else state.time_ms
+        state.last_op_end_ms = end if op_type == "attention" else state.time_ms
         state.op_index += 1
         if state.op_index == len(state.ops):
+            dispatcher.advance_time(state.time_ms)
             _complete_batch(state.batch, state.time_ms)
+            dispatcher.mark_batch_finished(state.batch)
             dp_available_ms[dp] = state.time_ms
             del states[dp]
 
@@ -569,8 +754,14 @@ def simulate_afd(
         f"attention_dp{dp}": value / makespan if makespan else 0.0
         for dp, value in enumerate(attention_busy_ms)
     }
-    utilization["ffn_ep8"] = ffn_busy_ms / makespan if makespan else 0.0
+    utilization[f"ffn_ep{afd_ep_size}"] = ffn_busy_ms / makespan if makespan else 0.0
     result = _build_result("afd", config, requests, timeline, makespan, utilization)
+    result["summary"]["topology"] = {
+        "dp_size": afd_dp_count,
+        "tp_size": afd_tp_size,
+        "ep_size": afd_ep_size,
+    }
+    result["summary"]["scheduler_policy"] = dispatcher.policy
     result["summary"]["attention_wait_ms"] = attention_wait_ms
     result["summary"]["cam_calibrated"] = config.cam.calibrated
     return result
@@ -677,54 +868,324 @@ def _request_ready_ms(request: RuntimeRequest) -> float:
 
 def _pack_batch(
     config: SimulationConfig,
+    batch_config: SchedulerBatchConfig,
     queue: list[RuntimeRequest],
     *,
     dp: int,
     batch_id: int,
     start_ms: float,
 ) -> SchedulerBatch | None:
-    budget = config.scheduler.max_num_batched_tokens
+    planned_segments, remaining_states = _plan_fifo_wave(
+        config,
+        batch_config,
+        _fifo_request_states(queue),
+        start_ms=start_ms,
+    )
+    if not planned_segments:
+        return None
     segments = []
-    while queue and len(segments) < config.scheduler.max_num_seqs and budget > 0:
-        request = queue[0]
-        if _request_ready_ms(request) > start_ms:
-            break
-        remaining = request.remaining_query_tokens
-        if not config.scheduler.chunked_prefill:
-            if remaining > budget:
-                if not segments:
-                    raise ValueError(
-                        f"request {request.spec.request_id} has {remaining} "
-                        "uncached tokens, "
-                        "exceeding non-chunked max_num_batched_tokens"
-                    )
-                break
-            query_tokens = remaining
-        else:
-            query_tokens = min(remaining, config.scheduler.chunk_size, budget)
-        prefix_tokens = request.current_prefix_tokens
-        request.computed_query_tokens += query_tokens
+    for planned_segment in planned_segments:
+        request = planned_segment.request
+        request.computed_query_tokens += planned_segment.query_tokens
         if request.first_scheduled_ms is None:
             request.first_scheduled_ms = start_ms
         segments.append(
             BatchSegment(
                 request=request,
-                prefix_tokens=prefix_tokens,
-                query_tokens=query_tokens,
+                prefix_tokens=planned_segment.prefix_tokens,
+                query_tokens=planned_segment.query_tokens,
             )
         )
-        budget -= query_tokens
-        if request.remaining_query_tokens == 0:
-            queue.pop(0)
-        else:
-            break
-    if not segments:
-        return None
+    queue[:] = [state.request for state in remaining_states]
     return SchedulerBatch(
         batch_id=batch_id,
         dp=dp,
         segments=tuple(segments),
     )
+
+
+def _fifo_request_states(
+    requests: Iterable[RuntimeRequest],
+) -> tuple[FifoRequestState, ...]:
+    return tuple(
+        FifoRequestState(
+            request=request,
+            prefix_tokens=request.current_prefix_tokens,
+            remaining_query_tokens=request.remaining_query_tokens,
+        )
+        for request in requests
+    )
+
+
+def _plan_fifo_wave(
+    config: SimulationConfig,
+    batch_config: SchedulerBatchConfig,
+    states: tuple[FifoRequestState, ...],
+    *,
+    start_ms: float,
+) -> tuple[tuple[FifoWaveSegment, ...], tuple[FifoRequestState, ...]]:
+    """Plan one FIFO wave without mutating runtime requests.
+
+    A request contributes at most one chunk to a wave. If that chunk does not
+    consume the wave budget, later FIFO requests may use the remaining budget.
+    Partial requests retain their relative order for the next wave.
+    """
+
+    budget = batch_config.max_num_batched_tokens
+    segments: list[FifoWaveSegment] = []
+    remaining_states: list[FifoRequestState] = []
+    state_index = 0
+    while (
+        state_index < len(states)
+        and len(segments) < config.scheduler.max_num_seqs
+        and budget > 0
+    ):
+        state = states[state_index]
+        if _request_ready_ms(state.request) > start_ms:
+            break
+        if not config.scheduler.chunked_prefill:
+            if state.remaining_query_tokens > budget:
+                if not segments:
+                    raise ValueError(
+                        f"request {state.request.spec.request_id} has "
+                        f"{state.remaining_query_tokens} uncached tokens, "
+                        "exceeding non-chunked max_num_batched_tokens"
+                    )
+                break
+            query_tokens = state.remaining_query_tokens
+        else:
+            query_tokens = min(
+                state.remaining_query_tokens,
+                batch_config.chunk_size,
+                budget,
+            )
+        remaining_query_tokens = state.remaining_query_tokens - query_tokens
+        segments.append(
+            FifoWaveSegment(
+                request=state.request,
+                prefix_tokens=state.prefix_tokens,
+                query_tokens=query_tokens,
+                remaining_query_tokens=remaining_query_tokens,
+            )
+        )
+        if remaining_query_tokens > 0:
+            remaining_states.append(
+                FifoRequestState(
+                    request=state.request,
+                    prefix_tokens=state.prefix_tokens + query_tokens,
+                    remaining_query_tokens=remaining_query_tokens,
+                )
+            )
+        budget -= query_tokens
+        state_index += 1
+    remaining_states.extend(states[state_index:])
+    return tuple(segments), tuple(remaining_states)
+
+
+def _afd_wave_completion_scores(
+    config: SimulationConfig,
+    request: RuntimeRequest,
+    queues: list[list[RuntimeRequest]],
+    states: dict[int, AfdDpState],
+    layer_count: int,
+    policy: str,
+) -> tuple[DpScore, ...]:
+    """Estimate each DP's FIFO tail-wave completion in Attention work units."""
+
+    use_squares = policy == AFD_WAVE_TOKEN_SQUARE_SUM_POLICY
+    arrival_ms = request.spec.arrival_ms
+    scores = []
+    for dp, queue in enumerate(queues):
+        running_work = _afd_remaining_attention_work(
+            states.get(dp), arrival_ms, use_squares
+        )
+        queued_waves = _fifo_waves(
+            config,
+            config.scheduler.afd,
+            (*queue, request),
+        )
+        completion_wave_idx = _fifo_completion_wave_index(queued_waves, request)
+        queued_work = sum(
+            _afd_wave_attention_work(
+                tuple(segment.query_tokens for segment in wave),
+                config.afd.ubatch_split,
+                layer_count,
+                use_squares,
+            )
+            for wave in queued_waves[: completion_wave_idx + 1]
+        )
+        scores.append((running_work + queued_work,))
+    return tuple(scores)
+
+
+def _merged_wave_completion_scores(
+    config: SimulationConfig,
+    request: RuntimeRequest,
+    queues: list[list[RuntimeRequest]],
+    policy: str,
+) -> tuple[DpScore, ...]:
+    """Score FIFO placement by global wave count and synchronous drain work."""
+
+    use_squares = policy == MERGED_WAVE_TOKEN_SQUARE_SUM_POLICY
+    scores = []
+    for candidate_dp in range(len(queues)):
+        waves_by_dp = [
+            _fifo_waves(
+                config,
+                config.scheduler.merged,
+                (*queue, request) if dp == candidate_dp else tuple(queue),
+            )
+            for dp, queue in enumerate(queues)
+        ]
+        global_wave_count = max(map(len, waves_by_dp))
+        global_wave_work = tuple(
+            max(
+                (
+                    _query_token_work(
+                        tuple(segment.query_tokens for segment in waves[wave_idx]),
+                        use_squares,
+                    )
+                    for waves in waves_by_dp
+                    if wave_idx < len(waves)
+                ),
+                default=0.0,
+            )
+            for wave_idx in range(global_wave_count)
+        )
+        candidate_wave_idx = _fifo_completion_wave_index(
+            waves_by_dp[candidate_dp], request
+        )
+        scores.append(
+            (
+                float(global_wave_count),
+                sum(global_wave_work),
+                sum(global_wave_work[: candidate_wave_idx + 1]),
+            )
+        )
+    return tuple(scores)
+
+
+def _afd_remaining_attention_work(
+    state: AfdDpState | None,
+    arrival_ms: float,
+    use_squares: bool,
+) -> float:
+    if state is None:
+        return 0.0
+    work = 0.0
+    if (
+        state.last_op_type == "attention"
+        and state.last_op_start_ms < arrival_ms < state.last_op_end_ms
+    ):
+        stage = state.stages[state.last_op_stage]
+        remaining_ratio = (state.last_op_end_ms - arrival_ms) / (
+            state.last_op_end_ms - state.last_op_start_ms
+        )
+        work += _query_token_work(
+            tuple(segment.query_tokens for segment in stage.segments),
+            use_squares,
+        ) * remaining_ratio
+    for op_type, stage_idx, _ in state.ops[state.op_index :]:
+        if op_type != "attention":
+            continue
+        work += _query_token_work(
+            tuple(
+                segment.query_tokens
+                for segment in state.stages[stage_idx].segments
+            ),
+            use_squares,
+        )
+    return work
+
+
+def _fifo_waves(
+    config: SimulationConfig,
+    batch_config: SchedulerBatchConfig,
+    requests: tuple[RuntimeRequest, ...],
+) -> tuple[tuple[FifoWaveSegment, ...], ...]:
+    """Plan all future FIFO waves using the runtime batch planner."""
+
+    waves = []
+    states = _fifo_request_states(requests)
+    while states:
+        segments, remaining_states = _plan_fifo_wave(
+            config,
+            batch_config,
+            states,
+            start_ms=math.inf,
+        )
+        if not segments:
+            raise RuntimeError("FIFO wave planner made no progress")
+        waves.append(segments)
+        states = remaining_states
+    return tuple(waves)
+
+
+def _fifo_completion_wave_index(
+    waves: tuple[tuple[FifoWaveSegment, ...], ...],
+    request: RuntimeRequest,
+) -> int:
+    for wave_idx, wave in enumerate(waves):
+        if any(
+            segment.request is request and segment.remaining_query_tokens == 0
+            for segment in wave
+        ):
+            return wave_idx
+    raise RuntimeError(f"request {request.spec.request_id} has no completion wave")
+
+
+def _afd_wave_attention_work(
+    query_tokens: tuple[int, ...],
+    ubatch_split: str,
+    layer_count: int,
+    use_squares: bool,
+) -> float:
+    stages = _split_query_token_lengths(query_tokens, ubatch_split)
+    per_layer_work = sum(
+        _query_token_work(stage, use_squares) for stage in stages
+    )
+    return per_layer_work * layer_count
+
+
+def _split_query_token_lengths(
+    query_tokens: tuple[int, ...], split: str
+) -> tuple[tuple[int, ...], ...]:
+    total_tokens = sum(query_tokens)
+    if len(query_tokens) < 2 and split == "request":
+        return (query_tokens,)
+    if split == "request":
+        cumulative = 0
+        best_index = 1
+        best_distance = math.inf
+        for index in range(1, len(query_tokens)):
+            cumulative += query_tokens[index - 1]
+            distance = abs(cumulative * 2 - total_tokens)
+            if distance < best_distance:
+                best_distance = distance
+                best_index = index
+        return (query_tokens[:best_index], query_tokens[best_index:])
+    if total_tokens < 2:
+        return (query_tokens,)
+    split_token = (total_tokens + 1) // 2
+    stages: list[list[int]] = [[], []]
+    cursor = 0
+    for tokens in query_tokens:
+        segment_start = cursor
+        segment_end = cursor + tokens
+        for stage_idx, (start, end) in enumerate(
+            ((0, split_token), (split_token, total_tokens))
+        ):
+            overlap = min(segment_end, end) - max(segment_start, start)
+            if overlap > 0:
+                stages[stage_idx].append(overlap)
+        cursor = segment_end
+    return tuple(tuple(stage) for stage in stages if stage)
+
+
+def _query_token_work(query_tokens: tuple[int, ...], use_squares: bool) -> float:
+    if use_squares:
+        return float(sum(tokens**2 for tokens in query_tokens))
+    return float(sum(query_tokens))
 
 
 def _split_afd_stages(batch: SchedulerBatch, split: str) -> tuple[AfdStage, ...]:
@@ -822,6 +1283,7 @@ def _load_afd_state(
     start_ms = max(current_time_ms, _request_ready_ms(queue[0]))
     batch = _pack_batch(
         config,
+        config.scheduler.afd,
         queue,
         dp=dp,
         batch_id=next_batch_id,
@@ -913,7 +1375,8 @@ def _append_timeline(
 ) -> None:
     if not config.output.include_timeline:
         return
-    if len(timeline) > config.output.timeline_max_events:
+    timeline_max_events = config.output.timeline_max_events
+    if timeline_max_events is not None and len(timeline) > timeline_max_events:
         return
     event = {
         "architecture": architecture,
@@ -989,7 +1452,10 @@ def _build_result(
         "slo_attainment": slo_hits / len(ttfts),
         "slo_goodput_rps": slo_hits / elapsed_s,
         "utilization": utilization,
-        "timeline_truncated": len(timeline) > config.output.timeline_max_events,
+        "timeline_truncated": (
+            config.output.timeline_max_events is not None
+            and len(timeline) > config.output.timeline_max_events
+        ),
     }
     request_payload = []
     if config.output.include_requests:
@@ -1014,7 +1480,11 @@ def _build_result(
     return {
         "summary": summary,
         "requests": request_payload,
-        "timeline": timeline[: config.output.timeline_max_events],
+        "timeline": (
+            timeline
+            if config.output.timeline_max_events is None
+            else timeline[: config.output.timeline_max_events]
+        ),
     }
 
 
@@ -1055,10 +1525,14 @@ def _validate_workload(
     ):
         raise ValueError("measurement window contains no requests")
     if not config.scheduler.chunked_prefill:
+        max_num_batched_tokens = min(
+            config.scheduler.afd.max_num_batched_tokens,
+            config.scheduler.merged.max_num_batched_tokens,
+        )
         too_large = [
             request.request_id
             for request in workload
-            if request.query_tokens > config.scheduler.max_num_batched_tokens
+            if request.query_tokens > max_num_batched_tokens
         ]
         if too_large:
             raise ValueError(
