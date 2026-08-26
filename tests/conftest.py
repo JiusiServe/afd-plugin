@@ -101,6 +101,10 @@ def download_dataset(dataset_id: str, dataset_config: str | None = None) -> None
         dataset_id: Dataset repo id, e.g. ``openai/gsm8k``.
         dataset_config: Optional dataset configuration name, e.g. ``main``.
     """
+    # Must be set before ``datasets`` transitively imports huggingface_hub,
+    # which reads HF_HUB_DISABLE_XET once at import time.
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
     from datasets import load_dataset
 
     if dataset_config is None:

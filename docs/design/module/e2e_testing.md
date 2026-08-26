@@ -69,7 +69,8 @@ cleanup. Production code does not depend on the E2E harness.
 - `E2E-INV-001` — A case **MUST** have a stable lower-kebab-case ID and cover
   behavior not already covered by an existing case.
 - `E2E-INV-002` — A PR case **MUST NOT** use more than four unique devices.
-  Standard AFD cases **MUST** use 2 Attention ranks and 1 FFN rank.
+  Gate AFD cases **MUST** use 2 Attention ranks and 2 FFN ranks; 2A1F cases
+  are local-only.
 - `E2E-INV-003` — Cases sharing devices or ports **MUST** run sequentially,
   remain order-independent, and release owned process groups before the next
   case.
@@ -92,9 +93,9 @@ cleanup. Production code does not depend on the E2E harness.
 
 | Case | Runtime | Devices | Purpose |
 | --- | --- | ---: | --- |
-| `afd-eager` | AFD eager, 2A1F | 3 | Lifecycle and eager smoke test. |
-| `afd-graph` | AFD graph, 2A1F | 3 | Primary graph path. |
-| `afd-graph-dbo` | AFD graph + DBO, 2A1F | 3 | Graph path with DBO. |
+| `afd-eager-2a2f` | AFD eager, 2A2F | 4 | Lifecycle and eager smoke test. |
+| `afd-graph-2a2f` | AFD graph, 2A2F | 4 | Primary graph path. |
+| `afd-graph-dbo-2a2f` | AFD graph + DBO, 2A2F | 4 | Graph path with DBO. |
 | `baseline-graph` | Native vLLM graph, DP4/TP1/EP4 | 4 | Non-AFD control. |
 
 Target runtime is about 20 minutes per platform for PRs and at most 30 minutes
@@ -106,9 +107,9 @@ graph mode.
 `afd-eager-async-cam` is a separate NPU-only smoke test. It uses four devices
 for Attention DP1/TP2 and FFN DP2/TP1/EP2. It is not part of the PR gate above.
 
-`afd-graph-dbo-2a2f` is a separate GPU/NPU accuracy case. It uses four devices
-for Attention DP2/TP1 and FFN DP2/TP1/EP2 and runs GSM8K-7. The default gate
-selects only the four default cases by pytest node ID.
+The 2A1F cases (`afd-eager-2a1f`, `afd-graph-2a1f`, `afd-graph-dbo-2a1f`) are
+local-only scenarios: they use three of the four devices (two Attention ranks,
+one FFN rank) and run outside CI.
 
 The Qwen3.5/3.6 adapter family has text-only CUDA E2E evidence through
 `Qwen/Qwen3.6-35B-A3B`, using the native Qwen3.5/3.6 model boundary with
@@ -129,7 +130,7 @@ unverified.
 | Samples | first 7 | all 1319 |
 | Metric | GSM8K exact match | GSM8K exact match |
 | Minimum accuracy | 0.27 | 0.27 |
-| Cases | all four | `afd-graph-dbo` only |
+| Cases | all four | `afd-graph-dbo-2a2f` only |
 
 An accuracy of `0.27` requires at least 2 correct answers out of 7, or 357 out
 of 1319.

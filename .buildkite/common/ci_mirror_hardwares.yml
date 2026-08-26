@@ -3,7 +3,7 @@
 # ``agents`` + ``plugins``, then strips ``mirror_hardwares`` before Buildkite upload.
 #
 # CUDA naming: {chip}_{count}
-#   l4_1, h100_4
+#   l4_1, l4_4, h100_4
 
 mirror_hardwares:
   l4_1:
@@ -17,6 +17,23 @@ mirror_hardwares:
           shm-size: "8gb"
           environment:
             - HF_HOME=/fsx/hf_cache
+            - HF_HUB_DISABLE_XET=1
+            - HF_TOKEN
+          volumes:
+            - /fsx/hf_cache:/fsx/hf_cache
+
+  l4_4:
+    agents:
+      queue: gpu_4_queue
+    plugins:
+      - docker#v5.2.0:
+          image: public.ecr.aws/q9t5s3a7/vllm-ci-test-repo:$BUILDKITE_COMMIT
+          always-pull: true
+          propagate-environment: true
+          shm-size: "8gb"
+          environment:
+            - HF_HOME=/fsx/hf_cache
+            - HF_HUB_DISABLE_XET=1
             - HF_TOKEN
           volumes:
             - /fsx/hf_cache:/fsx/hf_cache
@@ -40,6 +57,8 @@ mirror_hardwares:
                 env:
                   - name: HF_HOME
                     value: /root/.cache/huggingface
+                  - name: HF_HUB_DISABLE_XET
+                    value: "1"
                   - name: HF_TOKEN
                     valueFrom:
                       secretKeyRef:

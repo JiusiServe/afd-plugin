@@ -26,13 +26,21 @@ DEEPSEEK_V2_LITE_MAX_MODEL_LEN = 4096
 DEFAULT_DEVICE_IDS = ("0", "1", "2", "3")
 ATTENTION_DEVICE_COUNT = 2
 AFD_FFN_DEVICE_COUNT = 1
+AFD_TWO_FFN_DEVICE_COUNT = 2
 BASELINE_DEVICE_COUNT = 4
+TWO_FFN_SCENARIO_SUFFIX = "-2a2f"
+# CI gates select the gate scenarios by pytest node ID (E2E-INV-007); the
+# 2A1F scenarios below are local-only cases.
 SCENARIOS = (
+    # Gate scenarios: baseline plus the 2A2F AFD cases.
     "baseline-graph",
-    "afd-eager",
-    "afd-graph",
-    "afd-graph-dbo",
+    "afd-eager-2a2f",
+    "afd-graph-2a2f",
     "afd-graph-dbo-2a2f",
+    # Local scenarios: 2 Attention ranks + 1 FFN rank.
+    "afd-eager-2a1f",
+    "afd-graph-2a1f",
+    "afd-graph-dbo-2a1f",
     *V2_SCENARIOS,
 )
 
@@ -94,13 +102,13 @@ def build_runner_command(scenario: str, gsm8k_output_path: Path) -> list[str]:
         ffn_devices = devices[1:2]
     else:
         attention_devices = devices[:ATTENTION_DEVICE_COUNT]
-        ffn_count = (
-            2
-            if scenario == "afd-graph-dbo-2a2f" or scenario in V2_SCENARIOS
+        ffn_device_count = (
+            AFD_TWO_FFN_DEVICE_COUNT
+            if scenario.endswith(TWO_FFN_SCENARIO_SUFFIX) or scenario in V2_SCENARIOS
             else AFD_FFN_DEVICE_COUNT
         )
         ffn_devices = devices[
-            ATTENTION_DEVICE_COUNT : ATTENTION_DEVICE_COUNT + ffn_count
+            ATTENTION_DEVICE_COUNT : ATTENTION_DEVICE_COUNT + ffn_device_count
         ]
 
     command = [
