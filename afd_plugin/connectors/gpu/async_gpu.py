@@ -1039,13 +1039,16 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             expert_counts=[0] * self.expert_per_rank,
         )
         for peer in peers:
+            # Header only: the shutdown bit is the whole message, so every
+            # payload field is empty and write_slot skips it.
             window.write_slot(
                 peer=peer,
                 region=self.role_rank,
                 ring=0,
                 header=header,
+                expand_idx=None,
+                weights=None,
                 routed_x=None,
-                shared_idx=None,
                 shared_x=None,
             )
 

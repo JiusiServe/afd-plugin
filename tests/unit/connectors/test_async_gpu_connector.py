@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import inspect
 from itertools import pairwise
 from types import SimpleNamespace
 
@@ -23,6 +24,7 @@ from afd_plugin.connectors.gpu.symm_window import (  # noqa: E402
     FLAG_SHUTDOWN_BIT,
     HEADER_FIXED_WORDS,
     SlotLayout,
+    SymmWindow,
     decode_header,
     encode_header,
 )
@@ -115,6 +117,34 @@ def test_shared_split_is_empty_without_shared_experts():
     connector = SimpleNamespace(has_shared_experts=False, ffn_size=4)
     for rank in range(4):
         assert GpuAsyncAFDConnector._shared_slice(connector, rank, 64) == slice(0, 0)
+
+
+def test_shutdown_announcement_matches_the_window_write_signature(layout: SlotLayout):
+    # Nothing calls announce_shutdown yet, so no runtime path would notice it
+    # passing a keyword write_slot does not take. Binding the arguments it
+    # actually sends against the real signature is what catches that.
+    calls: list[dict] = []
+    window = SimpleNamespace(write_slot=lambda **kwargs: calls.append(kwargs))
+    connector = SimpleNamespace(
+        _require_initialized=lambda: window,
+        attn_size=2,
+        ffn_size=3,
+        is_attention=True,
+        _seq=7,
+        layout=layout,
+        role_rank=1,
+        topk=6,
+        expert_per_rank=layout.header_words - HEADER_FIXED_WORDS,
+    )
+
+    GpuAsyncAFDConnector.announce_shutdown(connector)
+
+    # One message per opposite-role peer, each carrying the shutdown bit.
+    assert len(calls) == 3
+    signature = inspect.signature(SymmWindow.write_slot)
+    for kwargs in calls:
+        signature.bind(window, **kwargs)
+        assert decode_header(kwargs["header"]).is_shutdown
 
 
 def test_every_field_offset_is_viewable_as_int32_and_payload(layout: SlotLayout):
