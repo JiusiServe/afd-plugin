@@ -1,11 +1,13 @@
 # DSV4-Flash Prefill 性能仿真器
 
-该工具在相同 16-die 预算下比较两种 Prefill 执行语义：
+该工具用可切换的等 die profile 比较两种 Prefill 执行语义：
 
-- CAMAsync AFD：Attention `DP2×TP4`（8 die）与 FFN `EP8`（8 die），两个 Attention DP 独立调度，FFN 使用共享 FCFS 队列；
-- 合并部署：`DP4×TP4/SP4/global EP16`，各 DP 每层等待全局 wave；全局 dispatch/routed expert/combine collective 按四个 DP 的 query token 总量建模，combine 后的本地尾段按最重 DP 建模。
+- CAMAsync AFD：profile 指定 Attention `DP×TP` 与独立 FFN `EP8`，Attention DP 异步调度，FFN 使用共享 FCFS 队列；
+- 合并部署：profile 指定 `DP×TP/global EP`，各 DP 每层等待全局 wave；全局 dispatch/routed expert/combine collective 按所有 DP 的 query token 总量建模，combine 后的本地尾段按最重 DP 建模。
 
 Python 后端是唯一仿真实现。CLI、HTTP API 和页面都调用同一套调度、离散事件和指标计算逻辑，前端不重复实现模型。
+
+所有比较强制使用相同的物理 die 数：`AFD Attention num_devices + AFD FFN num_devices = merged num_devices`。merged 的 TP、DP、EP 是同一组 die 上的并行维度，EP 不额外增加设备；例如 AFD `DP5×TP8 + 独立 FFN EP8` 使用 `40+8=48` die，对应 merged `DP6×TP8×EP48` 使用 48 die。不满足等 die 或 `DP×TP=num_devices` 的 profile 会在生成、组合、仿真或服务加载时直接报错。
 
 ## 1. 快速开始
 
@@ -28,21 +30,72 @@ python -m simulator profiles build \
 - prefix anchors：`0,8K,32K,64K,96K,120K`；
 - AFD Attention profile：8-device `DP2×TP4`，保留 `attention_router/afd_post`；
 - AFD 单 FFN job profile：8-device `DP8×TP1×EP8`，关闭 SP，每 rank 输入 `ceil(stage_query_tokens/8)`，保留 `routed_experts/shared_expert`；
-- 合并 profile：16-device `DP4×TP4×EP16`；
+- 合并 profile 默认使用 16-device `DP4×TP4×EP16`；可用 `--merged-dp-size 2 --merged-tp-size 8` 生成 `DP2×TP8×EP16`；
 - `DeepSeek-V4-Flash`、msModeling `analytic`、sequence parallel、compile 路径。
 
 最大的 query anchor 同时定义最大 context（默认 128K）。生成器会自动补 `prefix=0`、`query=1`、每个 prefix 的 `query=max_context-prefix` 边界点，以及 `prefix=max_context-1, query=1`，因此整个 `prefix+query<=max_context` 三角域都可插值。可通过 `--query-anchors`、`--prefix-anchors`、`--model-id`、`--device` 修改。非默认模型还应通过 `--hidden-size` 和 `--moe-top-k` 记录正确的模型 provenance；tooltip 的 Shape 直接来自 trace，TopK 来自 `--moe-top-k`。超出生成域的输入会报错，不做静默外推。`--keep-traces DIR` 可保留中间 Chrome trace。
+
+默认设备名 `ATLAS_800_A3_752T_128G_DIE` 是 msModeling 的单 die profile：
+每个 `--num-devices` 计数代表一个 64 GiB die；一张标称 128G 的 A3 卡包含
+两个 die。因此页面中的 die 数除以二才是物理卡数。该 profile 的通信不是
+全设备同速假设：rank 按 `[48, 8, 2]` 排列，并分别为跨 pod 的双层 CLOS、
+pod 内单层 CLOS 和卡内 SIO 使用不同的带宽与延迟。
+
+仓库内的 batch-64K profiles 覆盖以下等 die 拓扑。相同 AFD TP 和 FFN EP8
+的行只复用一次 per-DP 实采点；增加 AFD DP replica 不会重新运行
+msModeling。merged 的 TP 或全局 EP 变化时则重新生成 merged 点。运行时从
+profile spec 读取 DP/TP/EP，不对不同拓扑做比例换算。
+
+| die 数 | AFD Attention + 独立 FFN | merged 候选 |
+| ---: | --- | --- |
+| 16 | DP2×TP4 + EP8 | DP4×TP4×EP16；DP2×TP8×EP16 |
+| 24 | DP4×TP4 + EP8 | DP3×TP8×EP24；DP6×TP4×EP24 |
+| 32 | DP3×TP8 + EP8；DP6×TP4 + EP8 | DP4×TP8×EP32；DP8×TP4×EP32 |
+| 40 | DP4×TP8 + EP8 | DP5×TP8×EP40 |
+| 48 | DP5×TP8 + EP8 | DP6×TP8×EP48 |
+
+仅生成新的 merged 拓扑时可跳过 AFD 调用：
+
+```bash
+python -m simulator profiles build \
+  --msmodeling-root /path/to/msmodeling \
+  --python /path/to/msmodeling/python \
+  --topology merged \
+  --merged-num-devices 48 \
+  --merged-dp-size 6 \
+  --merged-tp-size 8 \
+  --merged-ep-size 48 \
+  --output /tmp/merged-dp6tp8ep48.json
+```
+
+AFD 只增加 DP replica、TP 与独立 FFN EP 不变时，使用已有 per-DP 点组合，避免重新运行 msModeling：
+
+```bash
+python -m simulator profiles compose \
+  --afd-profile simulator/profiles/existing-afd-tp8.json \
+  --merged-profile /tmp/merged-dp6tp8ep48.json \
+  --afd-dp-size 5 \
+  --output simulator/profiles/afd-dp5tp8-vs-merged-dp6tp8.json
+```
 
 ### 1.2 启动页面
 
 ```bash
 python -m simulator serve \
-  --profiles simulator/profiles/dsv4-flash-910c.json \
+  --profiles \
+    simulator/profiles/dsv4-batch-64k.json \
+    simulator/profiles/dsv4-batch-64k-dp2tp8.json \
+    simulator/profiles/dsv4-batch-64k-afd-dp3tp8-merged-dp4tp8.json \
+    simulator/profiles/dsv4-batch-64k-afd-dp5tp8-merged-dp6tp8.json \
+    simulator/profiles/dsv4-batch-64k-afd-dp4tp4-merged-dp3tp8.json \
+    simulator/profiles/dsv4-batch-64k-afd-dp6tp4-merged-dp8tp4.json \
+    simulator/profiles/dsv4-batch-64k-afd-dp4tp8-merged-dp5tp8.json \
+    simulator/profiles/dsv4-batch-64k-afd-dp4tp4-merged-dp6tp4.json \
   --host 127.0.0.1 \
   --port 8765
 ```
 
-浏览器访问 `http://127.0.0.1:8765`。
+浏览器访问 `http://127.0.0.1:8765`。服务会从全部输入 profile 中分别去重 AFD 和 merged 拓扑：AFD 下拉框列出所有 AFD 拓扑；选择后，merged 下拉框只列出总 die 数相同的选项，并默认选择该 AFD 原 profile 中的配对拓扑。同 die 下的其他 merged 拓扑仍可手动切换，例如 16-die AFD 可以比较 `DP4×TP4×EP16` 或 `DP2×TP8×EP16`。
 
 逐层关键路径时间线支持交互浏览：鼠标悬停或聚焦时间线后，按
 `W` / `S` 缩放，按 `A` / `D` 左右平移，按 `R` 复位；也可以使用
@@ -53,7 +106,7 @@ python -m simulator serve \
 放大到事件色块有足够空间时，色块内会直接显示 Attention、Router、
 Dispatch、FFN、Combine、Barrier 等阶段标签；空间不足时自动隐藏文字。
 时间线按执行路径合并展示泳道：AFD 的 CAM dispatch/combine 事件并入对应
-DP Attention 泳道，merged 的全局 EP16 阶段复制显示在四条 DP
+DP Attention 泳道，merged 的全局 EP 阶段复制显示在所有 DP
 Attention/FFN 泳道中。这里只改变前端布局，不改变后端事件和仿真结果。
 merged 时间线还会把相邻的 combine collective 与本地
 unpermute/TopK-weight 阶段合并成一个 `Combine` 色块，并将 SP 收尾阶段
@@ -101,31 +154,62 @@ python -m simulator sweep \
 
 优先级：CSV > `fixed_lengths`/`length_mix`。固定模式下 CSV 每行回放一次；持续模式下无时间戳 CSV 提供经验长度分布。
 
+WebUI 还提供 MoonConv V4 Flash 的 `formal_0/1/2`（各 512 条）和
+`screening`（128 条）内置 trace。它们只保留输入长度与相对到达时间；选择后
+自动切换到持续模式和 `scaled_trace`，按配置 QPS 缩放原 trace 的时间轴。
+
 ### 2.2 `arrival`
 
 | 字段 | 类型 / 默认值 | 说明 |
 | --- | --- | --- |
-| `arrival.kind` | `constant|poisson|trace` / `constant` | 固定间隔、泊松到达或回放 CSV 时间戳。 |
-| `arrival.qps` | `float` / `1.0` | `constant`/`poisson` 的 offered QPS；trace 模式忽略。 |
+| `arrival.kind` | `constant|poisson|scaled_trace|trace` / `constant` | 固定间隔、泊松到达、按 QPS 缩放 trace，或精确回放 CSV 时间戳。 |
+| `arrival.qps` | `float` / `1.0` | `constant`/`poisson` 的 offered QPS；`scaled_trace` 的目标平均 QPS；精确 `trace` 忽略。 |
 | `arrival.duration_s` | `float` / `60` | warmup 后的统计窗口和请求生成时长。 |
 | `arrival.warmup_s` | `float` / `10` | 持续负载预热时长；该区间到达的请求不进入最终指标。 |
 | `arrival.seed` | `int` / `1024` | 泊松间隔随机种子；长度采样使用 `seed+1`。 |
 
 `trace` 只支持持续模式，并要求 CSV 每一行都有 `arrival_time_ms`。第一条时间戳归零后按原间隔回放，只保留 `[0, warmup+duration)` 的请求；指标只统计 `[warmup, warmup+duration)` 内到达的请求，窗口内的空闲时间也进入吞吐分母。精确 trace 模式不支持自动 QPS 扫描。
 
+`scaled_trace` 同样要求完整时间戳。它保留所有相对间隔，包括同一时间戳形成的
+零间隔 burst；然后统一缩放间隔，使其平均值为 `1000/arrival.qps` ms。
+为了覆盖任意 warmup 和统计时长，trace 结束后按原请求及间隔顺序循环，并在
+循环边界插入一个缩放后的平均间隔。因此每个完整循环的 offered QPS 精确等于
+配置值。QPS sweep 可以使用 `scaled_trace`，每个扫描点重新缩放同一 arrival
+形状。
+
 ### 2.3 `scheduler`
 
 | 字段 | 类型 / 默认值 | 说明 |
 | --- | --- | --- |
-| `scheduler.policy` | `round_robin|vllm_queue_aware` / `round_robin` | `round_robin` 按到达顺序严格轮询；`vllm_queue_aware` 在请求到达时选择尚未完成请求数最少的 DP，同分时轮转。 |
+| `scheduler.afd_policy` | `current_runtime|afd_wave_token_sum|afd_wave_token_square_sum|prefill_token_greedy|prefill_token_square_greedy|vllm_queue_aware|round_robin` / `current_runtime` | AFD Attention DP 的独立路由策略。 |
+| `scheduler.merged_policy` | `current_runtime|merged_wave_token_sum|merged_wave_token_square_sum|prefill_token_greedy|prefill_token_square_greedy|vllm_queue_aware|round_robin` / `current_runtime` | merged DP 的独立路由策略。 |
 | `scheduler.max_num_seqs` | `int` / `64` | 一个 DP scheduler batch 最多包含的请求/请求 chunk 数。 |
-| `scheduler.max_num_batched_tokens` | `int` / `8192` | 一个 DP batch 的未缓存 query token 预算。 |
 | `scheduler.chunked_prefill` | `bool` / `false` | 是否允许长 Prompt 分多个 Prefill batch。AFD chunked 路径是敏感性假设，不代表当前运行时已支持。 |
-| `scheduler.chunk_size` | `int` / `max_num_batched_tokens` | 单请求每次最多调度的 query token；不得超过 batch token 预算。 |
+| `scheduler.afd.max_num_batched_tokens` | `int` / `8192` | AFD 单个 Attention DP batch 的未缓存 query token 预算。 |
+| `scheduler.afd.chunk_size` | `int` / AFD `max_num_batched_tokens` | AFD 单请求每个 wave 最多调度的 query token。 |
+| `scheduler.merged.max_num_batched_tokens` | `int` / `8192` | merged 单个 DP batch 的未缓存 query token 预算。 |
+| `scheduler.merged.chunk_size` | `int` / merged `max_num_batched_tokens` | merged 单请求每个 wave 最多调度的 query token。 |
 
-每个 DP 使用 FIFO 装箱。non-chunked 请求的未缓存长度若超过 token 预算会直接报错。chunked 请求保留已计算 prefix，最终 chunk 完成才算请求完成。
+AFD 与 merged 分别使用自己的 batch token 预算和 chunk 上限；旧的共享 `scheduler.max_num_batched_tokens`、`scheduler.chunk_size` 字段已经移除。每个 DP 使用 FIFO 装箱。non-chunked 请求的未缓存长度若超过任一架构的 token 预算会直接报错。chunked 模式下，每个请求在一个 wave 中至多贡献一个 chunk；若该 chunk 没有用完对应架构的 batch token 预算，调度器会继续按 FIFO 扫描后续请求来填充当前 wave。未完成请求保留已计算 prefix 和原有相对顺序，并在下一 wave 优先调度；因此后到的短请求可能与长请求的首个 chunk 同 wave，并比长请求更早完成。最终 chunk 完成才算请求完成。
 
-`vllm_queue_aware` 对齐当前 vLLM 内置 DP 负载均衡的请求数口径和轮转平局规则。vLLM 还会在存在 waiting 请求且 KV 使用率超过 50% 时增加压力惩罚；本仿真器没有 Decode 与 KV 容量/驻留模型，因此不模拟该项，也不将 Prefix Cache 命中率误作 KV 容量压力。请求长度本身不参与该策略评分。
+`current_runtime` 的架构差异如下：
+
+- merged 使用 vLLM 0.26 的 async-DP DPLB。
+- AFD async-DP 当前把 Attention engine core 替换为普通 `EngineCoreProc`，该路径不会发布 DPLB 的 waiting/running 统计；单 API frontend 下，client 只保留本地乐观计数，效果等价于轮询。因此 AFD 使用 `round_robin`。这是按当前代码路径得到的模型，多个相互独立的 API frontend 不在仿真范围内。
+
+两侧策略可以任意组合。例如 AFD 使用 `afd_wave_token_square_sum`、merged 使用 `merged_wave_token_sum`。实验分支不兼容旧的单字段 `scheduler.policy`；出现该字段会直接报错，避免隐式地把同一策略套到两种不同执行语义上。
+
+`vllm_queue_aware` 对齐 vLLM 0.26 的评分和更新机制：`score = 4 × waiting + running`，选择最低分 DP，同分时轮转扫描起点；engine 统计每 100 ms 更新一次，两次更新之间 client 会立即增加所选 DP 的本地 waiting 计数。请求 token 长度和 KV 使用率不参与这个版本的公式。仿真器显式跟踪 batch 外 waiting 与 batch 内 running 请求，chunked request 不会同时重复计数。
+
+`prefill_token_greedy` 是纯 Prefill 实验策略。每个请求到达时使用最新状态选择 outstanding query tokens 最少的 DP；outstanding 包含排队请求尚未计算的 query tokens 和正在运行 batch 的 query tokens，Prefix Cache 已命中的 tokens 不计入。同分时轮转。正在运行的 batch 在完成前按完整 query tokens 计数，不估算 batch 内部进度。
+
+`prefill_token_square_greedy` 使用每个未完成请求的 remaining query tokens 平方和作为 DP score，使长请求获得更高权重。chunk 完成后，其贡献从 `remaining_before²` 更新为 `remaining_after²`。该策略同样使用即时状态，不保留已完成工作的历史欠账。
+
+`afd_wave_token_sum` 和 `afd_wave_token_square_sum` 是 AFD 的 FIFO wave 完成时间实验。候选请求只能追加到某个 DP 的本地队尾；调度器按 AFD 自己的 `max_num_batched_tokens`、`chunk_size` 与共享的 `max_num_seqs` 重建尚未运行的 FIFO wave，并加上运行中 wave 尚未执行的 Attention op，选择候选请求预计最先完成的 DP。候选在某个 wave 内完成后，不再把该 DP 后续排空时间计入候选分数。两种策略分别以每个 uBatch 内的 `Σquery_tokens` 和 `Σquery_tokens²` 估算 Attention 工作；运行中的 Attention op 按已经经过的时间扣除进度。FFN 不作为加法项，因为 token uBatch 会隐藏 Attention/FFN 中较短的一侧；当前策略刻意用于先观察 Attention 主导区，不建模瓶颈翻转与流水 bubble。merged 使用其独立选择的策略。
+
+`merged_wave_token_sum` 和 `merged_wave_token_square_sum` 用相同的 FIFO 装箱约束预测同步 merged waves。对每个候选 DP，评分依次最小化：加入后的全局 wave 数、所有全局 wave 的预计 drain work、从当前状态到候选完成 wave 的预计 work。每个全局 wave 的 work 是该 wave 中最重 DP batch 的 `Σquery_tokens` 或 `Σquery_tokens²`。因此在某个 DP 新建本地 batch、但该序号的全局 wave 已由其他 DP 存在时，不会把它误判为新增全局 wave。已经运行或完成的 wave 不会重排。
+
+`vllm_queue_aware` 可让任一侧使用正常工作的 DPLB；两个 Prefill greedy 策略用于旧的即时 outstanding-token 对照；`round_robin` 严格轮询。
 
 ### 2.4 `prefix_cache`
 
@@ -150,7 +234,7 @@ Scheduler、FFN、Router 和 CAM 只处理 query tokens；Attention 用 `(prefix
 
 merged 的 Attention 仍按每个 DP 的真实 query tokens 分别查表，barrier 等待最慢
 DP。`merged_dispatch`、`routed_experts`、`merged_combine` 先求当前 wave 的
-四 DP query tokens 总和，再用 `global_query_tokens/4` 查询对称 DP4 profile；
+所有 DP query tokens 总和，再用 `global_query_tokens/dp_size` 查询当前 profile；
 不足 1 token 时按最小 anchor 1 处理。combine 后的 `merged_combine_local`、
 `shared_expert`、`merged_sp_post` 属于 per-DP 本地尾段，使用当前 wave 的
 `max(dp_query_tokens)` 查询 profile。时间线的 `Token 数` 是该 phase 的 workload
@@ -213,12 +297,26 @@ TTFT_proxy = Prefill完成时间 - arrival_time + fixed_ttft_overhead_ms
 | 字段 | 类型 / 默认值 | 说明 |
 | --- | --- | --- |
 | `output.include_timeline` | `bool` / `true` | 是否返回逐层阶段事件。QPS 扫描内部会关闭。 |
-| `output.timeline_max_events` | `int` / `20000` | 最大时间线事件数，超过后截断并设置 `timeline_truncated=true`。 |
+| `output.timeline_max_events` | `int|null` / `20000` | 最大时间线事件数，超过后截断并设置 `timeline_truncated=true`；`null` 表示不截断，WebUI 使用该模式。 |
 | `output.include_requests` | `bool` / `true` | 是否返回每个请求的到达、DP、cache、完成时间和 TTFT。 |
 
 ## 3. CSV 格式
 
-### 3.1 只有线上长度列表
+### 3.1 内置 MoonConv V4 Flash 长度
+
+内置数据来自
+[`ShwStone/moonconv-wildchat-v4-flash-prefill`](https://huggingface.co/datasets/ShwStone/moonconv-wildchat-v4-flash-prefill)
+revision `284a2326bbef3d5107995f52e38eeee9d0ccdb45`。这里只从 arrival
+JSONL 提取 `actual_input_length` 和 `base_arrival_offset_ms`。formal 三个窗口
+各 512 条，screening 为 128 条；总输入长度 min/max 为 891/63778。没有包含
+prompt、token IDs、request ID 或 Mooncake trace index。
+
+原始时间戳是 bursty 的，例如 formal_0 的 511 个相邻间隔中有 459 个为零。
+内置数据默认使用 `scaled_trace`，所以这些并发 burst 不变，只有非零时间尺度
+随目标 QPS 等比例变化。这里的 QPS 是完整循环的平均到达率，不会把 trace
+改造成固定间隔或泊松过程。
+
+### 3.2 只有线上长度列表
 
 ```csv
 input_length
@@ -230,7 +328,7 @@ input_length
 
 `input_length` 必填。重复行会保留，因此自然构成经验分布。
 
-### 3.2 完整 trace
+### 3.3 完整 trace
 
 ```csv
 request_id,arrival_time_ms,input_length,cached_prefix_tokens
@@ -252,9 +350,10 @@ r003,21,32768,24576
 
 | 接口 | 说明 |
 | --- | --- |
-| `GET /api/defaults` | 返回全部默认配置与当前 profile 元数据。 |
-| `POST /api/simulate` | Body 为完整配置 JSON；返回 AFD、合并结果和对比倍率。 |
-| `POST /api/sweep` | Body 为完整配置 JSON；返回两种架构的 QPS 曲线和最大 SLO QPS。 |
+| `GET /api/defaults` | 返回默认配置、`default_afd_topology_id`、去重后的 `afd_topologies` 与 `merged_topologies`。每个 AFD 条目提供同 die 的默认 merged ID。 |
+| `GET /api/length-datasets/{id}` | 返回内置数据集的 `arrival_time_ms,input_length` CSV；可用 ID 由 `/api/defaults` 的 `length_datasets` 给出。 |
+| `POST /api/simulate` | Body 为带 `afd_topology_id`、`merged_topology_id` 的完整配置 JSON；后端校验等 die 后返回对比结果。 |
+| `POST /api/sweep` | Body 为带 `afd_topology_id`、`merged_topology_id` 的完整配置 JSON；返回两种架构的 QPS 曲线和最大 SLO QPS。 |
 
 页面与 API 同源，默认只监听 `127.0.0.1`。请求 body 上限为 10 MiB。
 
@@ -274,8 +373,12 @@ r003,21,32768,24576
 
 - 算子时延来自 msModeling analytic trace；CAM 时延来自独立参数模型。AFD profile 在归一化阶段按 phase 合成 Attention 与单 FFN job 两种 trace，并在 JSON metadata 中保存来源和命令。
 - Attention batch 时延按各请求/chunk profile 求和；AFD FFN/MoE 使用 stage 总 query tokens 查表。FFN 侧假设 EP8 各 rank 均分单 job token，shared expert 也按每 rank `ceil(tokens/8)` 的 DP8×TP1 口径建模。
-- merged 的 routed/combine 以及按需求近似的 dispatch 使用 `global_query_tokens/4`；combine-local/shared/SP 使用 `max(dp_query_tokens)`。
+- merged 的 routed/combine 以及按需求近似的 dispatch 使用 `global_query_tokens/dp_size`；combine-local/shared/SP 使用 `max(dp_query_tokens)`。`dp_size`、`tp_size` 和 `ep_size` 均来自加载的 profile spec。
 - 不模拟 Decode、KV transfer、prefix cache 容量/淘汰算法、MTP、graph、prefix cache lookup 并发、HBM OOM、EPLB 或真实专家负载偏斜。
+- DeepSeek-V4-Flash 的 256 个 routed experts 若不能被 EP 整除，会按 rank
+  分配 `floor(256/EP)` 或 `ceil(256/EP)` 个本地 experts；msModeling 当前
+  rank 0 trace 会落在较重一侧。collective analytic 公式则对任意 EP 使用连续
+  的 `log2(EP)`，不会额外刻画非 2 的幂规模在真实通信算法中的补尾轮次。
 - AFD DSV4 NPU 与 AFD chunked prefill 都是架构性能假设，不代表当前 afd-plugin 已完成对应 E2E 支持。
 
 ## 7. 测试
