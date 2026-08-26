@@ -60,8 +60,10 @@ class ArrivalConfig:
             warmup_s=float(raw.get("warmup_s", DEFAULT_WARMUP_S)),
             seed=int(raw.get("seed", DEFAULT_RANDOM_SEED)),
         )
-        if item.kind not in {"constant", "poisson", "trace"}:
-            raise ValueError("arrival.kind must be constant, poisson, or trace")
+        if item.kind not in {"constant", "poisson", "trace", "scaled_trace"}:
+            raise ValueError(
+                "arrival.kind must be constant, poisson, trace, or scaled_trace"
+            )
         if item.kind != "trace":
             _positive(item.qps, "arrival.qps")
         _positive(item.duration_s, "arrival.duration_s")
@@ -343,8 +345,10 @@ class SimulationConfig:
     def validate(self) -> None:
         if self.mode not in {"fixed", "continuous"}:
             raise ValueError("mode must be fixed or continuous")
-        if self.mode == "fixed" and self.arrival.kind == "trace":
-            raise ValueError("arrival.kind=trace requires mode='continuous'")
+        if self.mode == "fixed" and self.arrival.kind in {"trace", "scaled_trace"}:
+            raise ValueError(
+                f"arrival.kind={self.arrival.kind} requires mode='continuous'"
+            )
         if self.csv_sampling not in {"cycle", "sample"}:
             raise ValueError("csv_sampling must be cycle or sample")
         if self.fixed_ttft_overhead_ms < 0:

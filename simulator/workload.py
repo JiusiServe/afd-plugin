@@ -130,9 +130,21 @@ def generate_workload(config: SimulationConfig) -> tuple[RequestSpec, ...]:
         return _materialize_requests(raw_requests, arrivals, config.prefix_cache)
 
     if csv_requests and all(item.arrival_time_ms is not None for item in csv_requests):
+        if config.arrival.kind == "scaled_trace":
+            raw_requests, arrivals = _scale_and_repeat_trace(
+                csv_requests,
+                config.arrival.qps,
+                (config.arrival.warmup_s + config.arrival.duration_s) * 1_000.0,
+            )
+            return _materialize_requests(
+                raw_requests,
+                arrivals,
+                config.prefix_cache,
+            )
         if config.arrival.kind != "trace":
             raise ValueError(
-                "CSV arrival_time_ms requires arrival.kind=trace for exact replay"
+                "CSV arrival_time_ms requires arrival.kind=trace for exact replay "
+                "or scaled_trace for QPS-scaled replay"
             )
         first_arrival = float(csv_requests[0].arrival_time_ms or 0.0)
         arrivals = [
@@ -179,8 +191,8 @@ def _generate_arrivals(
     end_ms: float,
     rng: random.Random,
 ) -> list[float]:
-    if kind == "trace":
-        raise ValueError("arrival.kind=trace requires CSV arrival_time_ms")
+    if kind in {"trace", "scaled_trace"}:
+        raise ValueError(f"arrival.kind={kind} requires CSV arrival_time_ms")
     arrivals = []
     current_ms = 0.0
     while current_ms < end_ms:
@@ -190,6 +202,46 @@ def _generate_arrivals(
         else:
             current_ms += rng.expovariate(qps) * 1_000.0
     return arrivals
+
+
+def _scale_and_repeat_trace(
+    requests: tuple[CsvRequest, ...],
+    qps: float,
+    end_ms: float,
+) -> tuple[tuple[CsvRequest, ...], list[float]]:
+    if len(requests) < 2:
+        raise ValueError("scaled_trace requires at least two timestamped requests")
+    source_arrivals = [float(request.arrival_time_ms or 0.0) for request in requests]
+    source_span_ms = source_arrivals[-1] - source_arrivals[0]
+    if source_span_ms <= 0:
+        raise ValueError("scaled_trace timestamps must span a positive duration")
+
+    source_mean_gap_ms = source_span_ms / (len(source_arrivals) - 1)
+    gap_scale = (1_000.0 / qps) / source_mean_gap_ms
+    source_gaps_ms = [
+        current - previous
+        for previous, current in zip(
+            source_arrivals[:-1],
+            source_arrivals[1:],
+            strict=True,
+        )
+    ]
+    # A mean-sized wrap gap keeps each repeated trace cycle aligned with its
+    # original length sequence and gives the configured mean QPS exactly over
+    # every complete cycle. Zero source gaps remain zero after scaling.
+    source_gaps_ms.append(source_mean_gap_ms)
+
+    repeated_requests = []
+    scaled_arrivals = []
+    current_ms = 0.0
+    index = 0
+    while current_ms < end_ms:
+        trace_index = index % len(requests)
+        repeated_requests.append(requests[trace_index])
+        scaled_arrivals.append(current_ms)
+        current_ms += source_gaps_ms[trace_index] * gap_scale
+        index += 1
+    return tuple(repeated_requests), scaled_arrivals
 
 
 def _choose_csv_request(
