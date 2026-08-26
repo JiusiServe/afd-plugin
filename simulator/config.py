@@ -15,6 +15,27 @@ DEFAULT_RANDOM_SEED = 1_024
 DEFAULT_SLO_LIMIT_MS = 1_000.0
 DEFAULT_SLO_TARGET_RATIO = 0.99
 DEFAULT_TIMELINE_MAX_EVENTS = 20_000
+DEFAULT_SCHEDULER_POLICY = "current_runtime"
+ARRIVAL_KINDS = frozenset({"constant", "poisson", "trace", "scaled_trace"})
+COMMON_SCHEDULER_POLICIES = frozenset(
+    {
+        "current_runtime",
+        "prefill_token_greedy",
+        "prefill_token_square_greedy",
+        "round_robin",
+        "vllm_queue_aware",
+    }
+)
+AFD_WAVE_SCHEDULER_POLICIES = frozenset(
+    {"afd_wave_token_sum", "afd_wave_token_square_sum"}
+)
+MERGED_WAVE_SCHEDULER_POLICIES = frozenset(
+    {"merged_wave_token_sum", "merged_wave_token_square_sum"}
+)
+AFD_SCHEDULER_POLICIES = COMMON_SCHEDULER_POLICIES | AFD_WAVE_SCHEDULER_POLICIES
+MERGED_SCHEDULER_POLICIES = (
+    COMMON_SCHEDULER_POLICIES | MERGED_WAVE_SCHEDULER_POLICIES
+)
 
 
 def _mapping(value: Any, name: str) -> dict[str, Any]:
@@ -60,7 +81,7 @@ class ArrivalConfig:
             warmup_s=float(raw.get("warmup_s", DEFAULT_WARMUP_S)),
             seed=int(raw.get("seed", DEFAULT_RANDOM_SEED)),
         )
-        if item.kind not in {"constant", "poisson", "trace", "scaled_trace"}:
+        if item.kind not in ARRIVAL_KINDS:
             raise ValueError(
                 "arrival.kind must be constant, poisson, trace, or scaled_trace"
             )
@@ -73,34 +94,75 @@ class ArrivalConfig:
 
 
 @dataclass(frozen=True)
-class SchedulerConfig:
-    policy: str = "round_robin"
-    max_num_seqs: int = DEFAULT_MAX_NUM_SEQS
+class SchedulerBatchConfig:
     max_num_batched_tokens: int = DEFAULT_MAX_BATCHED_TOKENS
-    chunked_prefill: bool = False
     chunk_size: int = DEFAULT_MAX_BATCHED_TOKENS
 
     @classmethod
-    def from_mapping(cls, raw: dict[str, Any]) -> SchedulerConfig:
+    def from_mapping(
+        cls, raw: dict[str, Any], name: str
+    ) -> SchedulerBatchConfig:
         max_batched_tokens = int(
             raw.get("max_num_batched_tokens", DEFAULT_MAX_BATCHED_TOKENS)
         )
         item = cls(
-            policy=str(raw.get("policy", "round_robin")),
-            max_num_seqs=int(raw.get("max_num_seqs", DEFAULT_MAX_NUM_SEQS)),
             max_num_batched_tokens=max_batched_tokens,
-            chunked_prefill=bool(raw.get("chunked_prefill", False)),
             chunk_size=int(raw.get("chunk_size", max_batched_tokens)),
         )
-        if item.policy not in {"round_robin", "vllm_queue_aware"}:
-            raise ValueError("scheduler.policy must be round_robin or vllm_queue_aware")
-        _positive(item.max_num_seqs, "scheduler.max_num_seqs")
-        _positive(item.max_num_batched_tokens, "scheduler.max_num_batched_tokens")
-        _positive(item.chunk_size, "scheduler.chunk_size")
+        _positive(item.max_num_batched_tokens, f"{name}.max_num_batched_tokens")
+        _positive(item.chunk_size, f"{name}.chunk_size")
         if item.chunk_size > item.max_num_batched_tokens:
             raise ValueError(
-                "scheduler.chunk_size cannot exceed max_num_batched_tokens"
+                f"{name}.chunk_size cannot exceed max_num_batched_tokens"
             )
+        return item
+
+
+@dataclass(frozen=True)
+class SchedulerConfig:
+    afd_policy: str = DEFAULT_SCHEDULER_POLICY
+    merged_policy: str = DEFAULT_SCHEDULER_POLICY
+    max_num_seqs: int = DEFAULT_MAX_NUM_SEQS
+    chunked_prefill: bool = False
+    afd: SchedulerBatchConfig = field(default_factory=SchedulerBatchConfig)
+    merged: SchedulerBatchConfig = field(default_factory=SchedulerBatchConfig)
+
+    @classmethod
+    def from_mapping(cls, raw: dict[str, Any]) -> SchedulerConfig:
+        if "policy" in raw:
+            raise ValueError(
+                "scheduler.policy was removed; use scheduler.afd_policy and "
+                "scheduler.merged_policy"
+            )
+        removed_fields = {"max_num_batched_tokens", "chunk_size"} & raw.keys()
+        if removed_fields:
+            removed = ", ".join(
+                f"scheduler.{name}" for name in sorted(removed_fields)
+            )
+            raise ValueError(
+                f"{removed} were removed; use scheduler.afd and scheduler.merged"
+            )
+        item = cls(
+            afd_policy=str(raw.get("afd_policy", DEFAULT_SCHEDULER_POLICY)),
+            merged_policy=str(raw.get("merged_policy", DEFAULT_SCHEDULER_POLICY)),
+            max_num_seqs=int(raw.get("max_num_seqs", DEFAULT_MAX_NUM_SEQS)),
+            chunked_prefill=bool(raw.get("chunked_prefill", False)),
+            afd=SchedulerBatchConfig.from_mapping(
+                _mapping(raw.get("afd"), "scheduler.afd"),
+                "scheduler.afd",
+            ),
+            merged=SchedulerBatchConfig.from_mapping(
+                _mapping(raw.get("merged"), "scheduler.merged"),
+                "scheduler.merged",
+            ),
+        )
+        if item.afd_policy not in AFD_SCHEDULER_POLICIES:
+            choices = ", ".join(sorted(AFD_SCHEDULER_POLICIES))
+            raise ValueError(f"scheduler.afd_policy must be one of: {choices}")
+        if item.merged_policy not in MERGED_SCHEDULER_POLICIES:
+            choices = ", ".join(sorted(MERGED_SCHEDULER_POLICIES))
+            raise ValueError(f"scheduler.merged_policy must be one of: {choices}")
+        _positive(item.max_num_seqs, "scheduler.max_num_seqs")
         return item
 
 
@@ -272,19 +334,21 @@ class SweepConfig:
 @dataclass(frozen=True)
 class OutputConfig:
     include_timeline: bool = True
-    timeline_max_events: int = DEFAULT_TIMELINE_MAX_EVENTS
+    timeline_max_events: int | None = DEFAULT_TIMELINE_MAX_EVENTS
     include_requests: bool = True
 
     @classmethod
     def from_mapping(cls, raw: dict[str, Any]) -> OutputConfig:
+        raw_max_events = raw.get("timeline_max_events", DEFAULT_TIMELINE_MAX_EVENTS)
         item = cls(
             include_timeline=bool(raw.get("include_timeline", True)),
-            timeline_max_events=int(
-                raw.get("timeline_max_events", DEFAULT_TIMELINE_MAX_EVENTS)
+            timeline_max_events=(
+                None if raw_max_events is None else int(raw_max_events)
             ),
             include_requests=bool(raw.get("include_requests", True)),
         )
-        _positive(item.timeline_max_events, "output.timeline_max_events")
+        if item.timeline_max_events is not None:
+            _positive(item.timeline_max_events, "output.timeline_max_events")
         return item
 
 
@@ -359,13 +423,18 @@ class SimulationConfig:
             self.mode == "fixed"
             and not self.scheduler.chunked_prefill
             and any(
-                tokens > self.scheduler.max_num_batched_tokens
+                tokens
+                > min(
+                    self.scheduler.afd.max_num_batched_tokens,
+                    self.scheduler.merged.max_num_batched_tokens,
+                )
                 for tokens in self.fixed_lengths
             )
             and not (self.csv_path or self.csv_text)
         ):
             raise ValueError(
-                "non-chunked fixed request exceeds scheduler.max_num_batched_tokens"
+                "non-chunked fixed request exceeds an architecture's "
+                "max_num_batched_tokens"
             )
 
     def to_mapping(self) -> dict[str, Any]:
@@ -382,6 +451,7 @@ __all__ = [
     "CamConfig",
     "LengthBucket",
     "PrefixCacheConfig",
+    "SchedulerBatchConfig",
     "SchedulerConfig",
     "SimulationConfig",
     "SloConfig",

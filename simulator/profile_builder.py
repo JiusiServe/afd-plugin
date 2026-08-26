@@ -9,12 +9,13 @@ import subprocess
 import tempfile
 from collections import Counter
 from collections.abc import Iterable
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from simulator.profiles import PROFILE_PHASES, PROFILE_SCHEMA_VERSION
+from simulator.profiles import PROFILE_PHASES, PROFILE_SCHEMA_VERSION, ProfileBundle
 
 DEFAULT_MODEL_ID = "deepseek-ai/DeepSeek-V4-Flash"
 DEFAULT_DEVICE = "ATLAS_800_A3_752T_128G_DIE"
@@ -46,10 +47,21 @@ class TopologySpec:
     sequence_parallel: bool = True
 
 
-DEFAULT_TOPOLOGIES = (
-    TopologySpec("afd", num_devices=8, dp_size=2, tp_size=4, ep_size=8),
-    TopologySpec("merged", num_devices=16, dp_size=4, tp_size=4, ep_size=16),
+DEFAULT_AFD_TOPOLOGY = TopologySpec(
+    "afd",
+    num_devices=8,
+    dp_size=2,
+    tp_size=4,
+    ep_size=8,
 )
+DEFAULT_MERGED_TOPOLOGY = TopologySpec(
+    "merged",
+    num_devices=16,
+    dp_size=4,
+    tp_size=4,
+    ep_size=16,
+)
+DEFAULT_TOPOLOGIES = (DEFAULT_AFD_TOPOLOGY, DEFAULT_MERGED_TOPOLOGY)
 DEFAULT_AFD_FFN_TOPOLOGY = TopologySpec(
     "afd_ffn",
     num_devices=8,
@@ -79,6 +91,32 @@ def build_profile_bundle(
 
     if hidden_size <= 0 or moe_top_k <= 0:
         raise ValueError("hidden_size and moe_top_k must be positive")
+    topology_by_name = {topology.name: topology for topology in topologies}
+    if len(topology_by_name) != len(topologies):
+        raise ValueError("profile topology names must be unique")
+    validated_topologies = list(topologies)
+    if "afd" in topology_by_name:
+        validated_topologies.append(afd_ffn_topology)
+    for topology in validated_topologies:
+        if min(
+            topology.num_devices,
+            topology.dp_size,
+            topology.tp_size,
+            topology.ep_size,
+        ) <= 0:
+            raise ValueError(f"{topology.name} parallel sizes must be positive")
+        if topology.dp_size * topology.tp_size != topology.num_devices:
+            raise ValueError(
+                f"{topology.name} DP multiplied by TP must equal num devices"
+            )
+    if "afd" in topology_by_name and "merged" in topology_by_name:
+        afd_devices = topology_by_name["afd"].num_devices + afd_ffn_topology.num_devices
+        merged_devices = topology_by_name["merged"].num_devices
+        if afd_devices != merged_devices:
+            raise ValueError(
+                "profile device budget mismatch: "
+                f"AFD uses {afd_devices} dies, but merged uses {merged_devices} dies"
+            )
 
     root = Path(msmodeling_root).resolve()
     if not (root / "cli" / "inference" / "text_generate.py").is_file():
@@ -200,6 +238,62 @@ def build_profile_bundle(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return payload
+
+
+def compose_retargeted_afd_profile(
+    *,
+    afd_profile_path: str | Path,
+    merged_profile_path: str | Path,
+    output_path: str | Path,
+    afd_dp_size: int,
+) -> dict[str, Any]:
+    """Reuse per-DP AFD points while replacing DP count and merged topology."""
+
+    if afd_dp_size <= 0:
+        raise ValueError("afd_dp_size must be positive")
+    afd_source_path = Path(afd_profile_path)
+    merged_source_path = Path(merged_profile_path)
+    afd_source = json.loads(afd_source_path.read_text(encoding="utf-8"))
+    merged_source = json.loads(merged_source_path.read_text(encoding="utf-8"))
+    try:
+        afd_topology = afd_source["topologies"]["afd"]
+        attention_spec = afd_topology["spec"]["attention"]
+        merged_topology = merged_source["topologies"]["merged"]
+    except KeyError as exc:
+        raise ValueError(f"profile composition is missing {exc.args[0]!r}") from exc
+    tp_size = int(attention_spec["tp_size"])
+    payload = deepcopy(afd_source)
+    retargeted_attention = payload["topologies"]["afd"]["spec"]["attention"]
+    retargeted_attention["dp_size"] = afd_dp_size
+    retargeted_attention["num_devices"] = afd_dp_size * tp_size
+    payload["topologies"]["merged"] = deepcopy(merged_topology)
+    metadata = payload.setdefault("metadata", {})
+    metadata["generated_at"] = datetime.now(timezone.utc).isoformat()
+    metadata["commands"] = merged_source.get("metadata", {}).get("commands", [])
+    metadata["profile_composition"] = {
+        "afd": {
+            "source": str(afd_source_path),
+            "reused_points": True,
+            "topology": payload["topologies"]["afd"]["spec"],
+        },
+        "merged": {
+            "source": str(merged_source_path),
+            "reused_points": False,
+            "topology": payload["topologies"]["merged"]["spec"],
+        },
+    }
+    metadata["notes"] = (
+        "AFD operator points are reused because changing only DP replication "
+        "does not change per-DP work. The merged topology was profiled separately."
+    )
+    ProfileBundle.from_mapping(payload).device_budget()
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
     )
     return payload
 
@@ -406,7 +500,7 @@ def _msmodeling_command(
         str(topology.ep_size),
     ]
     if topology.sequence_parallel:
-        command.append("--enable-sequence-parallel")
+        command.extend(("--compilation-config", "enable_sequence_parallel"))
     command.extend(
         [
             "--compile",
@@ -418,7 +512,7 @@ def _msmodeling_command(
             str(prefix_tokens),
             "--performance-model",
             "analytic",
-            "--chrome-trace",
+            "--chrome-trace-file",
             str(trace_path),
         ]
     )
@@ -426,13 +520,16 @@ def _msmodeling_command(
 
 
 __all__ = [
+    "DEFAULT_AFD_TOPOLOGY",
     "DEFAULT_DEVICE",
     "DEFAULT_AFD_FFN_TOPOLOGY",
     "DEFAULT_HIDDEN_SIZE",
     "DEFAULT_MODEL_ID",
     "DEFAULT_MOE_TOP_K",
+    "DEFAULT_MERGED_TOPOLOGY",
     "DEFAULT_TOPOLOGIES",
     "TopologySpec",
     "aggregate_trace",
     "build_profile_bundle",
+    "compose_retargeted_afd_profile",
 ]
