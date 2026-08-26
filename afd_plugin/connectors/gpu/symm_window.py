@@ -32,6 +32,13 @@ destination only ``(1 - 1/ffn_size) ** topk`` of the time, so at 2A2F and
 ``hidden_size`` elements, so shipping them whole to every peer costs well under
 a percent of the slot.
 
+``shared_x`` is the exception, and is sized ``shared_cap`` rather than
+``token_cap``: shared-expert tokens are split across the FFN ranks, so a slot
+never holds more than ``ceil(token_cap / ffn_size)`` of them in either
+direction, and a model with no shared experts does not need the field at all.
+Sizing it like ``routed_x`` reserved a second whole-batch payload per slot that
+nothing could ever fill.
+
 Flag words are written *after* the payload on the same stream. Same-stream
 device-to-device copies complete in issue order, so a visible flag implies a
 complete payload. That holds for NVLink-mapped peer memory; a cross-node
@@ -99,6 +106,7 @@ class SlotLayout:
     header_words: int
     partial_cap: int
     token_cap: int
+    shared_cap: int
     hidden_size: int
     payload_itemsize: int
 
@@ -116,6 +124,7 @@ class SlotLayout:
         expert_per_rank: int,
         partial_cap: int,
         token_cap: int,
+        shared_cap: int,
         hidden_size: int,
         payload_itemsize: int,
     ) -> SlotLayout:
@@ -125,11 +134,12 @@ class SlotLayout:
         weights_off = _align(expand_idx_off + partial_cap * 4)
         routed_x_off = _align(weights_off + partial_cap * 4)
         shared_x_off = _align(routed_x_off + token_cap * hidden_size * payload_itemsize)
-        slot_bytes = _align(shared_x_off + token_cap * hidden_size * payload_itemsize)
+        slot_bytes = _align(shared_x_off + shared_cap * hidden_size * payload_itemsize)
         return cls(
             header_words=header_words,
             partial_cap=partial_cap,
             token_cap=token_cap,
+            shared_cap=shared_cap,
             hidden_size=hidden_size,
             payload_itemsize=payload_itemsize,
             header_off=header_off,
@@ -404,8 +414,10 @@ class SymmWindow:
             sizes, dtype = (layout.partial_cap,), torch.int32
         elif field_off == layout.weights_off:
             sizes, dtype = (layout.partial_cap,), torch.float32
-        elif field_off in (layout.routed_x_off, layout.shared_x_off):
+        elif field_off == layout.routed_x_off:
             sizes, dtype = (layout.token_cap, hidden), self.payload_dtype
+        elif field_off == layout.shared_x_off:
+            sizes, dtype = (layout.shared_cap, hidden), self.payload_dtype
         else:
             raise ValueError(f"unknown slot field offset {field_off}")
 
@@ -497,9 +509,9 @@ class SymmWindow:
             raise RuntimeError(
                 f"partials {partial_count} exceed partial_cap {layout.partial_cap}",
             )
-        if shared_count > layout.token_cap:
+        if shared_count > layout.shared_cap:
             raise RuntimeError(
-                f"shared tokens {shared_count} exceed token_cap {layout.token_cap}",
+                f"shared tokens {shared_count} exceed shared_cap {layout.shared_cap}",
             )
 
         header_view = self._capacity_view(peer, region, ring, layout.header_off)

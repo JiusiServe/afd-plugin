@@ -45,6 +45,9 @@ def main() -> None:
         expert_per_rank=EXPERT_PER_RANK,
         partial_cap=NUM_TOKENS * TOPK,
         token_cap=NUM_TOKENS,
+        # This smoke test ships every token as shared, and FFN_SIZE is 1, so the
+        # per-rank split is the whole batch.
+        shared_cap=-(-NUM_TOKENS // FFN_SIZE),
         hidden_size=HIDDEN,
         payload_itemsize=2,
     )

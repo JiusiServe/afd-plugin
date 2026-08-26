@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("torch")
@@ -27,10 +30,14 @@ from afd_plugin.connectors.gpu.symm_window import (  # noqa: E402
 
 @pytest.fixture
 def layout() -> SlotLayout:
+    # shared_cap is deliberately not token_cap: the shared field is sized by the
+    # per-rank split, so a layout that quietly reused token_cap for it would
+    # otherwise still satisfy every assertion below.
     return SlotLayout.build(
         expert_per_rank=4,
         partial_cap=100,
         token_cap=32,
+        shared_cap=8,
         hidden_size=8,
         payload_itemsize=2,
     )
@@ -71,7 +78,43 @@ def test_slot_fields_are_disjoint_and_fit_inside_the_slot(layout: SlotLayout):
     # The payload is sized by distinct tokens, not by partials, and the shared
     # rows are a contiguous range so no index rides along with them.
     assert layout.shared_x_off >= layout.routed_x_off + 32 * 8 * 2
-    assert layout.slot_bytes >= layout.shared_x_off + 32 * 8 * 2
+    # The shared field is sized by the per-rank split, not by the batch: a slot
+    # can never hold a whole batch of shared rows, and reserving room for one
+    # doubled the payload half of every slot.
+    assert layout.slot_bytes >= layout.shared_x_off + 8 * 8 * 2
+    assert layout.slot_bytes < layout.shared_x_off + 32 * 8 * 2
+
+
+@pytest.mark.parametrize("ffn_size", [1, 2, 3, 4, 6])
+@pytest.mark.parametrize("num_tokens", [0, 1, 5, 7, 64, 513])
+def test_shared_split_tiles_the_batch_within_its_capacity(
+    ffn_size: int,
+    num_tokens: int,
+):
+    # _shared_slice only reads these two attributes, so the bound can be checked
+    # without a device or a vLLM config behind it.
+    connector = SimpleNamespace(has_shared_experts=True, ffn_size=ffn_size)
+    slices = [
+        GpuAsyncAFDConnector._shared_slice(connector, rank, num_tokens)
+        for rank in range(ffn_size)
+    ]
+
+    # Every shared token is computed exactly once: the slices tile [0, n).
+    assert slices[0].start == 0
+    assert slices[-1].stop == num_tokens
+    for earlier, later in pairwise(slices):
+        assert earlier.stop == later.start
+
+    # And none of them can overflow the field the slot reserves for them, which
+    # is what lets shared_cap be a fraction of the batch rather than all of it.
+    shared_cap = -(-num_tokens // ffn_size)
+    assert max(s.stop - s.start for s in slices) <= shared_cap
+
+
+def test_shared_split_is_empty_without_shared_experts():
+    connector = SimpleNamespace(has_shared_experts=False, ffn_size=4)
+    for rank in range(4):
+        assert GpuAsyncAFDConnector._shared_slice(connector, rank, 64) == slice(0, 0)
 
 
 def test_every_field_offset_is_viewable_as_int32_and_payload(layout: SlotLayout):

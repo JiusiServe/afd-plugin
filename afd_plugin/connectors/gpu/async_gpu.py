@@ -390,10 +390,18 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
         # the every-partial-to-one-rank worst case.
         self.token_cap = max(1, self.max_seq_len)
         self.partial_cap = max(1, self.max_seq_len * self.topk)
+        # Shared-expert rows are split across the FFN ranks, so a slot holds a
+        # fraction of the batch, not all of it -- and none at all when the model
+        # has no shared experts. Both roles derive this from the same config, so
+        # the symmetric allocation still matches.
+        self.shared_cap = (
+            -(-self.token_cap // self.ffn_size) if self.has_shared_experts else 0
+        )
         self.layout = SlotLayout.build(
             expert_per_rank=self.expert_per_rank,
             partial_cap=self.partial_cap,
             token_cap=self.token_cap,
+            shared_cap=self.shared_cap,
             hidden_size=self.hidden_size,
             payload_itemsize=torch.empty(0, dtype=self.payload_dtype).element_size(),
         )
@@ -516,6 +524,25 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             raise RuntimeError("AFD async GPU connector is not initialized")
         return self.window
 
+    def _shared_slice(self, ffn_rank: int, num_tokens: int) -> slice:
+        """Token range whose shared-expert output ``ffn_rank`` owns.
+
+        Contiguous chunks, so a rank's slice is a view: no index to build, none
+        to gather through, and none to put on the wire. Empty when the model has
+        no shared experts, which is what keeps the payload off the wire and the
+        field out of the slot.
+
+        The header's ``shared_tokens`` and the rows actually written have to
+        agree, and they are produced by different callers, so both come from
+        here rather than from two copies of the arithmetic.
+        """
+        if not self.has_shared_experts:
+            return slice(0, 0)
+        return slice(
+            ffn_rank * num_tokens // self.ffn_size,
+            (ffn_rank + 1) * num_tokens // self.ffn_size,
+        )
+
     def _headers_for(
         self,
         *,
@@ -554,15 +581,14 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
         )
         staging_words = staging.numpy()
         for ffn_rank in range(self.ffn_size):
-            shared_start = ffn_rank * num_tokens // self.ffn_size
-            shared_stop = (ffn_rank + 1) * num_tokens // self.ffn_size
+            shared = self._shared_slice(ffn_rank, num_tokens)
             staging_words[ffn_rank] = encode_header_host_words(
                 seq=seq,
                 src_role_rank=self.role_rank,
                 layer_idx=layer_idx,
                 stage_idx=stage_idx,
                 num_tokens=num_tokens,
-                shared_tokens=shared_stop - shared_start,
+                shared_tokens=shared.stop - shared.start,
                 topk=self.topk,
                 flags=0,
             )
@@ -656,14 +682,11 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
             plan=plan,
         )
         for ffn_rank in range(self.ffn_size):
-            # Shared-expert tokens are split into contiguous chunks, so a
-            # rank's slice is a view: no index to build, none to gather
-            # through, and none to put on the wire. Round-robin needed an
-            # arange, a gather and a whole slot field per peer per layer to
-            # achieve the same balance.
-            shared_start = ffn_rank * num_tokens // self.ffn_size
-            shared_stop = (ffn_rank + 1) * num_tokens // self.ffn_size
-            shared_slices.append(slice(shared_start, shared_stop))
+            # Round-robin needed an arange, a gather and a whole slot field per
+            # peer per layer to achieve the balance this contiguous split gets
+            # from a view.
+            shared = self._shared_slice(ffn_rank, num_tokens)
+            shared_slices.append(shared)
             # Everything but the shared slice goes out whole. The index arrays
             # cost a fraction of a percent of the slot, and the payload rows a
             # destination does not need are the few tokens none of whose topk
@@ -677,7 +700,7 @@ class GpuAsyncAFDConnector(AFDConnectorBase):
                 expand_idx=plan.expand_idx,
                 weights=plan.weights,
                 routed_x=hidden_states,
-                shared_x=hidden_states[shared_start:shared_stop],
+                shared_x=hidden_states[shared],
                 flag_value=self._seq,
             )
 
