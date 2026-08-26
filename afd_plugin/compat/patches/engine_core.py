@@ -11,6 +11,7 @@ startup out of HybridKVCacheCoordinator.
 from __future__ import annotations
 
 import gc
+import importlib
 import queue
 import time
 from collections import deque
@@ -28,6 +29,16 @@ if TYPE_CHECKING:
     from vllm.v1.kv_cache_interface import KVCacheConfig
 
 
+def _ensure_ascend_hybrid_kv_cache_grouping() -> None:
+    """Register vLLM-Ascend's DSV4 grouping implementation in EngineCore."""
+    try:
+        importlib.import_module("vllm_ascend.patch.platform.patch_kv_cache_utils")
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise RuntimeError(
+            "AFD DSV4 hybrid KV cache grouping requires vLLM-Ascend",
+        ) from exc
+
+
 # Patch reason: AFD FFN ranks run as connector daemons instead of normal
 # request-scheduling EngineCore instances.
 # Patch functionality: returns after model executor construction for AFD FFN
@@ -42,14 +53,6 @@ def __init__(
     executor_fail_callback: Callable | None = None,
     include_finished_set: bool = False,
 ):
-    # Install DSV4's Ascend KV grouping compatibility before an EngineCore can
-    # ask vLLM to construct its cache configuration.
-    from afd_plugin.compat.patches.npu.deepseek_v4_kv_cache import (
-        apply_deepseek_v4_kv_cache_patches,
-    )
-
-    apply_deepseek_v4_kv_cache_patches()
-
     # ### PATCH START: AFD FFN EngineCore daemon initialization
     # FFN ranks are connector daemons, so stop EngineCore initialization after
     # executor construction instead of setting up KV cache and scheduler state.
@@ -248,13 +251,11 @@ def _initialize_kv_caches(self, vllm_config: VllmConfig) -> KVCacheConfig:
         return _AFDFFNKVCacheConfig()
     # ### PATCH END: AFD FFN late-loaded KV cache bypass
 
-    # vLLM-Ascend can rebind its grouping helper while worker modules import.
-    # Reinstall at the call site used to build the target cache configuration.
-    from afd_plugin.compat.patches.npu.deepseek_v4_kv_cache import (
-        apply_deepseek_v4_kv_cache_patches,
-    )
-
-    apply_deepseek_v4_kv_cache_patches()
+    # vLLM-Ascend owns DSV4's hybrid cache packing.  AFD's EngineCore patch
+    # bypasses the normal vLLM-Ascend registration path, so register it at the
+    # exact call site that creates KV cache groups.  Do not add a second AFD
+    # grouping or allocator monkey patch here.
+    _ensure_ascend_hybrid_kv_cache_grouping()
 
     start = time.time()
 
