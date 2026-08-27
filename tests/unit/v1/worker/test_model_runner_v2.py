@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """Unit tests for AFD CUDA GPU ModelRunnerV2 support."""
 
 from __future__ import annotations
@@ -85,7 +87,7 @@ class _StepProfiler:
 
 
 class _RunnerRecorder:
-    instances = []
+    instances: list[tuple[object, object]] = []
 
     def __init__(self, vllm_config, device):
         type(self).instances.append((vllm_config, device))
@@ -383,6 +385,14 @@ def test_v2_fullgraph_replay_hook_rejects_same_manager_reentry():
     assert runner.cudagraph_manager.__dict__["run_fullgraph"] is original
 
 
+def _set_single_dp_rank(config):
+    config.parallel_config.data_parallel_size = 1
+    config.additional_config["afd"].update(
+        num_attention_ranks=1,
+        num_ffn_ranks=1,
+    )
+
+
 @pytest.mark.parametrize(
     (
         "role",
@@ -573,16 +583,7 @@ def test_npu_v2_validator_allows_full_decode_only_dbo_dp2():
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (
-            lambda c: (
-                setattr(c.parallel_config, "data_parallel_size", 1),
-                c.additional_config["afd"].update(
-                    num_attention_ranks=1,
-                    num_ffn_ranks=1,
-                ),
-            ),
-            "DP > 1",
-        ),
+        (_set_single_dp_rank, "DP > 1"),
         (lambda c: setattr(c.parallel_config, "num_ubatches", 4), "two ubatches"),
         (
             lambda c: setattr(c.model_config, "enforce_eager", False),
@@ -1010,7 +1011,7 @@ def test_v2_dp2_repeated_fullgraph_replay_sends_local_real_and_padded_tokens(
     descriptor = SimpleNamespace(num_tokens=8)
     payloads = []
     metadata_seen = []
-    replay_returns = []
+    replay_returns: list[str] = []
 
     class ReplayConnector(_RecordingConnector):
         def send_dp_metadata_list(self, payload):
@@ -1143,7 +1144,7 @@ def test_v2_graph_miss_uses_provider_once_without_replay_control(monkeypatch):
     runner.vllm_config.compilation_config.cudagraph_mode = (
         CUDAGraphMode.FULL_DECODE_ONLY
     )
-    replay_calls = []
+    replay_calls: list[object] = []
     context = ForwardContext(
         no_compile_layers={},
         attn_metadata={},
@@ -1631,7 +1632,7 @@ def test_v2_shutdown_runs_all_cleanup_layers_when_each_layer_fails(
         if failure == "connector":
             raise RuntimeError("connector failed")
 
-    runner.connector.close = close_connector
+    monkeypatch.setattr(runner.connector, "close", close_connector)
     monkeypatch.setattr(
         "afd_plugin.v1.worker.attention_model_runner_v2.stop_afd_gpu_profiler",
         stop_profiler,

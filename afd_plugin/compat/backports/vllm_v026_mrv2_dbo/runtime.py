@@ -113,6 +113,7 @@ def dispatch_afd_dbo_and_sync_dp(
                 num_ubatches=ubatches,
             )
 
+        assert cudagraph_manager is not None
         return cudagraph_manager.dispatch_ubatches(base, ubatches)
 
     # ### PATCH END: AFD v0.26 graph dispatch adapter

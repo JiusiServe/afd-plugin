@@ -1,3 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+# mypy: disable-error-code=attr-defined
+# This test deliberately builds incomplete ModuleType mocks for NPU imports.
+
 from __future__ import annotations
 
 import importlib
@@ -926,7 +931,7 @@ def test_mla_graph_replay_rejects_missing_capture_registry(monkeypatch):
         mla_full_graph_enabled=True,
     )
     wrapper.full_graph_params_updater = lambda *_args: None
-    replay_calls = []
+    replay_calls: list[str] = []
     graph_metadata = wrapper_module.AscendNPUGraphMetaData(
         aclgraph=SimpleNamespace(
             replay=lambda: replay_calls.append("replay"),
@@ -953,6 +958,7 @@ def test_mla_graph_replay_rejects_missing_updater_before_replay(monkeypatch):
     )
     wrapper.full_graph_params_updater = None
     workspace = object()
+    replay_calls: list[str] = []
     graph_metadata = wrapper_module.AscendNPUGraphMetaData(
         aclgraph=SimpleNamespace(replay=lambda: replay_calls.append("replay")),
         ubatch_metadata=[],
@@ -965,8 +971,6 @@ def test_mla_graph_replay_rejects_missing_updater_before_replay(monkeypatch):
         attn_metadata=[{"layer0": "m0"}, {"layer0": "m1"}],
         additional_kwargs={},
     )
-    replay_calls = []
-
     with pytest.raises(RuntimeError, match="no parameter updater"):
         wrapper._replay_mla_graph(graph_metadata, context, 4)
 

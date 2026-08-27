@@ -1,3 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+# mypy: disable-error-code=attr-defined
+# This test deliberately builds incomplete ModuleType mocks for vLLM modules.
+
 from __future__ import annotations
 
 import importlib
@@ -107,7 +112,7 @@ def _set_fake_platform(*, is_cuda, device_type):
 
 def _install_fake_npu_config(monkeypatch):
     arg_utils_module, config_module = _install_fake_vllm_config(monkeypatch)
-    events = []
+    events: list[tuple[str, object] | tuple[str, object, object]] = []
 
     class FakeParallelConfig:
         def __init__(
@@ -537,7 +542,7 @@ def test_config_validation_finalizes_async_attention_patch_after_ascend(monkeypa
     _set_fake_platform(is_cuda=False, device_type="npu")
 
     config_patch_calls = []
-    engine_patch_configs = []
+    engine_patch_configs: list[object] = []
     monkeypatch.setattr(
         npu_compat,
         "apply_afd_ascend_config_patch_if_needed",

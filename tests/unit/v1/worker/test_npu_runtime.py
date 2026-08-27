@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+# mypy: disable-error-code=attr-defined
+# This test deliberately builds incomplete ModuleType mocks for NPU imports.
 
 from __future__ import annotations
 
