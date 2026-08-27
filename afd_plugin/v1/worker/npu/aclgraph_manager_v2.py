@@ -108,22 +108,11 @@ class AFDModelAclGraphManagerV2(ModelAclGraphManager):
             for value in (True, False)
         )
 
-    def dispatch(
+    def dispatch_ubatches(
         self,
-        num_reqs: int,
-        num_tokens: int,
-        uniform_token_count: int | None,
-        num_active_loras: int,
-        num_ubatches: int = 1,
+        base: BatchExecutionDescriptor,
+        num_ubatches: int,
     ) -> BatchExecutionDescriptor:
-        base = super().dispatch(
-            num_reqs,
-            num_tokens,
-            uniform_token_count,
-            num_active_loras,
-        )
-        if num_ubatches == 1:
-            return base
         if num_ubatches != 2:
             raise RuntimeError("AFD NPU ModelRunnerV2 requires exactly two ubatches")
         twin = self._afd_twins.get(base)
@@ -131,9 +120,10 @@ class AFDModelAclGraphManagerV2(ModelAclGraphManager):
             return twin
         return AFDBatchExecutionDescriptor(
             cg_mode=CUDAGraphMode.NONE,
-            num_tokens=num_tokens,
-            num_reqs=num_reqs,
-            num_active_loras=num_active_loras,
+            num_tokens=base.num_tokens,
+            num_reqs=base.num_reqs,
+            uniform_token_count=base.uniform_token_count,
+            num_active_loras=base.num_active_loras,
             num_ubatches=2,
         )
 
@@ -357,7 +347,11 @@ class AFDModelAclGraphManagerV2(ModelAclGraphManager):
         )
 
         assert self.update_stream is not None
-        self.update_stream.wait_stream(torch.npu.current_stream())
+        current_stream = torch.npu.current_stream()
+        self.update_stream.wait_stream(current_stream)
+        # This graph bypasses Ascend's ACLGraphWrapper, so preserve its FULL
+        # replay fence before updating the captured FIA task-group handles.
+        current_stream.synchronize()
         entry.graph.replay()
         stage_tokens = desc.num_tokens // 2
         merged_metadata, merged_params = merge_mla_graph_params(

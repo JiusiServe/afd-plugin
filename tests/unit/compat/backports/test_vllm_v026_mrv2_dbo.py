@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 
+import inspect
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -32,6 +33,13 @@ def _parallel_config(*, decode_threshold=4, prefill_threshold=8):
         dbo_decode_token_threshold=decode_threshold,
         dbo_prefill_token_threshold=prefill_threshold,
     )
+
+
+def test_runtime_abi_matches_full_graph_dispatch_signature():
+    parameters = inspect.signature(dispatch_afd_dbo_and_sync_dp).parameters
+
+    assert runtime.AFD_MRV2_DBO_RUNTIME_ABI == 3
+    assert {"cudagraph_manager", "need_eager"} <= parameters.keys()
 
 
 def test_dispatch_selects_two_ubatches_and_uniform_padding(monkeypatch):
@@ -163,15 +171,79 @@ def test_dispatch_requests_captured_two_ubatch_descriptor(monkeypatch):
 
     class Manager:
         def dispatch(self, *args, **kwargs):
-            dispatch_calls.append((args, kwargs))
-            if kwargs["num_ubatches"] == 1:
-                return BatchExecutionDescriptor(
-                    cg_mode=CUDAGraphMode.FULL,
-                    num_tokens=args[1],
-                    num_reqs=args[0],
-                    uniform_token_count=args[2],
-                )
+            dispatch_calls.append(("dispatch", args, kwargs))
+            return BatchExecutionDescriptor(
+                cg_mode=CUDAGraphMode.FULL,
+                num_tokens=args[1],
+                num_reqs=args[0],
+                uniform_token_count=args[2],
+            )
+
+        def dispatch_ubatches(self, base, num_ubatches):
+            dispatch_calls.append(("dispatch_ubatches", base, num_ubatches))
+            assert base.num_tokens == 12
+            assert num_ubatches == 2
             return descriptor
+
+    def all_reduce(tensor, group):
+        del group
+        tensor[0] = torch.tensor([8, 12], dtype=torch.int32)
+        tensor[1] = torch.tensor([1, 1], dtype=torch.int32)
+        tensor[2] = torch.tensor([1, 1], dtype=torch.int32)
+        tensor[3] = torch.tensor(
+            [CUDAGraphMode.FULL.value, CUDAGraphMode.FULL.value],
+            dtype=torch.int32,
+        )
+
+    monkeypatch.setattr(runtime.dist, "all_reduce", all_reduce)
+    monkeypatch.setattr(
+        runtime,
+        "get_dp_group",
+        lambda: SimpleNamespace(cpu_group=None),
+    )
+
+    selected, counts = dispatch_afd_dbo_and_sync_dp(
+        num_reqs=8,
+        num_tokens=8,
+        uniform_token_count=1,
+        dp_size=2,
+        dp_rank=0,
+        parallel_config=_parallel_config(),
+        decode_query_len=1,
+        allow_ubatching=True,
+        cudagraph_manager=Manager(),
+    )
+
+    assert selected is descriptor
+    assert counts.tolist() == [12, 12]
+    assert dispatch_calls[:2] == [
+        ("dispatch", (8, 8, 1), {"num_active_loras": 0}),
+        ("dispatch", (8, 12, 1), {"num_active_loras": 0}),
+    ]
+    assert dispatch_calls[2][0] == "dispatch_ubatches"
+
+
+def test_dispatch_accepts_upstream_manager_without_ubatch_keyword(monkeypatch):
+    dispatch_calls = []
+
+    class Manager:
+        def dispatch(
+            self,
+            num_reqs,
+            num_tokens,
+            uniform_token_count,
+            num_active_loras,
+        ):
+            dispatch_calls.append(
+                (num_reqs, num_tokens, uniform_token_count, num_active_loras)
+            )
+            return BatchExecutionDescriptor(
+                cg_mode=CUDAGraphMode.NONE,
+                num_tokens=num_tokens,
+                num_reqs=num_reqs,
+                uniform_token_count=uniform_token_count,
+                num_active_loras=num_active_loras,
+            )
 
     def all_reduce(tensor, group):
         del group
@@ -198,12 +270,136 @@ def test_dispatch_requests_captured_two_ubatch_descriptor(monkeypatch):
         cudagraph_manager=Manager(),
     )
 
-    assert selected is descriptor
+    assert isinstance(selected, AFDBatchExecutionDescriptor)
+    assert selected.cg_mode is CUDAGraphMode.NONE
+    assert selected.num_tokens == 12
+    assert selected.num_ubatches == 2
     assert counts.tolist() == [12, 12]
-    assert dispatch_calls == [
-        ((8, 8, 1), {"num_active_loras": 0, "num_ubatches": 1}),
-        ((8, 12, 1), {"num_active_loras": 0, "num_ubatches": 2}),
-    ]
+    assert dispatch_calls == [(8, 8, 1, 0)]
+
+
+def test_dispatch_avoids_empty_second_ubatch_after_graph_padding(monkeypatch):
+    dispatch_calls = []
+
+    class Manager:
+        def dispatch(
+            self,
+            num_reqs,
+            num_tokens,
+            uniform_token_count,
+            num_active_loras,
+        ):
+            dispatch_calls.append((num_reqs, num_tokens, uniform_token_count))
+            return BatchExecutionDescriptor(
+                cg_mode=CUDAGraphMode.FULL,
+                num_tokens=8,
+                num_reqs=8,
+                uniform_token_count=1,
+                num_active_loras=num_active_loras,
+            )
+
+        def dispatch_ubatches(self, base, num_ubatches):
+            return AFDBatchExecutionDescriptor(
+                **vars(base),
+                num_ubatches=num_ubatches,
+            )
+
+    def all_reduce(tensor, group):
+        del group
+        tensor[0] = torch.tensor([4, 7], dtype=torch.int32)
+        tensor[1] = torch.tensor([1, 1], dtype=torch.int32)
+        tensor[2] = torch.tensor([1, 1], dtype=torch.int32)
+        tensor[3] = torch.tensor(
+            [CUDAGraphMode.FULL.value, CUDAGraphMode.FULL.value],
+            dtype=torch.int32,
+        )
+
+    monkeypatch.setattr(runtime.dist, "all_reduce", all_reduce)
+    monkeypatch.setattr(
+        runtime,
+        "get_dp_group",
+        lambda: SimpleNamespace(cpu_group=None),
+    )
+
+    selected, counts = dispatch_afd_dbo_and_sync_dp(
+        num_reqs=4,
+        num_tokens=4,
+        uniform_token_count=1,
+        dp_size=2,
+        dp_rank=0,
+        parallel_config=_parallel_config(),
+        decode_query_len=1,
+        allow_ubatching=True,
+        cudagraph_manager=Manager(),
+    )
+
+    assert not isinstance(selected, AFDBatchExecutionDescriptor)
+    assert selected.cg_mode is CUDAGraphMode.FULL
+    assert selected.num_tokens == 8
+    assert counts.tolist() == [8, 8]
+    assert dispatch_calls == [(4, 4, 1), (4, 7, 1), (4, 7, 1)]
+
+
+def test_dispatch_uses_eager_dbo_when_any_rank_misses_graph(monkeypatch):
+    dispatch_calls = []
+
+    class Manager:
+        def dispatch(
+            self,
+            num_reqs,
+            num_tokens,
+            uniform_token_count,
+            num_active_loras,
+        ):
+            dispatch_calls.append(
+                (num_reqs, num_tokens, uniform_token_count, num_active_loras)
+            )
+            return BatchExecutionDescriptor(
+                cg_mode=CUDAGraphMode.FULL,
+                num_tokens=num_tokens,
+                num_reqs=num_reqs,
+                uniform_token_count=uniform_token_count,
+                num_active_loras=num_active_loras,
+            )
+
+        def dispatch_ubatches(self, base, num_ubatches):
+            raise AssertionError((base, num_ubatches))
+
+    def all_reduce(tensor, group):
+        del group
+        tensor[0] = torch.tensor([8, 12], dtype=torch.int32)
+        tensor[1] = torch.tensor([1, 1], dtype=torch.int32)
+        tensor[2] = torch.tensor([1, 1], dtype=torch.int32)
+        tensor[3] = torch.tensor(
+            [CUDAGraphMode.FULL.value, CUDAGraphMode.NONE.value],
+            dtype=torch.int32,
+        )
+
+    monkeypatch.setattr(runtime.dist, "all_reduce", all_reduce)
+    monkeypatch.setattr(
+        runtime,
+        "get_dp_group",
+        lambda: SimpleNamespace(cpu_group=None),
+    )
+
+    selected, counts = dispatch_afd_dbo_and_sync_dp(
+        num_reqs=8,
+        num_tokens=8,
+        uniform_token_count=1,
+        dp_size=2,
+        dp_rank=0,
+        parallel_config=_parallel_config(),
+        decode_query_len=1,
+        allow_ubatching=True,
+        cudagraph_manager=Manager(),
+    )
+
+    assert isinstance(selected, AFDBatchExecutionDescriptor)
+    assert selected.cg_mode is CUDAGraphMode.NONE
+    assert selected.num_tokens == 12
+    assert selected.num_ubatches == 2
+    assert counts.tolist() == [12, 12]
+    assert dispatch_calls == [(8, 8, 1, 0)]
 
 
 def test_merge_ubatch_outputs_preserves_ascend_auxiliary_structure():

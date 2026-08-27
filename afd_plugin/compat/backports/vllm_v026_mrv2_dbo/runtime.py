@@ -29,9 +29,12 @@ from vllm.v1.worker.ubatch_utils import (
     UBatchSlice,
     UBatchSlices,
     check_ubatch_thresholds,
+    is_last_ubatch_empty,
     maybe_create_ubatch_slices,
 )
 from vllm.v1.worker.utils import AttentionGroup
+
+AFD_MRV2_DBO_RUNTIME_ABI = 3
 
 
 @dataclass(frozen=True)
@@ -76,27 +79,42 @@ def dispatch_afd_dbo_and_sync_dp(
         tokens: int,
         ubatches: int,
         uniform_tokens: int | None = uniform_token_count,
+        force_eager: bool = False,
     ) -> BatchExecutionDescriptor:
-        if need_eager or cudagraph_manager is None:
-            if ubatches > 1:
-                return AFDBatchExecutionDescriptor(
-                    cg_mode=CUDAGraphMode.NONE,
-                    num_tokens=tokens,
-                    num_reqs=num_reqs,
-                    num_ubatches=ubatches,
-                )
-            return BatchExecutionDescriptor(
+        if force_eager or need_eager or cudagraph_manager is None:
+            base = BatchExecutionDescriptor(
                 cg_mode=CUDAGraphMode.NONE,
                 num_tokens=tokens,
                 num_reqs=num_reqs,
             )
-        return cudagraph_manager.dispatch(
-            num_reqs,
-            tokens,
-            uniform_tokens,
-            num_active_loras=0,
-            num_ubatches=ubatches,
-        )
+        else:
+            base = cudagraph_manager.dispatch(
+                num_reqs,
+                tokens,
+                uniform_tokens,
+                num_active_loras=0,
+            )
+
+        if ubatches == 1:
+            return base
+        if base.cg_mode == CUDAGraphMode.NONE:
+            return AFDBatchExecutionDescriptor(
+                cg_mode=CUDAGraphMode.NONE,
+                num_tokens=tokens,
+                num_reqs=num_reqs,
+                uniform_token_count=uniform_tokens,
+                num_active_loras=base.num_active_loras,
+                num_ubatches=ubatches,
+            )
+
+        dispatch_ubatches = getattr(cudagraph_manager, "dispatch_ubatches", None)
+        if dispatch_ubatches is None:
+            manager_type = type(cudagraph_manager).__name__
+            raise RuntimeError(
+                "AFD NPU ModelRunnerV2 FULL graph DBO requires the plugin "
+                f"graph manager, got {manager_type}"
+            )
+        return dispatch_ubatches(base, ubatches)
 
     if dp_size == 1:
         return dispatch(num_tokens, 1), None
@@ -127,6 +145,7 @@ def dispatch_afd_dbo_and_sync_dp(
         or not torch.all(tensor[1] == synced_uniform_token_count).item()
     ):
         synced_uniform_token_count = None
+    synced_mode = CUDAGraphMode(int(tensor[3].min().item()))
     should_ubatch = (
         bool(torch.all(tensor[2] == 1).item())
         and int(num_tokens_across_dp.max().item()) >= int(parallel_config.num_ubatches)
@@ -137,7 +156,6 @@ def dispatch_afd_dbo_and_sync_dp(
         )
     )
     if not should_ubatch:
-        synced_mode = CUDAGraphMode(int(tensor[3].min().item()))
         if synced_mode == CUDAGraphMode.NONE:
             return (
                 BatchExecutionDescriptor(
@@ -153,12 +171,31 @@ def dispatch_afd_dbo_and_sync_dp(
         return synced, num_tokens_across_dp
 
     padded_tokens = int(num_tokens_across_dp.max().item())
-    num_tokens_across_dp.fill_(padded_tokens)
-    return dispatch(
+    num_ubatches = int(parallel_config.num_ubatches)
+    ubatch_desc = dispatch(
         padded_tokens,
-        int(parallel_config.num_ubatches),
+        num_ubatches,
         synced_uniform_token_count,
-    ), num_tokens_across_dp
+        force_eager=synced_mode == CUDAGraphMode.NONE,
+    )
+    # Graph dispatch can round the DP maximum upward. Check the final shape so
+    # every rank has real work in its last microbatch.
+    if not is_last_ubatch_empty(
+        int(num_tokens_across_dp.min().item()),
+        ubatch_desc.num_tokens,
+        num_ubatches,
+    ):
+        num_tokens_across_dp.fill_(ubatch_desc.num_tokens)
+        return ubatch_desc, num_tokens_across_dp
+
+    synced = dispatch(
+        padded_tokens,
+        1,
+        synced_uniform_token_count,
+        force_eager=synced_mode == CUDAGraphMode.NONE,
+    )
+    num_tokens_across_dp.fill_(synced.num_tokens)
+    return synced, num_tokens_across_dp
 
 
 def create_ubatch_slices(input_batch: InputBatch, num_ubatches: int) -> UBatchSlices:

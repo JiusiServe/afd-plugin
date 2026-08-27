@@ -8,7 +8,7 @@ import threading
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch_npu  # noqa: F401
@@ -20,10 +20,10 @@ from vllm.forward_context import (
 )
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.worker.gpu.attn_utils import build_slot_mappings_by_layer
-from vllm.v1.worker.gpu.input_batch import InputBatch
 from vllm.v1.worker.gpu.model_states.interface import ModelState
 from vllm.v1.worker.ubatch_utils import UBatchSlices
 from vllm.v1.worker.utils import AttentionGroup
+from vllm_ascend.worker.v2.input_batch import AscendInputBatch
 
 from afd_plugin.compat.backports.vllm_v026_mrv2_dbo import (
     prepare_attn_for_ubatch,
@@ -84,7 +84,7 @@ class AFDAscendUBatchRunnerV2:
 
     def prepare(
         self,
-        input_batch: InputBatch,
+        input_batch: AscendInputBatch,
         block_tables: tuple[torch.Tensor, ...],
         slot_mappings: torch.Tensor,
         slices: UBatchSlices,
@@ -102,11 +102,14 @@ class AFDAscendUBatchRunnerV2:
             context_cg_mode = cg_mode
         dp_size = int(self.parallel_config.data_parallel_size)
         for stage_index, stage in enumerate(slices):
-            child_batch = slice_input_batch(
-                input_batch,
-                stage,
-                self.query_start_loc_buffers[stage_index],
-                self.seq_lens_buffers[stage_index],
+            child_batch = cast(
+                AscendInputBatch,
+                slice_input_batch(
+                    input_batch,
+                    stage,
+                    self.query_start_loc_buffers[stage_index],
+                    self.seq_lens_buffers[stage_index],
+                ),
             )
             child_batch = self._with_ascend_fields(input_batch, child_batch, stage)
             stage_slot_mappings = slot_mappings[:, stage.token_slice]
@@ -165,10 +168,10 @@ class AFDAscendUBatchRunnerV2:
 
     @staticmethod
     def _with_ascend_fields(
-        parent_batch: InputBatch,
-        child_batch: InputBatch,
+        parent_batch: AscendInputBatch,
+        child_batch: AscendInputBatch,
         stage,
-    ) -> InputBatch:
+    ) -> AscendInputBatch:
         req_start = int(stage.request_slice.start)
         req_stop = int(stage.request_slice.stop)
         tok_stop = int(stage.token_slice.stop)

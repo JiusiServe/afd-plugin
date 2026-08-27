@@ -16,10 +16,10 @@ from vllm.forward_context import (
 from vllm.sequence import IntermediateTensors
 from vllm.v1.worker.gpu.attn_utils import build_slot_mappings_by_layer
 from vllm.v1.worker.gpu.cudagraph_utils import get_uniform_token_count
-from vllm.v1.worker.gpu.input_batch import InputBatch
 from vllm.v1.worker.gpu.model_runner import ExecuteModelState
 from vllm_ascend.worker.v2.input_batch import AscendInputBatch
 
+from . import runtime as dbo_runtime
 from .runtime import (
     AFDBatchExecutionDescriptor,
     create_ubatch_slices,
@@ -29,6 +29,17 @@ from .runtime import (
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
     from vllm.v1.outputs import ModelRunnerOutput
+
+
+_EXPECTED_RUNTIME_ABI = 3
+_loaded_runtime_abi = getattr(dbo_runtime, "AFD_MRV2_DBO_RUNTIME_ABI", 1)
+if _loaded_runtime_abi != _EXPECTED_RUNTIME_ABI:
+    raise ImportError(
+        "AFD ModelRunnerV2 DBO backport modules are out of sync: "
+        f"execute expects runtime ABI {_EXPECTED_RUNTIME_ABI}, but loaded "
+        f"ABI {_loaded_runtime_abi}. Reinstall afd-plugin from one checkout "
+        "and restart every worker process."
+    )
 
 
 def execute_model_v026_eager_dbo(
@@ -92,8 +103,7 @@ def execute_model_v026_eager_dbo(
             runner.req_states.num_computed_tokens.gpu,
         )
     else:
-        dummy_batch_cls = AscendInputBatch if num_ubatches > 1 else InputBatch
-        input_batch = dummy_batch_cls.make_dummy(
+        input_batch = AscendInputBatch.make_dummy(
             batch_desc.num_reqs or num_reqs,
             batch_desc.num_tokens,
             runner.input_buffers,
