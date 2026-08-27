@@ -168,13 +168,6 @@ def run_attention_gate_afd_forward(
             llama_4_scaling,
         )
 
-        # CAM allocates persistent operator workspace on its first dispatch.
-        # Keep EngineCore's synthetic KV-cache profile local so that workspace
-        # is not mistaken for reclaimable KV capacity.  The first real request
-        # performs the normal CAM dispatch/receive sequence below.
-        if forward_context.in_profile_run:
-            continue
-
         dispatch_payload = prepare_cam_dispatch_payload(
             hidden_states,
             topk_weights,

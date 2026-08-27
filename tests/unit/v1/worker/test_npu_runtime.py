@@ -1545,7 +1545,7 @@ def test_npu_ffn_connector_driven_uses_cam_layer_and_token_metadata(monkeypatch)
         shared_num_tokens=2,
     )
 
-    def recv_ffn_work_item(*, stage_idx, max_num_tokens, expected_layer_idx):
+    def recv_ffn_work_item(*, stage_idx, max_num_tokens):
         assert stage_idx == 0
         assert max_num_tokens == 16
         return work_item

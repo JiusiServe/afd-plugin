@@ -198,7 +198,7 @@ def test_remote_proxy_requires_forward_metadata(monkeypatch):
         adapter.RemoteFFNProxy(layer_idx=0)(torch.ones(1, 4))
 
 
-def test_remote_proxy_skips_cam_exchange_during_profile(monkeypatch):
+def test_remote_proxy_runs_cam_exchange_during_profile(monkeypatch):
     events = []
     _install_fake_forward_context(monkeypatch, events)
     monkeypatch.setattr(
@@ -210,8 +210,9 @@ def test_remote_proxy_skips_cam_exchange_during_profile(monkeypatch):
 
     output = adapter.RemoteFFNProxy(layer_idx=0)(hidden_states)
 
-    assert output is hidden_states
-    assert events == []
+    assert [event[0] for event in events] == ["send", "yield", "recv"]
+    assert events[0][2].metadata.stage_idx == 0
+    assert torch.equal(output, hidden_states * 0.25)
 
 
 def test_synchronous_model_forward_delegates_to_native(monkeypatch):

@@ -75,8 +75,6 @@ _AFD_ASYNC_EXTRA_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
         "dynamicQuant",
         "attn_ranks_per_dp",
         "shared_ffn_pool",
-        "cam_rendezvous_hosts",
-        "scheduler_host",
         "async_moe_ubatching",
         "async_moe_num_ubatches",
         "async_moe_split",
@@ -86,26 +84,17 @@ _AFD_ASYNC_EXTRA_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
 logger = init_logger(__name__)
 
 
-def _coerce_host(
-    value: object,
-    *,
-    field_name: str,
-    allow_empty: bool = False,
-) -> str:
-    if not isinstance(value, str):
-        raise TypeError(f"{field_name} must be a string, got {value!r}")
-    host = value.strip()
-    if not host and not allow_empty:
-        raise ValueError(f"{field_name} must not be empty")
-    return host
+def _create_control_store(host: str, port: int, *, is_server: bool) -> Any:
+    """Create the single TCPStore shared by CAM PG setup and scheduling."""
+    import torch.distributed as dist
 
-
-def _coerce_hosts(value: object, *, field_name: str) -> tuple[str, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise TypeError(f"{field_name} must be a list of host strings, got {value!r}")
-    return tuple(
-        _coerce_host(host, field_name=f"{field_name}[{index}]")
-        for index, host in enumerate(value)
+    return dist.TCPStore(
+        host,
+        port,
+        world_size=1,
+        is_master=is_server,
+        timeout=timedelta(hours=24),
+        wait_for_workers=False,
     )
 
 
@@ -125,8 +114,6 @@ class AFDAsyncExtraInfo(ConnectorExtraInfo):
     dynamic_quant: int = 0
     attn_ranks_per_dp: int = 1
     shared_ffn_pool: bool = False
-    cam_rendezvous_hosts: tuple[str, ...] = ()
-    scheduler_host: str = ""
     async_moe_ubatching: bool = False
     async_moe_num_ubatches: int = ASYNC_MOE_NUM_STAGES
     async_moe_split: str = ASYNC_MOE_REQUEST_SPLIT
@@ -162,15 +149,6 @@ class AFDAsyncExtraInfo(ConnectorExtraInfo):
                 raw.get(SHARED_FFN_POOL_CONFIG_KEY, False),
                 field_name=SHARED_FFN_POOL_CONFIG_KEY,
             ),
-            cam_rendezvous_hosts=_coerce_hosts(
-                raw.get("cam_rendezvous_hosts", ()),
-                field_name="cam_rendezvous_hosts",
-            ),
-            scheduler_host=_coerce_host(
-                raw.get("scheduler_host", ""),
-                field_name="scheduler_host",
-                allow_empty=True,
-            ),
             async_moe_ubatching=coerce_extra_bool(
                 raw.get("async_moe_ubatching", False),
                 field_name="async_moe_ubatching",
@@ -190,8 +168,6 @@ class AFDAsyncExtraInfo(ConnectorExtraInfo):
             "dynamicQuant": self.dynamic_quant,
             "attn_ranks_per_dp": self.attn_ranks_per_dp,
             SHARED_FFN_POOL_CONFIG_KEY: self.shared_ffn_pool,
-            "cam_rendezvous_hosts": list(self.cam_rendezvous_hosts),
-            "scheduler_host": self.scheduler_host,
             "async_moe_ubatching": self.async_moe_ubatching,
             "async_moe_num_ubatches": self.async_moe_num_ubatches,
             "async_moe_split": self.async_moe_split,
@@ -264,8 +240,6 @@ class _CAMGroupContext:
 
     topology: AFDAsyncTopology
     process_group_name: str
-    rendezvous_port: int
-    rendezvous_host: str
     cam_pg: ProcessGroup | None = None
     group_name: str = ""
     comm_args: Tensor | None = None
@@ -317,13 +291,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self.max_seq_len = vllm_config.scheduler_config.max_num_batched_tokens
         self.comm_id = CAM_COMM_ID
         self.tp_size = self.extra_info.attn_ranks_per_dp
-        rendezvous_hosts = self.extra_info.cam_rendezvous_hosts
-        num_dp_groups = afd_config.num_attention_ranks // self.tp_size
-        if rendezvous_hosts and len(rendezvous_hosts) != num_dp_groups:
-            raise ValueError(
-                "cam_rendezvous_hosts must contain one host per Attention DP "
-                f"group, got {len(rendezvous_hosts)} hosts for {num_dp_groups} groups"
-            )
         self.cam_pg: ProcessGroup | None = None
         self.topology = build_async_topology(
             afd_config,
@@ -337,14 +304,10 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self.ffn_size = self.topology.ffn_size
         self.expert_per_rank = self.topology.expert_per_rank
         self._process_group_name = _cam_process_group_name(self.topology)
-        self._rendezvous_port = _cam_rendezvous_port(
-            self.afd_config.port,
-            self.topology,
-        )
         self.comm_args: Tensor | None = None
         self._placeholder: Tensor | None = None
         self._cam_group_contexts = self._build_cam_group_contexts()
-        self._scheduler_store: Any | None = None
+        self._control_store: Any | None = None
         self._scheduler_next_sequence = 1
         self._scheduler_consumed_by_dp = [0] * self.topology.num_dp_groups
         self._pending_attention_payloads: dict[
@@ -376,16 +339,8 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             contexts[dp_group_index] = _CAMGroupContext(
                 topology=topology,
                 process_group_name=_cam_process_group_name(topology),
-                rendezvous_port=_cam_rendezvous_port(self.afd_config.port, topology),
-                rendezvous_host=self._rendezvous_host(dp_group_index),
             )
         return contexts
-
-    def _rendezvous_host(self, dp_group_index: int) -> str:
-        hosts = self.extra_info.cam_rendezvous_hosts
-        if hosts:
-            return hosts[dp_group_index]
-        return self.afd_config.host
 
     def _cam_context(self, dp_group_index: int | None = None) -> _CAMGroupContext:
         if dp_group_index is None:
@@ -412,7 +367,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         return self.extra_info.shared_ffn_pool and self.topology.num_dp_groups > 1
 
     def _init_shared_ffn_scheduler(self) -> None:
-        """Create the tiny control plane used only to select a ready CAM group.
+        """Initialize shared-pool scheduling keys in the common control store.
 
         CAM transports activations and completion data, but its blocking recv
         has no API to ask which of several communicators has pending work.  A
@@ -421,31 +376,10 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         """
         if not self.uses_shared_ffn_pool:
             return
-        import torch.distributed as dist
-
-        port = self.afd_config.port + self.topology.num_dp_groups
-        if not 1 <= port <= 65535:
-            raise ValueError(
-                "AFD shared-FFN scheduler TCPStore port is outside the valid "
-                f"range: base_port={self.afd_config.port}, "
-                f"num_dp_groups={self.topology.num_dp_groups}"
-            )
-        is_server = self.afd_config.role == "ffn" and self.role_rank == 0
-        self._scheduler_store = dist.TCPStore(
-            self.extra_info.scheduler_host or self.afd_config.host,
-            port,
-            world_size=1,
-            is_master=is_server,
-            # FFN workers enter their connector-driven receive loop before an
-            # API request necessarily arrives.  This store guards an idle
-            # work queue, not a collective rendezvous, so a 30-minute timeout
-            # would incorrectly kill a healthy service after a quiet period.
-            timeout=timedelta(hours=24),
-            wait_for_workers=False,
-        )
-        if is_server:
+        assert self._control_store is not None
+        if self._is_control_store_server():
             for dp_group_index in range(self.topology.num_dp_groups):
-                self._scheduler_store.set(
+                self._control_store.set(
                     _scheduler_ready_key(dp_group_index),
                     "0",
                 )
@@ -453,8 +387,8 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
     def _notify_shared_ffn_work_ready(self) -> None:
         if not self.uses_shared_ffn_pool or self.topology.world_rank != 0:
             return
-        assert self._scheduler_store is not None
-        self._scheduler_store.add(
+        assert self._control_store is not None
+        self._control_store.add(
             _scheduler_ready_key(self.topology.dp_group_index),
             1,
         )
@@ -463,26 +397,26 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         """Return the next ready Attention DP group on every FFN rank."""
         if not self.uses_shared_ffn_pool:
             return self.topology.dp_group_index
-        assert self._scheduler_store is not None
+        assert self._control_store is not None
 
         schedule_key = _scheduler_schedule_key(self._scheduler_next_sequence)
         if self.role_rank == 0:
             while True:
                 for dp_group_index in range(self.topology.num_dp_groups):
                     ready = int(
-                        self._scheduler_store.get(
+                        self._control_store.get(
                             _scheduler_ready_key(dp_group_index),
                         ).decode(),
                     )
                     if ready > self._scheduler_consumed_by_dp[dp_group_index]:
                         self._scheduler_consumed_by_dp[dp_group_index] += 1
-                        self._scheduler_store.set(schedule_key, str(dp_group_index))
+                        self._control_store.set(schedule_key, str(dp_group_index))
                         break
                 else:
                     sleep(0.001)
                     continue
                 break
-        dp_group_index = int(self._scheduler_store.get(schedule_key).decode())
+        dp_group_index = int(self._control_store.get(schedule_key).decode())
         self._scheduler_next_sequence += 1
         return dp_group_index
 
@@ -502,16 +436,21 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             return
 
         ensure_cam_async_ops_available()
+        self._control_store = _create_control_store(
+            self.afd_config.host,
+            self.afd_config.port,
+            is_server=self._is_control_store_server(),
+        )
         device = f"npu:{self.local_rank}"
         for context in self._cam_group_contexts.values():
             topology = context.topology
             context.cam_pg = init_afd_process_group(
                 backend="hccl",
-                init_method=f"tcp://{context.rendezvous_host}:{context.rendezvous_port}",
                 world_size=topology.world_size,
                 rank=topology.world_rank,
                 group_name=context.process_group_name,
                 timeout=timedelta(minutes=30),
+                store=self._control_store,
             )
             backend = context.cam_pg._get_backend(torch.device("npu"))
             context.group_name = str(backend.get_hccl_comm_name(topology.world_rank))
@@ -520,6 +459,13 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self._set_legacy_context_fields()
         self._init_shared_ffn_scheduler()
         self._initialized = True
+
+    def _is_control_store_server(self) -> bool:
+        return (
+            self.afd_config.role == "attention"
+            and self.topology.dp_group_index == 0
+            and self.topology.world_rank == 0
+        )
 
     def close(self) -> None:
         """Destroy the HCCL process group and clear pending transfer states."""
@@ -548,7 +494,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         *,
         stage_idx: int,
         max_num_tokens: int,
-        expected_layer_idx: int,
     ) -> AFDAsyncFFNWorkItem:
         """Receive and normalize one connector-driven FFN dispatch item.
 
@@ -590,10 +535,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         # CAM returns the true decoder-layer index in the dispatch-recv header
         # (field 2 of token_nums_rankid_layeridx).  Use it for both the local
         # FFN layer computation and the combine-send header so the completion
-        # matches the attention-side combine-recv.  Do NOT overwrite field 2
-        # with expected_layer_idx: the shared-FFN-pool scheduler alternates
-        # DP groups per layer, so expected_layer_idx is the busy-loop
-        # iteration index, not the true decoder layer.
+        # matches the attention-side combine-recv.
         layer_idx = max(0, int(token_nums_rankid_layeridx[2].item()))
         token_nums_rankid_layeridx = token_nums_rankid_layeridx.clone()
         states.token_nums_rankid_layeridx = token_nums_rankid_layeridx
@@ -776,9 +718,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             self.dynamic_quant,
             self.group_name,
         )
-        npu = getattr(torch, "npu", None)
-        if npu is not None:
-            npu.synchronize()
         return None
 
     def recv_ffn_output(
@@ -858,9 +797,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             self.topology.world_size,
             self.group_name,
         )
-        npu = getattr(torch, "npu", None)
-        if npu is not None:
-            npu.synchronize()
         return output
 
     def recv_attn_output(
@@ -1085,24 +1021,6 @@ def _cam_process_group_name(topology: AFDAsyncTopology) -> str:
     if topology.num_dp_groups == 1:
         return AFD_ASYNC_CAM_GROUP_NAME
     return f"{AFD_ASYNC_CAM_GROUP_NAME}_dp{topology.dp_group_index}"
-
-
-def _cam_rendezvous_port(base_port: int, topology: AFDAsyncTopology) -> int:
-    """Return the TCPStore port for a DP-scoped CAM communicator.
-
-    Every scoped communicator has a local rank zero.  Reusing the same TCP
-    rendezvous endpoint would therefore make the DP-group leaders compete to
-    bind one TCPStore server.  Keep all ranks in one CAM DP group on the same
-    endpoint, while assigning later groups consecutive ports.
-    """
-
-    port = base_port + topology.dp_group_index
-    if not 1 <= port <= 65535:
-        raise ValueError(
-            "AFD async CAM rendezvous port is outside the valid range: "
-            f"base_port={base_port}, dp_group_index={topology.dp_group_index}",
-        )
-    return port
 
 
 def _scheduler_ready_key(dp_group_index: int) -> str:

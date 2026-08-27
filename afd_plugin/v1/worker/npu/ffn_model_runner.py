@@ -291,11 +291,10 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         rank_ffn_output = None
         connector = cast(CAMAsyncAFDConnector, self.connector)
 
-        for expected_layer_idx in _ffn_layer_indices(self):
+        for _ in _ffn_layer_indices(self):
             work_item = connector.recv_ffn_work_item(
                 stage_idx=stage_idx,
                 max_num_tokens=self.max_num_tokens,
-                expected_layer_idx=int(expected_layer_idx),
             )
             hidden_states = work_item.hidden_states
             metadata = work_item.context.metadata
