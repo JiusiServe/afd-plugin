@@ -104,6 +104,33 @@ class WorkloadTests(unittest.TestCase):
 
         self.assertEqual([request.arrival_ms for request in workload], [0.0, 0.0])
 
+    def test_synthetic_arrival_uses_timestamped_csv_as_length_pool(self) -> None:
+        config = SimulationConfig.from_mapping(
+            {
+                "mode": "continuous",
+                "csv_text": (
+                    "arrival_time_ms,input_length\n"
+                    "100,128\n"
+                    "125,256\n"
+                    "160,512\n"
+                ),
+                "arrival": {
+                    "kind": "constant",
+                    "qps": 2,
+                    "duration_s": 1,
+                    "warmup_s": 0,
+                },
+            }
+        )
+
+        workload = generate_workload(config)
+
+        self.assertEqual([request.arrival_ms for request in workload], [0.0, 500.0])
+        self.assertEqual(
+            [request.input_tokens for request in workload],
+            [128, 256],
+        )
+
     def test_prefix_cache_sampling_is_deterministic_and_block_aligned(self) -> None:
         raw = {
             "mode": "fixed",

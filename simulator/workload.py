@@ -129,7 +129,11 @@ def generate_workload(config: SimulationConfig) -> tuple[RequestSpec, ...]:
         ]
         return _materialize_requests(raw_requests, arrivals, config.prefix_cache)
 
-    if csv_requests and all(item.arrival_time_ms is not None for item in csv_requests):
+    if (
+        csv_requests
+        and config.arrival.kind in {"trace", "scaled_trace"}
+        and all(item.arrival_time_ms is not None for item in csv_requests)
+    ):
         if config.arrival.kind == "scaled_trace":
             raw_requests, arrivals = _scale_and_repeat_trace(
                 csv_requests,
@@ -140,11 +144,6 @@ def generate_workload(config: SimulationConfig) -> tuple[RequestSpec, ...]:
                 raw_requests,
                 arrivals,
                 config.prefix_cache,
-            )
-        if config.arrival.kind != "trace":
-            raise ValueError(
-                "CSV arrival_time_ms requires arrival.kind=trace for exact replay "
-                "or scaled_trace for QPS-scaled replay"
             )
         first_arrival = float(csv_requests[0].arrival_time_ms or 0.0)
         arrivals = [
