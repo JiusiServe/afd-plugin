@@ -150,9 +150,11 @@ python -m simulator sweep \
 | `length_mix` | `{tokens,weight}[]` | 持续模式的离散长度分布；`weight` 只需为正数，不要求预归一化。 |
 | `csv_path` | `string|null` | CLI 读取的 CSV 路径；与 `csv_text` 互斥。页面上传会使用 `csv_text`。 |
 | `csv_text` | `string|null` | CSV 原始内容；与 `csv_path` 互斥。 |
-| `csv_sampling` | `cycle|sample` / `"cycle"` | 无时间戳 CSV 在持续模式下的选取方式：按行循环或有放回随机采样。 |
+| `csv_sampling` | `cycle|sample` / `"cycle"` | CSV 在合成到达过程下的长度选取方式：按行循环或有放回随机采样。 |
 
-优先级：CSV > `fixed_lengths`/`length_mix`。固定模式下 CSV 每行回放一次；持续模式下无时间戳 CSV 提供经验长度分布。
+优先级：CSV > `fixed_lengths`/`length_mix`。固定模式下 CSV 每行回放一次；
+持续模式下，`constant`/`poisson` 把 CSV 当作经验长度分布，即使文件带
+`arrival_time_ms` 也会忽略该列；只有 `trace`/`scaled_trace` 会消费时间戳。
 
 WebUI 还提供 MoonConv V4 Flash 的 `formal_0/1/2`（各 512 条）和
 `screening`（128 条）内置 trace。它们只保留输入长度与相对到达时间；选择后
@@ -176,6 +178,10 @@ WebUI 还提供 MoonConv V4 Flash 的 `formal_0/1/2`（各 512 条）和
 循环边界插入一个缩放后的平均间隔。因此每个完整循环的 offered QPS 精确等于
 配置值。QPS sweep 可以使用 `scaled_trace`，每个扫描点重新缩放同一 arrival
 形状。
+
+WebUI 上传带 `arrival_time_ms` 的 CSV 时默认切换到持续模式和
+`scaled_trace`。仍可手动切换为 `trace` 精确回放，或切换为
+`constant`/`poisson` 仅使用其长度分布。
 
 ### 2.3 `scheduler`
 

@@ -334,11 +334,21 @@
     $('profile').textContent = `${metadata.model || 'DSV4-Flash'} · ${metadata.device || 'device unknown'} · ${afd.num_devices} die · ${afd.layer_count} 层`;
   }
 
+  function useTimestampedCsvDefaults(text) {
+    const header = text.replace(/^\ufeff/, '').split(/\r?\n/, 1)[0];
+    const columns = header.split(',').map(column => column.trim());
+    if (!columns.includes('arrival_time_ms')) return;
+    $('mode').value = 'continuous';
+    $('arrival-kind').value = 'scaled_trace';
+  }
+
   $('csv-file').addEventListener('change', async event => {
     const file = event.target.files[0];
     csvText = file ? await file.text() : null;
     $('length-dataset').value = '';
     $('csv-status').textContent = file ? `${file.name} · ${(file.size / 1024).toFixed(1)} KiB` : '未加载 CSV';
+    if (csvText) useTimestampedCsvDefaults(csvText);
+    updateControlState();
   });
 
   $('length-dataset').addEventListener('change', async event => {
@@ -356,8 +366,7 @@
       const response = await fetch(`/api/length-datasets/${encodeURIComponent(datasetId)}`);
       if (!response.ok) throw new Error(`加载长度数据集失败：HTTP ${response.status}`);
       csvText = await response.text();
-      $('mode').value = 'continuous';
-      $('arrival-kind').value = 'scaled_trace';
+      useTimestampedCsvDefaults(csvText);
       $('csv-status').textContent = `${dataset.label} · ${dataset.request_count} 条 · ${(csvText.length / 1024).toFixed(1)} KiB`;
       updateControlState();
     } catch (error) {

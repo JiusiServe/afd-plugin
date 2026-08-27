@@ -187,6 +187,8 @@ class ServerTests(unittest.TestCase):
             self.assertIn("data.length_datasets.forEach", page)
             self.assertIn("/api/length-datasets/", page)
             self.assertIn('value="scaled_trace"', page)
+            self.assertIn("function useTimestampedCsvDefaults", page)
+            self.assertIn("columns.includes('arrival_time_ms')", page)
             self.assertIn("item.num_devices===afd.num_devices", page)
             self.assertIn('value="prefill_token_greedy"', page)
             self.assertIn('value="prefill_token_square_greedy"', page)
