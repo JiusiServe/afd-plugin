@@ -30,9 +30,11 @@ Run from the repository root. The environment needs `vllm`, `pytest`,
 `afd_plugin`, `lm_eval`, `datasets`, and `huggingface_hub`. NPU also needs
 `torch_npu`.
 
-The selected test downloads/caches `openai/gsm8k` and its Hugging Face model
-when the backend model env var is unset. Point `HF_HOME` at a persistent cache
-if you want to reuse downloads across runs.
+The default model suites download/cache `openai/gsm8k` and their Hugging Face
+model when the backend model env var is unset. Point `HF_HOME` at a persistent
+cache if you want to reuse downloads across runs. Large-model profiles are an
+exception: they require an explicit local model path and never download a
+checkpoint.
 
 GPU:
 
@@ -88,6 +90,34 @@ by AFD scenarios. The suite uses the same GSM8K-7, eight-shot, 4096-token,
 0.27 minimum exact-match gate as the other default suites. NPU, multimodal,
 `compute_gate_on_attention=true`, pipeline-parallel, asynchronous, and
 multi-node execution are not covered; quantization is unverified.
+
+### Qwen3.5-122B large-model CUDA profile
+
+`Qwen/Qwen3.5-122B-A10B` has a separate, manual hardware profile. It is not a
+default PR or merge gate and never downloads the roughly 234 GiB checkpoint.
+Running it requires an explicit opt-in, an existing model path, and exactly
+eight unique CUDA device IDs:
+
+```bash
+export AFD_E2E_BACKEND=gpu
+export AFD_E2E_LARGE_MODEL=1
+export AFD_GPU_E2E_MODEL=/path/to/Qwen3.5-122B-A10B
+# First four: Native or AFD Attention. Last four: AFD FFN.
+export AFD_E2E_DEVICES=0,2,4,6,1,3,5,7
+python -m pytest -q -s \
+  tests/e2e/models/qwen3_5/test_qwen3_5_122b.py
+```
+
+The two sequential cases are `baseline-eager` (native DP4/TP1/EP4 on the
+first four devices) and `afd-eager-4a4f` (Attention DP4/TP1 on the first four,
+FFN DP4/TP1/EP4 on the last four). Both use BF16, text-only vLLM V1, natural
+routing, GSM8K-7 with eight-shot prompting, and a 4096-token model length.
+The profile removes benchmark-only forced-routing variables from child server
+environments. It also disables the optional FlashInfer sampler because vLLM
+0.26.0 rejects Blackwell SM12 during that sampler's capability check; greedy
+GSM8K does not require it. Graph, DBO, asynchronous, multi-node, quantized,
+and multimodal coverage are out of scope; graph coverage remains excluded
+while #261 is unresolved.
 
 ### Local 2A1F cases
 
@@ -153,10 +183,11 @@ Use run-e2e to run the Qwen3 MoE GPU E2E tests with HF_HOME
 /data/huggingface.
 ```
 
-Provide `HF_HOME` and `AFD_E2E_BACKEND`. `AFD_E2E_DEVICES` is optional; when
-unset, the test module picks the defaults above. The model path is optional
-when Hugging Face download is available. The skill checks prerequisites, runs
-the same four tests, and reports failures and process cleanup.
+Provide `HF_HOME` and `AFD_E2E_BACKEND`. For default suites,
+`AFD_E2E_DEVICES` is optional and the model path is optional when Hugging Face
+download is available. The Qwen3.5-122B profile instead requires the explicit
+large-model variables documented above. The skill checks prerequisites, runs
+the selected cases, and reports failures and process cleanup.
 
 ## NPU async CAM smoke test
 

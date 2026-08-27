@@ -22,6 +22,7 @@ from tests.e2e.accuracy import gsm8k as helpers_gsm8k
 from tests.e2e.models.deepseek_v2_lite import (
     test_deepseek_v2_lite as deepseek_v2_lite_e2e,
 )
+from tests.e2e.models.qwen3_5 import test_qwen3_5_122b as qwen3_5_122b_e2e
 from tests.e2e.models.qwen3_6 import test_qwen3_6 as qwen3_6_e2e
 from tests.e2e.models.qwen3_moe import test_qwen3_moe as qwen3_moe_e2e
 
@@ -163,6 +164,126 @@ def test_qwen3_6_entrypoint_rejects_non_gpu_backends(monkeypatch, tmp_path):
         qwen3_6_e2e.build_runner_command("afd-eager-2a1f", tmp_path)
 
 
+@pytest.mark.parametrize("scenario", qwen3_5_122b_e2e.SCENARIOS)
+def test_qwen3_5_122b_entrypoint_builds_fixed_eager_topologies(
+    monkeypatch,
+    tmp_path,
+    scenario,
+):
+    monkeypatch.setenv("AFD_E2E_BACKEND", "gpu")
+    monkeypatch.setenv("AFD_E2E_DEVICES", "0,2,4,6,1,3,5,7")
+    monkeypatch.setenv("AFD_GPU_E2E_MODEL", "/models/qwen3.5-122b")
+
+    command = qwen3_5_122b_e2e.build_runner_command(scenario, tmp_path)
+
+    assert command[command.index("--attention-devices") + 1] == "0,2,4,6"
+    assert command[command.index("--model") + 1] == "/models/qwen3.5-122b"
+    assert (
+        command[command.index("--served-model-name-prefix") + 1] == "qwen3-5-122b-afd"
+    )
+    for arg in qwen3_5_122b_e2e.COMMON_VLLM_ARGS:
+        assert f"--common-vllm-arg={arg}" in command
+    if scenario == runner.AFD_EAGER_4A4F_SCENARIO:
+        assert command[command.index("--ffn-devices") + 1] == "1,3,5,7"
+    else:
+        assert "--ffn-devices" not in command
+
+
+@pytest.mark.parametrize(
+    ("env_name", "env_value", "error_message"),
+    [
+        ("AFD_E2E_LARGE_MODEL", None, "AFD_E2E_LARGE_MODEL must be set"),
+        ("AFD_E2E_LARGE_MODEL", "0", "AFD_E2E_LARGE_MODEL must be set to 1"),
+        ("AFD_GPU_E2E_MODEL", None, "AFD_GPU_E2E_MODEL must be set"),
+        ("AFD_E2E_DEVICES", None, "AFD_E2E_DEVICES must be set"),
+        (
+            "AFD_E2E_DEVICES",
+            "0,1,2,3",
+            "AFD_E2E_DEVICES must contain exactly 8 devices",
+        ),
+        (
+            "AFD_E2E_DEVICES",
+            "0,1,2,3,4,5,6,6",
+            "AFD_E2E_DEVICES must contain unique devices",
+        ),
+    ],
+)
+def test_qwen3_5_122b_preflight_fails_before_dataset_download(
+    monkeypatch,
+    tmp_path,
+    env_name,
+    env_value,
+    error_message,
+):
+    monkeypatch.setenv("AFD_E2E_BACKEND", "gpu")
+    monkeypatch.setenv("AFD_E2E_LARGE_MODEL", "1")
+    monkeypatch.setenv("AFD_GPU_E2E_MODEL", str(tmp_path))
+    monkeypatch.setenv("AFD_E2E_DEVICES", "0,1,2,3,4,5,6,7")
+    if env_value is None:
+        monkeypatch.delenv(env_name, raising=False)
+    else:
+        monkeypatch.setenv(env_name, env_value)
+    downloaded = False
+
+    def record_download(*_args):
+        nonlocal downloaded
+        downloaded = True
+
+    monkeypatch.setattr(qwen3_5_122b_e2e, "download_dataset", record_download)
+
+    with pytest.raises(RuntimeError, match=error_message):
+        qwen3_5_122b_e2e.prepare_e2e_assets()
+
+    assert downloaded is False
+
+
+def test_qwen3_5_122b_preflight_requires_existing_model_directory(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("AFD_E2E_BACKEND", "gpu")
+    monkeypatch.setenv("AFD_E2E_LARGE_MODEL", "1")
+    monkeypatch.setenv("AFD_GPU_E2E_MODEL", str(tmp_path / "missing"))
+    monkeypatch.setenv("AFD_E2E_DEVICES", "0,1,2,3,4,5,6,7")
+    monkeypatch.setattr(
+        qwen3_5_122b_e2e,
+        "download_dataset",
+        lambda *_args: pytest.fail("dataset download must not run"),
+    )
+
+    with pytest.raises(RuntimeError, match="must be an existing directory"):
+        qwen3_5_122b_e2e.prepare_e2e_assets()
+
+
+def test_qwen3_5_122b_preflight_rejects_non_gpu_before_download(
+    monkeypatch,
+):
+    monkeypatch.setenv("AFD_E2E_BACKEND", "npu")
+    downloaded = False
+
+    def record_download(*_args):
+        nonlocal downloaded
+        downloaded = True
+
+    monkeypatch.setattr(qwen3_5_122b_e2e, "download_dataset", record_download)
+
+    with pytest.raises(RuntimeError, match="supports only the 'gpu' backend"):
+        qwen3_5_122b_e2e.prepare_e2e_assets()
+
+    assert downloaded is False
+
+
+def test_qwen3_5_122b_correctness_clears_controlled_routing(monkeypatch):
+    for name in qwen3_5_122b_e2e.CONTROLLED_ROUTING_ENV_VARS:
+        monkeypatch.setenv(name, "benchmark-value")
+
+    env = qwen3_5_122b_e2e.natural_routing_env()
+
+    for name in qwen3_5_122b_e2e.CONTROLLED_ROUTING_ENV_VARS:
+        assert name not in env
+    assert env[qwen3_5_122b_e2e.FLASHINFER_SAMPLER_ENV] == "0"
+
+
 @pytest.mark.parametrize(
     ("first_suite", "first_model"),
     [
@@ -253,9 +374,9 @@ def test_run_runner_forwards_cancellation_and_reaps(monkeypatch):
         signal.SIGINT: object(),
     }
     installed_handlers: dict[int, Callable[[int, object], None]] = {}
-    signal_calls = []
-    kill_calls = []
-    popen_calls = []
+    signal_calls: list[tuple[int, Callable[[int, object], None]]] = []
+    kill_calls: list[tuple[int, int]] = []
+    popen_calls: list[tuple[list[str], dict[str, object]]] = []
 
     class FakeProcess:
         pid = 321
@@ -463,6 +584,7 @@ def test_parse_args_rejects_legacy_fixed_scenario_options(monkeypatch, legacy_ar
 @pytest.mark.parametrize(
     ("scenario", "expected"),
     [
+        ("baseline-eager", (True, False, False, 4, 0, 1, 1, 1, False)),
         ("baseline-graph", (True, True, False, 4, 0, 1, 1, 1, False)),
         ("afd-eager-2a1f", (False, False, False, 2, 1, 1, 1, 1, False)),
         ("afd-graph-2a1f", (False, True, False, 2, 1, 1, 1, 1, False)),
@@ -472,6 +594,7 @@ def test_parse_args_rejects_legacy_fixed_scenario_options(monkeypatch, legacy_ar
         ("afd-graph-dbo-2a2f", (False, True, True, 2, 2, 1, 1, 1, False)),
         ("afd-eager-async-cam", (False, False, False, 2, 2, 1, 2, 1, False)),
         ("afd-async-ubatch", (False, False, False, 2, 1, 1, 2, 1, False)),
+        ("afd-eager-4a4f", (False, False, False, 4, 4, 1, 1, 1, False)),
         ("afd-v2-eager-1a1f", (False, False, False, 1, 1, 1, 1, 1, True)),
         ("afd-v2-eager-dp2", (False, False, False, 2, 2, 1, 1, 1, True)),
         ("afd-v2-eager-tp2", (False, False, False, 2, 2, 1, 2, 2, True)),
@@ -653,6 +776,48 @@ def test_build_baseline_command_uses_native_dp4_graph_server():
     }
 
 
+def test_build_baseline_eager_command_uses_native_dp4_without_graph():
+    args = _args()
+    args.scenario = runner.BASELINE_EAGER_SCENARIO
+    runner.configure_scenario(args)
+
+    command = runner.build_baseline_command(args)
+
+    assert command[command.index("--data-parallel-size") + 1] == "4"
+    assert command[command.index("--tensor-parallel-size") + 1] == "1"
+    assert "--enable-expert-parallel" in command
+    assert "--enforce-eager" in command
+    assert "--compilation-config" not in command
+    assert "--additional-config" not in command
+
+
+@pytest.mark.parametrize("role", ["attention", "ffn"])
+def test_build_afd_eager_4a4f_command_uses_dp4_tp1(role):
+    args = _args()
+    args.scenario = runner.AFD_EAGER_4A4F_SCENARIO
+    runner.configure_scenario(args)
+
+    command = runner.build_vllm_command(args, role=role)
+    afd_config = json.loads(
+        command[command.index("--additional-config") + 1],
+    )["afd"]
+
+    assert command[command.index("--data-parallel-size") + 1] == "4"
+    assert command[command.index("--tensor-parallel-size") + 1] == "1"
+    assert "--enable-expert-parallel" in command
+    assert "--enforce-eager" in command
+    assert "--compilation-config" not in command
+    assert "--enable-dbo" not in command
+    assert afd_config == {
+        "role": role,
+        "connector": "P2pNcclAFDConnector",
+        "host": "127.0.0.1",
+        "port": 1239,
+        "num_attention_ranks": 4,
+        "num_ffn_ranks": 4,
+    }
+
+
 def test_build_baseline_command_configures_graceful_shutdown_timeout():
     args = _args()
     args.scenario = "baseline-graph"
@@ -697,6 +862,18 @@ def test_validate_topology_accepts_four_baseline_ranks_without_ffn_ranks():
     runner.configure_scenario(args)
 
     runner.validate_topology(args, ["0", "1", "2", "3"], [])
+
+
+def test_validate_topology_accepts_afd_eager_4a4f():
+    args = _args()
+    args.scenario = runner.AFD_EAGER_4A4F_SCENARIO
+    runner.configure_scenario(args)
+
+    runner.validate_topology(
+        args,
+        ["0", "2", "4", "6"],
+        ["1", "3", "5", "7"],
+    )
 
 
 @pytest.mark.parametrize(
