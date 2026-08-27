@@ -37,7 +37,7 @@ verified_platform_refs:
   - "CUDA Qwen3 MoE"
   - "CUDA Qwen3.6 MoE"
 related_issues: []
-last_reviewed: 2026-08-19
+last_reviewed: 2026-08-27
 ---
 
 # E2E testing
@@ -97,9 +97,13 @@ cleanup. Production code does not depend on the E2E harness.
 | `afd-graph-2a2f` | AFD graph, 2A2F | 4 | Primary graph path. |
 | `afd-graph-dbo-2a2f` | AFD graph + DBO, 2A2F | 4 | Graph path with DBO. |
 | `baseline-graph` | Native vLLM graph, DP4/TP1/EP4 | 4 | Non-AFD control. |
+| `afd-v2-eager-dp2` | CUDA ModelRunnerV2 eager, Attention DP2 + FFN DP2 | 4 | V2 data-parallel lifecycle and accuracy. |
+| `afd-v2-graph-dp2` | CUDA ModelRunnerV2 graph, Attention DP2 + FFN DP2 | 4 | V2 data-parallel full-decode graph path. |
+| `afd-v2-eager-tp2` | CUDA ModelRunnerV2 eager, Attention TP2 + FFN TP2 | 4 | V2 tensor-parallel lifecycle and accuracy. |
+| `afd-v2-graph-tp2` | CUDA ModelRunnerV2 graph, Attention TP2 + FFN TP2 | 4 | V2 tensor-parallel full-decode graph path. |
 
-Target runtime is about 20 minutes per platform for PRs and at most 30 minutes
-for merge validation. Put slower coverage in a scheduled job.
+CUDA CI runs the legacy and ModelRunnerV2 matrices as separate jobs with a
+40-minute timeout each. Put slower coverage in a scheduled job.
 
 Prefer graph coverage. Keep one eager smoke test unless a feature cannot run in
 graph mode.
@@ -110,6 +114,12 @@ for Attention DP1/TP2 and FFN DP2/TP1/EP2. It is not part of the PR gate above.
 The 2A1F cases (`afd-eager-2a1f`, `afd-graph-2a1f`, `afd-graph-dbo-2a1f`) are
 local-only scenarios: they use three of the four devices (two Attention ranks,
 one FFN rank) and run outside CI.
+
+The ModelRunnerV2 matrix is CUDA-only in the current E2E harness. Its local
+1A1F cases are `afd-v2-eager-1a1f` and `afd-v2-graph-1a1f`; CI selects the four
+DP2/TP2 cases listed above by exact node ID on `l4_4`. The Ascend
+ModelRunnerV2 implementation currently has focused unit evidence but no E2E
+case, so it is not included in the hardware gate.
 
 The Qwen3.5/3.6 adapter family has text-only CUDA E2E evidence through
 `Qwen/Qwen3.6-35B-A3B`, using the native Qwen3.5/3.6 model boundary with
@@ -130,7 +140,7 @@ unverified.
 | Samples | first 7 | all 1319 |
 | Metric | GSM8K exact match | GSM8K exact match |
 | Minimum accuracy | 0.27 | 0.27 |
-| Cases | all four | `afd-graph-dbo-2a2f` only |
+| Cases | four legacy cases plus four CUDA ModelRunnerV2 cases | `afd-graph-dbo-2a2f` only |
 
 An accuracy of `0.27` requires at least 2 correct answers out of 7, or 357 out
 of 1319.

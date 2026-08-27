@@ -6,10 +6,13 @@ owners:
   - "@hsliuustc0106"
   - "@jiangkuaixue123"
 primary_code_paths:
+  - "afd_plugin/v1/worker/attention_metadata.py"
   - "afd_plugin/v1/worker/attention_model_runner.py"
+  - "afd_plugin/v1/worker/attention_model_runner_v2.py"
   - "afd_plugin/v1/worker/attention_worker.py"
   - "afd_plugin/v1/worker/ubatch_wrapper.py"
   - "afd_plugin/v1/worker/npu/attention_model_runner.py"
+  - "afd_plugin/v1/worker/npu/attention_model_runner_v2.py"
   - "afd_plugin/v1/worker/npu/attention_worker.py"
 related_code_paths:
   - "afd_plugin/connectors/**"
@@ -23,25 +26,29 @@ depends_on:
   - "compatibility_and_patches.md"
 validation_paths:
   - "tests/unit/v1/worker/test_attention_model_runner.py"
+  - "tests/unit/v1/worker/test_model_runner_v2.py"
+  - "tests/unit/v1/worker/test_npu_device_contract.py"
   - "tests/unit/v1/worker/test_npu_runtime.py"
-  - "tests/e2e/features/test_serving_gpu.py"
-  - "tests/e2e/features/test_serving_npu.py"
+  - "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py"
   - "tests/e2e/accuracy/**"
   - "tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py"
 upstream_refs:
   - "vLLM vllm.v1.worker.gpu_worker.Worker"
   - "vLLM vllm.v1.worker.gpu_model_runner.GPUModelRunner"
+  - "vLLM vllm.v1.worker.gpu.model_runner.GPUModelRunner"
   - "vLLM-Ascend vllm_ascend.worker.worker.NPUWorker (tested environment evidence only)"
   - "vLLM-Ascend vllm_ascend.worker.model_runner_v1.NPUModelRunner (tested environment evidence only)"
+  - "vLLM-Ascend vllm_ascend.worker.v2.model_runner.NPUModelRunner (unit-test evidence only)"
 verified_platform_refs:
   - "CUDA paths marked gpu in tests/e2e"
+  - "CUDA ModelRunnerV2 DP2/TP2 eager and graph scenarios in tests/e2e"
   - "Ascend E2E environment recorded in the installation and NPU guides"
 related_issues:
   - "#86"
   - "#88"
   - "#105"
   - "#129"
-last_reviewed: 2026-08-06
+last_reviewed: 2026-08-27
 ---
 
 # Attention runtime
@@ -70,8 +77,8 @@ worker for the active platform when `worker_cls="auto"`.
 
 | Platform | Worker | Model runner | Current connectors |
 | --- | --- | --- | --- |
-| CUDA | `afd_plugin.v1.worker.AFDAttentionWorker` | `AFDAttentionModelRunner` | `P2pNcclAFDConnector` |
-| NPU | `afd_plugin.v1.worker.npu.AFDNPUAttentionWorker` | `AFDNPUAttentionModelRunner` | `CAMP2pAFDConnector`, `CAMAsyncAFDConnector` |
+| CUDA | `afd_plugin.v1.worker.AFDAttentionWorker` | `AFDAttentionModelRunner` (V1) or `AFDAttentionModelRunnerV2` | `P2pNcclAFDConnector` |
+| NPU | `afd_plugin.v1.worker.npu.AFDNPUAttentionWorker` | `AFDNPUAttentionModelRunner` (V1) or `AFDNPUAttentionModelRunnerV2` | `CAMP2pAFDConnector`, `CAMAsyncAFDConnector` (V1 only) |
 
 CUDA launch shape:
 
@@ -100,7 +107,7 @@ The common Attention initialization sequence is:
 ```text
 vLLM worker construction
   -> validate AFD config, role, connector, and selected worker class
-  -> reject model runner v2 and unsupported feature combinations
+  -> select and validate the V1 or V2 Attention runner
   -> initialize the matching upstream device worker
   -> construct the AFD Attention model runner
   -> derive the role-local AFD rank from DP/TP ranks when needed
@@ -121,12 +128,38 @@ execution, sleep/wake, and normal output handling. The model runner owns its
 connector, AFD profiler, pending request metadata, and graph/ubatch
 coordination state. It closes the connector and profiler during shutdown.
 
-CUDA calls the native `Worker.init_device()`, then replaces the native runner
-with `AFDAttentionModelRunner`. NPU applies the AFD-scoped vLLM-Ascend patches,
-fixes the all-to-all backend when required, initializes the vLLM workspace
-manager, and constructs `AFDNPUAttentionModelRunner` directly. Their exact
-inheritance and device mechanisms are specified in
+CUDA scopes a native runner-class substitution around `Worker.init_device()`
+and selects `AFDAttentionModelRunner` or `AFDAttentionModelRunnerV2` from the
+upstream `use_v2_model_runner` setting. NPU applies the AFD-scoped
+vLLM-Ascend patches, fixes the all-to-all backend when required, initializes
+the vLLM workspace manager, and directly constructs the matching V1 or V2 NPU
+runner. Their exact inheritance and device mechanisms are specified in
 [execution platforms](execution_platforms.md).
+
+## ModelRunnerV2 boundary
+
+ModelRunnerV2 is an upstream runtime selection, not an AFD configuration key.
+On Attention, the V2 runners are thin subclasses of the native CUDA or Ascend
+runner: native V2 retains request state, input preparation, Attention/KV
+execution, sampling, and output ownership. `AFDMetadataProviderMixin` adds the
+connector-facing sidecar, DP control payload, transaction IDs, and capture
+metadata without porting V1 execution methods.
+
+The supported V2 deployment is deliberately narrower than V1:
+
+| Constraint | CUDA V2 | Ascend V2 |
+| --- | --- | --- |
+| Connector | Synchronous `P2pNcclAFDConnector` | Synchronous `CAMP2pAFDConnector` |
+| Gate placement | `compute_gate_on_attention=false` | `compute_gate_on_attention=false` |
+| Parallelism | PP=PCP=DCP=1; configured role ranks equal DP x TP; static EP enabled | Same |
+| Excluded features | Elastic EP, EPLB, sequence-parallel MoE, compile SP, DBO, and ubatching | Same |
+| Graph execution | Eager or `FULL_DECODE_ONLY` | Eager, `FULL`, or `FULL_DECODE_ONLY` |
+| Model | Must resolve to a registered AFD architecture | Same |
+
+Both roles validate the paired V2 topology, but only Attention uses the native
+V2 model runner. FFN remains connector-driven and uses its existing AFD runner
+surface. CUDA V2 has DP2/TP2 eager and graph E2E evidence; the current Ascend
+V2 contract has focused unit evidence but no repository hardware E2E case.
 
 ## Request and forward flow
 
@@ -193,11 +226,16 @@ plugin-owned model code. These fields describe the current implementation;
 the open metadata issues prevent the object shape and live connector reference
 from becoming a long-term API.
 
-The runner creates pending AFD metadata while native attention metadata is
-built and installs it immediately before model forward. For native ubatching,
-each child forward context receives stage-local metadata. When vLLM does not
-produce `DPMetadata` for DP size 1, the runner creates `AFDDPMetadata` from the
-pending stage token count. DP greater than 1 requires native DP metadata.
+V1 creates pending AFD metadata while native Attention metadata is built and
+installs it immediately before model forward. V2 temporarily installs a
+provider at the native `ForwardContext` creation seam and attaches the same
+sidecar to the context created by the upstream runner. The shared metadata
+mixin supplies the ordinary single-stage and graph-control behavior. V1
+native ubatching still gives each child context stage-local metadata.
+
+When vLLM does not produce `DPMetadata` for DP size 1, the shared provider
+creates `AFDDPMetadata` from the pending stage token count. DP greater than 1
+requires native DP metadata on the ordinary request path.
 
 The previous NPU design described a separate forward-context metadata mirror.
 That is no longer the contract: current CUDA and Ascend model paths read the
@@ -208,13 +246,15 @@ canonical `additional_kwargs` entry.
 When `connector.control_plane` is not `None`, the runner sends an
 `AFDControlPayload` through that `AFDControlPlane` before model/data-plane
 transfer. The payload contains a stage-indexed DP metadata map plus
-`is_warmup` and `is_graph_capturing` flags.
+`is_warmup`, `is_graph_capturing`, and `is_profile` flags.
 
 - A non-ubatched request sends stage `0` and uses native or fallback DP
   metadata.
 - Native ubatching sends one DP metadata item per stage.
 - A padded full-graph request sends metadata for the padded capture token
   count.
+- An NPU V2 profile forward marks `is_profile` so FFN recreates the matching
+  Ascend profile context and balanced dummy-MoE state.
 - The control plane updates its owning connector's local state before sending
   the payload.
 
@@ -264,9 +304,9 @@ CAM async requires eager execution and rejects vLLM native ubatching. Its
 feature limits are recorded in the
 [platform matrix](execution_platforms.md#tested-runtime-matrix).
 
-## Native ubatching and graph orchestration
+## Ubatching and graph orchestration
 
-When native vLLM ubatching is enabled, AFD currently accepts exactly two
+On V1, when native vLLM ubatching is enabled, AFD accepts exactly two
 ubatches. The Attention runner chooses or normalizes slices, creates
 stage-local AFD/DP metadata, and installs the platform wrapper during model
 load. The role-level contract is that control-plane side effects complete
@@ -279,11 +319,19 @@ the platform wrapper send the exact per-stage shape. CUDA Graph, ACL Graph,
 stream, and wrapper implementation details are owned by
 [execution platforms](execution_platforms.md).
 
+V2 rejects DBO and ubatching. For full-graph capture, the V2 runner wraps the
+native capture input-preparation seam and publishes exactly one warmup and one
+capture payload for every native descriptor before the graph body. Native
+full-graph replay does not create a `ForwardContext`, so an execute-scoped
+manager hook publishes the padded control shape immediately before replay.
+All temporary hooks and pending metadata state are restored in `finally`.
+
 ## Failure and cleanup behavior
 
 Initialization fails early for a missing or role-mismatched AFD config, an
 unsupported connector/feature combination, an implicit or incorrect worker
-class, model runner v2, invalid native ubatch count, or unsupported graph mode.
+class, invalid V2 topology, invalid native ubatch count, or unsupported graph
+mode.
 Missing DP metadata for DP greater than 1 and missing pending metadata for a
 fallback are runtime errors rather than silently guessed shapes.
 
@@ -315,8 +363,11 @@ the matching platform and connector tests as well.
 
 ## Limitations and open issues
 
-Current shared limits are the supported vLLM release, model runner v1, exactly
-two native ubatches, and role-aware DeepSeek model integration.
+Current shared limits are the supported vLLM release and registered role-aware
+model integrations. V1 native ubatching accepts exactly two ubatches. V2
+instead requires a synchronous control-plane connector, static EP, no PP/CP,
+and no DBO/ubatching; the Ascend V2 path is unit-tested but does not yet have
+repository hardware E2E evidence.
 Platform/connector limits are intentionally centralized in
 [execution platforms](execution_platforms.md#tested-runtime-matrix).
 
