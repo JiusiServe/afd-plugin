@@ -128,6 +128,11 @@ class RemoteFFNProxy(nn.Module):
         if afd_metadata is None:
             raise RuntimeError("RemoteFFNProxy requires AFD forward metadata")
         forward_context = get_forward_context()
+        # CAM 209 cannot safely overlap vLLM's synthetic memory-profile
+        # forward with the shared FFN receive loop.  Live forwards retain the
+        # real remote-FFN exchange after profiling completes.
+        if bool(getattr(forward_context, "in_profile_run", False)):
+            return hidden_states
         stage_idx = int(
             getattr(forward_context, "ubatch_idx", afd_metadata.stage_idx),
         )

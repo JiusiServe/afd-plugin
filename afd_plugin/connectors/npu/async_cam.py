@@ -30,7 +30,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
-from time import sleep
 from typing import TYPE_CHECKING, Any, Final
 
 import torch
@@ -65,7 +64,6 @@ if TYPE_CHECKING:
 AFD_ASYNC_CAM_GROUP_NAME = "afd_async_cam"
 CAM_COMM_ID = 0
 ATTN_RANKS_PER_DP_CONFIG_KEY = "attn_ranks_per_dp"
-SHARED_FFN_POOL_CONFIG_KEY = "shared_ffn_pool"
 ASYNC_MOE_NUM_STAGES = 2
 ASYNC_MOE_REQUEST_SPLIT = "request"
 ASYNC_MOE_TOKEN_SPLIT = "token"
@@ -74,7 +72,6 @@ _AFD_ASYNC_EXTRA_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "dynamicQuant",
         "attn_ranks_per_dp",
-        "shared_ffn_pool",
         "async_moe_ubatching",
         "async_moe_num_ubatches",
         "async_moe_split",
@@ -82,20 +79,6 @@ _AFD_ASYNC_EXTRA_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
 )
 
 logger = init_logger(__name__)
-
-
-def _create_control_store(host: str, port: int, *, is_server: bool) -> Any:
-    """Create the single TCPStore shared by CAM PG setup and scheduling."""
-    import torch.distributed as dist
-
-    return dist.TCPStore(
-        host,
-        port,
-        world_size=1,
-        is_master=is_server,
-        timeout=timedelta(hours=24),
-        wait_for_workers=False,
-    )
 
 
 @dataclass(frozen=True)
@@ -113,7 +96,6 @@ class AFDAsyncExtraInfo(ConnectorExtraInfo):
 
     dynamic_quant: int = 0
     attn_ranks_per_dp: int = 1
-    shared_ffn_pool: bool = False
     async_moe_ubatching: bool = False
     async_moe_num_ubatches: int = ASYNC_MOE_NUM_STAGES
     async_moe_split: str = ASYNC_MOE_REQUEST_SPLIT
@@ -145,10 +127,6 @@ class AFDAsyncExtraInfo(ConnectorExtraInfo):
                 raw.get("attn_ranks_per_dp", 1),
                 field_name="attn_ranks_per_dp",
             ),
-            shared_ffn_pool=coerce_extra_bool(
-                raw.get(SHARED_FFN_POOL_CONFIG_KEY, False),
-                field_name=SHARED_FFN_POOL_CONFIG_KEY,
-            ),
             async_moe_ubatching=coerce_extra_bool(
                 raw.get("async_moe_ubatching", False),
                 field_name="async_moe_ubatching",
@@ -167,7 +145,6 @@ class AFDAsyncExtraInfo(ConnectorExtraInfo):
         return {
             "dynamicQuant": self.dynamic_quant,
             "attn_ranks_per_dp": self.attn_ranks_per_dp,
-            SHARED_FFN_POOL_CONFIG_KEY: self.shared_ffn_pool,
             "async_moe_ubatching": self.async_moe_ubatching,
             "async_moe_num_ubatches": self.async_moe_num_ubatches,
             "async_moe_split": self.async_moe_split,
@@ -196,7 +173,6 @@ class AFDAsyncTransferState(AFDTransferState):
     dynamic_scales: Tensor | None = None
     expand_x_shared: Tensor | None = None
     dynamic_scales_shared: Tensor | None = None
-    cam_dp_group_index: int = 0
 
 
 @dataclass(slots=True)
@@ -211,7 +187,6 @@ class AFDAsyncFFNWorkItem:
     num_tokens: int
     total_num_tokens: int
     shared_num_tokens: int
-    cam_dp_group_index: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,30 +195,15 @@ class AFDAsyncTopology:
 
     role: str
     role_rank: int
-    dp_group_index: int
-    num_dp_groups: int
     world_rank: int
     attn_size: int
     ffn_size: int
     expert_per_rank: int
-    shared_ffn_pool: bool = False
 
     @property
     def world_size(self) -> int:
         """Return the total number of Attention and FFN ranks."""
         return self.attn_size + self.ffn_size
-
-
-@dataclass(slots=True)
-class _CAMGroupContext:
-    """One DP-scoped CAM communicator owned by this connector process."""
-
-    topology: AFDAsyncTopology
-    process_group_name: str
-    cam_pg: ProcessGroup | None = None
-    group_name: str = ""
-    comm_args: Tensor | None = None
-    placeholder: Tensor | None = None
 
 
 class CAMAsyncAFDConnector(AFDConnectorBase):
@@ -277,8 +237,8 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
 
         Communication resources are created collectively by
         ``init_afd_connector``. ``role_rank`` is resolved before connector
-        construction; ``attn_ranks_per_dp`` is used as the CAM Attention TP
-        width.
+        construction; ``attn_ranks_per_dp`` is passed to CAM as the Attention
+        TP width, while all role ranks join one communicator.
         """
         super().__init__(rank, local_rank, vllm_config, afd_config, role_rank)
         self._initialized = False
@@ -296,129 +256,17 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             afd_config,
             role_rank,
             num_routed_experts=self.num_routed_experts,
-            attn_ranks_per_dp=self.tp_size,
-            shared_ffn_pool=self.extra_info.shared_ffn_pool,
         )
         self.world_rank = self.topology.world_rank
         self.attn_size = self.topology.attn_size
         self.ffn_size = self.topology.ffn_size
         self.expert_per_rank = self.topology.expert_per_rank
-        self._process_group_name = _cam_process_group_name(self.topology)
         self.comm_args: Tensor | None = None
         self._placeholder: Tensor | None = None
-        self._cam_group_contexts = self._build_cam_group_contexts()
-        self._control_store: Any | None = None
-        self._scheduler_next_sequence = 1
-        self._scheduler_consumed_by_dp = [0] * self.topology.num_dp_groups
         self._pending_attention_payloads: dict[
             int,
             list[tuple[AFDTransferContext, Tensor, Tensor]],
         ] = {}
-
-    def _build_cam_group_contexts(self) -> dict[int, _CAMGroupContext]:
-        """Build the CAM groups joined by this process.
-
-        In shared-pool mode an Attention rank joins only its own DP group, but
-        every FFN rank joins every group.  This preserves independent Attention
-        queues while keeping one DP8/TP1/EP8 FFN expert partition.
-        """
-        group_indices = [self.topology.dp_group_index]
-        if self.extra_info.shared_ffn_pool and self.afd_config.role == "ffn":
-            group_indices = list(range(self.topology.num_dp_groups))
-
-        contexts: dict[int, _CAMGroupContext] = {}
-        for dp_group_index in group_indices:
-            topology = build_async_topology(
-                self.afd_config,
-                self.role_rank,
-                num_routed_experts=self.num_routed_experts,
-                attn_ranks_per_dp=self.tp_size,
-                shared_ffn_pool=self.extra_info.shared_ffn_pool,
-                dp_group_index=dp_group_index,
-            )
-            contexts[dp_group_index] = _CAMGroupContext(
-                topology=topology,
-                process_group_name=_cam_process_group_name(topology),
-            )
-        return contexts
-
-    def _cam_context(self, dp_group_index: int | None = None) -> _CAMGroupContext:
-        if dp_group_index is None:
-            dp_group_index = self.topology.dp_group_index
-        try:
-            return self._cam_group_contexts[dp_group_index]
-        except KeyError as exc:
-            raise RuntimeError(
-                "CAMAsyncAFDConnector has no CAM communicator for "
-                f"Attention DP group {dp_group_index}"
-            ) from exc
-
-    def _set_legacy_context_fields(self) -> None:
-        """Keep the historical public fields bound to the primary CAM group."""
-        context = self._cam_context()
-        self.cam_pg = context.cam_pg
-        self.group_name = context.group_name
-        self.comm_args = context.comm_args
-        self._placeholder = context.placeholder
-
-    @property
-    def uses_shared_ffn_pool(self) -> bool:
-        """Whether one FFN TP/EP partition serves multiple Attention DPs."""
-        return self.extra_info.shared_ffn_pool and self.topology.num_dp_groups > 1
-
-    def _init_shared_ffn_scheduler(self) -> None:
-        """Initialize shared-pool scheduling keys in the common control store.
-
-        CAM transports activations and completion data, but its blocking recv
-        has no API to ask which of several communicators has pending work.  A
-        TCPStore queue lets the FFN leader select a ready Attention DP group;
-        all FFN ranks then receive from the same CAM communicator.
-        """
-        if not self.uses_shared_ffn_pool:
-            return
-        assert self._control_store is not None
-        if self._is_control_store_server():
-            for dp_group_index in range(self.topology.num_dp_groups):
-                self._control_store.set(
-                    _scheduler_ready_key(dp_group_index),
-                    "0",
-                )
-
-    def _notify_shared_ffn_work_ready(self) -> None:
-        if not self.uses_shared_ffn_pool or self.topology.world_rank != 0:
-            return
-        assert self._control_store is not None
-        self._control_store.add(
-            _scheduler_ready_key(self.topology.dp_group_index),
-            1,
-        )
-
-    def _next_shared_ffn_dp_group(self) -> int:
-        """Return the next ready Attention DP group on every FFN rank."""
-        if not self.uses_shared_ffn_pool:
-            return self.topology.dp_group_index
-        assert self._control_store is not None
-
-        schedule_key = _scheduler_schedule_key(self._scheduler_next_sequence)
-        if self.role_rank == 0:
-            while True:
-                for dp_group_index in range(self.topology.num_dp_groups):
-                    ready = int(
-                        self._control_store.get(
-                            _scheduler_ready_key(dp_group_index),
-                        ).decode(),
-                    )
-                    if ready > self._scheduler_consumed_by_dp[dp_group_index]:
-                        self._scheduler_consumed_by_dp[dp_group_index] += 1
-                        self._control_store.set(schedule_key, str(dp_group_index))
-                        break
-                else:
-                    sleep(0.001)
-                    continue
-                break
-        dp_group_index = int(self._control_store.get(schedule_key).decode())
-        self._scheduler_next_sequence += 1
-        return dp_group_index
 
     @property
     def is_initialized(self) -> bool:
@@ -436,47 +284,27 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             return
 
         ensure_cam_async_ops_available()
-        self._control_store = _create_control_store(
-            self.afd_config.host,
-            self.afd_config.port,
-            is_server=self._is_control_store_server(),
-        )
         device = f"npu:{self.local_rank}"
-        for context in self._cam_group_contexts.values():
-            topology = context.topology
-            context.cam_pg = init_afd_process_group(
-                backend="hccl",
-                world_size=topology.world_size,
-                rank=topology.world_rank,
-                group_name=context.process_group_name,
-                timeout=timedelta(minutes=30),
-                store=self._control_store,
-            )
-            backend = context.cam_pg._get_backend(torch.device("npu"))
-            context.group_name = str(backend.get_hccl_comm_name(topology.world_rank))
-            context.comm_args = torch.empty((1,), dtype=torch.float16, device=device)
-            context.placeholder = torch.empty((1,), dtype=torch.bfloat16, device=device)
-        self._set_legacy_context_fields()
-        self._init_shared_ffn_scheduler()
-        self._initialized = True
-
-    def _is_control_store_server(self) -> bool:
-        return (
-            self.afd_config.role == "attention"
-            and self.topology.dp_group_index == 0
-            and self.topology.world_rank == 0
+        self.cam_pg = init_afd_process_group(
+            backend="hccl",
+            init_method=f"tcp://{self.afd_config.host}:{self.afd_config.port}",
+            world_size=self.topology.world_size,
+            rank=self.world_rank,
+            group_name=AFD_ASYNC_CAM_GROUP_NAME,
+            timeout=timedelta(minutes=30),
         )
+        backend = self.cam_pg._get_backend(torch.device("npu"))
+        self.group_name = str(backend.get_hccl_comm_name(self.world_rank))
+        self.comm_args = torch.empty((1,), dtype=torch.float16, device=device)
+        self._placeholder = torch.empty((1,), dtype=torch.bfloat16, device=device)
+        self._initialized = True
 
     def close(self) -> None:
         """Destroy the HCCL process group and clear pending transfer states."""
         import torch.distributed as dist
 
-        for context in self._cam_group_contexts.values():
-            if context.cam_pg is not None:
-                dist.destroy_process_group(context.cam_pg)
-            context.cam_pg = None
-            context.comm_args = None
-            context.placeholder = None
+        if self.cam_pg is not None:
+            dist.destroy_process_group(self.cam_pg)
         self.cam_pg = None
         self.comm_args = None
         self._placeholder = None
@@ -506,8 +334,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             "batch_size": max(1, self.max_seq_len or max_num_tokens),
             "ubatch_idx": stage_idx,
         }
-        if self.uses_shared_ffn_pool:
-            recv_kwargs["cam_dp_group_index"] = self._next_shared_ffn_dp_group()
         recv_output = self.recv_attn_output(
             **recv_kwargs,
         )
@@ -539,7 +365,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         layer_idx = max(0, int(token_nums_rankid_layeridx[2].item()))
         token_nums_rankid_layeridx = token_nums_rankid_layeridx.clone()
         states.token_nums_rankid_layeridx = token_nums_rankid_layeridx
-        cam_dp_group_index = states.cam_dp_group_index
 
         expert_token_nums_shared = states.expert_token_nums_shared
         if expert_token_nums_shared is None:
@@ -583,7 +408,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             num_tokens=num_tokens,
             total_num_tokens=total_num_tokens,
             shared_num_tokens=shared_num_tokens,
-            cam_dp_group_index=cam_dp_group_index,
         )
 
     def _send_ffn_output_payload(
@@ -696,8 +520,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         ).append(
             (context, topk_ids, topk_weights),
         )
-
-        self._notify_shared_ffn_work_ready()
 
         torch.ops.umdk_cam_op_lib.async_dispatch_send(
             hidden_states,
@@ -829,27 +651,22 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             metadata=metadata,
             states=states,
         )
-        cam_dp_group_index = int(
-            kwargs.get("cam_dp_group_index", self.topology.dp_group_index),
-        )
-        cam_context = self._cam_context(cam_dp_group_index)
-        topology = cam_context.topology
-        placeholder = kwargs.get("placeholder", cam_context.placeholder)
+        placeholder = kwargs.get("placeholder", self._placeholder)
         outputs = torch.ops.umdk_cam_op_lib.async_dispatch_recv(
             placeholder,
-            cam_context.comm_args,
+            self.comm_args,
             self.comm_id,
             states.batch_size,
             states.hidden_size,
             states.topk,
-            topology.ffn_size,
-            topology.attn_size,
-            topology.expert_per_rank,
-            topology.world_rank,
-            topology.world_size,
+            self.ffn_size,
+            self.attn_size,
+            self.expert_per_rank,
+            self.world_rank,
+            self.topology.world_size,
             self.tp_size,
             self.dynamic_quant,
-            cam_context.group_name,
+            self.group_name,
         )
         (
             hidden_states,
@@ -866,7 +683,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         states.dynamic_scales = dynamic_scales
         states.expand_x_shared = expand_x_shared
         states.dynamic_scales_shared = dynamic_scales_shared
-        states.cam_dp_group_index = cam_dp_group_index
         return AFDA2FTransferPayload(
             hidden_states=hidden_states,
             context=context,
@@ -885,8 +701,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         """
         self._require_initialized()
         states = _require_async_transfer_state(context)
-        cam_context = self._cam_context(states.cam_dp_group_index)
-        topology = cam_context.topology
         expand_x_shared = kwargs.get("expand_x_shared")
         if expand_x_shared is None:
             expand_x_shared = ffn_output
@@ -901,19 +715,19 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         torch.ops.umdk_cam_op_lib.async_combine_send(
             ffn_output,
             expand_x_shared,
-            cam_context.comm_args,
+            self.comm_args,
             token_nums_rankid_layeridx,
             self.comm_id,
             states.batch_size,
             states.hidden_size,
             states.topk,
-            topology.ffn_size,
-            topology.attn_size,
-            topology.expert_per_rank,
-            topology.world_rank,
-            topology.world_size,
+            self.ffn_size,
+            self.attn_size,
+            self.expert_per_rank,
+            self.world_rank,
+            self.topology.world_size,
             self.tp_size,
-            cam_context.group_name,
+            self.group_name,
         )
     def _require_initialized(self) -> None:
         if not self._initialized:
@@ -937,66 +751,29 @@ def build_async_topology(
     role_rank: int,
     *,
     num_routed_experts: int | None = None,
-    attn_ranks_per_dp: int | None = None,
-    shared_ffn_pool: bool = False,
-    dp_group_index: int | None = None,
 ) -> AFDAsyncTopology:
-    """Derive the DP-scoped CAM HCCL world for one role-local rank.
-
-    CAM does not carry a DP queue identifier.  Multiple Attention DP replicas
-    must therefore use independent HCCL communicators rather than sharing one
-    global CAM world.  Each local world is Attention-first:
-    ``[A(dp, 0), ..., A(dp, tp - 1), F(dp, 0), ..., F(dp, n - 1)]``.
-    """
-    global_attn_size = afd_config.num_attention_ranks
-    global_ffn_size = afd_config.num_ffn_ranks
-    if global_attn_size <= 0 or global_ffn_size <= 0:
+    """Derive the one CAM HCCL world shared by all role-local ranks."""
+    attn_size = afd_config.num_attention_ranks
+    ffn_size = afd_config.num_ffn_ranks
+    if attn_size <= 0 or ffn_size <= 0:
         raise ValueError("AFD async topology sizes must be positive")
     if role_rank < 0:
         raise ValueError(f"AFD async role rank must be non-negative, got {role_rank}")
 
-    attn_size = (
-        global_attn_size if attn_ranks_per_dp is None else attn_ranks_per_dp
-    )
-    if not isinstance(attn_size, int) or isinstance(attn_size, bool) or attn_size <= 0:
-        raise ValueError("attn_ranks_per_dp must be a positive integer")
-    if global_attn_size % attn_size != 0:
-        raise ValueError(
-            "num_attention_ranks must be divisible by attn_ranks_per_dp, got "
-            f"{global_attn_size} and {attn_size}"
-        )
-    num_dp_groups = global_attn_size // attn_size
-    if not shared_ffn_pool and global_ffn_size % num_dp_groups != 0:
-        raise ValueError(
-            "num_ffn_ranks must be divisible by the CAM DP group count, got "
-            f"{global_ffn_size} and {num_dp_groups}"
-        )
-    ffn_size = global_ffn_size if shared_ffn_pool else global_ffn_size // num_dp_groups
-
     if afd_config.role == "attention":
-        if role_rank >= global_attn_size:
+        if role_rank >= attn_size:
             raise ValueError(
                 "Attention role rank must be within attention size "
-                f"(rank={role_rank}, size={global_attn_size})",
+                f"(rank={role_rank}, size={attn_size})",
             )
-        resolved_dp_group_index, world_rank = divmod(role_rank, attn_size)
+        world_rank = role_rank
     elif afd_config.role == "ffn":
-        if role_rank >= global_ffn_size:
+        if role_rank >= ffn_size:
             raise ValueError(
                 "FFN role rank must be within FFN size "
-                f"(rank={role_rank}, size={global_ffn_size})",
+                f"(rank={role_rank}, size={ffn_size})",
             )
-        if shared_ffn_pool:
-            resolved_dp_group_index = 0 if dp_group_index is None else dp_group_index
-            if not 0 <= resolved_dp_group_index < num_dp_groups:
-                raise ValueError(
-                    "shared FFN CAM DP group index is outside the valid range: "
-                    f"{resolved_dp_group_index} not in [0, {num_dp_groups})"
-                )
-            world_rank = attn_size + role_rank
-        else:
-            resolved_dp_group_index, local_ffn_rank = divmod(role_rank, ffn_size)
-            world_rank = attn_size + local_ffn_rank
+        world_rank = attn_size + role_rank
     else:
         raise ValueError(f"unknown AFD role {afd_config.role!r}")
 
@@ -1005,30 +782,11 @@ def build_async_topology(
     return AFDAsyncTopology(
         role=afd_config.role,
         role_rank=role_rank,
-        dp_group_index=resolved_dp_group_index,
-        num_dp_groups=num_dp_groups,
         world_rank=world_rank,
         attn_size=attn_size,
         ffn_size=ffn_size,
         expert_per_rank=expert_per_rank,
-        shared_ffn_pool=shared_ffn_pool,
     )
-
-
-def _cam_process_group_name(topology: AFDAsyncTopology) -> str:
-    """Return the DP-scoped HCCL group name used by CAM operators."""
-
-    if topology.num_dp_groups == 1:
-        return AFD_ASYNC_CAM_GROUP_NAME
-    return f"{AFD_ASYNC_CAM_GROUP_NAME}_dp{topology.dp_group_index}"
-
-
-def _scheduler_ready_key(dp_group_index: int) -> str:
-    return f"afd_async_cam/scheduler/ready/{dp_group_index}"
-
-
-def _scheduler_schedule_key(sequence: int) -> str:
-    return f"afd_async_cam/scheduler/next/{sequence}"
 
 
 def _validate_topk_payload(
@@ -1062,7 +820,6 @@ __all__ = [
     "AFDAsyncFFNWorkItem",
     "AFDAsyncTopology",
     "ATTN_RANKS_PER_DP_CONFIG_KEY",
-    "SHARED_FFN_POOL_CONFIG_KEY",
     "ASYNC_MOE_NUM_STAGES",
     "ASYNC_MOE_REQUEST_SPLIT",
     "ASYNC_MOE_TOKEN_SPLIT",

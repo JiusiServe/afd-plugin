@@ -289,61 +289,35 @@ def test_async_topology_uses_cam_attention_first_rank_layout():
 
 
 @pytest.mark.parametrize(
-    ("role", "role_rank", "expected_group", "expected_world_rank"),
+    ("role", "role_rank", "expected_world_rank"),
     [
-        ("attention", 3, 0, 3),
-        ("attention", 4, 1, 0),
-        ("ffn", 3, 0, 7),
-        ("ffn", 4, 1, 4),
+        ("attention", 3, 3),
+        ("attention", 4, 4),
+        ("ffn", 3, 11),
+        ("ffn", 4, 12),
     ],
 )
-def test_async_topology_scopes_cam_world_to_each_dp_group(
+def test_async_topology_uses_one_world_for_all_dp_replicas(
     role,
     role_rank,
-    expected_group,
     expected_world_rank,
 ):
     topology = build_async_topology(
         _dp2_afd_config(role=role),
         role_rank,
         num_routed_experts=32,
-        attn_ranks_per_dp=4,
     )
 
-    assert topology.dp_group_index == expected_group
-    assert topology.num_dp_groups == 2
     assert topology.world_rank == expected_world_rank
-    assert topology.attn_size == 4
-    assert topology.ffn_size == 4
-    assert topology.world_size == 8
-    assert topology.expert_per_rank == 8
-
-
-@pytest.mark.parametrize("dp_group_index", [0, 1])
-def test_async_topology_allows_a_shared_ffn_ep_pool(dp_group_index):
-    topology = build_async_topology(
-        _dp2_afd_config(role="ffn"),
-        7,
-        num_routed_experts=256,
-        attn_ranks_per_dp=4,
-        shared_ffn_pool=True,
-        dp_group_index=dp_group_index,
-    )
-
-    assert topology.dp_group_index == dp_group_index
-    assert topology.num_dp_groups == 2
-    assert topology.world_rank == 11
-    assert topology.attn_size == 4
+    assert topology.attn_size == 8
     assert topology.ffn_size == 8
-    assert topology.world_size == 12
-    assert topology.expert_per_rank == 32
+    assert topology.world_size == 16
+    assert topology.expert_per_rank == 4
 
 
-def test_async_extra_info_parses_shared_ffn_pool():
-    extra_info = AFDAsyncExtraInfo.from_mapping({"shared_ffn_pool": "true"})
-
-    assert extra_info.shared_ffn_pool is True
-    assert extra_info.to_mapping()["shared_ffn_pool"] is True
+def test_async_extra_info_rejects_removed_shared_ffn_pool_option():
+    with pytest.raises(ValueError, match="unknown AFD async connector_extra_config"):
+        AFDAsyncExtraInfo.from_mapping({"shared_ffn_pool": "true"})
 
 
 def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
@@ -371,8 +345,6 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
         "init_afd_process_group",
         fake_init_afd_process_group,
     )
-    control_store = object()
-    monkeypatch.setattr(async_cam_module, "_create_control_store", lambda *args, **kwargs: control_store)
     connector = CAMAsyncAFDConnector(
         0,
         0,
@@ -390,7 +362,7 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
             "rank": 5,
             "group_name": AFD_ASYNC_CAM_GROUP_NAME,
             "timeout": calls[0]["timeout"],
-            "store": control_store,
+            "init_method": "tcp://127.0.0.1:1239",
         },
     ]
     assert connector.cam_pg is not None
@@ -400,7 +372,7 @@ def test_async_connector_init_creates_attention_first_hccl_group(monkeypatch):
     assert connector._placeholder.shape == (1,)
 
 
-def test_async_connector_init_uses_a_distinct_hccl_group_for_each_dp(monkeypatch):
+def test_async_connector_init_uses_one_hccl_group_for_all_dp(monkeypatch):
     calls = []
     fake_torch = _FakeTorch()
     monkeypatch.setattr(async_cam_module, "torch", fake_torch)
@@ -422,8 +394,6 @@ def test_async_connector_init_uses_a_distinct_hccl_group_for_each_dp(monkeypatch
         "init_afd_process_group",
         fake_init_afd_process_group,
     )
-    control_store = object()
-    monkeypatch.setattr(async_cam_module, "_create_control_store", lambda *args, **kwargs: control_store)
     connector = CAMAsyncAFDConnector(
         0,
         0,
@@ -434,11 +404,11 @@ def test_async_connector_init_uses_a_distinct_hccl_group_for_each_dp(monkeypatch
 
     connector.init_afd_connector()
 
-    assert calls[0]["world_size"] == 8
-    assert calls[0]["rank"] == 4
-    assert calls[0]["group_name"] == "afd_async_cam_dp1"
-    assert calls[0]["store"] is control_store
-    assert connector.group_name == "hccl:afd_async_cam_dp1:4"
+    assert calls[0]["world_size"] == 16
+    assert calls[0]["rank"] == 12
+    assert calls[0]["group_name"] == AFD_ASYNC_CAM_GROUP_NAME
+    assert calls[0]["init_method"] == "tcp://127.0.0.1:1239"
+    assert connector.group_name == "hccl:afd_async_cam:12"
 
 
 def test_async_connector_disables_dp_metadata_control_plane():
@@ -606,7 +576,6 @@ def test_async_ffn_work_item_uses_cam_layer_and_token_metadata(monkeypatch):
     work_item = connector.recv_ffn_work_item(
         stage_idx=0,
         max_num_tokens=16,
-        expected_layer_idx=0,
     )
 
     states = work_item.context.states
@@ -669,7 +638,6 @@ def test_async_ffn_work_item_uses_expert_counts_for_routed_tokens(monkeypatch):
     work_item = connector.recv_ffn_work_item(
         stage_idx=0,
         max_num_tokens=16,
-        expected_layer_idx=0,
     )
 
     states = work_item.context.states
@@ -729,7 +697,6 @@ def test_async_send_ffn_work_item_output_preserves_all_shared_passthrough(
     work_item = connector.recv_ffn_work_item(
         stage_idx=0,
         max_num_tokens=16,
-        expected_layer_idx=0,
     )
     sent_output = connector.send_ffn_work_item_output(
         work_item,

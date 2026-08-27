@@ -6,8 +6,8 @@ set -euo pipefail
 # Attention is one global DP3TP8 vLLM process group, started once on each
 # node: node1 owns DP0-1 (NPUs 0-15) and hosts the API; node2 owns DP2
 # (NPUs 0-7) and joins headlessly.  Both Attention invocations use node1 as
-# the vLLM DP coordinator.  CAM rendezvous remains local to each CAM DP group.
-# node2 also hosts the shared FFN EP8 pool on NPUs 8-15.
+# the vLLM DP coordinator.  All 24 Attention ranks and 8 FFN ranks join one
+# CAM communicator through node1; node2 hosts the FFN DP8/EP8 ranks on NPUs 8-15.
 : "${ROLE:?ROLE must be attention or ffn}"
 : "${NODE_IP:?NODE_IP is required}"
 : "${ATTENTION_NODE_ID:=1}"  # 1 = node1 (DP0-1), 2 = node2 (DP2)
@@ -65,9 +65,12 @@ case "$PROFILE_VARIANT" in
 esac
 
 MODEL_PATH=/mnt/sfs_turbo/models/DeepSeek-V4-Flash-w8a8-mtp
-PLUGIN_ROOT=/a3_inference/itask/workdir/wb02363348/bjf_afd/code/afd-plugin
-NODE1_IP=33.182.143.180
-NODE2_IP=33.182.143.182
+# Resolve the plugin from this launcher instead of a task-specific workdir.
+# ``itask sync`` may assign each task a different workspace name.
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+PLUGIN_ROOT=${PLUGIN_ROOT:-$(cd -- "$SCRIPT_DIR/../.." && pwd)}
+: "${NODE1_IP:?NODE1_IP must be the validated node1 Pod IP}"
+: "${NODE2_IP:?NODE2_IP must be the validated node2 Pod IP}"
 
 source /usr/local/Ascend/cann-9.0.1/set_env.sh
 export ASCEND_RT_VISIBLE_DEVICES="$VISIBLE_DEVICES"
@@ -78,10 +81,12 @@ export AFD_FORCE_SPAWN_MULTIPROCESSING=1
 CAM_VENDOR=/usr/local/Ascend/cann-9.0.1/opp/vendors/CAM
 CAM_OPAPI_DIR="$CAM_VENDOR/op_api/lib"
 CAM_OPAPI="$CAM_OPAPI_DIR/libopapi.so"
+TORCH_NPU_LIB=/usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/lib
+TORCH_LIB=/usr/local/python3.12.13/lib/python3.12/site-packages/torch/lib
 export ASCEND_CUSTOM_OPP_PATH="$CAM_VENDOR:${ASCEND_CUSTOM_OPP_PATH:-}"
 # umdk_cam_op_lib resolves libopapi.so by name on first request.  Put CAM's
 # vendor implementation before CANN's stock libopapi.so, which lacks CAM ops.
-export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/driver:/usr/local/Ascend/driver/lib64:"$CAM_OPAPI_DIR":"$CAM_VENDOR/op_api":/usr/local/Ascend/cann-9.0.1/aarch64-linux/lib64:/usr/local/Ascend/cann-9.0.1/runtime/lib64:${LD_LIBRARY_PATH:-}
+export LD_LIBRARY_PATH="$TORCH_LIB":"$TORCH_NPU_LIB":/usr/local/Ascend/driver/lib64/driver:/usr/local/Ascend/driver/lib64:"$CAM_OPAPI_DIR":"$CAM_VENDOR/op_api":/usr/local/Ascend/cann-9.0.1/aarch64-linux/lib64:/usr/local/Ascend/cann-9.0.1/runtime/lib64:${LD_LIBRARY_PATH:-}
 export CAM_CUST_OPAPI_LIB_PATH="$CAM_OPAPI"
 export LD_PRELOAD="$CAM_OPAPI${LD_PRELOAD:+:$LD_PRELOAD}"
 export HCCL_IF_IP="$NODE_IP"
@@ -116,7 +121,7 @@ else
   MODEL_NAME=dsv4-afd-ffn
 fi
 
-ADDITIONAL_CONFIG="{\"enable_force_load_balance\":false,\"afd\":{\"role\":\"$ROLE\",\"connector\":\"CAMAsyncAFDConnector\",\"async\":true,\"host\":\"$NODE1_IP\",\"port\":1239,\"num_attention_ranks\":24,\"num_ffn_ranks\":8,\"compute_gate_on_attention\":true,\"connector_extra_config\":{\"dynamicQuant\":1,\"attn_ranks_per_dp\":8,\"shared_ffn_pool\":true,\"async_moe_ubatching\":true,\"cam_rendezvous_hosts\":[\"$NODE1_IP\",\"$NODE1_IP\",\"$NODE2_IP\"],\"scheduler_host\":\"$NODE2_IP\"}}}"
+ADDITIONAL_CONFIG="{\"enable_force_load_balance\":false,\"afd\":{\"role\":\"$ROLE\",\"connector\":\"CAMAsyncAFDConnector\",\"async\":true,\"host\":\"$NODE1_IP\",\"port\":1239,\"num_attention_ranks\":24,\"num_ffn_ranks\":8,\"compute_gate_on_attention\":true,\"connector_extra_config\":{\"dynamicQuant\":1,\"attn_ranks_per_dp\":8,\"async_moe_ubatching\":true}}}"
 
 exec env VLLM_USE_V1=1 /usr/local/python3.12.13/bin/vllm serve "$MODEL_PATH" \
   --host 0.0.0.0 --port "$API_PORT" "${API_SERVER_ARGS[@]}" --served-model-name "$MODEL_NAME" \
