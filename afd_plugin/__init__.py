@@ -106,7 +106,9 @@ _DEEPSEEK_MODEL_REGISTRATIONS = {
         "afd_plugin.model_executor.models.deepseek_v2:AFDDeepseekV3ForCausalLM"
     ),
     "DeepseekV4ForCausalLM": (
-        "afd_plugin.model_executor.models.deepseek_v4:AFDDeepseekV4ForCausalLM"
+        "afd_plugin.model_executor.models.npu.deepseek_v4:AFDDeepseekV4ForCausalLM"
+        if importlib.util.find_spec("torch_npu") is not None
+        else "afd_plugin.model_executor.models.deepseek_v4:AFDDeepseekV4ForCausalLM"
     ),
     "GlmMoeDsaForCausalLM": (
         "afd_plugin.model_executor.models.deepseek_v2:AFDGlmMoeDsaForCausalLM"

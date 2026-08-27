@@ -11,7 +11,6 @@ startup out of HybridKVCacheCoordinator.
 from __future__ import annotations
 
 import gc
-import importlib
 import queue
 import time
 from collections import deque
@@ -27,16 +26,6 @@ if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm.v1.executor import Executor
     from vllm.v1.kv_cache_interface import KVCacheConfig
-
-
-def _ensure_ascend_hybrid_kv_cache_grouping() -> None:
-    """Register vLLM-Ascend's DSV4 grouping implementation in EngineCore."""
-    try:
-        importlib.import_module("vllm_ascend.patch.platform.patch_kv_cache_utils")
-    except (ImportError, ModuleNotFoundError) as exc:
-        raise RuntimeError(
-            "AFD DSV4 hybrid KV cache grouping requires vLLM-Ascend",
-        ) from exc
 
 
 # Patch reason: AFD FFN ranks run as connector daemons instead of normal
@@ -251,11 +240,7 @@ def _initialize_kv_caches(self, vllm_config: VllmConfig) -> KVCacheConfig:
         return _AFDFFNKVCacheConfig()
     # ### PATCH END: AFD FFN late-loaded KV cache bypass
 
-    # vLLM-Ascend owns DSV4's hybrid cache packing.  AFD's EngineCore patch
-    # bypasses the normal vLLM-Ascend registration path, so register it at the
-    # exact call site that creates KV cache groups.  Do not add a second AFD
-    # grouping or allocator monkey patch here.
-    _ensure_ascend_hybrid_kv_cache_grouping()
+    import vllm_ascend.patch.platform.patch_kv_cache_utils  # noqa: F401
 
     start = time.time()
 

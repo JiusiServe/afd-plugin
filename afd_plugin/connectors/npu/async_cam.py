@@ -237,8 +237,8 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
 
         Communication resources are created collectively by
         ``init_afd_connector``. ``role_rank`` is resolved before connector
-        construction; ``attn_ranks_per_dp`` is passed to CAM as the Attention
-        TP width, while all role ranks join one communicator.
+        construction; ``attn_ranks_per_dp`` is used as the CAM Attention TP
+        width.
         """
         super().__init__(rank, local_rank, vllm_config, afd_config, role_rank)
         self._initialized = False
@@ -284,7 +284,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             return
 
         ensure_cam_async_ops_available()
-        device = f"npu:{self.local_rank}"
         self.cam_pg = init_afd_process_group(
             backend="hccl",
             init_method=f"tcp://{self.afd_config.host}:{self.afd_config.port}",
@@ -295,15 +294,20 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         )
         backend = self.cam_pg._get_backend(torch.device("npu"))
         self.group_name = str(backend.get_hccl_comm_name(self.world_rank))
+        device = f"npu:{self.local_rank}"
         self.comm_args = torch.empty((1,), dtype=torch.float16, device=device)
-        self._placeholder = torch.empty((1,), dtype=torch.bfloat16, device=device)
+        self._placeholder = torch.empty(
+            (1,),
+            dtype=torch.bfloat16,
+            device=device,
+        )
         self._initialized = True
 
     def close(self) -> None:
         """Destroy the HCCL process group and clear pending transfer states."""
-        import torch.distributed as dist
-
         if self.cam_pg is not None:
+            import torch.distributed as dist
+
             dist.destroy_process_group(self.cam_pg)
         self.cam_pg = None
         self.comm_args = None
@@ -328,14 +332,11 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         CAM metadata supplies the actual layer and routed/shared token counts;
         returned tensors are sliced from operator capacity to those counts.
         """
-        recv_kwargs: dict[str, Any] = {
-            "stage_idx": stage_idx,
-            "layer_idx": 0,
-            "batch_size": max(1, self.max_seq_len or max_num_tokens),
-            "ubatch_idx": stage_idx,
-        }
         recv_output = self.recv_attn_output(
-            **recv_kwargs,
+            stage_idx=stage_idx,
+            layer_idx=0,
+            batch_size=max(1, self.max_seq_len or max_num_tokens),
+            ubatch_idx=stage_idx,
         )
         context = recv_output.context
         metadata = context.metadata
@@ -752,7 +753,14 @@ def build_async_topology(
     *,
     num_routed_experts: int | None = None,
 ) -> AFDAsyncTopology:
-    """Derive the one CAM HCCL world shared by all role-local ranks."""
+    """Validate role-local rank settings and derive HCCL world rank.
+
+    The world is Attention-first: Attention role rank ``i`` maps to world rank
+    ``i`` and FFN role rank ``j`` maps to
+    ``num_attention_ranks + j``. Routed experts are distributed across FFN
+    ranks using a ceiling division; production model layouts should keep the
+    routed-expert count divisible by the FFN rank count.
+    """
     attn_size = afd_config.num_attention_ranks
     ffn_size = afd_config.num_ffn_ranks
     if attn_size <= 0 or ffn_size <= 0:

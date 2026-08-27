@@ -20,15 +20,6 @@ def get_afd_model_config(
 ) -> ModelConfig:
     """Return a model config that resolves to an AFD model implementation."""
 
-    # ``get_afd_model_config`` also runs in every spawned vLLM worker.  Those
-    # workers import the explicit AFD worker class directly and do not invoke
-    # the ``vllm.general_plugins`` entry point, so register the lazy AFD model
-    # names before replacing a native architecture with its ``AFD...`` name.
-    # Registration is idempotent in ``register_afd``.
-    from afd_plugin import register_afd
-
-    register_afd()
-
     for model_arch in model_config.hf_config.architectures:
         if model_arch in _MODEL_REGISTRATIONS:
             if model_arch in _QWEN3_5_MODEL_REGISTRATIONS and device_type != "cuda":
