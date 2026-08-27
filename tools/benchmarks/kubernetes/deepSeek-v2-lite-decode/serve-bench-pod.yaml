@@ -22,6 +22,7 @@ spec:
   containers:
     - name: afd
       image: ${TEMPLATE_IMAGE}
+      imagePullPolicy: Always
       command:
         - /bin/bash
         - -c
