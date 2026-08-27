@@ -147,6 +147,7 @@ def validate_npu_model_runner_v2_config(
         or vllm_config.compilation_config.pass_config.enable_sp
     ):
         raise RuntimeError("AFD ModelRunnerV2 requires static expert parallelism")
+    # ### PATCH START: AFD NPU MRV2 DBO validation
     dbo_enabled = bool(parallel.enable_dbo or parallel.use_ubatching)
     if dbo_enabled:
         if parallel.data_parallel_size <= 1 or int(parallel.num_ubatches) != 2:
@@ -170,6 +171,7 @@ def validate_npu_model_runner_v2_config(
                 "AFD NPU ModelRunnerV2 DBO does not support speculative decode, "
                 "LoRA, multimodal, or encoder models",
             )
+    # ### PATCH END: AFD NPU MRV2 DBO validation
 
     from afd_plugin.model_executor.models.model_utils import (
         has_afd_model_registration,

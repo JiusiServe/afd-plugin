@@ -402,6 +402,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             "Only DP metadata control plane supports graph capturing."
         )
         graph_key = self._make_graph_key(dp_metadata_list)
+        # ### PATCH START: AFD MRV2 repeated capture replay
         if graph_key in self._acl_graphs:
             logger.debug(
                 "AFD NPU FFN replaying existing ACL graph for capture key=%s",
@@ -415,6 +416,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             )
             self._acl_graphs[graph_key]["graph"].replay()
             return
+        # ### PATCH END: AFD MRV2 repeated capture replay
 
         logger.debug("AFD NPU FFN capturing ACL graph for key=%s", graph_key)
         graph = torch.npu.NPUGraph()

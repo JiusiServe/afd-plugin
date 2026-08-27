@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, fields, replace
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
@@ -34,9 +34,13 @@ from vllm.v1.worker.ubatch_utils import (
 )
 from vllm.v1.worker.utils import AttentionGroup
 
-AFD_MRV2_DBO_RUNTIME_ABI = 3
+if TYPE_CHECKING:
+    from afd_plugin.v1.worker.npu.aclgraph_manager_v2 import (
+        AFDModelAclGraphManagerV2,
+    )
 
 
+# ### PATCH START: AFD v0.26 DBO descriptor
 @dataclass(frozen=True)
 class AFDBatchExecutionDescriptor(BatchExecutionDescriptor):
     """v0.26 batch descriptor extended only with the DBO execution count."""
@@ -44,17 +48,18 @@ class AFDBatchExecutionDescriptor(BatchExecutionDescriptor):
     num_ubatches: int = 1
 
 
-def assert_backport_required() -> None:
-    """Fail when the pinned vLLM ABI no longer needs this backport."""
-
-    descriptor_fields = {field.name for field in fields(BatchExecutionDescriptor)}
-    if "num_ubatches" in descriptor_fields:
-        raise RuntimeError(
-            "vLLM already provides ModelRunnerV2 DBO descriptors; remove the "
-            "temporary afd-plugin v0.26 backport",
-        )
+# ### PATCH END: AFD v0.26 DBO descriptor
 
 
+# Upstream source: ``vllm/v1/worker/gpu/dp_utils.py`` from
+# ``specture724/vllm`` commit ``626fee7831``.
+# Patch reason: pinned vLLM's descriptor and graph-manager dispatch do not carry
+# ModelRunnerV2 microbatch state.
+# Patch functionality: preserve upstream DP-wide threshold selection while
+# routing DBO graph selection through the plugin-owned Ascend manager.
+# Signature: standalone backport helper; graph-manager and eager-control
+# parameters replace the newer upstream descriptor inputs.
+# Removal/upstream plan: delete this helper with the v0.26 compatibility layer.
 def dispatch_afd_dbo_and_sync_dp(
     *,
     num_reqs: int,
@@ -65,7 +70,7 @@ def dispatch_afd_dbo_and_sync_dp(
     parallel_config: ParallelConfig,
     decode_query_len: int,
     allow_ubatching: bool,
-    cudagraph_manager: Any | None = None,
+    cudagraph_manager: AFDModelAclGraphManagerV2 | None = None,
     need_eager: bool = False,
 ) -> tuple[BatchExecutionDescriptor, torch.Tensor | None]:
     """Select DBO and FULL graph execution consistently across DP ranks.
@@ -75,6 +80,7 @@ def dispatch_afd_dbo_and_sync_dp(
     upstream inference rule and avoids a separate per-rank DBO vote.
     """
 
+    # ### PATCH START: AFD v0.26 graph dispatch adapter
     def dispatch(
         tokens: int,
         ubatches: int,
@@ -107,24 +113,21 @@ def dispatch_afd_dbo_and_sync_dp(
                 num_ubatches=ubatches,
             )
 
-        dispatch_ubatches = getattr(cudagraph_manager, "dispatch_ubatches", None)
-        if dispatch_ubatches is None:
-            manager_type = type(cudagraph_manager).__name__
-            raise RuntimeError(
-                "AFD NPU ModelRunnerV2 FULL graph DBO requires the plugin "
-                f"graph manager, got {manager_type}"
-            )
-        return dispatch_ubatches(base, ubatches)
+        return cudagraph_manager.dispatch_ubatches(base, ubatches)
+
+    # ### PATCH END: AFD v0.26 graph dispatch adapter
 
     if dp_size == 1:
         return dispatch(num_tokens, 1), None
 
+    # ### PATCH START: AFD DBO graph-mode synchronization
     desired_single = dispatch(num_tokens, 1)
     tensor = torch.zeros(4, dp_size, dtype=torch.int32, device="cpu")
     tensor[0][dp_rank] = num_tokens
     tensor[1][dp_rank] = uniform_token_count or 0
     tensor[2][dp_rank] = int(allow_ubatching)
     tensor[3][dp_rank] = int(desired_single.cg_mode.value)
+    # ### PATCH END: AFD DBO graph-mode synchronization
     dist.all_reduce(tensor, group=get_dp_group().cpu_group)
 
     num_tokens_across_dp = tensor[0]
@@ -139,6 +142,7 @@ def dispatch_afd_dbo_and_sync_dp(
         )
 
     uniform_decode = bool(torch.all(tensor[1] == int(decode_query_len)).item())
+    # ### PATCH START: AFD v0.26 synchronized graph descriptor
     synced_uniform_token_count: int | None = int(tensor[1][0].item())
     if (
         synced_uniform_token_count == 0
@@ -146,6 +150,7 @@ def dispatch_afd_dbo_and_sync_dp(
     ):
         synced_uniform_token_count = None
     synced_mode = CUDAGraphMode(int(tensor[3].min().item()))
+    # ### PATCH END: AFD v0.26 synchronized graph descriptor
     should_ubatch = (
         bool(torch.all(tensor[2] == 1).item())
         and int(num_tokens_across_dp.max().item()) >= int(parallel_config.num_ubatches)
@@ -170,6 +175,7 @@ def dispatch_afd_dbo_and_sync_dp(
         num_tokens_across_dp.fill_(synced.num_tokens)
         return synced, num_tokens_across_dp
 
+    # ### PATCH START: AFD DBO graph dispatch and empty-stage fallback
     padded_tokens = int(num_tokens_across_dp.max().item())
     num_ubatches = int(parallel_config.num_ubatches)
     ubatch_desc = dispatch(
@@ -195,6 +201,7 @@ def dispatch_afd_dbo_and_sync_dp(
         force_eager=synced_mode == CUDAGraphMode.NONE,
     )
     num_tokens_across_dp.fill_(synced.num_tokens)
+    # ### PATCH END: AFD DBO graph dispatch and empty-stage fallback
     return synced, num_tokens_across_dp
 
 
@@ -337,6 +344,7 @@ def merge_ubatch_outputs(outputs: list[Any]) -> Any:
                 for key in first.tensors
             },
         )
+    # ### PATCH START: Ascend auxiliary hidden-state output
     if isinstance(first, tuple):
         hidden_states = torch.cat([output[0] for output in outputs], dim=0)
         auxiliary = [
@@ -344,6 +352,7 @@ def merge_ubatch_outputs(outputs: list[Any]) -> Any:
             for index in range(len(first[1]))
         ]
         return hidden_states, auxiliary
+    # ### PATCH END: Ascend auxiliary hidden-state output
     return torch.cat(outputs, dim=0)
 
 
@@ -353,21 +362,31 @@ def use_two_metadata_builders() -> Iterator[None]:
 
     original = AttentionGroup.create_metadata_builders
 
+    # Upstream source: vllm/v1/worker/utils.py,
+    # AttentionGroup.create_metadata_builders; commit 568afb3a13.
+    # Patch reason: pinned vLLM initializes one metadata builder for MRV2.
+    # Patch functionality: force exactly two builders only during AFD DBO
+    # KV-cache initialization.
+    # Signature: matches AttentionGroup.create_metadata_builders exactly.
+    # Removal/upstream plan: remove this replacement when native MRV2 DBO
+    # initializes one metadata builder per microbatch.
     def create_metadata_builders(
-        group: AttentionGroup,
+        self,
         vllm_config,
         device,
         kernel_block_size: int | None = None,
         num_metadata_builders: int = 1,
-    ) -> None:
+    ):
+        # ### PATCH START: AFD two metadata builders
         del num_metadata_builders
         original(
-            group,
+            self,
             vllm_config,
             device,
             kernel_block_size,
             num_metadata_builders=2,
         )
+        # ### PATCH END: AFD two metadata builders
 
     try:
         AttentionGroup.create_metadata_builders = create_metadata_builders
@@ -376,21 +395,14 @@ def use_two_metadata_builders() -> Iterator[None]:
         AttentionGroup.create_metadata_builders = original
 
 
-def share_metadata_builder_workspaces(
-    attn_groups: list[list[AttentionGroup]],
-) -> None:
-    """Share the backend workspace while retaining independent builders."""
-
-    workspace = None
-    for groups in attn_groups:
-        for group in groups:
-            for builder in group.metadata_builders:
-                if workspace is None and hasattr(builder, "_get_workspace_buffer"):
-                    workspace = builder._get_workspace_buffer()
-                elif workspace is not None and hasattr(builder, "set_workspace_buffer"):
-                    builder.set_workspace_buffer(workspace)
-
-
+# Upstream source: vllm/v1/worker/gpu/model_states/interface.py,
+# ModelState.prepare_attn; commit 568afb3a13.
+# Patch reason: pinned vLLM has one active metadata builder and no ubatch index.
+# Patch functionality: select the builder owned by the requested microbatch
+# while invoking the native attention-preparation path unchanged.
+# Signature: standalone adapter; ``ubatch_index`` is the only added input.
+# Removal/upstream plan: call native prepare_attn directly when it accepts an
+# ubatch index.
 def prepare_attn_for_ubatch(
     model_state: ModelState,
     input_batch: InputBatch,
@@ -415,6 +427,7 @@ def prepare_attn_for_ubatch(
             for_capture=for_capture,
         )
 
+    # ### PATCH START: AFD per-microbatch metadata builder
     swapped: list[AttentionGroup] = []
     for groups in attn_groups:
         for group in groups:
@@ -439,3 +452,4 @@ def prepare_attn_for_ubatch(
                 group.metadata_builders[ubatch_index],
                 group.metadata_builders[0],
             )
+    # ### PATCH END: AFD per-microbatch metadata builder

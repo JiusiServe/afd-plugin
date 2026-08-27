@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""vLLM 0.26 ModelRunnerV2 execute path with DBO dispatch and replay seams."""
+"""vLLM 0.26 ModelRunnerV2 execute path with DBO dispatch and replay seams.
+
+Upstream source: ``vllm/v1/worker/gpu/model_runner.py`` from
+``specture724/vllm`` commit ``626fee7831``. AFD-specific changes are delimited
+below so this temporary copy can be dropped when native support is available.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +24,6 @@ from vllm.v1.worker.gpu.cudagraph_utils import get_uniform_token_count
 from vllm.v1.worker.gpu.model_runner import ExecuteModelState
 from vllm_ascend.worker.v2.input_batch import AscendInputBatch
 
-from . import runtime as dbo_runtime
 from .runtime import (
     AFDBatchExecutionDescriptor,
     create_ubatch_slices,
@@ -31,17 +35,16 @@ if TYPE_CHECKING:
     from vllm.v1.outputs import ModelRunnerOutput
 
 
-_EXPECTED_RUNTIME_ABI = 3
-_loaded_runtime_abi = getattr(dbo_runtime, "AFD_MRV2_DBO_RUNTIME_ABI", 1)
-if _loaded_runtime_abi != _EXPECTED_RUNTIME_ABI:
-    raise ImportError(
-        "AFD ModelRunnerV2 DBO backport modules are out of sync: "
-        f"execute expects runtime ABI {_EXPECTED_RUNTIME_ABI}, but loaded "
-        f"ABI {_loaded_runtime_abi}. Reinstall afd-plugin from one checkout "
-        "and restart every worker process."
-    )
-
-
+# Upstream source: vllm/v1/worker/gpu/model_runner.py,
+# GPUModelRunner.execute_model; specture724 commit 626fee7831.
+# Patch reason: pinned vLLM v0.26 lacks the ModelRunnerV2 DBO execute path and
+# vLLM-Ascend does not provide its NPU adaptation.
+# Patch functionality: retain the supported upstream plain-decoder flow while
+# adding AFD DP dispatch, Ascend microbatch contexts, and DBO graph replay.
+# Signature: extracted from GPUModelRunner.execute_model; ``runner`` replaces
+# the bound ``self`` and the remaining parameters match the pinned method.
+# Removal/upstream plan: delete this function when pinned vLLM and vLLM-Ascend
+# provide native ModelRunnerV2 DBO execution.
 def execute_model_v026_eager_dbo(
     runner: Any,
     scheduler_output: SchedulerOutput,
@@ -71,6 +74,7 @@ def execute_model_v026_eager_dbo(
         num_tokens,
         max_query_len,
     )
+    # ### PATCH START: AFD v0.26 DBO dispatch
     batch_desc, num_tokens_across_dp = dispatch_afd_dbo_and_sync_dp(
         num_reqs=num_reqs,
         num_tokens=num_tokens,
@@ -91,6 +95,7 @@ def execute_model_v026_eager_dbo(
         if isinstance(batch_desc, AFDBatchExecutionDescriptor)
         else 1
     )
+    # ### PATCH END: AFD v0.26 DBO dispatch
     if not dummy_run:
         runner.input_buffers.is_padding[:num_tokens].fill_(False)
         runner.input_buffers.is_padding[num_tokens : batch_desc.num_tokens].fill_(True)
@@ -103,11 +108,13 @@ def execute_model_v026_eager_dbo(
             runner.req_states.num_computed_tokens.gpu,
         )
     else:
+        # ### PATCH START: Ascend dummy input batch
         input_batch = AscendInputBatch.make_dummy(
             batch_desc.num_reqs or num_reqs,
             batch_desc.num_tokens,
             runner.input_buffers,
         )
+        # ### PATCH END: Ascend dummy input batch
         if not skip_attn_for_dummy_run:
             block_tables, slot_mappings = runner.prepare_dummy_attn(input_batch)
         else:
@@ -117,10 +124,12 @@ def execute_model_v026_eager_dbo(
     attn_metadata = None
     slot_mappings_by_layer = None
     ubatch_slices = None
+    # ### PATCH START: AFD microbatch input preparation
     if num_ubatches > 1:
         assert runner.ubatch_runner is not None
         assert block_tables is not None and slot_mappings is not None
         ubatch_slices = create_ubatch_slices(input_batch, num_ubatches)
+    # ### PATCH END: AFD microbatch input preparation
     elif not (dummy_run and skip_attn_for_dummy_run):
         assert block_tables is not None and slot_mappings is not None
         slot_mappings_by_layer = build_slot_mappings_by_layer(
@@ -149,6 +158,7 @@ def execute_model_v026_eager_dbo(
         ubatch_slices,
     )
 
+    # ### PATCH START: AFD eager and FULL microbatch execution
     if ubatch_slices is not None and batch_desc.cg_mode == CUDAGraphMode.FULL:
         assert isinstance(batch_desc, AFDBatchExecutionDescriptor)
         ubatch_state = runner.ubatch_runner.prepare(
@@ -201,6 +211,7 @@ def execute_model_v026_eager_dbo(
                 model_inputs,
                 ubatch_state,
             )
+    # ### PATCH END: AFD eager and FULL microbatch execution
     elif batch_desc.cg_mode == CUDAGraphMode.FULL:
         assert runner.cudagraph_manager is not None
         runner.kv_connector.pre_forward(scheduler_output)

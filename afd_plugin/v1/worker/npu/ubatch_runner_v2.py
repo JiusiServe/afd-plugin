@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""Ascend eager and capture-time DBO runner for vLLM 0.26 ModelRunnerV2."""
+"""Ascend eager and capture-time DBO runner for vLLM 0.26 ModelRunnerV2.
+
+Upstream source: ``vllm/v1/worker/gpu/ubatch_utils.py`` from
+``specture724/vllm`` commit ``626fee7831``. PATCH markers identify the Ascend
+and AFD adaptations to that runner.
+"""
 
 from __future__ import annotations
 
@@ -21,8 +26,9 @@ from vllm.forward_context import (
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.worker.gpu.attn_utils import build_slot_mappings_by_layer
 from vllm.v1.worker.gpu.model_states.interface import ModelState
-from vllm.v1.worker.ubatch_utils import UBatchSlices
+from vllm.v1.worker.ubatch_utils import UBatchSlice, UBatchSlices
 from vllm.v1.worker.utils import AttentionGroup
+from vllm_ascend.compilation.acl_graph import GraphParams
 from vllm_ascend.worker.v2.input_batch import AscendInputBatch
 
 from afd_plugin.compat.backports.vllm_v026_mrv2_dbo import (
@@ -34,8 +40,14 @@ from afd_plugin.compat.backports.vllm_v026_mrv2_dbo.runtime import (
     merge_ubatch_outputs,
 )
 from afd_plugin.v1.worker.npu.forward_context import create_ascend_forward_context
-from afd_plugin.v1.worker.npu.npu_ubatch_wrapper import _all_gather_ubatch_output
-from afd_plugin.v1.worker.npu.ubatching import make_ubatch_contexts
+from afd_plugin.v1.worker.npu.npu_ubatch_wrapper import (
+    AscendModelOutput,
+    _all_gather_ubatch_output,
+)
+from afd_plugin.v1.worker.npu.ubatching import (
+    AscendUBatchContext,
+    make_ubatch_contexts,
+)
 
 AFD_NPU_MRV2_NUM_UBATCHES = 2
 
@@ -53,6 +65,14 @@ class AFDAscendUBatchState:
 class AFDAscendUBatchRunnerV2:
     """Run exactly two ModelRunnerV2 microbatches on Ascend."""
 
+    # Upstream source: vllm/v1/worker/gpu/ubatch_utils.py,
+    # UBatchRunner.__init__; specture724 commit 626fee7831.
+    # Patch reason: the GPU runner owns CUDA streams and supports a variable
+    # microbatch count; the AFD Ascend handoff protocol has exactly two stages.
+    # Patch functionality: allocate Ascend capture state and stage-local input
+    # buffers without CUDA SM-control state.
+    # Signature: matches UBatchRunner.__init__ exactly.
+    # Removal/upstream plan: replace this class with native Ascend MRV2 DBO.
     def __init__(
         self,
         vllm_config: VllmConfig,
@@ -64,15 +84,20 @@ class AFDAscendUBatchRunnerV2:
     ) -> None:
         self.vllm_config = vllm_config
         self.parallel_config = vllm_config.parallel_config
-        self.num_ubatches = int(self.parallel_config.num_ubatches)
+        self.num_ubatches = self.parallel_config.num_ubatches
+        # ### PATCH START: AFD NPU two-stage constraint
         if self.num_ubatches != AFD_NPU_MRV2_NUM_UBATCHES:
             raise RuntimeError("AFD NPU ModelRunnerV2 requires exactly two ubatches")
+        # ### PATCH END: AFD NPU two-stage constraint
         self.device = device
         self.model_state = model_state
         self.attn_groups = attn_groups
         self.kv_cache_config = kv_cache_config
         self.ready_barrier = threading.Barrier(self.num_ubatches + 1)
+        # ### PATCH START: Ascend capture stream
         self.capture_stream = torch.npu.Stream(device=device)
+        # ### PATCH END: Ascend capture stream
+        # ### PATCH START: Ascend stage-local input buffers
         self.query_start_loc_buffers = [
             torch.zeros(max_num_reqs + 2, dtype=torch.int32, device=device)
             for _ in range(self.num_ubatches)
@@ -81,7 +106,17 @@ class AFDAscendUBatchRunnerV2:
             torch.zeros(max_num_reqs, dtype=torch.int32, device=device)
             for _ in range(self.num_ubatches)
         ]
+        # ### PATCH END: Ascend stage-local input buffers
 
+    # Upstream source: vllm/v1/worker/gpu/ubatch_utils.py,
+    # UBatchRunner.prepare; specture724 commit 626fee7831.
+    # Patch reason: Ascend requires additional InputBatch fields, its own
+    # ForwardContext values, and per-stage MLA graph parameters.
+    # Patch functionality: prepare the supplied two slices for eager execution,
+    # graph warmup, or graph capture.
+    # Signature: adds ``slices``, ``parent_context``, ``context_cg_mode``, and
+    # ``mla_graph_params``; the return type is the concrete Ascend state.
+    # Removal/upstream plan: use native Ascend UBatchRunner.prepare when added.
     def prepare(
         self,
         input_batch: AscendInputBatch,
@@ -93,15 +128,16 @@ class AFDAscendUBatchRunnerV2:
         cg_mode: CUDAGraphMode = CUDAGraphMode.NONE,
         context_cg_mode: CUDAGraphMode | None = None,
         for_capture: bool = False,
-        mla_graph_params: tuple[Any, Any] | None = None,
+        mla_graph_params: tuple[GraphParams, GraphParams] | None = None,
     ) -> AFDAscendUBatchState:
         attn_metadata_list: list[dict[str, Any]] = []
         forward_contexts: list[ForwardContext] = []
         real_token_counts: list[int] = []
         if context_cg_mode is None:
             context_cg_mode = cg_mode
-        dp_size = int(self.parallel_config.data_parallel_size)
+        dp_size = self.parallel_config.data_parallel_size
         for stage_index, stage in enumerate(slices):
+            # ### PATCH START: Ascend input batch fields
             child_batch = cast(
                 AscendInputBatch,
                 slice_input_batch(
@@ -112,10 +148,12 @@ class AFDAscendUBatchRunnerV2:
                 ),
             )
             child_batch = self._with_ascend_fields(input_batch, child_batch, stage)
+            # ### PATCH END: Ascend input batch fields
             stage_slot_mappings = slot_mappings[:, stage.token_slice]
             stage_block_tables = tuple(
                 block_table[stage.request_slice] for block_table in block_tables
             )
+            # ### PATCH START: AFD v0.26 metadata builder selection
             attn_metadata = prepare_attn_for_ubatch(
                 self.model_state,
                 child_batch,
@@ -127,6 +165,7 @@ class AFDAscendUBatchRunnerV2:
                 cg_mode=cg_mode,
                 for_capture=for_capture,
             )
+            # ### PATCH END: AFD v0.26 metadata builder selection
             attn_metadata_list.append(attn_metadata)
             real_token_counts.append(int(child_batch.num_tokens))
             if parent_context is None:
@@ -140,6 +179,7 @@ class AFDAscendUBatchRunnerV2:
                 stage_tokens,
                 counts,
             )
+            # ### PATCH START: Ascend microbatch forward context
             context = create_ascend_forward_context(
                 parent_context,
                 attn_metadata,
@@ -157,6 +197,7 @@ class AFDAscendUBatchRunnerV2:
                 stage_slot_mappings,
                 self.kv_cache_config,
             )
+            # ### PATCH END: Ascend microbatch forward context
             forward_contexts.append(context)
 
         return AFDAscendUBatchState(
@@ -170,7 +211,7 @@ class AFDAscendUBatchRunnerV2:
     def _with_ascend_fields(
         parent_batch: AscendInputBatch,
         child_batch: AscendInputBatch,
-        stage,
+        stage: UBatchSlice,
     ) -> AscendInputBatch:
         req_start = int(stage.request_slice.start)
         req_stop = int(stage.request_slice.stop)
@@ -185,27 +226,40 @@ class AFDAscendUBatchRunnerV2:
             attn_state=parent_batch.attn_state,
         )
 
+    # Upstream source: vllm/v1/worker/gpu/ubatch_utils.py, UBatchRunner.run;
+    # specture724 commit 626fee7831.
+    # Patch reason: this adapter consumes the concrete Ascend ubatch state.
+    # Patch functionality: start and finish one two-stage Ascend execution.
+    # Signature: narrows the state and return types to the Ascend contract.
+    # Removal/upstream plan: use native Ascend UBatchRunner.run when added.
     def run(
         self,
         model: Any,
         model_inputs: dict[str, Any],
-        state: AFDAscendUBatchState,
-    ) -> Any:
-        return self.begin_capturable_run(model, model_inputs, state)()
+        ubatch_state: AFDAscendUBatchState,
+    ) -> AscendModelOutput:
+        return self.begin_capturable_run(model, model_inputs, ubatch_state)()
 
+    # Upstream source: vllm/v1/worker/gpu/ubatch_utils.py,
+    # UBatchRunner.begin_capturable_run; specture724 commit 626fee7831.
+    # Patch reason: GPU stream/SM control must be replaced by the existing
+    # Ascend two-stage contexts and FlashComm output handling.
+    # Patch functionality: launch both stages and return their finisher.
+    # Signature: narrows the state/output types; ``for_capture`` is unchanged.
+    # Removal/upstream plan: use native Ascend capturable DBO when available.
     def begin_capturable_run(
         self,
         model: Any,
         model_inputs: dict[str, Any],
-        state: AFDAscendUBatchState,
-        *,
+        ubatch_state: AFDAscendUBatchState,
         for_capture: bool = False,
-    ) -> Callable[[], Any]:
+    ) -> Callable[[], AscendModelOutput]:
         """Start both stages outside capture and return a one-shot finisher."""
 
-        forward_contexts = state.forward_contexts
+        forward_contexts = ubatch_state.forward_contexts
         if forward_contexts is None:
             raise RuntimeError("uBatch execution requires prepared forward contexts")
+        # ### PATCH START: Ascend microbatch contexts
         compute_stream = (
             self.capture_stream if for_capture else torch.npu.current_stream()
         )
@@ -215,13 +269,19 @@ class AFDAscendUBatchRunnerV2:
             forward_contexts,
             self.ready_barrier,
         )
-        outputs: dict[int, Any] = {}
+        # ### PATCH END: Ascend microbatch contexts
+        outputs: dict[int, AscendModelOutput] = {}
         errors: dict[int, BaseException] = {}
 
         @torch.inference_mode()
-        def run_stage(context, inputs: dict[str, Any]) -> None:
+        def run_stage(
+            context: AscendUBatchContext,
+            inputs: dict[str, Any],
+        ) -> None:
             try:
+                # ### PATCH START: Ascend worker device
                 torch.npu.set_device(self.device)
+                # ### PATCH END: Ascend worker device
                 with context:
                     outputs[context.id] = model(**inputs)
             except BaseException as error:  # noqa: BLE001
@@ -230,7 +290,7 @@ class AFDAscendUBatchRunnerV2:
         stack = ExitStack()
         stack.enter_context(override_forward_context(None))
         threads = []
-        for context, stage in zip(contexts, state.slices, strict=True):
+        for context, stage in zip(contexts, ubatch_state.slices, strict=True):
             thread = threading.Thread(
                 target=run_stage,
                 args=(context, slice_model_inputs(model_inputs, stage.token_slice)),
@@ -238,13 +298,8 @@ class AFDAscendUBatchRunnerV2:
             threads.append(thread)
             thread.start()
         self.ready_barrier.wait()
-        finished = False
 
-        def finish() -> Any:
-            nonlocal finished
-            if finished:
-                raise RuntimeError("uBatch finisher may only be called once")
-            finished = True
+        def finish() -> AscendModelOutput:
             try:
                 contexts[0].cpu_wait_event.set()
                 for thread in threads:
@@ -258,6 +313,7 @@ class AFDAscendUBatchRunnerV2:
                     f"AFD NPU microbatch {failed_stage} failed",
                 ) from errors[failed_stage]
             ordered_outputs = [outputs[index] for index in range(self.num_ubatches)]
+            # ### PATCH START: Ascend FlashComm output gathering
             if forward_contexts[0].additional_kwargs["flash_comm_v1_enabled"]:
                 ordered_outputs = [
                     _all_gather_ubatch_output(
@@ -270,6 +326,7 @@ class AFDAscendUBatchRunnerV2:
                         strict=True,
                     )
                 ]
+            # ### PATCH END: Ascend FlashComm output gathering
             return merge_ubatch_outputs(ordered_outputs)
 
         return finish

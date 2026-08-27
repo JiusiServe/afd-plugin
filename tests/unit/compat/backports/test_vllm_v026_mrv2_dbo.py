@@ -35,10 +35,9 @@ def _parallel_config(*, decode_threshold=4, prefill_threshold=8):
     )
 
 
-def test_runtime_abi_matches_full_graph_dispatch_signature():
+def test_full_graph_dispatch_signature():
     parameters = inspect.signature(dispatch_afd_dbo_and_sync_dp).parameters
 
-    assert runtime.AFD_MRV2_DBO_RUNTIME_ABI == 3
     assert {"cudagraph_manager", "need_eager"} <= parameters.keys()
 
 

@@ -26,28 +26,15 @@ if TYPE_CHECKING:
     from vllm_ascend.compilation.acl_graph import GraphParams
 
 
-def _get_ascend_extra(
-    forward_context: ForwardContext,
-    vllm_config: VllmConfig,
-    name: str,
-):
-    if vllm_config.use_v2_model_runner:
-        return forward_context.additional_kwargs.get(name)
-    return getattr(forward_context, name)
-
-
-def _set_ascend_extra(
-    forward_context: ForwardContext,
-    vllm_config: VllmConfig,
-    name: str,
-    value,
-) -> None:
-    if vllm_config.use_v2_model_runner:
-        forward_context.additional_kwargs[name] = value
-    else:
-        setattr(forward_context, name, value)
-
-
+# Upstream source: vllm-ascend commit 80d8c194f,
+# set_additional_forward_context and the ModelRunnerV1 forward-context fields.
+# Patch reason: vLLM-Ascend stores Ascend state as direct attributes for MRV1
+# but as guaranteed additional_kwargs entries for MRV2.
+# Patch functionality: retain the MRV1 attribute path and update only the
+# per-microbatch values in MRV2's concrete additional_kwargs contract.
+# Signature: plugin-owned helper; no upstream symbol is replaced.
+# Removal/upstream plan: use native Ascend MRV2 ubatch context construction
+# when vLLM-Ascend provides it.
 def create_ascend_forward_context(
     cur_forward_context: ForwardContext,
     attn_metadata,
@@ -63,7 +50,7 @@ def create_ascend_forward_context(
     if cudagraph_runtime_mode is None:
         cudagraph_runtime_mode = CUDAGraphMode.NONE
 
-    parent_kwargs = dict(cur_forward_context.additional_kwargs or {})
+    parent_kwargs = dict(cur_forward_context.additional_kwargs)
     afd_metadata = parent_kwargs.get("afd_metadata")
     if afd_metadata is not None:
         parent_kwargs = build_ubatch_additional_kwargs(
@@ -97,143 +84,126 @@ def create_ascend_forward_context(
     tp_world_size = get_tensor_model_parallel_world_size()
     dp_world_size = get_dp_group().world_size
 
-    moe_comm_type = _get_ascend_extra(
-        cur_forward_context,
-        vllm_config,
-        "moe_comm_type",
-    )
-    _set_ascend_extra(
-        new_forward_context,
-        vllm_config,
-        "moe_comm_type",
-        moe_comm_type,
-    )
-    _set_ascend_extra(
-        new_forward_context,
-        vllm_config,
-        "moe_comm_method",
-        get_moe_comm_method(moe_comm_type),
-    )
-    for name in (
-        "in_profile_run",
-        "mmrs_fusion",
-        "is_first_layer",
-        "layer_idx",
-        "prefetch_mlp_gate_up_proj",
-        "prefetch_mlp_down_proj",
-        "model_instance",
-        "is_draft_model",
-        "is_draft_model_prefill",
-        "draft_attn_metadatas",
-        "max_tokens_across_pcp",
-        "sinks",
-        "input_ids",
-        "eplb_heat_collection_status",
-    ):
-        _set_ascend_extra(
-            new_forward_context,
-            vllm_config,
-            name,
-            _get_ascend_extra(cur_forward_context, vllm_config, name),
-        )
-    _set_ascend_extra(
-        new_forward_context,
-        vllm_config,
-        "capturing",
-        mla_graph_params is not None
-        or _get_ascend_extra(cur_forward_context, vllm_config, "capturing"),
-    )
-    _set_ascend_extra(
-        new_forward_context,
-        vllm_config,
-        "num_tokens",
-        num_tokens,
-    )
     new_forward_context.ubatch_idx = int(ubatch_num)
     new_forward_context.num_ubatches = len(ubatch_slices)
-    flash_comm_v1_enabled = bool(
-        _get_ascend_extra(
-            cur_forward_context,
-            vllm_config,
-            "flash_comm_v1_enabled",
-        )
-    )
-    _set_ascend_extra(
-        new_forward_context,
-        vllm_config,
-        "flash_comm_v1_enabled",
-        flash_comm_v1_enabled,
-    )
-    _set_ascend_extra(
-        new_forward_context,
-        vllm_config,
-        "pad_size",
-        0,
-    )
 
-    if flash_comm_v1_enabled:
-        _set_ascend_extra(
-            new_forward_context,
-            vllm_config,
-            "pad_size",
-            (tp_world_size - (num_tokens % tp_world_size)) % tp_world_size,
-        )
+    # ### PATCH START: MRV2 Ascend additional kwargs
+    if vllm_config.use_v2_model_runner:
+        source = cur_forward_context.additional_kwargs
+        target = new_forward_context.additional_kwargs
+        target["capturing"] = mla_graph_params is not None or source["capturing"]
+        target["num_tokens"] = num_tokens
 
-    if dp_world_size > 1 and dp_metadata is not None:
-        max_tokens_across_dp = dp_metadata.num_tokens_across_dp_cpu.max().item()
+        flash_comm_v1_enabled = source["flash_comm_v1_enabled"]
+        pad_size = 0
+        padded_length = None
         if flash_comm_v1_enabled:
-            padded_length = (
-                (max_tokens_across_dp + tp_world_size - 1)
-                // tp_world_size
-                * tp_world_size
-            )
-            _set_ascend_extra(
-                new_forward_context,
-                vllm_config,
-                "padded_length",
-                padded_length,
-            )
-            _set_ascend_extra(
-                new_forward_context,
-                vllm_config,
-                "pad_size",
-                padded_length - num_tokens,
-            )
-    else:
-        max_tokens_across_dp = num_tokens
-    _set_ascend_extra(
-        new_forward_context,
-        vllm_config,
-        "max_tokens_across_dp",
-        max_tokens_across_dp,
-    )
+            pad_size = (tp_world_size - (num_tokens % tp_world_size)) % tp_world_size
 
-    padded_num_tokens = math.ceil(max_tokens_across_dp / tp_world_size) * tp_world_size
-    _set_ascend_extra(
-        new_forward_context,
-        vllm_config,
-        "padded_num_tokens",
-        padded_num_tokens,
-    )
-    cur_mc2_mask = _get_ascend_extra(
-        cur_forward_context,
-        vllm_config,
-        "mc2_mask",
-    )
-    if cur_mc2_mask is not None:
-        mc2_mask = torch.zeros(
-            (padded_num_tokens,),
-            dtype=cur_mc2_mask.dtype,
-            device=cur_mc2_mask.device,
+        if dp_world_size > 1 and dp_metadata is not None:
+            max_tokens_across_dp = dp_metadata.num_tokens_across_dp_cpu.max().item()
+            if flash_comm_v1_enabled:
+                padded_length = (
+                    (max_tokens_across_dp + tp_world_size - 1)
+                    // tp_world_size
+                    * tp_world_size
+                )
+                pad_size = padded_length - num_tokens
+        else:
+            max_tokens_across_dp = num_tokens
+
+        padded_num_tokens = (
+            math.ceil(max_tokens_across_dp / tp_world_size) * tp_world_size
         )
-        mc2_mask[:num_tokens] = True
-        mc2_mask[num_tokens:] = False
-        _set_ascend_extra(
-            new_forward_context,
-            vllm_config,
-            "mc2_mask",
-            mc2_mask,
+        mc2_mask = None
+        source_mc2_mask = source["mc2_mask"]
+        if source_mc2_mask is not None:
+            mc2_mask = torch.zeros(
+                (padded_num_tokens,),
+                dtype=source_mc2_mask.dtype,
+                device=source_mc2_mask.device,
+            )
+            mc2_mask[:num_tokens] = True
+            mc2_mask[num_tokens:] = False
+
+        target["pad_size"] = pad_size
+        target["padded_length"] = padded_length
+        target["max_tokens_across_dp"] = max_tokens_across_dp
+        target["padded_num_tokens"] = padded_num_tokens
+        target["mc2_mask"] = mc2_mask
+    # ### PATCH END: MRV2 Ascend additional kwargs
+    else:
+        new_forward_context.moe_comm_type = cur_forward_context.moe_comm_type
+        new_forward_context.moe_comm_method = get_moe_comm_method(
+            new_forward_context.moe_comm_type
         )
+        new_forward_context.in_profile_run = cur_forward_context.in_profile_run
+        new_forward_context.capturing = (
+            mla_graph_params is not None or cur_forward_context.capturing
+        )
+        new_forward_context.mmrs_fusion = cur_forward_context.mmrs_fusion
+        new_forward_context.num_tokens = num_tokens
+        new_forward_context.flash_comm_v1_enabled = (
+            cur_forward_context.flash_comm_v1_enabled
+        )
+        new_forward_context.pad_size = 0
+        new_forward_context.is_first_layer = cur_forward_context.is_first_layer
+        new_forward_context.layer_idx = cur_forward_context.layer_idx
+        new_forward_context.prefetch_mlp_gate_up_proj = (
+            cur_forward_context.prefetch_mlp_gate_up_proj
+        )
+        new_forward_context.prefetch_mlp_down_proj = (
+            cur_forward_context.prefetch_mlp_down_proj
+        )
+        new_forward_context.model_instance = cur_forward_context.model_instance
+        new_forward_context.is_draft_model = cur_forward_context.is_draft_model
+        new_forward_context.is_draft_model_prefill = (
+            cur_forward_context.is_draft_model_prefill
+        )
+        new_forward_context.draft_attn_metadatas = (
+            cur_forward_context.draft_attn_metadatas
+        )
+        new_forward_context.max_tokens_across_pcp = (
+            cur_forward_context.max_tokens_across_pcp
+        )
+        new_forward_context.sinks = cur_forward_context.sinks
+        new_forward_context.input_ids = cur_forward_context.input_ids
+        new_forward_context.eplb_heat_collection_status = (
+            cur_forward_context.eplb_heat_collection_status
+        )
+
+        if new_forward_context.flash_comm_v1_enabled:
+            new_forward_context.pad_size = (
+                tp_world_size - (num_tokens % tp_world_size)
+            ) % tp_world_size
+
+        if dp_world_size > 1 and dp_metadata is not None:
+            max_tokens_across_dp = dp_metadata.num_tokens_across_dp_cpu.max().item()
+            if new_forward_context.flash_comm_v1_enabled:
+                padded_length = (
+                    (max_tokens_across_dp + tp_world_size - 1)
+                    // tp_world_size
+                    * tp_world_size
+                )
+                new_forward_context.padded_length = padded_length
+                new_forward_context.pad_size = padded_length - num_tokens
+        else:
+            max_tokens_across_dp = num_tokens
+        new_forward_context.max_tokens_across_dp = max_tokens_across_dp
+
+        new_forward_context.padded_num_tokens = (
+            math.ceil(max_tokens_across_dp / tp_world_size) * tp_world_size
+        )
+        cur_mc2_mask = cur_forward_context.mc2_mask
+        if cur_mc2_mask is not None:
+            mc2_mask = torch.zeros(
+                (new_forward_context.padded_num_tokens,),
+                dtype=cur_mc2_mask.dtype,
+                device=cur_mc2_mask.device,
+            )
+            mc2_mask[:num_tokens] = True
+            mc2_mask[num_tokens:] = False
+            new_forward_context.mc2_mask = mc2_mask
 
     new_forward_context.dbo_enabled = True
     return new_forward_context

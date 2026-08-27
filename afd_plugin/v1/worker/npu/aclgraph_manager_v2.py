@@ -1,12 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""Temporary MRV2 DBO FULL ACL graph manager for vLLM 0.26."""
+"""Temporary MRV2 DBO FULL ACL graph manager for vLLM 0.26.
+
+Upstream sources: ``vllm/v1/worker/gpu/cudagraph_utils.py`` from
+``specture724/vllm`` commit ``626fee7831`` and
+``vllm_ascend/worker/v2/aclgraph_utils.py`` at commit ``d543ccee0``.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -26,6 +31,7 @@ from vllm.v1.worker.gpu.model_states.interface import ModelState
 from vllm.v1.worker.ubatch_utils import check_ubatch_thresholds
 from vllm.v1.worker.utils import AttentionGroup
 from vllm_ascend.compilation.acl_graph import (
+    GraphParams,
     get_graph_params,
     update_full_graph_params,
 )
@@ -47,12 +53,18 @@ from afd_plugin.v1.worker.npu.ubatch_runner_v2 import (
     AFDAscendUBatchState,
 )
 
+if TYPE_CHECKING:
+    from afd_plugin.v1.worker.npu.attention_model_runner_v2 import (
+        AFDNPUAttentionModelRunnerV2,
+    )
+    from afd_plugin.v1.worker.npu.npu_ubatch_wrapper import AscendModelOutput
+
 
 @dataclass
 class _AFDGraphEntry:
-    graph: Any
-    output: Any
-    graph_params: tuple[Any, Any]
+    graph: torch.npu.NPUGraph
+    output: AscendModelOutput
+    graph_params: tuple[GraphParams, GraphParams]
     workspace: torch.Tensor
 
 
@@ -63,15 +75,26 @@ class _PendingReplay:
 
 
 class AFDModelAclGraphManagerV2(ModelAclGraphManager):
-    """Keep DBO graph descriptors and storage separate from upstream graphs."""
+    """Keep DBO graph descriptors and storage separate from upstream graphs.
 
+    ``ubatch_runner`` is the only parameter added to the upstream
+    ``ModelAclGraphManager`` constructor.
+    """
+
+    # Upstream source: vllm_ascend/worker/v2/aclgraph_utils.py,
+    # ModelAclGraphManager.__init__; commit d543ccee0.
+    # Patch reason: the native manager has no ModelRunnerV2 DBO executor.
+    # Patch functionality: retain native initialization and register separate
+    # two-microbatch capture descriptors, graphs, and replay state.
+    # Signature: adds only ``ubatch_runner`` to the native constructor.
+    # Removal/upstream plan: use the native manager when it owns DBO graphs.
     def __init__(
         self,
         vllm_config: VllmConfig,
         device: torch.device,
         cudagraph_mode: CUDAGraphMode,
         decode_query_len: int,
-        model_runner: Any,
+        model_runner: AFDNPUAttentionModelRunnerV2,
         ubatch_runner: AFDAscendUBatchRunnerV2,
         lora_capture_cases: list[int] | None = None,
     ) -> None:
@@ -83,6 +106,7 @@ class AFDModelAclGraphManagerV2(ModelAclGraphManager):
             model_runner,
             lora_capture_cases=lora_capture_cases,
         )
+        # ### PATCH START: AFD DBO graph registry
         self.ubatch_runner = ubatch_runner
         self._afd_twins = {
             desc: AFDBatchExecutionDescriptor(
@@ -98,6 +122,7 @@ class AFDModelAclGraphManagerV2(ModelAclGraphManager):
         }
         self._afd_graphs: dict[AFDBatchExecutionDescriptor, _AFDGraphEntry] = {}
         self._afd_pending_replay: _PendingReplay | None = None
+        # ### PATCH END: AFD DBO graph registry
 
     def _needs_ubatch_twin(self, desc: BatchExecutionDescriptor) -> bool:
         if desc.num_tokens % 2 or desc.num_tokens < 2:
@@ -144,6 +169,12 @@ class AFDModelAclGraphManagerV2(ModelAclGraphManager):
         self._afd_pending_replay = None
         self._afd_graphs.clear()
 
+    # Patch reason: native vLLM-Ascend captures only single-batch descriptors.
+    # Patch functionality: preserve native capture, then capture eligible AFD
+    # two-stage twins in a separate registry.
+    # Signature: matches ModelAclGraphManager.capture exactly.
+    # Removal/upstream plan: delete this override when native Ascend capture
+    # accepts DBO descriptors and an ubatch runner.
     def capture(
         self,
         model: nn.Module,
@@ -171,6 +202,7 @@ class AFDModelAclGraphManagerV2(ModelAclGraphManager):
             lora_capture_hook=lora_capture_hook,
             progress_bar_desc=progress_bar_desc,
         )
+        # ### PATCH START: AFD DBO twin graph capture
         if not self._afd_twins:
             return
 
@@ -189,6 +221,7 @@ class AFDModelAclGraphManagerV2(ModelAclGraphManager):
         except BaseException:
             self.clear_afd_graphs()
             raise
+        # ### PATCH END: AFD DBO twin graph capture
 
     def _capture_afd_graph(
         self,
@@ -280,7 +313,7 @@ class AFDModelAclGraphManagerV2(ModelAclGraphManager):
         block_tables: tuple[torch.Tensor, ...],
         slot_mappings: torch.Tensor,
         slices,
-        graph_params: tuple[Any, Any] | None,
+        graph_params: tuple[GraphParams, GraphParams] | None,
         *,
         is_warmup: bool,
     ) -> AFDAscendUBatchState:
@@ -322,9 +355,19 @@ class AFDModelAclGraphManagerV2(ModelAclGraphManager):
                 mla_graph_params=graph_params,
             )
 
-    def run_fullgraph(self, desc: BatchExecutionDescriptor) -> Any:
+    # Patch reason: native replay has no staged two-microbatch state or AFD
+    # control-plane metadata.
+    # Patch functionality: delegate native descriptors unchanged and replay
+    # only AFD descriptors from the plugin-owned registry.
+    # Signature: matches ModelAclGraphManager.run_fullgraph exactly.
+    # Removal/upstream plan: delete this override with the DBO graph registry.
+    def run_fullgraph(
+        self,
+        desc: BatchExecutionDescriptor,
+    ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
         if not isinstance(desc, AFDBatchExecutionDescriptor):
             return super().run_fullgraph(desc)
+        # ### PATCH START: AFD DBO FULL graph replay
         pending = self._afd_pending_replay
         self._afd_pending_replay = None
         if pending is None or pending.descriptor != desc:
@@ -379,6 +422,7 @@ class AFDModelAclGraphManagerV2(ModelAclGraphManager):
                     self.vllm_config,
                     self.model_runner.speculative_config,
                 )
+        # ### PATCH END: AFD DBO FULL graph replay
         return entry.output
 
 

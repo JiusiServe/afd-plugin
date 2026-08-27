@@ -120,12 +120,12 @@ def __post_init__(self):
     """Verify configs are valid & consistent with each other."""
 
     assert _original_vllm_config_post_init is not None
+    # ### PATCH START: AFD repeated ubatching and MRV2 DBO validation
     relax_backend = _should_relax_vllm_config_backend(self)
     relax_v2_dbo = _should_relax_npu_v2_dbo_validation(self)
     if not relax_backend and not relax_v2_dbo:
         return _original_vllm_config_post_init(self)
 
-    # ### PATCH START: AFD repeated ubatching and MRV2 DBO validation
     parallel_config = self.parallel_config
     original_backend = parallel_config.all2all_backend
     if relax_backend:
