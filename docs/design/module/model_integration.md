@@ -10,7 +10,7 @@ primary_code_paths:
 related_code_paths:
   - "afd_plugin/connectors/metadata.py"
   - "afd_plugin/v1/worker/dbo.py"
-  - "afd_plugin/v1/worker/{attention_model_runner,ffn_model_runner}.py"
+  - "afd_plugin/v1/worker/{attention_metadata,attention_model_runner,attention_model_runner_v2,ffn_model_runner}.py"
 depends_on:
   - "plugin_boundary.md"
   - "connector_contracts.md"
@@ -27,12 +27,13 @@ upstream_refs:
 verified_platform_refs:
   - "DeepSeek V2 Lite GPU and NPU model E2E paths"
   - "CAM async NPU model E2E path"
+  - "DeepSeek V4 CUDA boundary has focused unit coverage only"
 related_issues:
   - "#86"
   - "#88"
   - "#105"
   - "#129"
-last_reviewed: 2026-08-06
+last_reviewed: 2026-08-27
 ---
 
 # Model integration
@@ -55,6 +56,7 @@ make a backend-specific worker class the shared model API.
 | --- | --- | --- |
 | Registration map | [`afd_plugin/__init__.py`](../../../afd_plugin/__init__.py) | [`test_package.py`](../../../tests/unit/package/test_package.py) |
 | Role-aware model and weight loading | [`deepseek_v2.py`](../../../afd_plugin/model_executor/models/deepseek_v2.py) | [`test_forward_context.py`](../../../tests/unit/model_executor/models/test_forward_context.py), model and accuracy E2E suites |
+| DeepSeek V4 CUDA role boundary | [`deepseek_v4.py`](../../../afd_plugin/model_executor/models/deepseek_v4.py) | [`test_deepseek_v4_construction.py`](../../../tests/unit/model_executor/models/test_deepseek_v4_construction.py), [`test_deepseek_v4_proxy.py`](../../../tests/unit/model_executor/models/test_deepseek_v4_proxy.py), [`test_deepseek_v4_weight_policy.py`](../../../tests/unit/model_executor/models/test_deepseek_v4_weight_policy.py) |
 | Qwen3 MoE role-aware model and weight loading | [`qwen3_moe.py`](../../../afd_plugin/model_executor/models/qwen3_moe.py) | [`test_qwen3_moe_construction.py`](../../../tests/unit/model_executor/models/test_qwen3_moe_construction.py), [`test_qwen3_moe_weight_policy.py`](../../../tests/unit/model_executor/models/test_qwen3_moe_weight_policy.py) |
 | CUDA remote-experts boundary | [`deepseek_v2.py`](../../../afd_plugin/model_executor/models/deepseek_v2.py), [`gpu/p2p.py`](../../../afd_plugin/connectors/gpu/p2p.py) | [`test_p2p_experts_contract.py`](../../../tests/unit/connectors/test_p2p_experts_contract.py), [`test_deepseek_v2_proxy.py`](../../../tests/unit/model_executor/models/test_deepseek_v2_proxy.py) |
 | Forward-context adapter | [`forward_context.py`](../../../afd_plugin/model_executor/models/forward_context.py) | [`test_forward_context.py`](../../../tests/unit/model_executor/models/test_forward_context.py) |
@@ -75,6 +77,7 @@ registers lazy AFD wrapper paths under `AFD`-prefixed aliases.
 | `DeepseekV2ForCausalLM` | `AFDDeepseekV2ForCausalLM` | `AFDDeepseekV2ForCausalLM` |
 | `DeepseekV3ForCausalLM` | `AFDDeepseekV3ForCausalLM` | `AFDDeepseekV3ForCausalLM` |
 | `DeepseekV32ForCausalLM` | `AFDDeepseekV32ForCausalLM` | `AFDDeepseekV3ForCausalLM` |
+| `DeepseekV4ForCausalLM` | `AFDDeepseekV4ForCausalLM` | `AFDDeepseekV4ForCausalLM` |
 | `GlmMoeDsaForCausalLM` | `AFDGlmMoeDsaForCausalLM` | `AFDGlmMoeDsaForCausalLM` |
 | `Qwen3MoeForCausalLM` | `AFDQwen3MoeForCausalLM` | `AFDQwen3MoeForCausalLM` |
 | `Qwen3_5MoeForConditionalGeneration` | `AFDQwen3_5MoeForConditionalGeneration` | `AFDQwen3_5MoeForConditionalGeneration` |
@@ -83,12 +86,11 @@ Only AFD workers switch their worker-local model configuration to the matching
 alias before constructing the AFD model runner. Non-AFD workers keep the
 checkpoint architecture and resolve to vLLM's native model class.
 
-The DeepSeek-family aliases share the DeepSeek V2-derived implementation.
-Qwen3 MoE has a separate wrapper around vLLM's native Qwen3 MoE classes. These
-`Qwen3_5MoeForConditionalGeneration` has a separate Qwen3.5/3.6 adapter that
-retains its native hybrid model, decoder, MoE forward, and loader lifecycles.
-These aliases express known compatible architecture families; they do not make
-either wrapper a generic MoE model API.
+The DeepSeek, DeepSeek V2/V3/V3.2, and GLM aliases share the DeepSeek
+V2-derived implementation. DeepSeek V4, Qwen3 MoE, and Qwen3.5/3.6 each have a
+separate wrapper around their matching native architecture. These aliases
+express known compatible architecture families; they do not make any wrapper
+a generic MoE model API.
 
 ## Role-aware module construction
 
@@ -117,6 +119,26 @@ explicitly.
 The full AFD model remains decorated with vLLM's compile support. Backend-only
 helpers are imported inside the NPU path so CUDA model import does not require
 vLLM-Ascend.
+
+### DeepSeek V4 CUDA boundary
+
+`AFDDeepseekV4ForCausalLM` wraps vLLM's NVIDIA DeepSeek V4 implementation and
+splits immediately around each decoder FFN. Attention owns Attention, all mHC
+residual-stream state and normalization, embeddings/finalization, auxiliary
+CUDA streams, and sparse-index buffers. It sends only the normalized
+two-dimensional FFN activation plus token-aligned `input_ids` through a
+parameter-free `RemoteDeepseekV4FFN`. FFN owns the complete native
+`DeepseekV4MoE`, including its hash router, and returns the FFN activation.
+
+Role-aware weight filtering keeps layer `.ffn` parameters on FFN and all
+other layer-local and mHC head parameters on Attention; common non-layer paths
+remain available to both roles for the native loader lifecycle. The adapter is
+CUDA-only and requires synchronous `P2pNcclAFDConnector`,
+`compute_gate_on_attention=false`, and pipeline-parallel size 1. It rejects
+sequence-parallel MoE, EPLB, and the `deep_gemm_mega_moe` backend. The P2P
+connector validates one-dimensional `torch.int32` input IDs and preallocates
+their receive buffers for graph execution. This boundary currently has
+focused unit coverage but no repository model or accuracy E2E case.
 
 ### Qwen3 MoE CUDA boundary
 
@@ -156,11 +178,13 @@ ad-hoc `ForwardContext.afd_metadata` attribute. The current metadata supplies
 stage/request/token slicing, stage count, optional transaction ID, and a live
 connector reference.
 
-Native vLLM dummy runs can bypass the AFD model-runner call site. During those
-runs, `use_afd_metadata_provider()` temporarily wraps
-`vllm.forward_context.create_forward_context`, lets the runner install the same
-`additional_kwargs` entry, and restores the original function in `finally`.
-This is a scoped compatibility adapter, not a permanent global provider.
+Native forward-context creation can bypass an AFD model-runner call site:
+V1 dummy runs do so, while V2 creates its context inside native
+`execute_model()`. During those scopes, `use_afd_metadata_provider()`
+temporarily wraps `vllm.forward_context.create_forward_context`, lets the
+runner install the same `additional_kwargs` entry, and restores the original
+function in `finally`. This is a scoped compatibility adapter, not a permanent
+global provider.
 
 Async MoE ubatching uses a second sidecar key,
 `afd_async_moe_ubatch_metadata`, containing upstream Attention metadata and
@@ -251,6 +275,8 @@ the other role can be omitted from model/accuracy E2E coverage.
   not an implicit local-forward fallback.
 - AFD paths that require a connector, top-k payload, group list, or async stage
   metadata fail when that input is missing.
+- DeepSeek V4 fails when its remote boundary lacks token-aligned input IDs or
+  when those IDs have the wrong shape/dtype for P2P transfer.
 - Unsupported aux-hidden-state capture, unsupported device gate placement or
   gate quantization, and inconsistent shared-expert dimensions fail explicitly.
 - The model owns modules, parameters, local intermediates, and layer
@@ -275,12 +301,13 @@ not declared a long-term model API.
 
 ## Upstream relationship and validation requirements
 
-Changes must be compared with the pinned vLLM DeepSeek V2 implementation and
+Changes must be compared with the matching pinned vLLM architecture and
 forward-context contract. Run model unit tests and the affected GPU/NPU model
 and accuracy E2E paths; weight-loading changes require role-specific evidence.
 Forward-context mutations require restoration/error-path tests, and an
 architecture registration change requires package registration plus checkpoint
-load evidence.
+load evidence. A unit-only architecture such as the current DeepSeek V4 path
+must not be described as hardware-validated without new E2E evidence.
 
 ## Limitations and open issues
 
