@@ -35,37 +35,11 @@ spec:
           mkdir -p "$RESULT_DIR"
           cd "$REPO"
 
-          echo "=== fetch dcgmi client (must match cluster DCGM host-engine 4.4.2) ==="
-          mkdir -p /work/dcgm
-          if curl -fsSL -o /work/dcgm/dcgm.deb \
-            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/datacenter-gpu-manager-4-core_4.4.2-1_amd64.deb"; then
-            dpkg-deb -x /work/dcgm/dcgm.deb /work/dcgm/extract
-            export PATH="/work/dcgm/extract/usr/bin:$PATH"
-            export LD_LIBRARY_PATH="/work/dcgm/extract/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
-          else
-            echo "WARNING: could not fetch dcgmi client; DCGM profiling will be skipped"
-          fi
-
-          echo "=== per-GPU DCGM profiling (tensor core / SM / DRAM activity) ==="
-          # 1002 SM_ACTIVE, 1003 SM_OCCUPANCY, 1004 PIPE_TENSOR_ACTIVE, 1005
-          # DRAM_ACTIVE, 1013/1014/1015 tensor core INT8/FP16/FP64 active. The
-          # cluster's DCGM host-engine pods aren't on hostNetwork, so they're
-          # only reachable at their own pod IP (not the node's hostIP); run.sh
-          # resolves the host-engine pod on our node and drops its IP in
-          # /work/DCGM_HOST_IP right after the pod reaches Running; wait
-          # briefly here in case that write hasn't landed yet.
-          for i in $(seq 1 30); do
-            [ -f /work/DCGM_HOST_IP ] && break
-            sleep 1
-          done
-          DCGM_HOST_ARGS=()
-          [ -f /work/DCGM_HOST_IP ] && DCGM_HOST_ARGS=(--host "$(cat /work/DCGM_HOST_IP)")
-          if command -v dcgmi >/dev/null 2>&1 && [ "${#DCGM_HOST_ARGS[@]}" -gt 0 ]; then
-            dcgmi dmon "${DCGM_HOST_ARGS[@]}" -e 1002,1003,1004,1005,1013,1014,1015 -d 1000 > /work/dcgm.log 2>&1 &
-            DCGM_PID=$!
-          else
-            echo "dcgmi not found or DCGM host-engine unresolved; skipping DCGM profiling" > /work/dcgm.log
-          fi
+          REAL_UV="$(command -v uv)"
+          mkdir -p /work/bin
+          printf '#!/bin/bash\nif [ "$1" = "run" ]; then\n  shift\n  exec "$@"\nfi\nexec "%s" "$@"\n' "$REAL_UV" > /work/bin/uv
+          chmod +x /work/bin/uv
+          export PATH="/work/bin:$PATH"
 
           echo "=== [1/2] launch recipe ==="
           export MODEL_PATH=/models/DeepSeek-V2-Lite
@@ -101,8 +75,7 @@ spec:
           [ "$RC" -ne 0 ] && BENCH_RC=$RC
           set -e
           echo "benchmark exited rc=$BENCH_RC"
-          [ -n "${DCGM_PID:-}" ] && kill "$DCGM_PID" 2>/dev/null || true
-          cp -f /work/attn.log /work/ffn.log /work/dcgm.log "$RESULT_DIR"/ 2>/dev/null || true
+          cp -f /work/attn.log /work/ffn.log "$RESULT_DIR"/ 2>/dev/null || true
           echo "$BENCH_RC" > "$RESULT_DIR/bench_rc.txt"
 
           echo "=== benchmark finished; results in $RESULT_DIR ==="

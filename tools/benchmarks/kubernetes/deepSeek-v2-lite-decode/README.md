@@ -22,15 +22,15 @@ garbage. See the header comments in
   [serve-bench-pod.yaml](serve-bench-pod.yaml) for the requested recipe
   before `kubectl apply`.
 - A benchmark image built from
-  [docker/Dockerfile.k8s-bench](../../../../docker/Dockerfile.k8s-bench)
-  (base `vllm/vllm-openai:v0.26.0` with `nixl` and an editable `afd-plugin`
+  [docker/Dockerfile.ci](../../../../docker/Dockerfile.ci)
+  (base `vllm/vllm-openai:v0.26.0` with an editable `afd-plugin`
   install, repo sources baked in) and pushed somewhere the cluster can pull
   it from. Set `AFD_PLUGIN_IMAGE` to that image ref when running `run.sh`.
   Build and push it from the afd-plugin repo root:
 
   ```bash
   IMAGE=<registry>/<repo>:<tag>
-  docker build -f docker/Dockerfile.k8s-bench -t "$IMAGE" .
+  docker build -f docker/Dockerfile.ci -t "$IMAGE" .
   docker push "$IMAGE"
   ```
 
@@ -46,10 +46,6 @@ garbage. See the header comments in
 
 - Cluster nodes with 4 GPUs available (both recipes request
   `nvidia.com/gpu: "4"`).
-- Optional: an NVIDIA DCGM host-engine DaemonSet in the `nvidia-gpu-operator`
-  namespace, for per-GPU profiling during the run. If it isn't found,
-  `run.sh` prints a warning and profiling is skipped -- the benchmark still
-  runs.
 
 ## Usage
 
@@ -96,7 +92,7 @@ pod template) -- there are no more per-recipe config files. `run.sh` maps the
 `<baseline|2a2f>` argument to two values, rendered into the pod template via
 `envsubst`.
 
-`nixl` and an editable `afd-plugin` install are not conditional on the
-recipe: they're baked into the `AFD_PLUGIN_IMAGE` image at build time (see
-[docker/Dockerfile.k8s-bench](../../../../docker/Dockerfile.k8s-bench)), so
+An editable `afd-plugin` install is not conditional on the
+recipe: it's baked into the `AFD_PLUGIN_IMAGE` image at build time (see
+[docker/Dockerfile.ci](../../../../docker/Dockerfile.ci)), so
 every recipe run uses the same image.

@@ -46,19 +46,7 @@ run_stage() {
     sleep 10
   done
 
-  echo "=== [${label}] resolving on-node DCGM host-engine pod IP ==="
-  local node dcgm_ip
-  node="$(kubectl get pod "${pod}" -o jsonpath='{.spec.nodeName}')"
-  dcgm_ip="$(kubectl get pod -n nvidia-gpu-operator -l app=nvidia-dcgm \
-    --field-selector "spec.nodeName=${node}" \
-    -o jsonpath='{.items[0].status.podIP}' 2>/dev/null || true)"
   kubectl exec "${pod}" -- mkdir -p /work
-  if [ -n "${dcgm_ip}" ]; then
-    echo "DCGM host-engine for node ${node}: ${dcgm_ip}"
-    kubectl exec "${pod}" -- bash -c "echo '${dcgm_ip}' > /work/DCGM_HOST_IP"
-  else
-    echo "WARNING: could not resolve DCGM host-engine pod IP for node ${node}; DCGM profiling will be skipped"
-  fi
 
   echo "--- [${label}] streaming pod logs until benchmark completes ---"
   kubectl logs -f "pod/${pod}" &
