@@ -124,3 +124,33 @@ follow_imports = "silent"
 
 [tool.ty.analysis]
 allowed-unresolved-imports = ["torch.**", "vllm.**"]
+
+[tool.typos.default]
+extend-ignore-words-re = [
+    # Ascend domain terms checked as plain words in docs/comments.
+    "(?i)^cann$",
+    "(?i)^tbe$",
+]
+extend-ignore-identifiers-re = [
+    ".*_thw",
+    ".*thw",
+    "ein",
+    ".*arange",
+    ".*MoBA",
+    ".*temperal_downsample",
+    ".*nd",
+    ".*[Nn][Dd]$",
+    ".*EmbedND$",
+    ".*nothink.*",
+    ".*NOTHINK.*",
+    ".*nin.*",
+    ".*[Oo]no.*[Aa]nna.*",
+    ".*cann.*",
+    ".*[Nn][Dd]3.*",
+    ".*updator.*",
+    "byt5.*",
+    # NemotronVoiceChat vendored triton kernel: dout/DOUT abbreviate d_out
+    # (output feature dim), not "doubt".
+    ".*dout.*",
+    ".*DOUT.*",
+]
