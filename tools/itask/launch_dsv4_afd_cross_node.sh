@@ -19,6 +19,7 @@ set -euo pipefail
 : "${PROFILE_ROOT:=/tmp/dsv4_afd_profiles}"
 : "${GPU_MEMORY_UTILIZATION:=0.70}"
 : "${HCCL_BUFFSIZE:=512}"
+: "${MAX_NUM_BATCHED_TOKENS:=1024}"
 
 case "$ROLE" in
   attention|ffn) ;;
@@ -127,7 +128,7 @@ exec env VLLM_USE_V1=1 /usr/local/python3.12.13/bin/vllm serve "$MODEL_PATH" \
   --host 0.0.0.0 --port "$API_PORT" "${API_SERVER_ARGS[@]}" --served-model-name "$MODEL_NAME" \
   --worker-cls "$WORKER" "${PARALLEL_ARGS[@]}" --enable-expert-parallel \
   --enforce-eager --quantization ascend --tokenizer-mode deepseek_v4 \
-  --block-size 128 --max-model-len 8192 --max-num-batched-tokens 1024 --max-num-seqs 2 \
+  --block-size 128 --max-model-len 8192 --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS" --max-num-seqs 2 \
   --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" --model-loader-extra-config '{"enable_multithread_load": true, "num_threads": 16}' \
   --trust-remote-code --no-enable-prefix-caching --enable-chunked-prefill \
   --additional-config "$ADDITIONAL_CONFIG" "${PROFILER_ARGS[@]}"

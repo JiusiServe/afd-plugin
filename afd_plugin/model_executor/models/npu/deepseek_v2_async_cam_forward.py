@@ -168,11 +168,6 @@ def run_attention_gate_afd_forward(
             llama_4_scaling,
         )
 
-        # Profile forwards are synthetic and have no safe shared-FFN CAM
-        # schedule on CAM 209.  Do not issue dispatch/combine until serving.
-        if forward_context.in_profile_run:
-            continue
-
         dispatch_payload = prepare_cam_dispatch_payload(
             hidden_states,
             topk_weights,

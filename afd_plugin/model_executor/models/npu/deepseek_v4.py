@@ -25,6 +25,10 @@ from vllm.sequence import IntermediateTensors
 from afd_plugin.config import AFD_ASYNC_CONNECTOR, parse_afd_config
 from afd_plugin.connectors import AFDExpertRoutingSpec, AFDF2ATransferPayload
 from afd_plugin.model_executor.models.deepseek_v2 import RemoteFFNProxy
+from afd_plugin.model_executor.models.npu.async_cam_layout import (
+    prepare_cam_dispatch_payload,
+    restore_cam_dispatch_output,
+)
 
 try:
     from vllm_ascend.models import deepseek_v4 as native
@@ -146,11 +150,19 @@ class AFDDeepseekV4AttentionGateRemoteMoE(RemoteFFNProxy):
             self,
             hidden_states,
         )
-        return self._send_and_receive(
+        dispatch_payload = prepare_cam_dispatch_payload(
             hidden_states,
-            topk_weights=topk_weights,
-            topk_ids=topk_ids,
+            topk_weights,
+            topk_ids,
+            None,
+            use_sequence_parallel=get_forward_context().flash_comm_v1_enabled,
         )
+        output = self._send_and_receive(
+            dispatch_payload.hidden_states,
+            topk_weights=dispatch_payload.topk_weights,
+            topk_ids=dispatch_payload.topk_ids,
+        )
+        return restore_cam_dispatch_output(output, dispatch_payload.layout)
 
 
 class AFDDeepseekV4DecoderLayer(native.DeepseekV2DecoderLayer):

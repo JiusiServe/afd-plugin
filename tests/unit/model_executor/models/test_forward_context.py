@@ -178,7 +178,7 @@ def test_async_model_forward_preserves_pp_boundaries(
         assert torch.equal(output["residual"], scheduled_residual)
 
 
-def test_async_cam_profile_forward_skips_real_connector_io(monkeypatch):
+def test_async_cam_profile_forward_runs_matched_connector_io(monkeypatch):
     from afd_plugin.model_executor.models.npu import (
         deepseek_v2_async_cam_forward as async_forward,
     )
@@ -186,13 +186,22 @@ def test_async_cam_profile_forward_skips_real_connector_io(monkeypatch):
     forward_context = SimpleNamespace(
         in_profile_run=True,
         ubatch_idx=0,
+        flash_comm_v1_enabled=True,
     )
     monkeypatch.setattr(async_forward, "get_forward_context", lambda: forward_context)
 
-    connector_calls = []
+    connector_calls: list[str] = []
+
+    def send_attn_output(*args, **kwargs):
+        connector_calls.append("send")
+
+    def recv_ffn_output(ref_tensor, ubatch_idx):
+        connector_calls.append("recv")
+        return ref_tensor
+
     connector = SimpleNamespace(
-        send_attn_output=lambda *args, **kwargs: connector_calls.append("send"),
-        recv_ffn_output=lambda *args, **kwargs: connector_calls.append("recv"),
+        send_attn_output=send_attn_output,
+        recv_ffn_output=recv_ffn_output,
     )
     afd_metadata = SimpleNamespace(connector=connector, stage_idx=0)
 
@@ -233,7 +242,7 @@ def test_async_cam_profile_forward_skips_real_connector_io(monkeypatch):
 
     assert torch.equal(output, hidden_states + 2)
     assert residual is None
-    assert connector_calls == []
+    assert connector_calls == ["send", "recv", "send", "recv"]
 
 
 def test_deepseek_afd_wrapper_keeps_full_model_compile_enabled():
