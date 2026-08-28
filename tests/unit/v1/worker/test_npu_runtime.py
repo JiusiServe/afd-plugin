@@ -11,8 +11,7 @@ import threading
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
-from types import ModuleType, SimpleNamespace
-from typing import Any
+from types import MethodType, ModuleType, SimpleNamespace
 
 import pytest
 
@@ -128,7 +127,9 @@ class _AsyncRecordingConnector(_RecordingConnector):
 class _FakeFFNConnector:
     def __init__(self, *, attn_size=1, ffn_size=1, role_rank=0, world_rank=0):
         self.dp_metadata_list = {}
-        self.attn_outputs: deque[Any] = deque()
+        self.attn_outputs: deque[
+            AFDA2FTransferPayload | tuple[object, AFDTransferMetadata]
+        ] = deque()
         self.ffn_outputs = []
         self.updates = []
         self.attn_size = attn_size
@@ -516,12 +517,13 @@ def test_npu_attention_runner_installs_mla_graph_wrapper(monkeypatch):
     _require_npu_runtime()
     from afd_plugin.v1.worker.npu import attention_model_runner
 
-    captured: dict[str, Any] = {}
+    captured_args: list[tuple[object, ...]] = []
+    captured_kwargs: list[dict[str, object]] = []
 
     class RecordingUBatchWrapper:
-        def __init__(self, *args, **kwargs):
-            captured["args"] = args
-            captured["kwargs"] = kwargs
+        def __init__(self, *args: object, **kwargs: object):
+            captured_args.append(args)
+            captured_kwargs.append(kwargs)
 
     monkeypatch.setattr(
         attention_model_runner,
@@ -544,10 +546,12 @@ def test_npu_attention_runner_installs_mla_graph_wrapper(monkeypatch):
 
     runner._install_ascend_ubatch_wrapper()
 
-    assert captured["args"][:2] == ("model", runner.vllm_config)
-    assert captured["kwargs"]["mla_full_graph_enabled"] is True
-    assert captured["kwargs"]["enable_enpu"] is False
-    updater = captured["kwargs"]["full_graph_params_updater"]
+    assert captured_args[0][:2] == ("model", runner.vllm_config)
+    kwargs = captured_kwargs[0]
+    assert kwargs["mla_full_graph_enabled"] is True
+    assert kwargs["enable_enpu"] is False
+    updater = kwargs["full_graph_params_updater"]
+    assert isinstance(updater, MethodType)
     assert updater.__self__ is runner
 
 
@@ -782,14 +786,14 @@ def test_npu_attention_metadata_positional_args_and_padded_slices():
 
 def test_npu_request_boundary_ubatch_slices_balance_tokens(monkeypatch):
     np = pytest.importorskip("numpy")
-    fake_torch: Any = ModuleType("torch")
-    fake_torch.Tensor = object
+    fake_torch = ModuleType("torch")
+    fake_torch.Tensor = object  # type: ignore[attr-defined]
     fake_vllm = ModuleType("vllm")
-    fake_vllm_config: Any = ModuleType("vllm.config")
-    fake_vllm_config.VllmConfig = object
+    fake_vllm_config = ModuleType("vllm.config")
+    fake_vllm_config.VllmConfig = object  # type: ignore[attr-defined]
     fake_vllm_v1 = ModuleType("vllm.v1")
     fake_vllm_worker = ModuleType("vllm.v1.worker")
-    fake_vllm_ubatch_utils: Any = ModuleType("vllm.v1.worker.ubatch_utils")
+    fake_vllm_ubatch_utils = ModuleType("vllm.v1.worker.ubatch_utils")
 
     class UBatchSlice:
         def __init__(self, request_slice, token_slice):
@@ -803,15 +807,21 @@ def test_npu_request_boundary_ubatch_slices_balance_tokens(monkeypatch):
         def is_empty(self):
             return self.num_tokens <= 0
 
-    fake_vllm_ubatch_utils.UBatchSlice = UBatchSlice
-    fake_vllm_ubatch_utils.UBatchSlices = list
-    fake_vllm_ubatch_utils.check_ubatch_thresholds = lambda *_args, **_kwargs: False
+    fake_vllm_ubatch_utils.UBatchSlice = UBatchSlice  # type: ignore[attr-defined]
+    fake_vllm_ubatch_utils.UBatchSlices = list  # type: ignore[attr-defined]
+    fake_vllm_ubatch_utils.check_ubatch_thresholds = (  # type: ignore[attr-defined]
+        lambda *_args, **_kwargs: False
+    )
     fake_vllm_ascend = ModuleType("vllm_ascend")
-    fake_forward_context: Any = ModuleType("vllm_ascend.ascend_forward_context")
-    fake_forward_context.MoECommType = type("MoECommType", (), {})
+    fake_forward_context = ModuleType("vllm_ascend.ascend_forward_context")
+    fake_forward_context.MoECommType = type(  # type: ignore[attr-defined]
+        "MoECommType", (), {}
+    )
     fake_attention = ModuleType("vllm_ascend.attention")
-    fake_attention_utils: Any = ModuleType("vllm_ascend.attention.utils")
-    fake_attention_utils.AscendCommonAttentionMetadata = object
+    fake_attention_utils = ModuleType("vllm_ascend.attention.utils")
+    fake_attention_utils.AscendCommonAttentionMetadata = (  # type: ignore[attr-defined]
+        object
+    )
 
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "vllm", fake_vllm)
@@ -2275,18 +2285,18 @@ def test_npu_async_moe_ubatching_validation_rejects_unsupported_shape(
 
 
 def test_npu_ubatch_enabled_when_thresholds_are_met(monkeypatch):
-    fake_numpy: Any = ModuleType("numpy")
-    fake_numpy.ndarray = object
-    fake_torch: Any = ModuleType("torch")
-    fake_torch.Tensor = object
+    fake_numpy = ModuleType("numpy")
+    fake_numpy.ndarray = object  # type: ignore[attr-defined]
+    fake_torch = ModuleType("torch")
+    fake_torch.Tensor = object  # type: ignore[attr-defined]
     fake_vllm = ModuleType("vllm")
-    fake_vllm_config: Any = ModuleType("vllm.config")
-    fake_vllm_config.VllmConfig = object
+    fake_vllm_config = ModuleType("vllm.config")
+    fake_vllm_config.VllmConfig = object  # type: ignore[attr-defined]
     fake_vllm_v1 = ModuleType("vllm.v1")
     fake_vllm_worker = ModuleType("vllm.v1.worker")
-    fake_vllm_ubatch_utils: Any = ModuleType("vllm.v1.worker.ubatch_utils")
-    fake_vllm_ubatch_utils.UBatchSlice = object
-    fake_vllm_ubatch_utils.UBatchSlices = list
+    fake_vllm_ubatch_utils = ModuleType("vllm.v1.worker.ubatch_utils")
+    fake_vllm_ubatch_utils.UBatchSlice = object  # type: ignore[attr-defined]
+    fake_vllm_ubatch_utils.UBatchSlices = list  # type: ignore[attr-defined]
 
     def check_ubatch_thresholds(config, num_tokens, uniform_decode):
         if not config.use_ubatching:
@@ -2295,14 +2305,18 @@ def test_npu_ubatch_enabled_when_thresholds_are_met(monkeypatch):
             return num_tokens >= config.dbo_decode_token_threshold
         return num_tokens >= config.dbo_prefill_token_threshold
 
-    fake_vllm_ubatch_utils.check_ubatch_thresholds = check_ubatch_thresholds
+    fake_vllm_ubatch_utils.check_ubatch_thresholds = (  # type: ignore[attr-defined]
+        check_ubatch_thresholds
+    )
 
     fake_vllm_ascend = ModuleType("vllm_ascend")
     fake_forward_context = ModuleType("vllm_ascend.ascend_forward_context")
 
     fake_attention = ModuleType("vllm_ascend.attention")
-    fake_attention_utils: Any = ModuleType("vllm_ascend.attention.utils")
-    fake_attention_utils.AscendCommonAttentionMetadata = object
+    fake_attention_utils = ModuleType("vllm_ascend.attention.utils")
+    fake_attention_utils.AscendCommonAttentionMetadata = (  # type: ignore[attr-defined]
+        object
+    )
 
     monkeypatch.setitem(sys.modules, "numpy", fake_numpy)
     monkeypatch.setitem(sys.modules, "torch", fake_torch)

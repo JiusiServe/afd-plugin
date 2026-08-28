@@ -26,6 +26,7 @@ from vllm.forward_context import (
 from vllm.logger import init_logger
 from vllm.sequence import IntermediateTensors
 from vllm.utils.math_utils import cdiv
+from vllm.v1.attention.backend import AttentionMetadata
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
 from vllm.v1.attention.backends.utils import CommonAttentionMetadata
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -476,7 +477,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             return {}, None
         # ### PATCH START: AFD per-ubatch metadata containers
         assert ubatch_slices is not None
-        attn_metadata: list[dict[str, Any]] = [
+        attn_metadata: list[dict[str, AttentionMetadata]] = [
             dict() for _ in range(len(ubatch_slices))
         ]
         # ### PATCH END: AFD per-ubatch metadata containers
@@ -606,9 +607,9 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             # ### PATCH START: AFD stage-local actual request count
             num_reqs_actual: int,
             # ### PATCH END: AFD stage-local actual request count
-            prefill_ratio_to_sas_metadata: dict[Any, Any],
-            decode_ratio_to_sas_metadata: dict[Any, Any],
-            common_ratio_to_sas_metadata: dict[Any, Any],
+            prefill_ratio_to_sas_metadata: dict[object, object],
+            decode_ratio_to_sas_metadata: dict[object, object],
+            common_ratio_to_sas_metadata: dict[object, object],
             ubid: int | None = None,
         ) -> None:
             attn_group = self.attn_groups[kv_cache_gid][attn_gid]
@@ -711,9 +712,9 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         # pinned upstream cache and request-count behavior for native DBO.
         if not is_async_moe_stage_build:
             shared_dsa_metadata_caches: tuple[
-                dict[Any, Any],
-                dict[Any, Any],
-                dict[Any, Any],
+                dict[object, object],
+                dict[object, object],
+                dict[object, object],
             ] = ({}, {}, {})
             dsa_metadata_caches = [shared_dsa_metadata_caches for _ in ubatch_slices]
             num_actual_reqs_per_ubatch = [num_reqs for _ in ubatch_slices]
@@ -993,7 +994,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         profile_seq_lens: int | None,
         allow_microbatching: bool,
         num_warmups: int,
-        profiler: AbstractContextManager[Any],
+        profiler: AbstractContextManager[object],
     ) -> None:
         force_attention = cudagraph_runtime_mode == CUDAGraphMode.FULL
 
