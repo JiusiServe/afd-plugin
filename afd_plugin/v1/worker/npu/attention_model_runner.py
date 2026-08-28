@@ -413,10 +413,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             use_sequence_parallel=use_sequence_parallel,
             parent_input_tokens=num_tokens_padded,
         )
-        self._afd_pending_metadata = self._build_afd_metadata(
-            stage_slices,
-            num_tokens,
-        )
         return full_metadata
 
     # Upstream source: vllm-ascend commit 80d8c194f,
@@ -1426,11 +1422,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             return
         dp_metadata = forward_context.dp_metadata
         ubatch_slices = forward_context.ubatch_slices
-        if self._afd_async_moe_ubatch_metadata is not None:
-            ubatch_slices = [
-                UBatchSlice(stage.request_slice, stage.token_slice)
-                for stage in self._afd_async_moe_ubatch_metadata.stages
-            ]
         padded_graph_tokens = _full_cudagraph_padded_tokens(forward_context)
         if padded_graph_tokens is not None and not ubatch_slices:
             dp_metadata = self._build_capture_dp_metadata(padded_graph_tokens)

@@ -353,20 +353,7 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         # received no routed tokens in this dispatch.  Such ranks must still
         # enter combine-send (the zero-token fallback below supplies its
         # placeholder) so every participant completes the CAM collective.
-        # CAM 209 currently returns zero in the documented layer-index slot
-        # for every dispatch-recv result.  The connector-driven FFN runner
-        # already has the authoritative decoder-layer order, so consuming this
-        # stale field makes every DSV4 work item execute FFN layer 0.  CAM
-        # combine-send also uses this header to match the completion to its
-        # original dispatch, so merely fixing the local model call is not
-        # sufficient: all later layers would still be combined as layer 0.
-        # CAM returns the true decoder-layer index in the dispatch-recv header
-        # (field 2 of token_nums_rankid_layeridx).  Use it for both the local
-        # FFN layer computation and the combine-send header so the completion
-        # matches the attention-side combine-recv.
-        layer_idx = max(0, int(token_nums_rankid_layeridx[2].item()))
-        token_nums_rankid_layeridx = token_nums_rankid_layeridx.clone()
-        states.token_nums_rankid_layeridx = token_nums_rankid_layeridx
+        layer_idx = int(token_nums_rankid_layeridx[2].item())
 
         expert_token_nums_shared = states.expert_token_nums_shared
         if expert_token_nums_shared is None:

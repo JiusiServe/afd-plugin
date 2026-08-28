@@ -572,6 +572,7 @@ def test_npu_attention_async_connector_skips_dp_metadata_control_plane():
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
     runner._afd_pending_metadata = None
+    runner._afd_async_moe_ubatch_metadata = object()
     runner._afd_transaction_counter = 0
     forward_context = SimpleNamespace(
         additional_kwargs={},
@@ -976,9 +977,10 @@ def test_npu_attention_runner_builds_stage_metadata(monkeypatch):
     ]
     assert materialized_full_metadata == [(full_attn_metadata, runner.positions)]
     assert runner.ubatch_slices is None
-    assert runner._afd_pending_metadata.num_stages == 2
-    assert runner._afd_pending_metadata.tokens_start_loc == [0, 550]
-    assert runner._afd_pending_metadata.tokens_lens == [550, 549]
+    assert runner._afd_pending_metadata.num_stages == 1
+    assert runner._afd_pending_metadata.tokens_start_loc == [0]
+    assert runner._afd_pending_metadata.tokens_lens == [1099]
+    assert runner._afd_transaction_counter == 1
 
 
 def test_npu_attention_runner_isolates_dsa_caches_per_stage(monkeypatch):
