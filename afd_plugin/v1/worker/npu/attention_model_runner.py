@@ -1565,11 +1565,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         if not self.connector.is_initialized:
             self.connector.init_afd_connector()
 
-    def _is_dsv4_model(self) -> bool:
-        from afd_plugin.compat.npu.feature_validation import _is_dsv4_target
-
-        return _is_dsv4_target(self.vllm_config)
-
     def _install_ascend_ubatch_wrapper(self) -> None:
         if isinstance(self.model, AscendUBatchWrapper):
             return
