@@ -543,6 +543,7 @@ def test_npu_attention_runner_builds_and_sets_metadata():
     runner._afd_is_graph_capturing = False
     runner._afd_pending_metadata = None
     runner._afd_transaction_counter = 0
+    runner.ubatch_slices = None
     runner._afd_suppress_metadata_send = False
     forward_context = SimpleNamespace(
         additional_kwargs={},
@@ -974,6 +975,10 @@ def test_npu_attention_runner_builds_stage_metadata(monkeypatch):
         slice(550, 1099),
     ]
     assert materialized_full_metadata == [(full_attn_metadata, runner.positions)]
+    assert runner.ubatch_slices is None
+    assert runner._afd_pending_metadata.num_stages == 2
+    assert runner._afd_pending_metadata.tokens_start_loc == [0, 550]
+    assert runner._afd_pending_metadata.tokens_lens == [550, 549]
 
 
 def test_npu_attention_runner_isolates_dsa_caches_per_stage(monkeypatch):
@@ -2505,3 +2510,35 @@ def test_npu_attention_runner_load_model_initializes_connector_after_weights(
     expected.append("connector_init")
     assert events == expected
     assert connector.is_initialized is True
+
+
+def test_npu_attention_runner_afd_ubatching_does_not_install_native_wrapper(
+    monkeypatch,
+):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import attention_model_runner
+
+    events = []
+    connector = _LifecycleConnector(events)
+    runner = object.__new__(attention_model_runner.AFDNPUAttentionModelRunner)
+    runner.connector = connector
+    runner.vllm_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            use_ubatching=False,
+            num_ubatches=0,
+        ),
+    )
+    monkeypatch.setattr(
+        attention_model_runner.NPUModelRunner,
+        "load_model",
+        lambda self: events.append("model_load"),
+    )
+    monkeypatch.setattr(
+        attention_model_runner.AFDNPUAttentionModelRunner,
+        "_install_ascend_ubatch_wrapper",
+        lambda self: events.append("wrapper_install"),
+    )
+
+    runner.load_model()
+
+    assert events == ["model_load", "connector_init"]

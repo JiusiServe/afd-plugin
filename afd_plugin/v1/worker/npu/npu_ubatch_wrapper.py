@@ -153,6 +153,7 @@ class AscendUBatchWrapper(UBatchWrapper):
         enable_enpu: bool = False,
     ):
         assert not enable_enpu, "AscendUBatchWrapper does not support ENPU"
+        assert vllm_config.parallel_config.num_ubatches == 2
         self.runnable = runnable
         self.vllm_config = vllm_config
         self.compilation_config = vllm_config.compilation_config

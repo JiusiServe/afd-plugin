@@ -237,14 +237,14 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 num_tokens_padded,
             )
 
-        # ### PATCH START: AFD defers FlashComm gather to the ubatch wrapper
+        # ### PATCH START: AFD defers FlashComm gather to model execution
         if (
             forward_context.flash_comm_v1_enabled
             and not forward_context.dbo_enabled
             and not isinstance(hidden_states, IntermediateTensors)
         ):
             hidden_states = self._all_gather_hidden_states_and_aux(hidden_states)
-        # ### PATCH END: AFD defers FlashComm gather to the ubatch wrapper
+        # ### PATCH END: AFD defers FlashComm gather to model execution
         return hidden_states
 
     # Upstream source: vllm-ascend commit 80d8c194f,
@@ -290,18 +290,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 num_scheduled_tokens_np=num_scheduled_tokens_np,
                 cascade_attn_prefix_lens=cascade_attn_prefix_lens,
             )
-            if (
-                self._is_dsv4_model()
-                and self._afd_async_moe_ubatch_metadata is not None
-            ):
-                self.ubatch_slices = [
-                    UBatchSlice(stage.request_slice, stage.token_slice)
-                    for stage in self._afd_async_moe_ubatch_metadata.stages
-                ]
-                return (
-                    self._afd_async_moe_ubatch_metadata.attn_metadata,
-                    None,
-                )
             self.ubatch_slices = None
             return result
         self._afd_pending_metadata = self._build_afd_metadata(
@@ -424,6 +412,10 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             stages=stages,
             use_sequence_parallel=use_sequence_parallel,
             parent_input_tokens=num_tokens_padded,
+        )
+        self._afd_pending_metadata = self._build_afd_metadata(
+            stage_slices,
+            num_tokens,
         )
         return full_metadata
 
@@ -1434,6 +1426,11 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             return
         dp_metadata = forward_context.dp_metadata
         ubatch_slices = forward_context.ubatch_slices
+        if self._afd_async_moe_ubatch_metadata is not None:
+            ubatch_slices = [
+                UBatchSlice(stage.request_slice, stage.token_slice)
+                for stage in self._afd_async_moe_ubatch_metadata.stages
+            ]
         padded_graph_tokens = _full_cudagraph_padded_tokens(forward_context)
         if padded_graph_tokens is not None and not ubatch_slices:
             dp_metadata = self._build_capture_dp_metadata(padded_graph_tokens)
@@ -1559,10 +1556,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
     # Signature: matches upstream; no added parameters.
     def load_model(self) -> None:
         super().load_model()
-        if (
-            bool(self.vllm_config.parallel_config.use_ubatching)
-            or self.afd_async_extra_info.async_moe_ubatching
-        ):
+        if bool(self.vllm_config.parallel_config.use_ubatching):
             self._install_ascend_ubatch_wrapper()
         # Wrapper installation is local and non-blocking; the connector
         # rendezvous is the blocking cross-role collective, so it is

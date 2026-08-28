@@ -382,6 +382,22 @@ def test_ubatch_wrapper_rejects_enpu(monkeypatch):
         )
 
 
+def test_ubatch_wrapper_requires_native_two_ubatch_config(monkeypatch):
+    wrapper_module = _load_ubatch_wrapper_module(monkeypatch)
+    config = SimpleNamespace(
+        parallel_config=SimpleNamespace(num_ubatches=0),
+        compilation_config=object(),
+    )
+
+    with pytest.raises(AssertionError):
+        wrapper_module.AscendUBatchWrapper(
+            lambda: None,
+            config,
+            wrapper_module.CUDAGraphMode.NONE,
+            torch.device("cpu"),
+        )
+
+
 def test_npu_graph_key_separates_stage_shapes_and_lora(monkeypatch):
     wrapper_module = _load_ubatch_wrapper_module(monkeypatch)
 
