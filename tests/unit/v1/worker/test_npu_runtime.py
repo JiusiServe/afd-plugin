@@ -1,6 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import sys
 import threading
@@ -8,6 +12,7 @@ from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -91,7 +96,7 @@ class _RecordingConnector:
         self.sent_dp_metadata_lists = []
         # The runners reach the control plane through connector.control_plane;
         # the fake serves as both.
-        self.control_plane = self
+        self.control_plane: _RecordingConnector | None = self
 
     def update_state_from_dp_metadata(self, payload):
         assert isinstance(payload, AFDControlPayload)
@@ -123,7 +128,7 @@ class _AsyncRecordingConnector(_RecordingConnector):
 class _FakeFFNConnector:
     def __init__(self, *, attn_size=1, ffn_size=1, role_rank=0, world_rank=0):
         self.dp_metadata_list = {}
-        self.attn_outputs = deque()
+        self.attn_outputs: deque[Any] = deque()
         self.ffn_outputs = []
         self.updates = []
         self.attn_size = attn_size
@@ -284,6 +289,24 @@ def _require_npu_runtime():
     pytest.importorskip("vllm", reason="NPU runtime tests require vLLM")
     pytest.importorskip("vllm_ascend", reason="NPU runtime tests require vLLM-Ascend")
     pytest.importorskip("torch_npu", reason="NPU runtime tests require torch-npu")
+
+
+def test_npu_v1_runner_signatures_match_pinned_ascend():
+    _require_npu_runtime()
+    from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
+
+    from afd_plugin.v1.worker.npu.attention_model_runner import (
+        AFDNPUAttentionModelRunner,
+    )
+
+    for method_name in ("_dummy_run", "_build_attention_metadata"):
+        assert inspect.signature(
+            getattr(AFDNPUAttentionModelRunner, method_name),
+            eval_str=True,
+        ) == inspect.signature(
+            getattr(NPUModelRunner, method_name),
+            eval_str=True,
+        )
 
 
 def _new_attention_runner():
@@ -493,7 +516,7 @@ def test_npu_attention_runner_installs_mla_graph_wrapper(monkeypatch):
     _require_npu_runtime()
     from afd_plugin.v1.worker.npu import attention_model_runner
 
-    captured = {}
+    captured: dict[str, Any] = {}
 
     class RecordingUBatchWrapper:
         def __init__(self, *args, **kwargs):
@@ -759,14 +782,14 @@ def test_npu_attention_metadata_positional_args_and_padded_slices():
 
 def test_npu_request_boundary_ubatch_slices_balance_tokens(monkeypatch):
     np = pytest.importorskip("numpy")
-    fake_torch = ModuleType("torch")
+    fake_torch: Any = ModuleType("torch")
     fake_torch.Tensor = object
     fake_vllm = ModuleType("vllm")
-    fake_vllm_config = ModuleType("vllm.config")
+    fake_vllm_config: Any = ModuleType("vllm.config")
     fake_vllm_config.VllmConfig = object
     fake_vllm_v1 = ModuleType("vllm.v1")
     fake_vllm_worker = ModuleType("vllm.v1.worker")
-    fake_vllm_ubatch_utils = ModuleType("vllm.v1.worker.ubatch_utils")
+    fake_vllm_ubatch_utils: Any = ModuleType("vllm.v1.worker.ubatch_utils")
 
     class UBatchSlice:
         def __init__(self, request_slice, token_slice):
@@ -784,10 +807,10 @@ def test_npu_request_boundary_ubatch_slices_balance_tokens(monkeypatch):
     fake_vllm_ubatch_utils.UBatchSlices = list
     fake_vllm_ubatch_utils.check_ubatch_thresholds = lambda *_args, **_kwargs: False
     fake_vllm_ascend = ModuleType("vllm_ascend")
-    fake_forward_context = ModuleType("vllm_ascend.ascend_forward_context")
+    fake_forward_context: Any = ModuleType("vllm_ascend.ascend_forward_context")
     fake_forward_context.MoECommType = type("MoECommType", (), {})
     fake_attention = ModuleType("vllm_ascend.attention")
-    fake_attention_utils = ModuleType("vllm_ascend.attention.utils")
+    fake_attention_utils: Any = ModuleType("vllm_ascend.attention.utils")
     fake_attention_utils.AscendCommonAttentionMetadata = object
 
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
@@ -1653,7 +1676,7 @@ def test_npu_ffn_runner_warmup_uses_eager_forward_without_graph(monkeypatch):
     runner.max_num_tokens = 1
     runner.use_aclgraph = True
     runner._acl_graphs = {}
-    capture_flags = []
+    capture_flags: list[bool] = []
 
     def fail_graph_capture_context(device):
         raise AssertionError("warmup must not enter graph_capture context")
@@ -2252,16 +2275,16 @@ def test_npu_async_moe_ubatching_validation_rejects_unsupported_shape(
 
 
 def test_npu_ubatch_enabled_when_thresholds_are_met(monkeypatch):
-    fake_numpy = ModuleType("numpy")
+    fake_numpy: Any = ModuleType("numpy")
     fake_numpy.ndarray = object
-    fake_torch = ModuleType("torch")
+    fake_torch: Any = ModuleType("torch")
     fake_torch.Tensor = object
     fake_vllm = ModuleType("vllm")
-    fake_vllm_config = ModuleType("vllm.config")
+    fake_vllm_config: Any = ModuleType("vllm.config")
     fake_vllm_config.VllmConfig = object
     fake_vllm_v1 = ModuleType("vllm.v1")
     fake_vllm_worker = ModuleType("vllm.v1.worker")
-    fake_vllm_ubatch_utils = ModuleType("vllm.v1.worker.ubatch_utils")
+    fake_vllm_ubatch_utils: Any = ModuleType("vllm.v1.worker.ubatch_utils")
     fake_vllm_ubatch_utils.UBatchSlice = object
     fake_vllm_ubatch_utils.UBatchSlices = list
 
@@ -2278,7 +2301,7 @@ def test_npu_ubatch_enabled_when_thresholds_are_met(monkeypatch):
     fake_forward_context = ModuleType("vllm_ascend.ascend_forward_context")
 
     fake_attention = ModuleType("vllm_ascend.attention")
-    fake_attention_utils = ModuleType("vllm_ascend.attention.utils")
+    fake_attention_utils: Any = ModuleType("vllm_ascend.attention.utils")
     fake_attention_utils.AscendCommonAttentionMetadata = object
 
     monkeypatch.setitem(sys.modules, "numpy", fake_numpy)
@@ -2374,7 +2397,7 @@ def test_npu_attention_runner_constructor_does_not_initialize_connector(monkeypa
     _require_npu_runtime()
     from afd_plugin.v1.worker.npu import attention_model_runner
 
-    events = []
+    events: list[str] = []
     connector = _LifecycleConnector(events)
 
     def fake_native_init(self, vllm_config, device):
@@ -2432,7 +2455,7 @@ def test_npu_attention_runner_load_model_initializes_connector_after_weights(
     _require_npu_runtime()
     from afd_plugin.v1.worker.npu import attention_model_runner
 
-    events = []
+    events: list[str] = []
     connector = _LifecycleConnector(events)
     runner = object.__new__(attention_model_runner.AFDNPUAttentionModelRunner)
     runner.connector = connector

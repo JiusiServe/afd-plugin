@@ -124,6 +124,8 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
     """NPU model runner that injects AFD metadata into Ascend forward context."""
 
     afd_expected_role = "attention"
+    model: nn.Module
+    intermediate_tensors: IntermediateTensors | None
 
     def __init__(self, vllm_config: VllmConfig, device: torch.device):
         afd_config = self.parse_config(vllm_config)
@@ -158,7 +160,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         self._afd_pending_metadata: AFDForwardContextMetadata | None = None
         self._afd_suppress_metadata_send = False
         self._afd_transaction_counter = 0
-        self._afd_async_moe_ubatch_metadata = None
+        self._afd_async_moe_ubatch_metadata: AsyncMoeUbatchMetadata | None = None
         self._afd_live_execution = False
         self.ubatch_slices = None
         self.prof = create_afd_npu_profiler("attention")
@@ -268,7 +270,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         num_scheduled_tokens: dict[str, int] | None = None,
         num_scheduled_tokens_np: np.ndarray | None = None,
         cascade_attn_prefix_lens: list[list[int]] | None = None,
-        skip_gdn_state_update: bool = False,
     ) -> tuple[PerLayerAttnMetadata, CommonAttentionMetadata | None]:
         # ### PATCH START: AFD NPU ubatch metadata routing
         ubatch_slices = _normalize_metadata_ubatch_slices(
@@ -291,7 +292,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 num_scheduled_tokens=num_scheduled_tokens,
                 num_scheduled_tokens_np=num_scheduled_tokens_np,
                 cascade_attn_prefix_lens=cascade_attn_prefix_lens,
-                skip_gdn_state_update=skip_gdn_state_update,
             )
         self._afd_pending_metadata = self._build_afd_metadata(
             ubatch_slices,
@@ -312,7 +312,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 num_scheduled_tokens=num_scheduled_tokens,
                 num_scheduled_tokens_np=num_scheduled_tokens_np,
                 cascade_attn_prefix_lens=cascade_attn_prefix_lens,
-                skip_gdn_state_update=skip_gdn_state_update,
             )
         result = super()._build_attention_metadata(
             num_tokens=num_tokens,
@@ -327,7 +326,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             num_scheduled_tokens=num_scheduled_tokens,
             num_scheduled_tokens_np=num_scheduled_tokens_np,
             cascade_attn_prefix_lens=cascade_attn_prefix_lens,
-            skip_gdn_state_update=skip_gdn_state_update,
         )
         # ### PATCH END: AFD NPU ubatch metadata routing
         return result
@@ -346,7 +344,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         num_scheduled_tokens: dict[str, int] | None,
         num_scheduled_tokens_np: np.ndarray | None,
         cascade_attn_prefix_lens: list[list[int]] | None,
-        skip_gdn_state_update: bool,
     ) -> tuple[PerLayerAttnMetadata, CommonAttentionMetadata | None]:
         full_metadata = super()._build_attention_metadata(
             num_tokens=num_tokens,
@@ -361,7 +358,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             num_scheduled_tokens=num_scheduled_tokens,
             num_scheduled_tokens_np=num_scheduled_tokens_np,
             cascade_attn_prefix_lens=cascade_attn_prefix_lens,
-            skip_gdn_state_update=skip_gdn_state_update,
         )
         self._afd_async_moe_ubatch_metadata = None
         self._afd_pending_metadata = self._build_afd_metadata(
@@ -426,7 +422,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             num_scheduled_tokens=num_scheduled_tokens,
             num_scheduled_tokens_np=num_scheduled_tokens_np,
             cascade_attn_prefix_lens=cascade_attn_prefix_lens,
-            skip_gdn_state_update=skip_gdn_state_update,
             is_async_moe_stage_build=True,
         )
         self._afd_async_moe_ubatch_metadata = AsyncMoeUbatchMetadata(
@@ -466,7 +461,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         num_scheduled_tokens: dict[str, int] | None = None,
         num_scheduled_tokens_np: np.ndarray | None = None,
         cascade_attn_prefix_lens: list[list[int]] | None = None,
-        skip_gdn_state_update: bool = False,
         # ### PATCH START: Async CAM stage metadata ownership
         is_async_moe_stage_build: bool = False,
         # ### PATCH END: Async CAM stage metadata ownership
@@ -623,26 +617,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 metadata_builder_offset + (ubid or 0),
             )
             # ### PATCH END: Async CAM builder offset
-            is_gdn_noop = skip_gdn_state_update and isinstance(
-                builder,
-                GDNAttentionMetadataBuilder,
-            )
-            if is_gdn_noop:
-                common_attn_metadata = common_attn_metadata.replace(
-                    query_start_loc=self.gdn_query_start_loc.gpu[
-                        : common_attn_metadata.query_start_loc.shape[0]
-                    ],
-                    query_start_loc_cpu=self.gdn_query_start_loc.cpu[
-                        : common_attn_metadata.query_start_loc_cpu.shape[0]
-                    ],
-                    num_actual_tokens=0,
-                    max_query_len=0,
-                    is_prefilling=(
-                        torch.zeros_like(common_attn_metadata.is_prefilling)
-                        if common_attn_metadata.is_prefilling is not None
-                        else None
-                    ),
-                )
             cascade_attn_prefix_len = (
                 cascade_attn_prefix_lens[kv_cache_gid][attn_gid]
                 if cascade_attn_prefix_lens
@@ -650,11 +624,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             )
 
             extra_attn_metadata_args = {}
-            if (
-                use_spec_decode
-                and isinstance(builder, GDNAttentionMetadataBuilder)
-                and not is_gdn_noop
-            ):
+            if use_spec_decode and isinstance(builder, GDNAttentionMetadataBuilder):
                 assert ubid is None, "UBatching not supported with GDN yet"
                 extra_attn_metadata_args = dict(
                     num_accepted_tokens=self.num_accepted_tokens.gpu[:num_reqs_padded],
@@ -740,7 +710,11 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         # makes later stages reuse the first stage's metadata. Preserve the
         # pinned upstream cache and request-count behavior for native DBO.
         if not is_async_moe_stage_build:
-            shared_dsa_metadata_caches = ({}, {}, {})
+            shared_dsa_metadata_caches: tuple[
+                dict[Any, Any],
+                dict[Any, Any],
+                dict[Any, Any],
+            ] = ({}, {}, {})
             dsa_metadata_caches = [shared_dsa_metadata_caches for _ in ubatch_slices]
             num_actual_reqs_per_ubatch = [num_reqs for _ in ubatch_slices]
         else:
@@ -874,7 +848,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         num_active_loras: int = 0,
         profile_seq_lens: int | None = None,
         profile_cpp: bool = False,
-        skip_gdn_state_update: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         with torch.inference_mode():
             return self._dummy_run_inference_mode(
@@ -892,7 +865,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 num_active_loras=num_active_loras,
                 profile_seq_lens=profile_seq_lens,
                 profile_cpp=profile_cpp,
-                skip_gdn_state_update=skip_gdn_state_update,
             )
 
     def _dummy_run_inference_mode(
@@ -911,7 +883,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         num_active_loras: int = 0,
         profile_seq_lens: int | None = None,
         profile_cpp: bool = False,
-        skip_gdn_state_update: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         previous = self._afd_is_graph_capturing
         self._afd_is_graph_capturing = bool(is_graph_capturing)
@@ -936,7 +907,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                     num_active_loras=num_active_loras,
                     profile_seq_lens=profile_seq_lens,
                     profile_cpp=profile_cpp,
-                    skip_gdn_state_update=skip_gdn_state_update,
                 )
             finally:
                 self._afd_is_graph_capturing = previous
@@ -959,7 +929,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 num_active_loras=num_active_loras,
                 profile_seq_lens=profile_seq_lens,
                 profile_cpp=profile_cpp,
-                skip_gdn_state_update=skip_gdn_state_update,
             )
         finally:
             self._afd_is_graph_capturing = previous
@@ -1110,7 +1079,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         num_active_loras: int = 0,
         profile_seq_lens: int | None = None,
         profile_cpp: bool = False,
-        skip_gdn_state_update: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         assert (
             cudagraph_runtime_mode is None
@@ -1238,12 +1206,9 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 self.query_start_loc.np[1 : num_reqs_padded + 1] = cum_num_tokens
                 self.query_start_loc.copy_to_gpu()
                 if self._has_gdn:
-                    if skip_gdn_state_update:
-                        self.gdn_query_start_loc.np.fill(0)
-                    else:
-                        self.gdn_query_start_loc.np[1 : num_reqs_padded + 1] = (
-                            cum_num_tokens
-                        )
+                    self.gdn_query_start_loc.np[1 : num_reqs_padded + 1] = (
+                        cum_num_tokens
+                    )
                     self.gdn_query_start_loc.copy_to_gpu()
 
                 if not profile_cpp:
@@ -1282,7 +1247,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                     # ### PATCH END: AFD dummy ubatch metadata input
                     for_cudagraph_capture=is_graph_capturing,
                     num_scheduled_tokens_np=num_scheduled_tokens,
-                    skip_gdn_state_update=skip_gdn_state_update,
                 )
                 if not is_graph_capturing:
                     for kv_cache_gid in range(
@@ -1550,7 +1514,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         logger.warning(
             "AFD NPU Attention send_dp_metadata decision; world_rank=%d "
             "key=%s is_graph_capturing=%s is_warmup=%s",
-            self.connector.world_rank,
+            self.connector.world_rank,  # type: ignore[attr-defined]
             _dp_metadata_debug_key(dp_metadata_list),
             is_graph_capturing,
             is_warmup,
@@ -1964,8 +1928,8 @@ def _make_uniform_dp_metadata(dp_size: int, num_tokens: int) -> AFDDPMetadata:
 
 def _dp_metadata_debug_key(
     dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
-) -> tuple[tuple[int, tuple]]:
-    key_parts: list[tuple[int, tuple]] = []
+) -> tuple[tuple[int, tuple[int, ...]], ...]:
+    key_parts: list[tuple[int, tuple[int, ...]]] = []
     for stage_idx, metadata in sorted(dp_metadata_list.items()):
         values_tuple = tuple(
             int(value) for value in metadata.num_tokens_across_dp_cpu.tolist()
