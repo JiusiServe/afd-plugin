@@ -153,12 +153,14 @@ class AFDNPUFFNWorker(NPUWorker):
             is_attn_graph_capturing = payload.is_graph_capturing
             is_warmup = payload.is_warmup
             is_profile = payload.is_profile
+            is_graph_replaying = payload.is_graph_replaying
 
             self.model_runner.execute_ffn_step(
                 dp_metadata_list=dp_metadata_list,
                 is_graph_capturing=is_attn_graph_capturing,
                 is_warmup=is_warmup,
                 is_profile=is_profile,
+                is_graph_replaying=is_graph_replaying,
             )
             torch.npu.synchronize()
 

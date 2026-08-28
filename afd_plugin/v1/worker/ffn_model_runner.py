@@ -139,6 +139,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata] | None = None,
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
+        is_graph_replaying: bool = False,
     ) -> None:
         step_afd_gpu_profiler(self.prof)
         if dp_metadata_list is None:
@@ -148,6 +149,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         run_mode = graph_run_mode(
             is_warmup=is_warmup,
             is_graph_capturing=is_graph_capturing,
+            is_graph_replaying=is_graph_replaying,
             graph_enabled=bool(self.use_cuda_graph),
             graph_exists=cuda_graph_info is not None,
         )

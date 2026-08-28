@@ -99,10 +99,12 @@ class AFDMetadataProviderMixin:
         # Keep the V1 object.__new__ test seam and older graph lifecycle
         # callers compatible with runners created before this mixin existed.
         is_graph_capturing = getattr(self, "_afd_is_graph_capturing", False)
+        is_graph_replaying = getattr(self, "_afd_is_graph_replaying", False)
         payload = AFDControlPayload(
             dp_metadata_list=dp_metadata_list,
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,
+            is_graph_replaying=is_graph_replaying,
             is_profile=self._afd_is_profile,
         )
         self.connector.control_plane.update_state_from_dp_metadata(payload)

@@ -1634,10 +1634,40 @@ def test_npu_ffn_runner_replays_acl_graph_when_key_exists():
     graph = _FakeGraph()
     runner._acl_graphs = {runner._make_graph_key(dp_metadata): {"graph": graph}}
 
-    runner.execute_model(dp_metadata_list=dp_metadata)
+    runner.execute_model(
+        dp_metadata_list=dp_metadata,
+        is_graph_replaying=True,
+    )
 
     assert graph.replay_count == 1
     assert runner.connector.ffn_outputs == []
+
+
+def test_npu_ffn_runner_skips_replay_when_attention_is_eager(monkeypatch):
+    _patch_ffn_forward_context(monkeypatch)
+    runner = _new_ffn_runner()
+    runner.vllm_config = _vllm_config(role="ffn")
+    runner.connector = _FakeFFNConnector()
+    runner.model = _FakeModel()
+    runner.num_layers = 1
+    runner.max_num_tokens = 1
+    runner.use_aclgraph = True
+    dp_metadata = {0: _FakeDPMetadata([1])}
+    graph = _FakeGraph()
+    runner._acl_graphs = {runner._make_graph_key(dp_metadata): {"graph": graph}}
+    metadata = AFDTransferMetadata.create_attention_metadata(
+        layer_idx=0,
+        stage_idx=0,
+        seq_len=1,
+    )
+    runner.connector.attn_outputs.append(("hidden", metadata))
+
+    runner.execute_model(dp_metadata_list=dp_metadata)
+
+    assert graph.replay_count == 0
+    assert runner.connector.ffn_outputs == [
+        ("npu-ffn(hidden, layer=0)", metadata, {"ubatch_idx": 0}),
+    ]
 
 
 def test_npu_ffn_runner_graph_key_uses_ffn_aggregated_token_counts():

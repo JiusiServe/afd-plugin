@@ -158,6 +158,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         # so Attention and FFN weight loading overlap; see that method.
         self._is_warmup = False
         self._afd_is_graph_capturing = False
+        self._afd_is_graph_replaying = False
         self._afd_pending_metadata: AFDForwardContextMetadata | None = None
         self._afd_suppress_metadata_send = False
         self._afd_transaction_counter = 0
@@ -182,11 +183,14 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
     ) -> ModelRunnerOutput | IntermediateTensors | None:
         step_afd_npu_profiler(self.prof)
         # ### PATCH START: AFD live execution scope
+        previous_is_graph_replaying = getattr(self, "_afd_is_graph_replaying", False)
+        self._afd_is_graph_replaying = False
         self._afd_live_execution = True
         try:
             result = super().execute_model(scheduler_output, intermediate_tensors)
         finally:
             self._afd_live_execution = False
+            self._afd_is_graph_replaying = previous_is_graph_replaying
         # ### PATCH END: AFD live execution scope
         return result
 
@@ -1506,19 +1510,22 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             dp_metadata_list = {0: dp_metadata}
         is_warmup = bool(self._is_warmup)
         is_graph_capturing = bool(self._afd_is_graph_capturing)
+        is_graph_replaying = bool(getattr(self, "_afd_is_graph_replaying", False))
         payload = AFDControlPayload(
             dp_metadata_list=dp_metadata_list,
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,
+            is_graph_replaying=is_graph_replaying,
         )
         self.connector.control_plane.update_state_from_dp_metadata(payload)
         logger.warning(
             "AFD NPU Attention send_dp_metadata decision; world_rank=%d "
-            "key=%s is_graph_capturing=%s is_warmup=%s",
+            "key=%s is_graph_capturing=%s is_warmup=%s is_graph_replaying=%s",
             self.connector.world_rank,  # type: ignore[attr-defined]
             _dp_metadata_debug_key(dp_metadata_list),
             is_graph_capturing,
             is_warmup,
+            is_graph_replaying,
         )
         self.connector.control_plane.send_dp_metadata_list(payload)
 
@@ -1838,6 +1845,11 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 num_paddings=batch_descriptor.num_tokens - num_tokens,
                 runtime_mode=str(cudagraph_mode),
             )
+        self._afd_is_graph_replaying = (
+            not bool(getattr(self, "_is_warmup", False))
+            and not bool(getattr(self, "_afd_is_graph_capturing", False))
+            and cudagraph_mode == CUDAGraphMode.FULL
+        )
         return (
             cudagraph_mode,
             batch_descriptor,

@@ -82,6 +82,7 @@ class AFDAttentionModelRunner(AFDMetadataProviderMixin, GPUModelRunner):
         )
         self._is_warmup = False
         self._afd_is_graph_capturing = False
+        self._afd_is_graph_replaying = False
         self._afd_pending_metadata: AFDForwardContextMetadata | None = None
         self._afd_suppress_metadata_send = False
         self._afd_transaction_counter = 0
@@ -233,6 +234,11 @@ class AFDAttentionModelRunner(AFDMetadataProviderMixin, GPUModelRunner):
             force_num_active_loras,
             num_encoder_reqs,
         )
+        self._afd_is_graph_replaying = (
+            not bool(getattr(self, "_is_warmup", False))
+            and not bool(getattr(self, "_afd_is_graph_capturing", False))
+            and cudagraph_mode == CUDAGraphMode.FULL
+        )
 
         args = (
             num_tokens,
@@ -346,7 +352,12 @@ class AFDAttentionModelRunner(AFDMetadataProviderMixin, GPUModelRunner):
         intermediate_tensors: IntermediateTensors | None = None,
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | IntermediateTensors | None:
         step_afd_gpu_profiler(self.prof)
-        return super().execute_model(scheduler_output, intermediate_tensors)
+        previous_is_graph_replaying = getattr(self, "_afd_is_graph_replaying", False)
+        self._afd_is_graph_replaying = False
+        try:
+            return super().execute_model(scheduler_output, intermediate_tensors)
+        finally:
+            self._afd_is_graph_replaying = previous_is_graph_replaying
 
     def _dummy_run(
         self,

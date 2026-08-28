@@ -460,6 +460,7 @@ def test_p2p_dp_metadata_serialization_uses_json_payload():
             dp_metadata_list={7: metadata},
             is_graph_capturing=True,
             is_warmup=False,
+            is_graph_replaying=True,
             is_profile=True,
         ),
     )
@@ -475,6 +476,7 @@ def test_p2p_dp_metadata_serialization_uses_json_payload():
     assert _tolist(decoded[7].cu_tokens_across_sp(1)) == [3, 8]
     assert decoded_payload.is_graph_capturing is True
     assert decoded_payload.is_warmup is False
+    assert decoded_payload.is_graph_replaying is True
     assert decoded_payload.is_profile is True
 
 
