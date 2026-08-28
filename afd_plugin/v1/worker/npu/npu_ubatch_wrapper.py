@@ -157,7 +157,6 @@ class AscendUBatchWrapper(UBatchWrapper):
         self.vllm_config = vllm_config
         self.compilation_config = vllm_config.compilation_config
         self.comm_stream = torch.npu.Stream(device=device)
-        assert self.vllm_config.parallel_config.num_ubatches == AFD_NPU_NUM_UBATCHES
         self.ready_barrier = threading.Barrier(_READY_BARRIER_PARTIES)
         self.cudagraphs: dict[AscendNPUGraphKey, AscendNPUGraphMetaData] = {}
         self.cudagraph_wrapper = None
