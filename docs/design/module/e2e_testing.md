@@ -149,16 +149,15 @@ unverified.
 | Task | GSM8K | GSM8K |
 | Few-shot examples | 8 | 8 |
 | Generated-token limit | 512 | 512 |
-| Samples | first 7 | all 1319 |
+| Samples | first 7 | first 7 |
 | Metric | GSM8K exact match | GSM8K exact match |
 | Minimum accuracy | 0.27 | 0.27 |
-| Cases | four legacy cases plus four CUDA ModelRunnerV2 cases | `afd-graph-dbo-2a2f` only |
+| Cases | four legacy cases plus four CUDA ModelRunnerV2 cases | six Qwen3 MoE / Qwen3.6 MoE cases plus DeepSeek-V2-Lite `afd-graph-dbo-2a1f` |
 
-An accuracy of `0.27` requires at least 2 correct answers out of 7, or 357 out
-of 1319.
+An accuracy of `0.27` requires at least 2 correct answers out of 7.
 
-- PR CI leaves `AFD_GSM8K_LIMIT` unset.
-- Weekly CI sets `AFD_GSM8K_LIMIT=all`.
+- PR and weekly CI leave `AFD_GSM8K_LIMIT` unset.
+- Set `AFD_GSM8K_LIMIT=all` locally for a full 1319-sample run.
 - Other limits are for local debugging, not CI gates.
 - CI leaves `AFD_GSM8K_THRESHOLD` unset or raises it.
 - Use the official GSM8K task, `HF_HOME`, and `results_*.json`. Do not commit a
