@@ -42,12 +42,13 @@ class DefaultProcessGroupSwitcher:
 def init_afd_process_group(
     *,
     backend: str,
-    init_method: str,
+    init_method: str | None = None,
     world_size: int,
     rank: int,
     group_name: str,
     timeout: timedelta,
     pg_options: Any | None = None,
+    store: Any | None = None,
 ) -> ProcessGroup:
     """Create a plugin-owned process group without patching vLLM source.
 
@@ -56,13 +57,16 @@ def init_afd_process_group(
     unavailable.
     """
 
-    rendezvous_iterator = rendezvous(
-        init_method,
-        rank,
-        world_size,
-        timeout=timeout,
-    )
-    store, rank, world_size = next(rendezvous_iterator)
+    if store is None:
+        if init_method is None:
+            raise ValueError("init_method is required when store is not provided")
+        rendezvous_iterator = rendezvous(
+            init_method,
+            rank,
+            world_size,
+            timeout=timeout,
+        )
+        store, rank, world_size = next(rendezvous_iterator)
     store.set_timeout(timeout)
     prefixed_store = PrefixStore(group_name, store)
     backend_value = Backend(backend) if backend else Backend("undefined")

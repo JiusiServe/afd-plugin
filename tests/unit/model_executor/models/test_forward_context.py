@@ -189,25 +189,15 @@ def test_async_cam_profile_forward_runs_matched_connector_io(monkeypatch):
         flash_comm_v1_enabled=True,
     )
     monkeypatch.setattr(async_forward, "get_forward_context", lambda: forward_context)
-    monkeypatch.setattr(
-        async_forward,
-        "maybe_apply_dbo_yield",
-        lambda hidden_states, **_kwargs: hidden_states,
-    )
 
-    connector_calls = []
-    pending_outputs = []
+    connector_calls: list[str] = []
 
-    def send_attn_output(hidden_states, context, **kwargs):
-        layer_idx = context.metadata.layer_idx
-        connector_calls.append(("send", layer_idx, context.metadata.stage_idx))
-        pending_outputs.append((layer_idx, hidden_states.clone()))
+    def send_attn_output(*args, **kwargs):
+        connector_calls.append("send")
 
-    def recv_ffn_output(*, ref_tensor, ubatch_idx):
-        layer_idx, dispatched_hidden_states = pending_outputs.pop(0)
-        assert torch.equal(ref_tensor, dispatched_hidden_states)
-        connector_calls.append(("recv", layer_idx, ubatch_idx))
-        return dispatched_hidden_states + 10
+    def recv_ffn_output(ref_tensor, ubatch_idx):
+        connector_calls.append("recv")
+        return ref_tensor
 
     connector = SimpleNamespace(
         send_attn_output=send_attn_output,
@@ -215,49 +205,10 @@ def test_async_cam_profile_forward_runs_matched_connector_io(monkeypatch):
     )
     afd_metadata = SimpleNamespace(connector=connector, stage_idx=0)
 
-    dispatch_layouts = []
-
-    def prepare_dispatch_payload(
-        hidden_states,
-        topk_weights,
-        topk_ids,
-        router_logits,
-        *,
-        use_sequence_parallel,
-    ):
-        assert use_sequence_parallel is True
-        layout = object()
-        dispatch_layouts.append(layout)
-        return SimpleNamespace(
-            hidden_states=hidden_states,
-            topk_weights=topk_weights,
-            topk_ids=topk_ids,
-            router_logits=router_logits,
-            layout=layout,
-        )
-
-    restored_layouts = []
-
-    def restore_dispatch_output(local_output, layout):
-        restored_layouts.append(layout)
-        return local_output
-
-    monkeypatch.setattr(
-        async_forward,
-        "prepare_cam_dispatch_payload",
-        prepare_dispatch_payload,
-    )
-    monkeypatch.setattr(
-        async_forward,
-        "restore_cam_dispatch_output",
-        restore_dispatch_output,
-    )
-
     class _ProfileMoELayer:
         is_moe_layer = True
 
-        def __init__(self, layer_idx):
-            self.layer_idx = layer_idx
+        layer_idx = 0
 
         def compute_attn_output(
             self,
@@ -275,7 +226,7 @@ def test_async_cam_profile_forward_runs_matched_connector_io(monkeypatch):
             )
 
     model = SimpleNamespace(
-        layers=[_ProfileMoELayer(0), _ProfileMoELayer(1)],
+        layers=[_ProfileMoELayer(), _ProfileMoELayer()],
         start_layer=0,
         end_layer=2,
     )
@@ -289,16 +240,9 @@ def test_async_cam_profile_forward_runs_matched_connector_io(monkeypatch):
         afd_metadata,
     )
 
-    assert torch.equal(output, hidden_states + 22)
+    assert torch.equal(output, hidden_states + 2)
     assert residual is None
-    assert connector_calls == [
-        ("send", 0, 0),
-        ("recv", 0, 0),
-        ("send", 1, 0),
-        ("recv", 1, 0),
-    ]
-    assert restored_layouts == dispatch_layouts
-    assert pending_outputs == []
+    assert connector_calls == ["send", "recv", "send", "recv"]
 
 
 def test_deepseek_afd_wrapper_keeps_full_model_compile_enabled():

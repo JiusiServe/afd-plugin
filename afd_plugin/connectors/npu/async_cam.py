@@ -349,6 +349,10 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
                 "TokenNums_Rankid_Layeridx from async_dispatch_recv",
             )
         total_num_tokens = max(1, int(token_nums_rankid_layeridx[0].item()))
+        # A zero in the header's leading count is valid for an FFN rank that
+        # received no routed tokens in this dispatch.  Such ranks must still
+        # enter combine-send (the zero-token fallback below supplies its
+        # placeholder) so every participant completes the CAM collective.
         layer_idx = int(token_nums_rankid_layeridx[2].item())
 
         expert_token_nums_shared = states.expert_token_nums_shared
@@ -802,7 +806,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             self.tp_size,
             self.group_name,
         )
-
     def _require_initialized(self) -> None:
         if not self._initialized:
             raise RuntimeError("CAMAsyncAFDConnector is not initialized")
@@ -856,7 +859,7 @@ def build_async_topology(
     *,
     num_routed_experts: int | None = None,
 ) -> AFDAsyncTopology:
-    """Validate role-local rank settings and derive the CAM HCCL world rank.
+    """Validate role-local rank settings and derive HCCL world rank.
 
     The world is Attention-first: Attention role rank ``i`` maps to world rank
     ``i`` and FFN role rank ``j`` maps to

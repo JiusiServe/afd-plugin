@@ -328,7 +328,6 @@ def validate_afd_config(
             f"num_ffn_ranks must be positive, got {config.num_ffn_ranks}",
         )
 
-
 __all__ = [
     "AFDConfig",
     "AFD_ASYNC_CONNECTOR",

@@ -155,9 +155,9 @@ class AscendUBatchWrapper(UBatchWrapper):
         assert not enable_enpu, "AscendUBatchWrapper does not support ENPU"
         self.runnable = runnable
         self.vllm_config = vllm_config
+        assert self.vllm_config.parallel_config.num_ubatches == AFD_NPU_NUM_UBATCHES
         self.compilation_config = vllm_config.compilation_config
         self.comm_stream = torch.npu.Stream(device=device)
-        assert self.vllm_config.parallel_config.num_ubatches == AFD_NPU_NUM_UBATCHES
         self.ready_barrier = threading.Barrier(_READY_BARRIER_PARTIES)
         self.cudagraphs: dict[AscendNPUGraphKey, AscendNPUGraphMetaData] = {}
         self.cudagraph_wrapper = None

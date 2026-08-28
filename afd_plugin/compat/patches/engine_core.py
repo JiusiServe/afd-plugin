@@ -240,6 +240,8 @@ def _initialize_kv_caches(self, vllm_config: VllmConfig) -> KVCacheConfig:
         return _AFDFFNKVCacheConfig()
     # ### PATCH END: AFD FFN late-loaded KV cache bypass
 
+    import vllm_ascend.patch.platform.patch_kv_cache_utils  # noqa: F401
+
     start = time.time()
 
     core_module.register_all_kvcache_specs(vllm_config)

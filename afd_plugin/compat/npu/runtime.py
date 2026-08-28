@@ -69,7 +69,6 @@ def apply_afd_ascend_patches_if_needed() -> None:
     from afd_plugin.compat.patches.npu.mla_graph import (
         apply_afd_mla_graph_patch,
     )
-
     apply_afd_ascend_config_patch_if_needed()
     if not apply_afd_mla_graph_patch():
         raise RuntimeError(

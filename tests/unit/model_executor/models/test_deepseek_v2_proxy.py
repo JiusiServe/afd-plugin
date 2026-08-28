@@ -198,6 +198,22 @@ def test_remote_proxy_requires_forward_metadata(monkeypatch):
         adapter.RemoteFFNProxy(layer_idx=0)(torch.ones(1, 4))
 
 
+def test_remote_proxy_exchanges_cam_during_profile(monkeypatch):
+    events = []
+    _install_fake_forward_context(monkeypatch, events)
+    monkeypatch.setattr(
+        adapter,
+        "get_forward_context",
+        lambda: SimpleNamespace(in_profile_run=True, ubatch_idx=0),
+    )
+    hidden_states = torch.ones(2, 4)
+
+    output = adapter.RemoteFFNProxy(layer_idx=0)(hidden_states)
+
+    assert torch.equal(output, hidden_states * 0.25)
+    assert [event[0] for event in events] == ["send", "yield", "recv"]
+
+
 def test_synchronous_model_forward_delegates_to_native(monkeypatch):
     calls = []
     expected = torch.ones(1, 4)

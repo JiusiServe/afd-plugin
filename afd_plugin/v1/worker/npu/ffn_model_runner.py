@@ -36,6 +36,7 @@ from afd_plugin.connectors.npu.async_cam import (
     AFDAsyncTransferState,
     CAMAsyncAFDConnector,
 )
+from afd_plugin.connectors.npu.camp2p import CAMP2pAFDConnector
 from afd_plugin.v1.worker.attention_model_runner import (
     _resolve_world_ranks,
 )
@@ -55,7 +56,6 @@ if TYPE_CHECKING:
     from afd_plugin.connectors import AFDConnectorBase
 
 logger = init_logger(__name__)
-
 
 class AFDNPUFFNModelRunner(NPUModelRunner):
     """Connector-driven NPU FFN runner for AFD execution."""
@@ -208,6 +208,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 _make_dp_metadata_payload(
                     dp_metadata_list,
                     is_graph_capturing=is_graph_capturing,
+                    input_ids_by_stage=_camp2p_input_ids_by_stage(self.connector),
                 ),
             )
         num_stages = max(len(dp_metadata_list), 1)
@@ -263,6 +264,12 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     forward_context.dp_metadata = dp_metadata_list.get(stage_idx)
                     forward_context.additional_kwargs["afd_metadata"] = metadata
                     assert states, "Context.states must not be None"
+                    _install_ffn_input_ids(
+                        forward_context,
+                        _camp2p_input_ids_by_stage(self.connector).get(stage_idx),
+                        num_tokens=int(hidden_states.shape[0]),
+                        device=hidden_states.device,
+                    )
                     _set_moe_layer_index(forward_context, layer_idx)
 
                     rank_ffn_output = self.model.compute_ffn_output(
@@ -330,6 +337,13 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     work_item,
                     rank_ffn_output,
                 )
+                # ``async_combine_send`` returns after enqueueing its NPU work.
+                # Without an acknowledgement/credit path, immediately calling
+                # dispatch-recv for all following MoE layers can reuse CAM's
+                # bounded buffers while the prior combine is still in flight.
+                # The target baseline is deliberately serialized per layer;
+                # async MoE ubatching will introduce explicit stage credits.
+                torch.npu.synchronize()
         return rank_ffn_output
 
     def capture_model(
@@ -478,9 +492,12 @@ def _ffn_layer_indices(runner: AFDNPUFFNModelRunner) -> range | list[int]:
 
 def _is_moe_layer(hf_config: object, layer_idx: int) -> bool:
     moe_layer_freq = getattr(hf_config, "moe_layer_freq", 1)
+    # DeepSeek V4 has routed experts in every decoder layer and does not expose
+    # the V2/V3 ``first_k_dense_replace`` compatibility field.
+    first_moe_layer = getattr(hf_config, "first_k_dense_replace", 0)
     return (
-        hf_config.n_routed_experts is not None
-        and layer_idx >= hf_config.first_k_dense_replace
+        getattr(hf_config, "n_routed_experts", None) is not None
+        and layer_idx >= first_moe_layer
         and layer_idx % moe_layer_freq == 0
     )
 
@@ -490,12 +507,42 @@ def _make_dp_metadata_payload(
     *,
     is_graph_capturing: bool = False,
     is_warmup: bool = False,
+    input_ids_by_stage: dict[int, list[int]] | None = None,
 ) -> AFDControlPayload:
     return AFDControlPayload(
         dp_metadata_list=dp_metadata_list,
         is_graph_capturing=is_graph_capturing,
         is_warmup=is_warmup,
+        input_ids_by_stage={} if input_ids_by_stage is None else input_ids_by_stage,
     )
+
+
+def _camp2p_input_ids_by_stage(
+    connector: AFDConnectorBase,
+) -> dict[int, list[int]]:
+    if isinstance(connector, CAMP2pAFDConnector):
+        return connector.input_ids_by_stage
+    return {}
+
+
+def _install_ffn_input_ids(
+    forward_context: Any,
+    input_ids: list[int] | None,
+    *,
+    num_tokens: int,
+    device: torch.device,
+) -> None:
+    """Install token ids required by native DSV4 hash routing on FFN."""
+    if input_ids is None:
+        forward_context.input_ids = None
+        return
+    ids = torch.as_tensor(input_ids, dtype=torch.int64, device=device).flatten()
+    if ids.numel() != num_tokens:
+        raise RuntimeError(
+            "CAMP2P input_ids must align with received hidden states: "
+            f"got {ids.numel()} token IDs for {num_tokens} hidden-state rows"
+        )
+    forward_context.input_ids = ids
 
 
 def _ffn_token_counts_across_ranks(
