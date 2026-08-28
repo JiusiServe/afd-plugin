@@ -37,19 +37,31 @@ class AscendUBatchContext:
     def __enter__(self):
         _THREAD_ID_TO_CONTEXT[threading.get_ident()] = self.id
         _CURRENT_CONTEXTS[self.id] = self
-        self.ready_barrier.wait()
-        self.cpu_wait_event.wait()
-        self.cpu_wait_event.clear()
-        self._restore_context()
-        self.update_stream(self.compute_stream)
+        # ### PATCH START: Context failure cleanup
+        try:
+            self.ready_barrier.wait()
+            self.cpu_wait_event.wait()
+            self.cpu_wait_event.clear()
+            self._restore_context()
+            self.update_stream(self.compute_stream)
+        except BaseException:  # noqa: BLE001
+            self._release()
+            raise
+        # ### PATCH END: Context failure cleanup
         return self
 
+    # ### PATCH START: Shared context cleanup
     def __exit__(self, exc_type, exc_val, exc_tb):
+        self._release()
+        return False
+
+    def _release(self):
         _CURRENT_CONTEXTS[self.id] = None
         del _THREAD_ID_TO_CONTEXT[threading.get_ident()]
         self.cpu_signal_event.set()
         self.cpu_wait_event.clear()
-        return False
+
+    # ### PATCH END: Shared context cleanup
 
     def _restore_context(self):
         forward_context._forward_context = self.forward_context

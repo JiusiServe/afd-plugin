@@ -286,32 +286,56 @@ class AFDAscendUBatchRunnerV2:
                     outputs[context.id] = model(**inputs)
             except BaseException as error:  # noqa: BLE001
                 errors[context.id] = error
+                # ### PATCH START: Failed worker release
+                self.ready_barrier.abort()
+                # ### PATCH END: Failed worker release
 
         stack = ExitStack()
         stack.enter_context(override_forward_context(None))
-        threads = []
-        for context, stage in zip(contexts, ubatch_state.slices, strict=True):
-            thread = threading.Thread(
-                target=run_stage,
-                args=(context, slice_model_inputs(model_inputs, stage.token_slice)),
-            )
-            threads.append(thread)
-            thread.start()
-        self.ready_barrier.wait()
+        threads: list[threading.Thread] = []
 
-        def finish() -> AscendModelOutput:
+        # ### PATCH START: Failed execution cleanup
+        def close_execution() -> None:
             try:
-                contexts[0].cpu_wait_event.set()
                 for thread in threads:
                     thread.join()
             finally:
                 stack.close()
+                if self.ready_barrier.broken:
+                    self.ready_barrier.reset()
 
+        def raise_stage_error() -> None:
             if errors:
                 failed_stage = min(errors)
                 raise RuntimeError(
                     f"AFD NPU microbatch {failed_stage} failed",
                 ) from errors[failed_stage]
+
+        try:
+            for context, stage in zip(contexts, ubatch_state.slices, strict=True):
+                thread = threading.Thread(
+                    target=run_stage,
+                    args=(
+                        context,
+                        slice_model_inputs(model_inputs, stage.token_slice),
+                    ),
+                )
+                thread.start()
+                threads.append(thread)
+            self.ready_barrier.wait()
+        except BaseException:  # noqa: BLE001
+            self.ready_barrier.abort()
+            close_execution()
+            raise_stage_error()
+            raise
+        # ### PATCH END: Failed execution cleanup
+
+        def finish() -> AscendModelOutput:
+            # ### PATCH START: Failed execution cleanup
+            contexts[0].cpu_wait_event.set()
+            close_execution()
+            raise_stage_error()
+            # ### PATCH END: Failed execution cleanup
             ordered_outputs = [outputs[index] for index in range(self.num_ubatches)]
             # ### PATCH START: Ascend FlashComm output gathering
             if forward_contexts[0].additional_kwargs["flash_comm_v1_enabled"]:
