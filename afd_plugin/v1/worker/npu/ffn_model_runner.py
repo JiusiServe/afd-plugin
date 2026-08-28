@@ -337,13 +337,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     work_item,
                     rank_ffn_output,
                 )
-                # ``async_combine_send`` returns after enqueueing its NPU work.
-                # Without an acknowledgement/credit path, immediately calling
-                # dispatch-recv for all following MoE layers can reuse CAM's
-                # bounded buffers while the prior combine is still in flight.
-                # The target baseline is deliberately serialized per layer;
-                # async MoE ubatching will introduce explicit stage credits.
-                torch.npu.synchronize()
         return rank_ffn_output
 
     def capture_model(
