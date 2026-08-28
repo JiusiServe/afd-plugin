@@ -8,7 +8,28 @@ import os
 import signal
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
+from contextlib import suppress
+from dataclasses import dataclass
+from pathlib import Path
+
+PROC_ROOT = Path("/proc")
+
+
+@dataclass(frozen=True)
+class ProcessIdentity:
+    """A PID plus a handle that remains bound to the same Linux process."""
+
+    pid: int
+    pidfd: int
+
+
+def close_process_identities(processes: Sequence[ProcessIdentity]) -> None:
+    """Close pidfds returned by ``find_processes_matching_environment``."""
+    for process in processes:
+        # Closing an owned pidfd is best effort during process teardown.
+        with suppress(OSError):
+            os.close(process.pidfd)
 
 
 def terminate_process_groups(
@@ -18,8 +39,14 @@ def terminate_process_groups(
     poll_interval_s: float,
     reap_timeout_s: float,
     process_name: str = "",
+    deferred_sigkill_pgids: Collection[int] = (),
 ) -> list[str]:
-    """Terminate process groups with one deadline and reap their leaders."""
+    """Terminate process groups with one deadline and reap their leaders.
+
+    ``deferred_sigkill_pgids`` identifies process groups whose successful
+    SIGKILL escalation and liveness verification are owned by caller-specific
+    cleanup. Signal-delivery and process-reaping failures are always reported.
+    """
     failures: list[str] = []
     live_pgids: list[int] = []
     group_description = f"{process_name} process group".strip()
@@ -87,10 +114,11 @@ def terminate_process_groups(
             )
             forced_pgids.append(pgid)
         else:
-            failures.append(
-                f"forced SIGKILL for {group_description} {pgid} after "
-                f"{termination_timeout_s}s timeout",
-            )
+            if pgid not in deferred_sigkill_pgids:
+                failures.append(
+                    f"forced SIGKILL for {group_description} {pgid} after "
+                    f"{termination_timeout_s}s timeout",
+                )
             forced_pgids.append(pgid)
 
     reap_deadline = time.monotonic() + reap_timeout_s
@@ -102,7 +130,9 @@ def terminate_process_groups(
                 f"wait failed for {process_description} {process.pid}: {exc}",
             )
 
-    surviving_pgids = forced_pgids
+    surviving_pgids = [
+        pgid for pgid in forced_pgids if pgid not in deferred_sigkill_pgids
+    ]
     while surviving_pgids:
         still_alive: list[int] = []
         for pgid in surviving_pgids:
@@ -126,4 +156,104 @@ def terminate_process_groups(
             f"{group_description} {pgid} still alive after SIGKILL",
         )
 
+    return failures
+
+
+def find_processes_matching_environment(
+    required_environment: Mapping[str, str],
+    *,
+    proc_root: Path = PROC_ROOT,
+) -> list[ProcessIdentity]:
+    """Open stable handles for matching processes for the caller to close."""
+    if not required_environment:
+        raise ValueError("required_environment must not be empty")
+
+    required_entries = {
+        f"{name}={value}".encode() for name, value in required_environment.items()
+    }
+    try:
+        process_entries = list(proc_root.iterdir())
+    except OSError as exc:
+        raise RuntimeError(
+            f"could not scan process directory {proc_root}: {exc}",
+        ) from exc
+
+    matching_processes: list[ProcessIdentity] = []
+    for process_entry in process_entries:
+        if not process_entry.name.isdecimal():
+            continue
+        pid = int(process_entry.name)
+        try:
+            # Open the pidfd before reading environ so a later PID reuse cannot
+            # redirect the handle used for signaling to another process.
+            pidfd = os.pidfd_open(pid)
+        except ProcessLookupError:
+            continue
+        except OSError as exc:
+            close_process_identities(matching_processes)
+            raise RuntimeError(
+                f"could not open pidfd for process {pid}: {exc}"
+            ) from exc
+        process = ProcessIdentity(pid=pid, pidfd=pidfd)
+        try:
+            environment = (process_entry / "environ").read_bytes()
+        except OSError:
+            # Processes may exit or be inaccessible while /proc is scanned.
+            close_process_identities((process,))
+            continue
+        if required_entries.issubset(environment.split(b"\0")):
+            matching_processes.append(process)
+        else:
+            close_process_identities((process,))
+    return sorted(matching_processes, key=lambda process: process.pid)
+
+
+def kill_processes_matching_environment(
+    required_environment: Mapping[str, str],
+    *,
+    timeout_s: float,
+    poll_interval_s: float,
+    process_name: str,
+    proc_root: Path = PROC_ROOT,
+) -> list[str]:
+    """SIGKILL matching processes until none remain or the deadline expires."""
+    failures: list[str] = []
+    reported_signal_failures: set[int] = set()
+    deadline = time.monotonic() + timeout_s
+
+    while matching_processes := find_processes_matching_environment(
+        required_environment,
+        proc_root=proc_root,
+    ):
+        try:
+            for process in matching_processes:
+                try:
+                    signal.pidfd_send_signal(process.pidfd, signal.SIGKILL)
+                except ProcessLookupError:
+                    continue
+                except OSError as exc:
+                    if process.pid not in reported_signal_failures:
+                        failures.append(
+                            f"SIGKILL failed for {process_name} process "
+                            f"{process.pid}: {exc}",
+                        )
+                        reported_signal_failures.add(process.pid)
+        finally:
+            close_process_identities(matching_processes)
+
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(poll_interval_s)
+
+    surviving_processes = find_processes_matching_environment(
+        required_environment,
+        proc_root=proc_root,
+    )
+    try:
+        failures.extend(
+            f"{process_name} process {process.pid} still alive after SIGKILL"
+            for process in surviving_processes
+        )
+    finally:
+        close_process_identities(surviving_processes)
     return failures

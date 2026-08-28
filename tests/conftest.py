@@ -13,8 +13,9 @@ from importlib.util import find_spec
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# Covers the roughly 64-second nested lm-eval/vLLM cleanup bound with buffer.
-RUNNER_CLEANUP_TIMEOUT_S = 90
+# Covers the roughly 64-second nested lm-eval/vLLM cleanup bound plus the NPU
+# async runner's 120-second procfs cleanup window with buffer.
+RUNNER_CLEANUP_TIMEOUT_S = 240
 
 # vLLM-Ascend 80d8c194f (v0.26 baseline) has an inherent circular import:
 # device/device_op.py -> ops/__init__ -> fused_moe -> experts_selector.py ->

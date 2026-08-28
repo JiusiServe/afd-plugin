@@ -23,7 +23,10 @@ from tests.e2e.accuracy.gsm8k import (
     _extract_gsm8k_sample_count,
     _run_lm_eval,
 )
-from tests.e2e.process_utils import terminate_process_groups
+from tests.e2e.process_utils import (
+    kill_processes_matching_environment,
+    terminate_process_groups,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ASYNC_AFD_CONNECTOR = "CAMAsyncAFDConnector"
@@ -52,9 +55,15 @@ V2_SINGLE_RANK_SCENARIOS = frozenset(
 V2_TENSOR_PARALLEL_SCENARIOS = frozenset(
     ("afd-v2-eager-tp2", "afd-v2-graph-tp2"),
 )
+E2E_RUN_ID_ENV = "AFD_E2E_RUN_ID"
+E2E_PROCESS_ROLE_ENV = "AFD_E2E_PROCESS_ROLE"
 PROCESS_TERMINATION_TIMEOUT_S = 20
 PROCESS_POLL_INTERVAL_S = 0.2
 PROCESS_REAP_TIMEOUT_S = 5
+# NPU async teardown: workers blocked in uninterruptible driver/HCCL teardown
+# take tens of seconds to disappear after SIGKILL (measured up to ~45s on A3),
+# so the NPU async path waits much longer before reporting survivors.
+NPU_ASYNC_PROCESS_KILL_TIMEOUT_S = 120
 LOG_THREAD_JOIN_TIMEOUT_S = 2
 VLLM_SHUTDOWN_TIMEOUT_S = 10
 DEFAULT_GSM8K_SAMPLE_LIMIT = 7
@@ -97,8 +106,15 @@ def main() -> int:
     attention_devices = parse_csv(args.attention_devices)
     ffn_devices = parse_csv(args.ffn_devices)
     validate_topology(args, attention_devices, ffn_devices)
+    use_npu_async_process_cleanup = uses_npu_async_process_cleanup(args)
+    e2e_run_id = (
+        f"{os.getpid()}-{time.monotonic_ns()}"
+        if use_npu_async_process_cleanup
+        else None
+    )
 
     processes: list[subprocess.Popen[str]] = []
+    processes_by_role: dict[str, subprocess.Popen[str]] = {}
     log_threads: list[threading.Thread] = []
     handled_signals = (signal.SIGTERM, signal.SIGINT)
     previous_handlers = {signum: signal.getsignal(signum) for signum in handled_signals}
@@ -116,6 +132,7 @@ def main() -> int:
     for signum in handled_signals:
         signal.signal(signum, exit_after_cleanup)
 
+    launch_order: tuple[tuple[str, str], ...]
     try:
         if args.baseline:
             role_devices = {"baseline": attention_devices}
@@ -139,7 +156,12 @@ def main() -> int:
                 else build_vllm_command(args, role=role)
             )
             visible_devices = ",".join(role_devices[role])
-            process_env = build_env(visible_devices, args, role=role)
+            process_env = build_env(
+                visible_devices,
+                args,
+                role=role,
+                e2e_run_id=e2e_run_id,
+            )
             print_command(
                 label,
                 command,
@@ -152,6 +174,7 @@ def main() -> int:
                 process_env,
             )
             processes.append(process)
+            processes_by_role[role] = process
             log_threads.append(stream_output(role, process))
             ensure_alive(process, f"{label} process exited during startup")
 
@@ -168,10 +191,27 @@ def main() -> int:
         body_error = sys.exc_info()[1]
         cleanup_error: BaseException | None = None
         cleanup_in_progress = True
+        ffn_process = processes_by_role.get("ffn")
+        deferred_sigkill_pgids = (
+            (ffn_process.pid,)
+            if use_npu_async_process_cleanup and ffn_process is not None
+            else ()
+        )
         try:
             try:
                 try:
-                    terminate_processes(processes)
+                    terminate_processes(
+                        processes,
+                        deferred_sigkill_pgids=deferred_sigkill_pgids,
+                        force_kill_environment=(
+                            {
+                                E2E_RUN_ID_ENV: e2e_run_id,
+                                E2E_PROCESS_ROLE_ENV: "ffn",
+                            }
+                            if e2e_run_id is not None
+                            else None
+                        ),
+                    )
                 finally:
                     try:
                         for thread in log_threads:
@@ -668,6 +708,14 @@ def uses_async_connector(args: argparse.Namespace) -> bool:
     return args.afd_connector == ASYNC_AFD_CONNECTOR
 
 
+def uses_npu_async_process_cleanup(args: argparse.Namespace) -> bool:
+    """Return whether E2E teardown must find and kill every FFN process."""
+    return args.device_backend == "npu" and args.scenario in (
+        ASYNC_CAM_SCENARIO,
+        ASYNC_UBATCH_SCENARIO,
+    )
+
+
 def decode_bench_connector_config() -> str:
     return json.dumps(
         {
@@ -787,6 +835,7 @@ def build_env(
     args: argparse.Namespace,
     *,
     role: str | None = None,
+    e2e_run_id: str | None = None,
 ) -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("VLLM_ENGINE_READY_TIMEOUT_S", "18000")
@@ -798,6 +847,11 @@ def build_env(
     else:
         env["VLLM_PLUGINS"] = "ascend,afd" if args.device_backend == "npu" else "afd"
     env["PYTHONUNBUFFERED"] = "1"
+    if e2e_run_id is not None:
+        if role is None:
+            raise ValueError("role is required when setting an E2E run id")
+        env[E2E_RUN_ID_ENV] = e2e_run_id
+        env[E2E_PROCESS_ROLE_ENV] = role
     if (
         args.device_backend == "npu"
         and role in ("attention", "ffn")
@@ -890,13 +944,28 @@ def ensure_processes_alive(processes: list[subprocess.Popen[str]]) -> None:
             )
 
 
-def terminate_processes(processes: list[subprocess.Popen[str]]) -> None:
+def terminate_processes(
+    processes: list[subprocess.Popen[str]],
+    *,
+    deferred_sigkill_pgids: tuple[int, ...] = (),
+    force_kill_environment: dict[str, str] | None = None,
+) -> None:
     failures = terminate_process_groups(
         processes,
         termination_timeout_s=PROCESS_TERMINATION_TIMEOUT_S,
         poll_interval_s=PROCESS_POLL_INTERVAL_S,
         reap_timeout_s=PROCESS_REAP_TIMEOUT_S,
+        deferred_sigkill_pgids=deferred_sigkill_pgids,
     )
+    if force_kill_environment is not None:
+        failures.extend(
+            kill_processes_matching_environment(
+                force_kill_environment,
+                timeout_s=NPU_ASYNC_PROCESS_KILL_TIMEOUT_S,
+                poll_interval_s=PROCESS_POLL_INTERVAL_S,
+                process_name="FFN",
+            ),
+        )
     if failures:
         raise RuntimeError("; ".join(failures))
 

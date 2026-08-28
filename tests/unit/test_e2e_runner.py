@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+
 from __future__ import annotations
 
 import argparse
@@ -7,6 +10,7 @@ import os
 import signal
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -248,7 +252,7 @@ def test_run_runner_forwards_cancellation_and_reaps(monkeypatch):
         signal.SIGTERM: object(),
         signal.SIGINT: object(),
     }
-    installed_handlers = {}
+    installed_handlers: dict[int, Callable[[int, object], None]] = {}
     signal_calls = []
     kill_calls = []
     popen_calls = []
@@ -317,7 +321,7 @@ def test_run_runner_forwards_cancellation_and_reaps(monkeypatch):
 
 
 def test_run_runner_forwards_signal_received_during_spawn(monkeypatch):
-    handlers = {}
+    handlers: dict[int, Callable[[int, object], None]] = {}
     forwarded = []
 
     class FakeProcess:
@@ -1149,7 +1153,7 @@ def test_run_lm_eval_defers_a_first_signal_until_cleanup_finishes(
 
 
 def test_run_lm_eval_handles_signal_received_during_spawn(monkeypatch, tmp_path):
-    handlers = {}
+    handlers: dict[int, Callable[[int, object], None]] = {}
     cleaned = []
 
     class FakeProcess:
@@ -1394,7 +1398,7 @@ def test_ensure_processes_alive_reports_exited_process_returncode():
     process = argparse.Namespace(poll=lambda: 17)
 
     with pytest.raises(RuntimeError, match="returncode=17"):
-        runner.ensure_processes_alive([process])
+        runner.ensure_processes_alive([process])  # type: ignore[list-item]
 
 
 def test_terminate_processes_rejects_cleanup_failure(monkeypatch):
@@ -1448,7 +1452,9 @@ def test_main_checks_processes_and_restores_signal_handlers_when_cleanup_fails(
     monkeypatch.setattr(
         runner,
         "terminate_processes",
-        lambda _processes: (_ for _ in ()).throw(RuntimeError("cleanup failed")),
+        lambda _processes, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("cleanup failed"),
+        ),
     )
     monkeypatch.setattr(
         runner.signal,
@@ -1497,7 +1503,7 @@ def test_main_defers_a_first_signal_until_cleanup_failure_is_reported(monkeypatc
     def fake_signal(signum, handler):
         installed_handlers[signum] = handler
 
-    def cleanup_with_first_signal(_processes):
+    def cleanup_with_first_signal(_processes, **_kwargs):
         cleanup_events.append("started")
         installed_handlers[signal.SIGTERM](signal.SIGTERM, None)
         cleanup_events.append("completed")
@@ -1539,6 +1545,29 @@ def test_runner_drops_flashcomm_for_npu_role_without_tp(monkeypatch):
     env = runner.build_env("2,3", args, role="ffn")
 
     assert "VLLM_ASCEND_ENABLE_FLASHCOMM1" not in env
+
+
+def test_build_env_marks_managed_process_trees_by_role():
+    args = _args()
+    args.device_backend = "npu"
+
+    attention_env = runner.build_env(
+        "0,1",
+        args,
+        role="attention",
+        e2e_run_id="run-1",
+    )
+    ffn_env = runner.build_env(
+        "2,3",
+        args,
+        role="ffn",
+        e2e_run_id="run-1",
+    )
+
+    assert attention_env[runner.E2E_RUN_ID_ENV] == "run-1"
+    assert attention_env[runner.E2E_PROCESS_ROLE_ENV] == "attention"
+    assert ffn_env[runner.E2E_RUN_ID_ENV] == "run-1"
+    assert ffn_env[runner.E2E_PROCESS_ROLE_ENV] == "ffn"
 
 
 @pytest.mark.parametrize(

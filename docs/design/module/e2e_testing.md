@@ -110,6 +110,18 @@ graph mode.
 
 `afd-eager-async-cam` is a separate NPU-only smoke test. It uses four devices
 for Attention DP1/TP2 and FFN DP2/TP1/EP2. It is not part of the PR gate above.
+The NPU async CAM cases may require SIGKILL escalation because a pending CAM
+receive cannot be interrupted cleanly. For these two scenarios, the runner
+adds a unique run id and role marker to each launched process environment.
+After normal process-group cleanup, it finds every FFN process carrying those
+markers through `/proc/*/environ` and sends SIGKILL to each matching PID. This
+also finds workers that changed process groups or were reparented after their
+launcher exited, without selecting another concurrent E2E run. NPU workers can
+stay blocked in uninterruptible driver teardown for tens of seconds after
+SIGKILL (measured up to ~45s on A3), so this path waits up to 120s before
+reporting survivors. Marker-scan signal-delivery and survivor failures, plus
+normal process-reaping failures, remain fatal. This test-scoped exception
+should be removed when the runtime supports graceful cancellation.
 
 The 2A1F cases (`afd-eager-2a1f`, `afd-graph-2a1f`, `afd-graph-dbo-2a1f`) are
 local-only scenarios: they use three of the four devices (two Attention ranks,
