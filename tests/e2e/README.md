@@ -125,11 +125,9 @@ python -m pytest -q -s \
 
 ### Weekly GSM8K
 
-The weekly pipeline runs the Qwen3 MoE and Qwen3.6 MoE suites (baseline,
-eager, and graph scenarios; the DBO scenario is excluded pending the FFN
-CUDA fault investigation from build 68) plus the DeepSeek-V2-Lite
-`afd-graph-dbo-2a1f` scenario, all with the default GSM8K sample limit. To
-reproduce locally:
+The weekly pipeline runs the Qwen3 MoE and Qwen3.6 MoE suites plus
+the DeepSeek-V2-Lite `afd-graph-dbo-2a1f` scenario, all with the default
+GSM8K sample limit. To reproduce locally:
 
 ```bash
 # Qwen3 MoE (all four scenarios)
