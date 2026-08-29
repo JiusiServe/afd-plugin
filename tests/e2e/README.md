@@ -123,27 +123,25 @@ python -m pytest -q -s \
   -k 'afd-v2'
 ```
 
-### Weekly full GSM8K
+### Weekly GSM8K
 
-For the weekly full GSM8K test, run only `afd-graph-dbo-2a2f`:
+The weekly pipeline runs the Qwen3 MoE and Qwen3.6 MoE suites (baseline,
+eager, and graph scenarios; the DBO scenario is excluded pending the FFN
+CUDA fault investigation from build 68) plus the DeepSeek-V2-Lite
+`afd-graph-dbo-2a1f` scenario, all with the default GSM8K sample limit. To
+reproduce locally:
 
 ```bash
-export AFD_GSM8K_LIMIT=all
-# DeepSeek-V2-Lite
-python -m pytest -q -s \
-  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-graph-dbo-2a2f]"
+# Qwen3 MoE (all four scenarios)
+python -m pytest -q -s tests/e2e/models/qwen3_moe/test_qwen3_moe.py
 
-# Qwen3 MoE (2A1F only)
-python -m pytest -q -s \
-  "tests/e2e/models/qwen3_moe/test_qwen3_moe.py::test_qwen3_moe[afd-graph-dbo-2a1f]"
-
-# Qwen3.6 MoE
-python -m pytest -q -s \
-  "tests/e2e/models/qwen3_6/test_qwen3_6.py::test_qwen3_6[afd-graph-dbo]"
+# Qwen3.6 MoE (all four scenarios)
+python -m pytest -q -s tests/e2e/models/qwen3_6/test_qwen3_6.py
 ```
 
-This evaluates all 1319 GSM8K test samples. Without `AFD_GSM8K_LIMIT`, each
-scenario evaluates the first 7 samples.
+For a full 1319-sample run, export `AFD_GSM8K_LIMIT=all` before invoking
+pytest. Without `AFD_GSM8K_LIMIT`, each scenario evaluates the first 7
+samples.
 
 ## Run with the Codex skill
 

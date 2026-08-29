@@ -160,7 +160,7 @@ def test_qwen3_6_entrypoint_rejects_non_gpu_backends(monkeypatch, tmp_path):
     monkeypatch.setenv("AFD_GPU_E2E_MODEL", "model")
 
     with pytest.raises(RuntimeError, match="supports only the 'gpu' backend"):
-        qwen3_6_e2e.build_runner_command("afd-eager", tmp_path)
+        qwen3_6_e2e.build_runner_command("afd-eager-2a1f", tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -203,7 +203,7 @@ def test_generated_gpu_model_is_scoped_to_its_e2e_suite(
     second_fixture = qwen3_6_e2e._prepare_e2e_assets.__wrapped__()
     next(second_fixture)
     try:
-        command = qwen3_6_e2e.build_runner_command("afd-eager", tmp_path)
+        command = qwen3_6_e2e.build_runner_command("afd-eager-2a1f", tmp_path)
         assert command[command.index("--model") + 1] == second_model
     finally:
         with pytest.raises(StopIteration):
