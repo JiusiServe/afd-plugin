@@ -85,7 +85,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             "GPU model runner only supports control-plane-driven connectors"
         )
 
-        self.model: Any | None = None
+        self.model: Any = None
         self.model_memory_usage = 0
         self.num_layers = int(self.model_config.hf_text_config.num_hidden_layers)
         self.use_cuda_graph = bool(
@@ -153,7 +153,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             graph_enabled=bool(self.use_cuda_graph),
             graph_exists=cuda_graph_info is not None,
         )
-        if run_mode is AFDGraphRunMode.REPLAY:
+        if run_mode is AFDGraphRunMode.REPLAY and cuda_graph_info is not None:
             cuda_graph_info["graph"].replay()
             return None
 
@@ -173,6 +173,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         update_connector_state: bool = True,
     ) -> torch.Tensor | None:
         if update_connector_state:
+            assert self.connector.control_plane is not None
             self.connector.control_plane.update_state_from_dp_metadata(
                 _make_dp_metadata_payload(
                     dp_metadata_list,
@@ -277,7 +278,9 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             ffn_counts,
             dp_size=int(self.vllm_config.parallel_config.data_parallel_size),
         )
-        return AFDDPMetadata(num_tokens_across_dp_cpu=dp_counts)
+        return AFDDPMetadata(
+            num_tokens_across_dp_cpu=torch.as_tensor(dp_counts, dtype=torch.int32),
+        )
 
     def update_config(self, overrides: dict[str, Any]) -> None:
         for config_name, config_overrides in overrides.items():
@@ -307,6 +310,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             cudagraph = torch.cuda.CUDAGraph()
             # DP metadata receive/update is a control-plane side effect and must
             # complete before CUDA graph capture starts.
+            assert self.connector.control_plane is not None
             self.connector.control_plane.update_state_from_dp_metadata(
                 _make_dp_metadata_payload(
                     dp_metadata_list,
@@ -349,6 +353,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         try:
             with graph_capture(device=self.device):
                 if is_warmup:
+                    assert self.connector.control_plane is not None
                     self.connector.control_plane.update_state_from_dp_metadata(
                         _make_dp_metadata_payload(
                             dp_metadata_list,
@@ -436,7 +441,7 @@ def _ffn_forward_context(vllm_config: VllmConfig):
         yield get_forward_context()
 
 
-def _set_moe_layer_index(forward_context: object, layer_idx: int) -> None:
+def _set_moe_layer_index(forward_context: Any, layer_idx: int) -> None:
     all_moe_layers = forward_context.all_moe_layers
     if not all_moe_layers:
         return

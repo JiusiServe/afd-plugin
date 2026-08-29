@@ -171,7 +171,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             graph_enabled=graph_enabled,
             graph_exists=graph_info is not None,
         )
-        if run_mode is AFDGraphRunMode.REPLAY:
+        if run_mode is AFDGraphRunMode.REPLAY and graph_info is not None:
             logger.debug(
                 "AFD NPU FFN replaying ACL graph; key=%s cached_graphs=%d",
                 graph_key,
@@ -490,7 +490,7 @@ def _ffn_layer_indices(runner: AFDNPUFFNModelRunner) -> range | list[int]:
     ]
 
 
-def _is_moe_layer(hf_config: object, layer_idx: int) -> bool:
+def _is_moe_layer(hf_config: Any, layer_idx: int) -> bool:
     moe_layer_freq = getattr(hf_config, "moe_layer_freq", 1)
     return (
         hf_config.n_routed_experts is not None
@@ -553,7 +553,7 @@ def _ffn_token_counts_across_ranks(
 
 
 def _ffn_token_count_for_rank(
-    connector: AFDConnectorBase,
+    connector: Any,
     num_tokens_across_dp: torch.Tensor,
 ) -> int:
     values = _to_int_list(num_tokens_across_dp)
@@ -563,7 +563,7 @@ def _ffn_token_count_for_rank(
     return max(1, int(values[role_rank]))
 
 
-def _to_int_list(value: object) -> list[int]:
+def _to_int_list(value: Any) -> list[int]:
     if value is None:
         return []
     if isinstance(value, (int, float)):
@@ -596,7 +596,7 @@ def _to_dp_level_token_counts(
     return num_tokens_across_dp[indices].contiguous()
 
 
-def _use_npu_aclgraph(vllm_config: VllmConfig, runner: object) -> bool:
+def _use_npu_aclgraph(vllm_config: VllmConfig, runner: Any) -> bool:
     inherited = bool(runner.use_aclgraph)
     if bool(vllm_config.model_config.enforce_eager):
         return False

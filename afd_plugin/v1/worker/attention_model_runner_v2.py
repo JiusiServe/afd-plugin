@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from types import MethodType
+from typing import Any, cast
 
 import torch
 from vllm.config import CUDAGraphMode, VllmConfig
@@ -155,7 +156,9 @@ def _use_afd_fullgraph_replay_hook(
         raise RuntimeError(
             "AFD FULL graph replay hook requires an initialized graph manager",
         )
-    manager_state = vars(manager)
+    # typeshed types ``vars(instance)`` as a read-only mapping proxy, but an
+    # instance ``__dict__`` is a live mutable dict at runtime.
+    manager_state = cast("dict[str, Any]", vars(manager))
     if _AFD_FULLGRAPH_HOOK_MARKER in manager_state:
         raise RuntimeError("AFD FULL graph replay hook is already active")
 

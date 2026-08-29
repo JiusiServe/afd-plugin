@@ -1,9 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+
 from __future__ import annotations
 
 import logging
 import threading
 from collections import deque
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -33,7 +37,7 @@ from afd_plugin.v1.worker.ffn_worker import AFDFFNWorker  # noqa: E402
 
 class _FakeConnector:
     def __init__(self):
-        self.attn_outputs = deque()
+        self.attn_outputs: deque[Any] = deque()
         self.ffn_outputs = []
         self.expert_routing_specs = []
         self.recv_input_ids = []
@@ -43,7 +47,7 @@ class _FakeConnector:
         self.ffn_size = 1
         # The runners reach the control plane through connector.control_plane;
         # the fake serves as both.
-        self.control_plane = self
+        self.control_plane: _FakeConnector | None = self
 
     def update_state_from_dp_metadata(self, payload):
         assert isinstance(payload, AFDControlPayload)
@@ -236,7 +240,7 @@ def test_ffn_runner_forwards_payload_input_ids_to_model():
         def __init__(self):
             self.calls = []
 
-        def compute_ffn_output(self, hidden_states, layer_idx, *, input_ids):
+        def compute_ffn_output(self, hidden_states, layer_idx, *, input_ids=None):
             self.calls.append((hidden_states, layer_idx, input_ids))
             return input_ids
 
