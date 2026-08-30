@@ -33,6 +33,8 @@ from afd_plugin.connectors import (
     AFDTransferState,
 )
 
+STAGE_FAILURE_JOIN_TIMEOUT_SECONDS = 5
+
 
 @contextmanager
 def _temporarily_reimport_module(module_name: str) -> Iterator[ModuleType]:
@@ -95,6 +97,7 @@ class _RecordingConnector:
     def __init__(self):
         self.dp_metadata_updates = []
         self.sent_dp_metadata_lists = []
+        self.last_sent_payload: AFDControlPayload | None = None
         # The runners reach the control plane through connector.control_plane;
         # the fake serves as both.
         self.control_plane: _RecordingConnector | None = self
@@ -111,6 +114,7 @@ class _RecordingConnector:
 
     def send_dp_metadata_list(self, payload):
         assert isinstance(payload, AFDControlPayload)
+        self.last_sent_payload = payload
         self.sent_dp_metadata_lists.append(
             (
                 payload.dp_metadata_list,
@@ -292,6 +296,178 @@ def _require_npu_runtime():
     pytest.importorskip("vllm", reason="NPU runtime tests require vLLM")
     pytest.importorskip("vllm_ascend", reason="NPU runtime tests require vLLM-Ascend")
     pytest.importorskip("torch_npu", reason="NPU runtime tests require torch-npu")
+
+
+def test_npu_v2_dbo_fullgraph_replay_reaches_ffn_graph():
+    _require_npu_runtime()
+    from vllm.config import CUDAGraphMode
+
+    from afd_plugin.compat.backports.vllm_v026_mrv2_dbo import (
+        AFDBatchExecutionDescriptor,
+    )
+    from afd_plugin.v1.worker.npu import attention_model_runner_v2
+
+    runner = object.__new__(attention_model_runner_v2.AFDNPUAttentionModelRunnerV2)
+    runner.vllm_config = _vllm_config()
+    runner.connector = _RecordingConnector()
+    runner._is_warmup = False
+    runner._afd_is_graph_capturing = False
+    runner._afd_is_graph_replaying = False
+    runner._afd_is_profile = False
+
+    ffn_runner = _new_ffn_runner()
+    ffn_runner.vllm_config = _vllm_config(role="ffn")
+    ffn_runner.connector = _FakeFFNConnector()
+    ffn_runner.max_num_tokens = 8
+    ffn_runner.use_aclgraph = True
+    graph = _FakeGraph()
+
+    class Manager:
+        def run_fullgraph(self, desc):
+            runner.send_dp_metadata(_FakeDPMetadata([desc.num_tokens]), None)
+            payload = runner.connector.last_sent_payload
+            ffn_runner._acl_graphs = {
+                ffn_runner._make_graph_key(payload.dp_metadata_list): {"graph": graph},
+            }
+            ffn_runner.execute_model(
+                dp_metadata_list=payload.dp_metadata_list,
+                is_graph_replaying=payload.is_graph_replaying,
+            )
+            return desc.num_tokens
+
+    runner.cudagraph_manager = Manager()
+    descriptor = AFDBatchExecutionDescriptor(
+        cg_mode=CUDAGraphMode.FULL,
+        num_tokens=8,
+        num_reqs=4,
+        num_ubatches=2,
+    )
+
+    with attention_model_runner_v2._use_afd_fullgraph_replay_hook(runner, 6):
+        assert runner.cudagraph_manager.run_fullgraph(descriptor) == 8
+
+    payload = runner.connector.last_sent_payload
+    assert payload is not None
+    assert payload.is_graph_replaying is True
+    assert graph.replay_count == 1
+    assert runner._afd_is_graph_replaying is False
+
+
+def test_npu_v2_shutdown_releases_ubatch_before_native(monkeypatch):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import attention_model_runner_v2
+    from afd_plugin.v1.worker.npu.aclgraph_manager_v2 import (
+        AFDModelAclGraphManagerV2,
+    )
+
+    events = []
+    runner = object.__new__(attention_model_runner_v2.AFDNPUAttentionModelRunnerV2)
+    manager = object.__new__(AFDModelAclGraphManagerV2)
+    ubatch_runner = SimpleNamespace(model_state=object())
+    manager.ubatch_runner = ubatch_runner
+    manager.clear_afd_graphs = MethodType(
+        lambda _self: events.append("clear_graphs"),
+        manager,
+    )
+    runner.cudagraph_manager = manager
+    runner.ubatch_runner = ubatch_runner
+    runner.prof = object()
+    runner._afd_pending_metadata = object()
+    runner.connector = SimpleNamespace(close=lambda: events.append("close"))
+
+    monkeypatch.setattr(
+        attention_model_runner_v2,
+        "stop_afd_npu_profiler",
+        lambda _prof: events.append("stop_profiler"),
+    )
+
+    def native_shutdown(_self):
+        assert not hasattr(runner, "ubatch_runner")
+        assert not hasattr(manager, "ubatch_runner")
+        events.append("native_shutdown")
+
+    monkeypatch.setattr(
+        attention_model_runner_v2.NPUModelRunnerV2,
+        "shutdown",
+        native_shutdown,
+    )
+
+    runner.shutdown()
+
+    assert events == ["stop_profiler", "clear_graphs", "native_shutdown", "close"]
+    assert runner._afd_pending_metadata is None
+
+
+def test_npu_v2_ubatch_failure_cancels_sibling_event_wait(monkeypatch):
+    _require_npu_runtime()
+    import torch
+    from vllm.v1.worker.ubatch_utils import UBatchSlice
+
+    from afd_plugin.v1.worker.npu import ubatch_runner_v2
+    from afd_plugin.v1.worker.npu.ubatch_runner_v2 import (
+        AFDAscendUBatchRunnerV2,
+        AFDAscendUBatchState,
+    )
+    from afd_plugin.v1.worker.npu.ubatching import dbo_yield
+
+    stream = object()
+    monkeypatch.setattr(torch.npu, "current_stream", lambda: stream)
+    monkeypatch.setattr(torch.npu, "set_device", lambda _device: None)
+    monkeypatch.setattr(torch.npu, "set_stream", lambda _stream: None)
+
+    thread_class = threading.Thread
+
+    def daemon_thread(*args, **kwargs):
+        kwargs["daemon"] = True
+        return thread_class(*args, **kwargs)
+
+    monkeypatch.setattr(
+        ubatch_runner_v2,
+        "threading",
+        SimpleNamespace(Thread=daemon_thread),
+    )
+
+    runner = object.__new__(AFDAscendUBatchRunnerV2)
+    runner.num_ubatches = 2
+    runner.device = torch.device("npu")
+    runner.ready_barrier = threading.Barrier(3)
+    state = AFDAscendUBatchState(
+        slices=[
+            UBatchSlice(slice(0, 1), slice(0, 1)),
+            UBatchSlice(slice(1, 2), slice(1, 2)),
+        ],
+        attn_metadata=[],
+        forward_contexts=[SimpleNamespace(), SimpleNamespace()],
+        real_token_counts=[1, 1],
+    )
+    model_inputs = {
+        "input_ids": torch.tensor([0, 1]),
+        "positions": torch.tensor([0, 1]),
+    }
+
+    def model(input_ids, **_kwargs):
+        if input_ids[0].item() == 1:
+            raise ValueError("stage failure")
+        dbo_yield()
+        dbo_yield()
+        return input_ids
+
+    execution_errors: list[BaseException] = []
+
+    def execute() -> None:
+        try:
+            runner.run(model, model_inputs, state)
+        except BaseException as error:  # noqa: BLE001
+            execution_errors.append(error)
+
+    execution_thread = thread_class(target=execute, daemon=True)
+    execution_thread.start()
+    execution_thread.join(STAGE_FAILURE_JOIN_TIMEOUT_SECONDS)
+
+    assert not execution_thread.is_alive()
+    assert len(execution_errors) == 1
+    assert str(execution_errors[0]) == "AFD NPU microbatch 1 failed"
+    assert isinstance(execution_errors[0].__cause__, ValueError)
 
 
 def test_npu_v1_runner_signatures_match_pinned_ascend():

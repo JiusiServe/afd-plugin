@@ -1,6 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+
 from __future__ import annotations
 
 import importlib.metadata
+import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +19,53 @@ from afd_plugin.compat import is_vllm_version_supported
 def test_package_import_is_cpu_safe():
     assert afd_plugin.__version__
     assert afd_plugin.AFDConfig().connector == "P2pNcclAFDConnector"
+
+
+def test_wheel_contains_importable_backport_package(tmp_path):
+    root = Path(__file__).resolve().parents[3]
+    env = os.environ.copy()
+    env["AFD_BUILD_ASCEND_OPS"] = "0"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            "--no-build-isolation",
+            "--no-deps",
+            "--wheel-dir",
+            str(tmp_path),
+            str(root),
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+    wheel = next(tmp_path.glob("vllm_afd_plugin-*.whl"))
+    subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            """
+import importlib.util
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import afd_plugin.compat.backports as backports
+
+assert backports.__file__.startswith(sys.argv[1])
+assert importlib.util.find_spec(
+    "afd_plugin.compat.backports.vllm_v026_mrv2_dbo"
+) is not None
+""",
+            str(wheel),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_register_afd_is_idempotent():

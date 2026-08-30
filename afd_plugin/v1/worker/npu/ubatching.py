@@ -25,6 +25,7 @@ class AscendUBatchContext:
         ready_barrier: threading.Barrier,
         cpu_wait_event: threading.Event,
         cpu_signal_event: threading.Event,
+        cancellation_event: threading.Event,
     ):
         self.id = id
         self.compute_stream = compute_stream
@@ -32,6 +33,7 @@ class AscendUBatchContext:
         self.ready_barrier = ready_barrier
         self.cpu_wait_event = cpu_wait_event
         self.cpu_signal_event = cpu_signal_event
+        self.cancellation_event = cancellation_event
         self.current_stream = compute_stream
 
     def __enter__(self):
@@ -40,8 +42,7 @@ class AscendUBatchContext:
         # ### PATCH START: Context failure cleanup
         try:
             self.ready_barrier.wait()
-            self.cpu_wait_event.wait()
-            self.cpu_wait_event.clear()
+            self._wait_for_turn()
             self._restore_context()
             self.update_stream(self.compute_stream)
         except BaseException:  # noqa: BLE001
@@ -71,16 +72,23 @@ class AscendUBatchContext:
         if dbo_current_stream() != stream:
             dbo_set_stream(stream)
 
+    # ### PATCH START: Shared execution cancellation
+    def _wait_for_turn(self) -> None:
+        self.cpu_wait_event.wait()
+        self.cpu_wait_event.clear()
+        if self.cancellation_event.is_set():
+            raise RuntimeError("AFD NPU microbatch execution cancelled")
+
     def _cpu_yield(self):
         assert forward_context._forward_context == self.forward_context
         assert dbo_current_stream() == self.current_stream
         assert not self.cpu_wait_event.is_set()
 
         self.cpu_signal_event.set()
-        self.cpu_wait_event.wait()
-        self.cpu_wait_event.clear()
+        self._wait_for_turn()
         self._restore_context()
         self.update_stream(self.current_stream)
+        # ### PATCH END: Shared execution cancellation
 
     def yield_(self):
         self.current_stream = dbo_current_stream()
@@ -135,6 +143,9 @@ def make_ubatch_contexts(
     if len(_CURRENT_CONTEXTS) < num_micro_batches:
         _CURRENT_CONTEXTS.extend([None] * (num_micro_batches - len(_CURRENT_CONTEXTS)))
 
+    # ### PATCH START: Shared execution cancellation
+    cancellation_event = threading.Event()
+    # ### PATCH END: Shared execution cancellation
     cpu_events = [threading.Event() for _ in range(num_micro_batches)]
     return [
         AscendUBatchContext(
@@ -144,6 +155,7 @@ def make_ubatch_contexts(
             ready_barrier=ready_barrier,
             cpu_wait_event=cpu_events[i],
             cpu_signal_event=cpu_events[(i + 1) % num_micro_batches],
+            cancellation_event=cancellation_event,
         )
         for i in range(num_micro_batches)
     ]

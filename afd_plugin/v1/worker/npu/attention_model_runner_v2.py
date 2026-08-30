@@ -95,17 +95,17 @@ def _use_afd_fullgraph_replay_hook(
         self: v2_cudagraph_utils.ModelCudaGraphManager,
         desc: v2_cudagraph_utils.BatchExecutionDescriptor,
     ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]] | IntermediateTensors:
-        # ### PATCH START: bypass native replay metadata for AFD DBO graphs.
-        if isinstance(desc, AFDBatchExecutionDescriptor):
-            return original_run_fullgraph(desc)
-        # ### PATCH END: bypass native replay metadata for AFD DBO graphs.
-        # ### PATCH START: publish one AFD pre-replay payload.
+        # ### PATCH START: publish AFD replay control metadata.
         previous_is_graph_replaying = getattr(
             runner,
             "_afd_is_graph_replaying",
             False,
         )
         try:
+            runner._afd_is_graph_replaying = True
+            if isinstance(desc, AFDBatchExecutionDescriptor):
+                return original_run_fullgraph(desc)
+
             padded_tokens = int(desc.num_tokens)
             metadata = runner.build_afd_metadata(None, real_tokens)
             metadata.tokens_lens = [padded_tokens]
@@ -113,7 +113,6 @@ def _use_afd_fullgraph_replay_hook(
             runner._afd_suppress_metadata_send = True
             runner._is_warmup = False
             runner._afd_is_graph_capturing = False
-            runner._afd_is_graph_replaying = True
             runner.send_dp_metadata(
                 runner.build_capture_dp_metadata(padded_tokens),
                 None,
@@ -121,7 +120,7 @@ def _use_afd_fullgraph_replay_hook(
             result = original_run_fullgraph(desc)
         finally:
             runner._afd_is_graph_replaying = previous_is_graph_replaying
-        # ### PATCH END: publish one AFD pre-replay payload.
+        # ### PATCH END: publish AFD replay control metadata.
         return result
 
     try:
@@ -472,16 +471,20 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
         finally:
             try:
                 # ### PATCH START: AFD MRV2 DBO graph cleanup
-                if isinstance(
-                    self.cudagraph_manager,
-                    AFDModelAclGraphManagerV2,
-                ):
-                    self.cudagraph_manager.clear_afd_graphs()
+                manager = self.cudagraph_manager
+                if isinstance(manager, AFDModelAclGraphManagerV2):
+                    try:
+                        manager.clear_afd_graphs()
+                    finally:
+                        del manager.ubatch_runner
+                        del self.ubatch_runner
                 # ### PATCH END: AFD MRV2 DBO graph cleanup
-                super().shutdown()
             finally:
-                self._afd_pending_metadata = None
-                self.connector.close()
+                try:
+                    super().shutdown()
+                finally:
+                    self._afd_pending_metadata = None
+                    self.connector.close()
         # ### PATCH END: guarantee profiler/native/connector cleanup.
 
 

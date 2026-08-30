@@ -111,6 +111,7 @@ def _v2_config(
     tensor_parallel_size: int = 1,
     prefill_context_parallel_size: int = 1,
     enforce_eager: bool = True,
+    use_mla: bool = True,
     cudagraph_mode: CUDAGraphMode = CUDAGraphMode.NONE,
     cudagraph_capture_sizes: list[int] | None = None,
     max_cudagraph_capture_size: int = 0,
@@ -127,6 +128,7 @@ def _v2_config(
         is_encoder_decoder=False,
         is_multimodal_model=False,
         enforce_eager=enforce_eager,
+        use_mla=use_mla,
         enable_prompt_embeds=False,
         enable_return_routed_experts=False,
         quantization=None,
@@ -545,6 +547,7 @@ def test_npu_v2_validator_allows_eager_dbo_dp2():
         num_attention_ranks=2,
         num_ffn_ranks=2,
         data_parallel_size=2,
+        use_mla=False,
     )
     config.additional_config["afd"]["connector"] = "CAMP2pAFDConnector"
     config.parallel_config.enable_dbo = True
@@ -578,6 +581,31 @@ def test_npu_v2_validator_allows_full_decode_only_dbo_dp2():
         expected_role="attention",
         device_type="npu",
     )
+
+
+def test_npu_v2_validator_rejects_non_mla_dbo_acl_graph():
+    config = _v2_config(
+        architecture="Qwen3MoeForCausalLM",
+        num_attention_ranks=2,
+        num_ffn_ranks=2,
+        data_parallel_size=2,
+        enforce_eager=False,
+        use_mla=False,
+        cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY,
+        cudagraph_capture_sizes=[TEST_CUDAGRAPH_CAPTURE_SIZE],
+        max_cudagraph_capture_size=TEST_CUDAGRAPH_CAPTURE_SIZE,
+    )
+    config.additional_config["afd"]["connector"] = "CAMP2pAFDConnector"
+    config.parallel_config.enable_dbo = True
+    config.parallel_config.use_ubatching = True
+    config.parallel_config.num_ubatches = 2
+
+    with pytest.raises(RuntimeError, match="requires MLA"):
+        validate_npu_model_runner_v2_config(
+            config,
+            expected_role="attention",
+            device_type="npu",
+        )
 
 
 @pytest.mark.parametrize(

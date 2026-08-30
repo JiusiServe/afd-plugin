@@ -269,9 +269,19 @@ class AFDAscendUBatchRunnerV2:
             forward_contexts,
             self.ready_barrier,
         )
+        cancellation_event = contexts[0].cancellation_event
         # ### PATCH END: Ascend microbatch contexts
         outputs: dict[int, AscendModelOutput] = {}
         errors: dict[int, BaseException] = {}
+
+        # ### PATCH START: Failed worker release
+        def cancel_execution() -> None:
+            cancellation_event.set()
+            # Stages can block on different ring events, so cancellation must
+            # wake every event before joining any worker.
+            for context in contexts:
+                context.cpu_wait_event.set()
+            self.ready_barrier.abort()
 
         @torch.inference_mode()
         def run_stage(
@@ -285,10 +295,11 @@ class AFDAscendUBatchRunnerV2:
                 with context:
                     outputs[context.id] = model(**inputs)
             except BaseException as error:  # noqa: BLE001
-                errors[context.id] = error
-                # ### PATCH START: Failed worker release
-                self.ready_barrier.abort()
-                # ### PATCH END: Failed worker release
+                if not cancellation_event.is_set():
+                    errors[context.id] = error
+                cancel_execution()
+
+        # ### PATCH END: Failed worker release
 
         stack = ExitStack()
         stack.enter_context(override_forward_context(None))
@@ -324,7 +335,7 @@ class AFDAscendUBatchRunnerV2:
                 threads.append(thread)
             self.ready_barrier.wait()
         except BaseException:  # noqa: BLE001
-            self.ready_barrier.abort()
+            cancel_execution()
             close_execution()
             raise_stage_error()
             raise

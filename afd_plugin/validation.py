@@ -154,13 +154,15 @@ def validate_npu_model_runner_v2_config(
             raise RuntimeError(
                 "AFD NPU ModelRunnerV2 DBO requires DP > 1 and exactly two ubatches",
             )
-        if (
-            not vllm_config.model_config.enforce_eager
-            and cudagraph_mode_name(vllm_config) != "FULL_DECODE_ONLY"
-        ):
-            raise RuntimeError(
-                "AFD NPU ModelRunnerV2 DBO ACL graph requires FULL_DECODE_ONLY",
-            )
+        if not vllm_config.model_config.enforce_eager:
+            if cudagraph_mode_name(vllm_config) != "FULL_DECODE_ONLY":
+                raise RuntimeError(
+                    "AFD NPU ModelRunnerV2 DBO ACL graph requires FULL_DECODE_ONLY",
+                )
+            if not vllm_config.model_config.use_mla:
+                raise RuntimeError(
+                    "AFD NPU ModelRunnerV2 DBO ACL graph requires MLA",
+                )
         if (
             vllm_config.speculative_config is not None
             or vllm_config.lora_config is not None
