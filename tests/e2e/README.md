@@ -196,7 +196,9 @@ The device count is derived from the scenario's Attention/FFN rank constants,
 not hard-coded; `AFD_E2E_DEVICES` may supply any three unique NPU IDs. The
 topology is fixed at 2A1F, with TP=2 on Attention as required by token split.
 
-Prerequisites match the async CAM smoke test (CAM/CANN runtime, custom
-operators, `HCCL_BUFFSIZE=4096`), plus a reachable GSM8K dataset source —
-offline pods need a local HF mirror (`HF_ENDPOINT`). See
+Prerequisites match the async CAM smoke test (CAM/CANN runtime and custom
+operators), plus a reachable GSM8K dataset source — offline pods need a local
+HF mirror (`HF_ENDPOINT`). Both async CAM tests configure a 4096 MB buffer only
+for connector-owned HCCL groups and remove `HCCL_BUFFSIZE` from child process
+environments so unrelated groups retain their normal defaults. See
 [`docs/npu/TROUBLESHOOTING.md`](../../docs/npu/TROUBLESHOOTING.md).

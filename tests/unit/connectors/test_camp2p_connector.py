@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+
 from __future__ import annotations
 
 import sys
@@ -201,8 +204,9 @@ def test_camp2p_connector_uses_role_specific_core_num(monkeypatch):
     assert states.aiv_num == 13
 
 
-def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
+def test_camp2p_init_scopes_fresh_options_to_each_hccl_group(monkeypatch):
     calls = []
+    option_calls = []
 
     monkeypatch.setitem(sys.modules, "torch_npu", ModuleType("torch_npu"))
     monkeypatch.setattr(camp2p_module, "ensure_cam_p2p_ops_available", lambda: None)
@@ -223,20 +227,37 @@ def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
         "init_afd_process_group",
         fake_init_afd_process_group,
     )
+
+    def fake_create_hccl_process_group_options(hccl_buffer_size_mb):
+        option_calls.append(hccl_buffer_size_mb)
+        return object()
+
+    monkeypatch.setattr(
+        camp2p_module,
+        "create_hccl_process_group_options",
+        fake_create_hccl_process_group_options,
+    )
     connector = CAMP2pAFDConnector(
         0,
         0,
-        _vllm_config(num_ubatches=2),
-        _afd_config(role="attention"),
+        _vllm_config(
+            num_ubatches=2,
+            extra_config={"hccl_buffer_size": 2048},
+        ),
+        _afd_config(role="ffn"),
         0,
     )
 
     connector.init_afd_connector()
 
-    assert [call["group_name"] for call in calls[:2]] == ["afd", "afd1"]
-    assert connector.hccl_comm_name_list == ["hccl:afd:2", "hccl:afd1:2"]
-    assert connector.hccl_comm_name == "hccl:afd:2"
-    assert connector.hccl_comm_name2 == "hccl:afd1:2"
+    assert [call["group_name"] for call in calls] == ["afd", "afd1", "afd_moe", "p2p"]
+    assert option_calls == [2048, 2048, 2048]
+    hccl_options = [call["pg_options"] for call in calls[:3]]
+    assert len({id(options) for options in hccl_options}) == 3
+    assert "pg_options" not in calls[3]
+    assert connector.hccl_comm_name_list == ["hccl:afd:0", "hccl:afd1:0"]
+    assert connector.hccl_comm_name == "hccl:afd:0"
+    assert connector.hccl_comm_name2 == "hccl:afd1:0"
     assert (
         camp2p_module._get_group_ep(
             0,
@@ -244,7 +265,7 @@ def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
             connector.hccl_comm_name2,
             "",
         )
-        == "hccl:afd:2"
+        == "hccl:afd:0"
     )
     assert (
         camp2p_module._get_group_ep(
@@ -253,7 +274,7 @@ def test_camp2p_init_creates_one_hccl_group_per_ubatch(monkeypatch):
             connector.hccl_comm_name2,
             "",
         )
-        == "hccl:afd1:2"
+        == "hccl:afd1:0"
     )
 
 
