@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
-"""EngineCore compatibility patch for AFD FFN daemon mode.
+"""EngineCore compatibility patches for AFD runtime modes.
 
 The AFD FFN side runs as a connector daemon, not as a normal request-scheduling
 EngineCore. After constructing the model executor, FFN EngineCore
 initialization returns before KV cache and scheduler setup. This keeps FFN
 startup out of HybridKVCacheCoordinator.
+
+AFD async-DP Attention uses the regular ``EngineCoreProc`` to avoid vLLM's
+synchronous DP-wave loop. The regular vLLM 0.26.0 loop does not publish the
+request counts needed by native DPLB, so this patch reports changed scheduler
+counts without adding wave coordination or cross-DP collectives.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 import vllm.v1.engine.core as core_module
 
-from afd_plugin.config import AFDConfig, parse_optional_afd_config
+from afd_plugin.config import AFDConfig, is_afd_async_dp, parse_optional_afd_config
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -346,10 +351,11 @@ def _initialize_kv_caches(self, vllm_config: VllmConfig) -> KVCacheConfig:
     return scheduler_kv_cache_config
 
 
-# Patch reason: AFD FFN ranks must run the connector server loop rather than
-# vLLM's normal request scheduling busy loop.
-# Patch functionality: starts and monitors the FFN connector loop for AFD FFN
-# engines while preserving upstream busy loops for non-AFD engine processes.
+# Patch reason: AFD FFN ranks run a connector daemon, while AFD async Attention
+# ranks use the regular EngineCoreProc but still need native DPLB request stats.
+# Patch functionality: starts the FFN connector loop or adds changed-only request
+# count publication to the independent async Attention loop while preserving the
+# target upstream tag's normal busy loops for all other engines.
 # Signature: matches upstream; no added parameters.
 def run_busy_loop(self):
     # ### PATCH START: AFD FFN connector busy loop
@@ -359,6 +365,11 @@ def run_busy_loop(self):
         result = _run_ffn_busy_loop(self, core_module)
         return result
     # ### PATCH END: AFD FFN connector busy loop
+
+    # ### PATCH START: AFD async-DP request-count publication
+    if _is_afd_async_attention_engine(self):
+        return _run_async_attention_busy_loop(self)
+    # ### PATCH END: AFD async-DP request-count publication
 
     if isinstance(self, core_module.DPEngineCoreProc):
         """Core busy loop of the EngineCore for data parallel case."""
@@ -440,6 +451,55 @@ def run_busy_loop(self):
         self._process_engine_step()
 
     raise SystemExit
+
+
+def _run_async_attention_busy_loop(self) -> None:
+    """Run independent Attention steps while publishing native DPLB counts."""
+
+    last_request_counts = (0, 0)
+    while self._handle_shutdown():
+        self._process_input_queue()
+        last_request_counts = _publish_async_attention_request_counts(
+            self,
+            last_request_counts,
+        )
+        self._process_engine_step()
+        last_request_counts = _publish_async_attention_request_counts(
+            self,
+            last_request_counts,
+        )
+
+    raise SystemExit
+
+
+def _publish_async_attention_request_counts(
+    self,
+    last_request_counts: tuple[int, int],
+) -> tuple[int, int]:
+    """Publish changed ``(running, waiting)`` counts to the DP coordinator."""
+
+    if not self.publish_dp_lb_stats:
+        return last_request_counts
+
+    request_counts = self.scheduler.get_request_counts()
+    if request_counts == last_request_counts:
+        return last_request_counts
+
+    num_running_reqs, num_waiting_reqs = request_counts
+    scheduler_stats = core_module.SchedulerStats(
+        num_running_reqs=num_running_reqs,
+        num_waiting_reqs=num_waiting_reqs,
+    )
+    self.output_queue.put_nowait(
+        (-1, core_module.EngineCoreOutputs(scheduler_stats=scheduler_stats))
+    )
+    core_module.logger.debug(
+        "AFD async-DP engine %d published request counts: running=%d waiting=%d",
+        self.engine_index,
+        num_running_reqs,
+        num_waiting_reqs,
+    )
+    return request_counts
 
 
 class _AFDFFNKVCacheConfig:
@@ -607,6 +667,19 @@ def _is_running(self, core_module: Any) -> bool:
 
 def _is_afd_ffn_engine(self) -> bool:
     return _is_afd_ffn_config(getattr(self, "vllm_config", None))
+
+
+def _is_afd_async_attention_engine(self) -> bool:
+    return _is_afd_async_attention_config(self.vllm_config)
+
+
+def _is_afd_async_attention_config(vllm_config: VllmConfig) -> bool:
+    config = _get_afd_config(vllm_config)
+    return (
+        config is not None
+        and config.role == "attention"
+        and is_afd_async_dp(vllm_config)
+    )
 
 
 def _is_afd_ffn_config(vllm_config: VllmConfig | None) -> bool:

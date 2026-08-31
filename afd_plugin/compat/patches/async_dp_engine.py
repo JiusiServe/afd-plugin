@@ -6,7 +6,8 @@ This module patches:
 1. ``vllm.v1.engine.core.EngineCoreProc.run_engine_core``
 2. ``vllm.v1.engine.utils.launch_core_engines``
 3. ``vllm.v1.engine.utils.DPCoordinator`` construction during launch
-4. ``vllm.v1.engine.core_client.DPAsyncMPClient.add_request_async``
+4. ``vllm.v1.engine.coordinator.DPCoordinatorProc.process_input_socket``
+5. ``vllm.v1.engine.core_client.DPAsyncMPClient.add_request_async``
 
 Why:
     vLLM 0.26.0's native MoE DP path uses ``DPEngineCoreProc`` and DP wave
@@ -22,8 +23,9 @@ How:
     ``FIRST_REQ`` wakeups are disabled.
 
 Future plan:
-    Remove this patch when vLLM exposes an external async-DP scheduling hook
-    that can be selected by plugin-owned configuration.
+    Remove the coordinator portion when the pinned vLLM includes upstream
+    #49204's non-lockstep stats handling. Remove the remaining patch when vLLM
+    exposes an external async-DP scheduling hook selectable by plugin config.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
+import vllm.v1.engine.coordinator as coordinator_module
 import vllm.v1.engine.core as engine_core_module
 import vllm.v1.engine.core_client as core_client_module
 import vllm.v1.engine.utils as engine_utils_module
@@ -332,6 +335,286 @@ def launch_core_engines(
         )
 
 
+# Patch reason: vLLM 0.26.0 groups request-count updates by globally synchronized
+# DP steps, but AFD async Attention engines advance independently.
+# Patch functionality: preserve upstream coordinator transport and its 100 ms
+# frontend publication cadence while skipping lockstep snapshot/warning behavior
+# whenever wave coordination is disabled.
+# Signature: matches upstream; no added parameters.
+def process_input_socket(
+    self,
+    front_publish_address: str,
+    back_output_address: str,
+    back_publish_address: str,
+    zmq_addr_pipe=None,
+):
+    time = coordinator_module.time
+    msgspec = coordinator_module.msgspec
+    zmq = coordinator_module.zmq
+    logger = coordinator_module.logger
+    make_zmq_socket = coordinator_module.make_zmq_socket
+    MsgpackDecoder = coordinator_module.MsgpackDecoder
+    EngineCoreOutputs = engine_core_module.EngineCoreOutputs
+    EngineState = coordinator_module.EngineState
+
+    decoder = MsgpackDecoder(EngineCoreOutputs)
+
+    # For tracking request wave progression.
+    current_wave = 0
+    engines_running = False
+
+    # For tracking request counts for internal load-balancing.
+    stats_changed = False
+    last_stats_step = -1
+    last_stats_wave = -1
+    last_step_counts: list[list[int]] | None = None
+
+    with (
+        make_zmq_socket(
+            path=front_publish_address,  # IPC
+            ctx=self.ctx,
+            socket_type=zmq.XPUB,
+            bind=True,
+        ) as publish_front,
+        make_zmq_socket(
+            path=back_output_address,  # IPC or TCP
+            ctx=self.ctx,
+            socket_type=zmq.PULL,
+            bind=True,
+        ) as output_back,
+        make_zmq_socket(
+            path=back_publish_address,  # IPC or TCP
+            ctx=self.ctx,
+            socket_type=zmq.XPUB,
+            bind=True,
+        ) as publish_back,
+    ):
+        if zmq_addr_pipe is not None:
+            try:
+                zmq_addr_pipe.send(
+                    (
+                        publish_front.getsockopt(zmq.LAST_ENDPOINT).decode(),
+                        output_back.getsockopt(zmq.LAST_ENDPOINT).decode(),
+                        publish_back.getsockopt(zmq.LAST_ENDPOINT).decode(),
+                    )
+                )
+            finally:
+                zmq_addr_pipe.close()
+        # Wait until all engines subscribe.
+        for _ in self.engines:
+            if publish_back.recv() != b"\x01":
+                logger.error(
+                    "DP Coordinator received unexpected message while "
+                    "waiting for engines to subscribe"
+                )
+                return
+        # Send ready message to engines.
+        publish_back.send(b"READY")
+
+        logger.info("All engine subscriptions received by DP coordinator")
+
+        poller = zmq.Poller()
+        poller.register(publish_front, zmq.POLLIN)
+        poller.register(publish_back, zmq.POLLIN)
+        poller.register(output_back, zmq.POLLIN)
+        last_publish_time = 0
+        while True:
+            elapsed = int(time.time() * 1000) - last_publish_time
+            # Send at stats_update_interval_ms interval if the stats have
+            # changed, or otherwise every 5 seconds.
+            wait_for = self.stats_update_interval_ms if stats_changed else 5000
+
+            # ### PATCH START: AFD independent request-count cadence
+            # Only lockstep DP engines have a shared step whose rank-local
+            # updates need a short aggregation window.
+            min_timeout = (
+                50 if self.enable_wave_coordination and last_step_counts is None else 0
+            )
+            # ### PATCH END: AFD independent request-count cadence
+
+            events = poller.poll(timeout=max(min_timeout, wait_for - elapsed))
+            if not events:
+                # Poller timeout - publish current stats to front-ends.
+                if last_step_counts is not None:
+                    engine_req_counts_list = last_step_counts
+                    last_step_counts = None
+                else:
+                    engine_req_counts_list = self._get_engine_counts()
+                    stats_changed = False
+
+                to_publish = (engine_req_counts_list, current_wave, engines_running)
+                publish_front.send(msgspec.msgpack.encode(to_publish))
+                last_publish_time = int(time.time() * 1000)
+                continue
+
+            events = dict(events)
+            wave_state_changed = False
+
+            if publish_back in events:
+                buffer = publish_back.recv()
+                if buffer == b"\x01":
+                    # NOTE(yongji): newly started engine subscribed
+                    # We need to send READY message here instead of receiving
+                    # SCALE_ELASTIC_EP notification from engine core client
+                    # as SCALE_ELASTIC_EP is only sent when
+                    # new engines finished initialization.
+                    # Subscription message, on the other hand, is sent
+                    # by each engine during initialization
+                    publish_back.send(b"READY")
+                elif buffer != b"\x00":
+                    logger.error(
+                        "DP Coordinator received unexpected message from engines"
+                    )
+
+            if publish_front in events:
+                buffer = publish_front.recv()
+                if buffer in (b"\x01", b"\x00"):
+                    # Ignore subscription messages.
+                    continue
+
+                decoded = msgspec.msgpack.decode(buffer)
+                if (
+                    isinstance(decoded, (list, tuple))
+                    and len(decoded) == 2
+                    and decoded[0] == "SCALE_ELASTIC_EP"
+                ):
+                    # Handle scale up notification
+                    new_engine_count = decoded[1]
+                    current_count = len(self.engines)
+                    if new_engine_count > current_count:
+                        for _ in range(new_engine_count - current_count):
+                            self.engines.append(EngineState())
+                        # NOTE(yongji): handle the case
+                        # where newly started engines have current_wave = 0
+                        # if existing engines just finished a wave
+                        # and engine_running isn't updated yet at
+                        # CoordinatorProc requests routed to newly started
+                        # engines may not wake up existing engines, as long
+                        # as 0 < request.wave < existing engines'
+                        # current_wave
+                        # we note that 0 is the wave number for the new
+                        # engine
+                        logger.info(
+                            "DPCoordinator scaled up from %s to %s engines",
+                            current_count,
+                            new_engine_count,
+                        )
+                    else:
+                        self.engines = self.engines[:new_engine_count]
+                        logger.info(
+                            "DPCoordinator scaled down from %s to %s engines",
+                            current_count,
+                            new_engine_count,
+                        )
+                    continue  # Skip normal engine notification processing
+
+                # Wave coordination: handle new-request messages from front-end.
+                # Only process these when wave coordination is enabled
+                if self.enable_wave_coordination:
+                    # We received a message on the front-end XPUB socket,
+                    # from an API server sending a new request while the
+                    # engines are paused, so that we can wake the other
+                    # engines.
+                    engine_to_exclude, wave = decoded
+                    if not engines_running:
+                        if wave < current_wave:
+                            # If the wave number is stale, ensure the message
+                            # is handled by all the engines.
+                            engine_to_exclude = None
+
+                        engines_running = True
+                        wave_state_changed = True
+                        self._send_start_wave(
+                            publish_back, current_wave, engine_to_exclude
+                        )
+
+            if output_back in events:
+                # We received a message from one of the engines.
+
+                buffer = output_back.recv()
+                outputs: EngineCoreOutputs = decoder.decode(buffer)
+
+                assert not outputs.outputs
+                assert outputs.utility_output is None
+
+                eng_index = outputs.engine_index
+                scheduler_stats = outputs.scheduler_stats
+                if scheduler_stats:
+                    # 1. Updated request load stats - update our local
+                    # state with these.
+                    stats = self.engines[eng_index].request_counts
+                    # ### PATCH START: AFD independent request-count updates
+                    # Step/wave ordering is meaningful only for lockstep DP.
+                    # Async Attention ranks update their latest counts directly.
+                    if self.enable_wave_coordination:
+                        stats_step = scheduler_stats.step_counter
+                        stats_wave = scheduler_stats.current_wave
+                        if (
+                            stats_wave > last_stats_wave
+                            or stats_wave == last_stats_wave
+                            and stats_step > last_stats_step
+                        ):
+                            if stats_changed:
+                                last_step_counts = self._get_engine_counts(do_copy=True)
+                            last_stats_step = stats_step
+                            last_stats_wave = stats_wave
+                        elif stats_wave != last_stats_wave or (
+                            stats_step != last_stats_step
+                        ):
+                            logger.warning(
+                                "Received stats for out-of-order "
+                                "step (%d, %d) from engine %d (expected "
+                                "> (%d, %d))",
+                                stats_wave,
+                                stats_step,
+                                eng_index,
+                                last_stats_wave,
+                                last_stats_step,
+                            )
+                    # ### PATCH END: AFD independent request-count updates
+                    stats[0] = scheduler_stats.num_waiting_reqs
+                    stats[1] = scheduler_stats.num_running_reqs
+                    stats_changed = True
+
+                # Wave coordination: handle wave completion and start notifications
+                # Only process these when wave coordination is enabled
+                if self.enable_wave_coordination:
+                    if (wave := outputs.wave_complete) is not None:
+                        # 2. Notification from rank 0 engine that we've
+                        # moved into the global paused state
+                        # (engines_running==False).
+                        if current_wave <= wave:
+                            new_wave = wave + 1
+                            logger.debug(
+                                "Moving DP wave from %d to %d.",
+                                current_wave,
+                                new_wave,
+                            )
+                            current_wave = new_wave
+                            engines_running = False
+                            wave_state_changed = True
+                    elif (wave := outputs.start_wave) is not None and (
+                        wave > current_wave
+                        or (wave == current_wave and not engines_running)
+                    ):
+                        # 3. The engine received request for a non-current wave
+                        # so we must ensure that other engines progress to the
+                        # next wave (race condition handling).
+                        logger.debug(
+                            "Starting wave %d after notification of "
+                            "stale wave request from engine.",
+                            wave,
+                        )
+                        current_wave = wave
+                        engines_running = True
+                        wave_state_changed = True
+                        self._send_start_wave(publish_back, wave, eng_index)
+
+            if wave_state_changed:
+                message = (None, current_wave, engines_running)
+                publish_front.send(msgspec.msgpack.encode(message))
+
+
 # Patch reason: vLLM sends FIRST_REQ wakeups to coordinate DP waves, which AFD
 # async-DP engines intentionally do not use.
 # Patch functionality: preserve request routing and stats updates while skipping
@@ -405,6 +688,7 @@ def apply_async_dp_engine_patch() -> bool:
     EngineCoreProc.run_engine_core = staticmethod(run_engine_core)
     engine_utils_module.launch_core_engines = launch_core_engines
     core_client_module.launch_core_engines = launch_core_engines
+    coordinator_module.DPCoordinatorProc.process_input_socket = process_input_socket
     DPAsyncMPClient.add_request_async = add_request_async
     engine_core_module.logger.debug("AFD async-DP engine patch applied")
     return True
