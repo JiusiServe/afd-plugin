@@ -190,6 +190,7 @@ class AFDFFNWorker(Worker):
             dp_metadata_list = payload.dp_metadata_list
             is_attn_graph_capturing = payload.is_graph_capturing
             is_warmup = payload.is_warmup
+            is_graph_replaying = payload.is_graph_replaying
 
             if self.model_runner.use_cuda_graph and (
                 is_warmup or is_attn_graph_capturing
@@ -204,6 +205,7 @@ class AFDFFNWorker(Worker):
                     dp_metadata_list=dp_metadata_list,
                     is_graph_capturing=is_attn_graph_capturing,
                     is_warmup=is_warmup,
+                    is_graph_replaying=is_graph_replaying,
                 )
 
             if self.device.type == "cuda":

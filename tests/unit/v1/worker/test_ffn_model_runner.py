@@ -611,10 +611,32 @@ def test_ffn_runner_replays_cuda_graph_when_key_exists():
         make_ffn_graph_key(dp_metadata): {"graph": graph},
     }
 
-    runner.execute_model(dp_metadata_list=dp_metadata)
+    runner.execute_model(
+        dp_metadata_list=dp_metadata,
+        is_graph_replaying=True,
+    )
 
     assert graph.replay_count == 1
     assert runner.connector.ffn_outputs == []
+
+
+def test_ffn_runner_skips_replay_when_attention_is_eager():
+    runner = _runner_with_connector_and_model(_FakeModel())
+    runner.use_cuda_graph = True
+    graph = _FakeGraph()
+    dp_metadata = {0: _FakeDPMetadata([1])}
+    runner._cuda_graphs = {
+        make_ffn_graph_key(dp_metadata): {"graph": graph},
+    }
+    metadata = _metadata()
+    runner.connector.attn_outputs.append(_payload("hidden", metadata))
+
+    runner.execute_model(dp_metadata_list=dp_metadata)
+
+    assert graph.replay_count == 0
+    assert runner.connector.ffn_outputs == [
+        ("ffn(hidden, layer=0)", metadata),
+    ]
 
 
 def test_ffn_runner_cuda_graph_miss_falls_back_to_eager():

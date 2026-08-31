@@ -13,8 +13,9 @@ from importlib.util import find_spec
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# Covers the roughly 64-second nested lm-eval/vLLM cleanup bound with buffer.
-RUNNER_CLEANUP_TIMEOUT_S = 90
+# Covers the roughly 64-second nested lm-eval/vLLM cleanup bound plus the NPU
+# async runner's 120-second procfs cleanup window with buffer.
+RUNNER_CLEANUP_TIMEOUT_S = 240
 
 # vLLM-Ascend 80d8c194f (v0.26 baseline) has an inherent circular import:
 # device/device_op.py -> ops/__init__ -> fused_moe -> experts_selector.py ->
@@ -101,6 +102,10 @@ def download_dataset(dataset_id: str, dataset_config: str | None = None) -> None
         dataset_id: Dataset repo id, e.g. ``openai/gsm8k``.
         dataset_config: Optional dataset configuration name, e.g. ``main``.
     """
+    # Must be set before ``datasets`` transitively imports huggingface_hub,
+    # which reads HF_HUB_DISABLE_XET once at import time.
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
     from datasets import load_dataset
 
     if dataset_config is None:

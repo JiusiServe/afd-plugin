@@ -14,16 +14,17 @@ Run one of the model suites:
 - `tests/e2e/models/qwen3_6/test_qwen3_6.py` on CUDA (text-only Qwen3.6
   evidence for the Qwen3.5/3.6 adapter family)
 
-Each suite contains four default scenarios:
+Each suite contains four gate scenarios:
 
 - baseline-graph
-- afd-eager
-- afd-graph
-- afd-graph-dbo
+- afd-eager-2a2f
+- afd-graph-2a2f
+- afd-graph-dbo-2a2f
 
-Each default scenario evaluates the first 7 GSM8K samples. AFD scenarios use
-2 Attention ranks and 1 FFN rank. `baseline-graph` uses native DP4/TP1/EP4.
-`afd-graph-dbo-2a2f` is a separate opt-in case.
+Each gate scenario evaluates the first 7 GSM8K samples. The AFD gate scenarios
+use 2 Attention ranks and 2 FFN ranks. `baseline-graph` uses native
+DP4/TP1/EP4. The 2A1F cases (`afd-eager-2a1f`, `afd-graph-2a1f`,
+`afd-graph-dbo-2a1f`) are local-only scenarios.
 
 ## Workflow
 
@@ -77,8 +78,10 @@ export AFD_E2E_DEVICES=0,1,2,3
 # Optional: export AFD_NPU_E2E_VLLM_BIN=/path/to/vllm
 ~~~
 
-Device order defines roles: AFD uses the first two devices for Attention and
-the third for FFN. `baseline-graph` uses the first four for native DP4/TP1/EP4.
+Device order defines roles: the 2A2F AFD scenarios use the first two devices
+for Attention DP2/TP1 and the last two for FFN DP2/TP1/EP2. `baseline-graph`
+uses the first four for native DP4/TP1/EP4. The local 2A1F scenarios use the
+first two for Attention and the third for FFN.
 
 ### 4. Run
 
@@ -86,10 +89,10 @@ From the repository root, stream output in the foreground:
 
 ~~~bash
 python -m pytest -q -s \
-  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-eager]" \
-  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-graph]" \
-  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-graph-dbo]" \
-  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[baseline-graph]"
+  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[baseline-graph]" \
+  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-eager-2a2f]" \
+  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-graph-2a2f]" \
+  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-graph-dbo-2a2f]"
 ~~~
 
 For Qwen3 MoE on GPU, run:
@@ -119,17 +122,8 @@ unverified.
 
 Do not add backend markers or run scenarios in parallel; they share devices.
 
-For the opt-in DeepSeek-V2-Lite GPU/NPU 2A2F case, set four unique device IDs
-and run:
-
-~~~bash
-export AFD_E2E_DEVICES=0,1,2,3
-python -m pytest -q -s \
-  "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-graph-dbo-2a2f]"
-~~~
-
-The first two devices run Attention DP2/TP1. The last two run FFN
-DP2/TP1/EP2.
+For the local DeepSeek-V2-Lite 2A1F cases, run the same pytest entrypoint with
+`[afd-eager-2a1f]`, `[afd-graph-2a1f]`, or `[afd-graph-dbo-2a1f]`.
 
 On cancellation, forward SIGTERM and allow over 90 seconds for cleanup.
 

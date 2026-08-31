@@ -42,7 +42,7 @@ def test_terminate_process_groups_signals_the_leader_before_the_group(
     monkeypatch.setattr(process_utils.time, "monotonic", lambda: 100.0)
 
     failures = process_utils.terminate_process_groups(
-        [FakeProcess()],
+        [FakeProcess()],  # type: ignore[list-item]
         termination_timeout_s=20,
         poll_interval_s=0.2,
         reap_timeout_s=5,
@@ -80,7 +80,7 @@ def test_terminate_process_groups_cleans_children_after_leader_exits(monkeypatch
     monkeypatch.setattr(process_utils.time, "monotonic", lambda: 100.0)
 
     failures = process_utils.terminate_process_groups(
-        [ExitedLeader()],
+        [ExitedLeader()],  # type: ignore[list-item]
         termination_timeout_s=20,
         poll_interval_s=0.2,
         reap_timeout_s=5,
@@ -118,7 +118,7 @@ def test_terminate_process_groups_reports_force_kill_escalation(monkeypatch):
     monkeypatch.setattr(process_utils.time, "monotonic", lambda: 100.0)
 
     failures = process_utils.terminate_process_groups(
-        [FakeProcess()],
+        [FakeProcess()],  # type: ignore[list-item]
         termination_timeout_s=0,
         poll_interval_s=0,
         reap_timeout_s=0,
@@ -156,7 +156,7 @@ def test_terminate_process_groups_reports_a_group_that_survives_sigkill(
     monkeypatch.setattr(process_utils.time, "monotonic", lambda: 100.0)
 
     failures = process_utils.terminate_process_groups(
-        [FakeProcess()],
+        [FakeProcess()],  # type: ignore[list-item]
         termination_timeout_s=0,
         poll_interval_s=0,
         reap_timeout_s=0,
@@ -165,6 +165,101 @@ def test_terminate_process_groups_reports_a_group_that_survives_sigkill(
     assert any("forced SIGKILL" in failure for failure in failures)
     assert any("still alive after SIGKILL" in failure for failure in failures)
     assert group_liveness_checks >= 2
+
+
+def test_find_processes_matching_environment_uses_exact_entries(
+    monkeypatch,
+    tmp_path,
+):
+    environments = {
+        101: b"AFD_E2E_RUN_ID=run-1\0AFD_E2E_PROCESS_ROLE=ffn\0",
+        102: b"AFD_E2E_RUN_ID=run-1\0AFD_E2E_PROCESS_ROLE=attention\0",
+        103: b"AFD_E2E_RUN_ID=run-10\0AFD_E2E_PROCESS_ROLE=ffn\0",
+    }
+    for pid, environment in environments.items():
+        process_dir = tmp_path / str(pid)
+        process_dir.mkdir()
+        (process_dir / "environ").write_bytes(environment)
+    (tmp_path / "self").mkdir()
+    closed_pidfds: list[int] = []
+    monkeypatch.setattr(
+        process_utils.os,
+        "pidfd_open",
+        lambda pid: pid + 1000,
+    )
+    monkeypatch.setattr(
+        process_utils.os,
+        "close",
+        closed_pidfds.append,
+    )
+
+    matching_processes = process_utils.find_processes_matching_environment(
+        {
+            "AFD_E2E_RUN_ID": "run-1",
+            "AFD_E2E_PROCESS_ROLE": "ffn",
+        },
+        proc_root=tmp_path,
+    )
+
+    assert [process.pid for process in matching_processes] == [101]
+    assert [process.pidfd for process in matching_processes] == [1101]
+    process_utils.close_process_identities(matching_processes)
+    assert set(closed_pidfds[:2]) == {1102, 1103}
+    assert closed_pidfds[-1] == 1101
+
+
+def test_kill_matching_process_does_not_signal_recycled_pid(monkeypatch, tmp_path):
+    process_dir = tmp_path / "101"
+    process_dir.mkdir()
+    environment_path = process_dir / "environ"
+    environment_path.write_bytes(
+        b"AFD_E2E_RUN_ID=run-1\0AFD_E2E_PROCESS_ROLE=ffn\0",
+    )
+    opened_pidfds = iter((501, 502))
+    closed_pidfds: list[int] = []
+    signal_calls: list[tuple[int, int]] = []
+
+    def fake_pidfd_open(pid):
+        assert pid == 101
+        return next(opened_pidfds)
+
+    def fake_close(pidfd):
+        closed_pidfds.append(pidfd)
+
+    def fake_pidfd_send_signal(pidfd, sig):
+        signal_calls.append((pidfd, sig))
+        # The matched process exits and PID 101 is immediately recycled for an
+        # unrelated process. Signaling the old pidfd must not target the reuse.
+        environment_path.write_bytes(b"UNRELATED_PROCESS=1\0")
+        raise ProcessLookupError
+
+    def fail_numeric_pid_signal(*_args):
+        raise AssertionError("numeric PID signaled")
+
+    monkeypatch.setattr(process_utils.os, "pidfd_open", fake_pidfd_open)
+    monkeypatch.setattr(process_utils.os, "close", fake_close)
+    monkeypatch.setattr(process_utils.os, "kill", fail_numeric_pid_signal)
+    monkeypatch.setattr(
+        process_utils.signal,
+        "pidfd_send_signal",
+        fake_pidfd_send_signal,
+    )
+    monkeypatch.setattr(process_utils.time, "monotonic", lambda: 100.0)
+
+    failures = process_utils.kill_processes_matching_environment(
+        {
+            "AFD_E2E_RUN_ID": "run-1",
+            "AFD_E2E_PROCESS_ROLE": "ffn",
+        },
+        timeout_s=0,
+        poll_interval_s=0,
+        process_name="FFN",
+        proc_root=tmp_path,
+    )
+
+    assert failures == []
+    assert signal_calls == [(501, signal.SIGKILL)]
+    assert closed_pidfds == [501, 502]
 
 
 def test_terminate_process_groups_uses_one_deadline_and_reaps_every_process(
@@ -212,7 +307,7 @@ def test_terminate_process_groups_uses_one_deadline_and_reaps_every_process(
     )
 
     failures = process_utils.terminate_process_groups(
-        [first_process, second_process],
+        [first_process, second_process],  # type: ignore[list-item]
         termination_timeout_s=20,
         poll_interval_s=0.2,
         reap_timeout_s=5,

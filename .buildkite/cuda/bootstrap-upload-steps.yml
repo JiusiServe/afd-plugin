@@ -1,6 +1,6 @@
 # Uploaded by upload_pipeline.py --upload (not the Buildkite hook).
 # ``if`` is injected by step ``key`` from skip-ci at upload time.
-# CUDA ready (L2) + merge (L3). NPU will use `.buildkite/npu/` when added.
+# CUDA ready (L2) + merge (L3) + weekly. NPU will use `.buildkite/npu/` when added.
 steps:
   - label: ":docker: Build image"
     key: image-build
@@ -24,5 +24,14 @@ steps:
     key: upload-merge-pipeline
     commands:
       - python3 .buildkite/common/scripts/upload_pipeline.py --upload .buildkite/cuda/test-merge.yml
+    agents:
+      queue: "cpu_queue_premerge"
+
+  # Weekly — main+WEEKLY=1 (scheduled), or PR label weekly-test
+  - label: "Upload Weekly Pipeline"
+    depends_on: image-build
+    key: upload-weekly-pipeline
+    commands:
+      - python3 .buildkite/common/scripts/upload_pipeline.py --upload .buildkite/cuda/test-weekly.yml
     agents:
       queue: "cpu_queue_premerge"
