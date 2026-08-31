@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+#
 # Orchestrate a DeepSeek-V2-Lite AFD recipe run end-to-end:
 #   1. download the model to deepseek-v2-lite-pvc (Job)
-#   2. launch the serve+bench pod for the requested recipe (image already
-#      has nixl + afd-plugin baked in, see docker/Dockerfile.k8s-bench), run
+#   2. launch the serve+bench pod for the requested recipe, run
 #      `vllm serve`, benchmark, copy results out, delete the pod
 #
 # Usage: AFD_PLUGIN_IMAGE=<image> ./run.sh <baseline|2a2f>
@@ -35,6 +37,7 @@ run_stage() {
   local label="$1" pod="${POD}"
 
   echo "=== [${label}] apply serve+bench pod ==="
+  # shellcheck disable=SC2016
   TEMPLATE_RECIPE="${label}" TEMPLATE_RESULT_PREFIX="${label}" TEMPLATE_IMAGE="${IMAGE}" \
     envsubst '${TEMPLATE_RECIPE} ${TEMPLATE_RESULT_PREFIX} ${TEMPLATE_IMAGE}' \
     < "${SCRIPT_DIR}/serve-bench-pod.yaml" | kubectl apply -f -
