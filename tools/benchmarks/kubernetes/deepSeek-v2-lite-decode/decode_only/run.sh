@@ -18,6 +18,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BENCHMARK_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 RECIPE="${1:-}"
 case "$RECIPE" in
@@ -74,9 +75,9 @@ echo "=== [1/2] apply model PVC + downloader job ==="
 if kubectl get pvc "${PVC}" >/dev/null 2>&1; then
   echo "PVC ${PVC} already exists; skipping download job"
 else
-  kubectl apply -f "${SCRIPT_DIR}/pvc.yaml"
+  kubectl apply -f "${BENCHMARK_DIR}/pvc.yaml"
   kubectl delete job "${JOB}" --ignore-not-found
-  kubectl apply -f "${SCRIPT_DIR}/download-job.yaml"
+  kubectl apply -f "${BENCHMARK_DIR}/download-job.yaml"
 
   echo "=== waiting for download job to complete (timeout 30m) ==="
   kubectl wait --for=condition=complete "job/${JOB}" --timeout=30m
