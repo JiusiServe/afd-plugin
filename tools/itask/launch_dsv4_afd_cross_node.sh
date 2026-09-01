@@ -75,7 +75,7 @@ PLUGIN_ROOT=${PLUGIN_ROOT:-$(cd -- "$SCRIPT_DIR/../.." && pwd)}
 
 source /usr/local/Ascend/cann-9.0.1/set_env.sh
 export ASCEND_RT_VISIBLE_DEVICES="$VISIBLE_DEVICES"
-export PYTHONPATH="$PLUGIN_ROOT:/vllm-workspace/vllm-ascend:/vllm-workspace/vllm:${PYTHONPATH:-}"
+export PYTHONPATH="/vllm-workspace/vllm-ascend:/vllm-workspace/vllm:${PYTHONPATH:-}"
 export VLLM_PLUGINS=ascend,afd
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export AFD_FORCE_SPAWN_MULTIPROCESSING=1
