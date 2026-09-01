@@ -557,7 +557,7 @@ def test_dp_coordinator_separates_independent_and_lockstep_stats(
 
     assert output_front.sent == [([[3, 1], [4, 2]], 0, False)]
     assert poll_timeouts == expected_timeouts
-    assert ("out-of-order step" in caplog.text) is expects_warning
+    assert ("out-of-order update" in caplog.text) is expects_warning
 
 
 def test_async_dp_client_skips_first_req(monkeypatch):
