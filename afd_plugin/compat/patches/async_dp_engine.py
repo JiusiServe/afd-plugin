@@ -6,8 +6,9 @@ This module patches:
 1. ``vllm.v1.engine.core.EngineCoreProc.run_engine_core``
 2. ``vllm.v1.engine.utils.launch_core_engines``
 3. ``vllm.v1.engine.utils.DPCoordinator`` construction during launch
-4. ``vllm.v1.engine.coordinator.DPCoordinatorProc.process_input_socket``
-5. ``vllm.v1.engine.core_client.DPAsyncMPClient.add_request_async``
+4. ``vllm.v1.engine.coordinator.DPCoordinatorProc.run_coordinator``
+5. ``vllm.v1.engine.coordinator.DPCoordinatorProc.process_input_socket``
+6. ``vllm.v1.engine.core_client.DPAsyncMPClient.add_request_async``
 
 Why:
     vLLM 0.26.0's native MoE DP path uses ``DPEngineCoreProc`` and DP wave
@@ -335,6 +336,47 @@ def launch_core_engines(
         )
 
 
+# Patch reason: multiprocessing spawn imports the coordinator target in a fresh
+# process, where parent-only class assignments are not retained.
+# Patch functionality: use a plugin-owned process target that constructs the
+# pinned coordinator and invokes AFD's patched socket loop after child import.
+# Signature: matches upstream; no added parameters.
+def run_coordinator(
+    engine_count: int,
+    front_publish_address: str,
+    back_output_address: str,
+    back_publish_address: str,
+    zmq_addr_pipe=None,
+    min_stats_update_interval_ms: int = 100,
+    enable_wave_coordination: bool = True,
+):
+    # ### PATCH START: AFD copied-coordinator module bindings
+    DPCoordinatorProc = coordinator_module.DPCoordinatorProc
+    logger = coordinator_module.logger
+    # ### PATCH END: AFD copied-coordinator module bindings
+
+    coordinator = DPCoordinatorProc(
+        engine_count=engine_count,
+        min_stats_update_interval_ms=min_stats_update_interval_ms,
+        enable_wave_coordination=enable_wave_coordination,
+    )
+    try:
+        # ### PATCH START: AFD spawn-safe coordinator loop
+        process_input_socket(
+            coordinator,
+            front_publish_address,
+            back_output_address,
+            back_publish_address,
+            zmq_addr_pipe,
+        )
+        # ### PATCH END: AFD spawn-safe coordinator loop
+    except KeyboardInterrupt:
+        logger.info("DP Coordinator process exiting")
+    finally:
+        if zmq_addr_pipe is not None:
+            zmq_addr_pipe.close()
+
+
 # Patch reason: vLLM 0.26.0 groups request-count updates by globally synchronized
 # DP steps, but AFD async Attention engines advance independently.
 # Patch functionality: preserve upstream coordinator transport and its 100 ms
@@ -348,6 +390,7 @@ def process_input_socket(
     back_publish_address: str,
     zmq_addr_pipe=None,
 ):
+    # ### PATCH START: AFD copied-coordinator module bindings
     time = coordinator_module.time
     msgspec = coordinator_module.msgspec
     zmq = coordinator_module.zmq
@@ -356,6 +399,7 @@ def process_input_socket(
     MsgpackDecoder = coordinator_module.MsgpackDecoder
     EngineCoreOutputs = engine_core_module.EngineCoreOutputs
     EngineState = coordinator_module.EngineState
+    # ### PATCH END: AFD copied-coordinator module bindings
 
     decoder = MsgpackDecoder(EngineCoreOutputs)
 
@@ -659,6 +703,18 @@ def _is_afd_async_attention_config(vllm_config: VllmConfig) -> bool:
     )
 
 
+def _should_patch_pinned_dp_coordinator() -> bool:
+    """Return whether the copied coordinator exactly matches the installed vLLM."""
+
+    try:
+        import vllm
+
+        version_text = str(vllm.__version__)
+    except (AttributeError, ImportError):
+        return False
+    return version_text == TARGET_VLLM_VERSION
+
+
 def _is_target_vllm_compatible() -> bool:
     try:
         import vllm
@@ -688,7 +744,13 @@ def apply_async_dp_engine_patch() -> bool:
     EngineCoreProc.run_engine_core = staticmethod(run_engine_core)
     engine_utils_module.launch_core_engines = launch_core_engines
     core_client_module.launch_core_engines = launch_core_engines
-    coordinator_module.DPCoordinatorProc.process_input_socket = process_input_socket
+    # The copied coordinator is exact-release-only. Newer development versions
+    # retain their native non-lockstep implementation and payload fields.
+    if _should_patch_pinned_dp_coordinator():
+        coordinator_module.DPCoordinatorProc.run_coordinator = staticmethod(
+            run_coordinator
+        )
+        coordinator_module.DPCoordinatorProc.process_input_socket = process_input_socket
     DPAsyncMPClient.add_request_async = add_request_async
     engine_core_module.logger.debug("AFD async-DP engine patch applied")
     return True
