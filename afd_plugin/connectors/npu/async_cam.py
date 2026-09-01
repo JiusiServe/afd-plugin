@@ -44,7 +44,6 @@ from afd_plugin.config_utils import (
     coerce_extra_int,
     coerce_extra_positive_int,
     coerce_extra_str,
-    coerce_optional_extra_positive_int,
 )
 from afd_plugin.connectors.base import (
     AFDConnectorBase,
@@ -57,10 +56,7 @@ from afd_plugin.connectors.metadata import (
     AFDTransferMetadata,
     AFDTransferState,
 )
-from afd_plugin.distributed import (
-    create_hccl_process_group_options,
-    init_afd_process_group,
-)
+from afd_plugin.distributed import init_afd_process_group
 
 if TYPE_CHECKING:
     from torch.distributed.distributed_c10d import ProcessGroup
@@ -80,7 +76,6 @@ _AFD_ASYNC_EXTRA_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
         "async_moe_ubatching",
         "async_moe_num_ubatches",
         "async_moe_split",
-        "hccl_buffer_size",
     },
 )
 
@@ -98,7 +93,6 @@ class AFDAsyncExtraInfo(ConnectorExtraInfo):
         async_moe_num_ubatches: Number of stages used by async MoE ubatching.
         async_moe_split: ``"request"`` for request boundaries or ``"token"``
             for token-balanced DP+TP/SP stages.
-        hccl_buffer_size: Optional buffer size in MB for the CAM HCCL domain.
     """
 
     dynamic_quant: int = 0
@@ -106,7 +100,6 @@ class AFDAsyncExtraInfo(ConnectorExtraInfo):
     async_moe_ubatching: bool = False
     async_moe_num_ubatches: int = ASYNC_MOE_NUM_STAGES
     async_moe_split: str = ASYNC_MOE_REQUEST_SPLIT
-    hccl_buffer_size: int | None = None
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any] | None) -> AFDAsyncExtraInfo:
@@ -147,23 +140,16 @@ class AFDAsyncExtraInfo(ConnectorExtraInfo):
                 raw.get("async_moe_split", ASYNC_MOE_REQUEST_SPLIT),
                 field_name="async_moe_split",
             ),
-            hccl_buffer_size=coerce_optional_extra_positive_int(
-                raw.get("hccl_buffer_size"),
-                field_name="hccl_buffer_size",
-            ),
         )
 
     def to_mapping(self) -> dict[str, Any]:
-        result: dict[str, Any] = {
+        return {
             "dynamicQuant": self.dynamic_quant,
             "attn_ranks_per_dp": self.attn_ranks_per_dp,
             "async_moe_ubatching": self.async_moe_ubatching,
             "async_moe_num_ubatches": self.async_moe_num_ubatches,
             "async_moe_split": self.async_moe_split,
         }
-        if self.hccl_buffer_size is not None:
-            result["hccl_buffer_size"] = self.hccl_buffer_size
-        return result
 
 
 @dataclass(slots=True)
@@ -263,7 +249,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
         self.num_routed_experts = hf_config.n_routed_experts
         extra_info = cast(AFDAsyncExtraInfo, self.extra_info)
         self.dynamic_quant = extra_info.dynamic_quant
-        self.hccl_buffer_size_mb = extra_info.hccl_buffer_size
         self.group_name = ""
         self.max_seq_len = vllm_config.scheduler_config.max_num_batched_tokens
         self.comm_id = CAM_COMM_ID
@@ -308,9 +293,6 @@ class CAMAsyncAFDConnector(AFDConnectorBase):
             rank=self.world_rank,
             group_name=AFD_ASYNC_CAM_GROUP_NAME,
             timeout=timedelta(minutes=30),
-            pg_options=create_hccl_process_group_options(
-                self.hccl_buffer_size_mb,
-            ),
         )
         backend = self.cam_pg._get_backend(torch.device("npu"))
         self.group_name = str(backend.get_hccl_comm_name(self.world_rank))

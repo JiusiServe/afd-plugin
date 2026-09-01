@@ -132,8 +132,7 @@ There is no separate `--afd-config` option.
       "attn_ranks_per_dp": 2,
       "async_moe_ubatching": true,
       "async_moe_num_ubatches": 2,
-      "async_moe_split": "request",
-      "hccl_buffer_size": 4096
+      "async_moe_split": "request"
     }
   }
 }
@@ -167,7 +166,6 @@ spelling used by the recipes.
 | `async_moe_ubatching` | `bool` | `false` | Enables AFD-managed asynchronous MoE-only ubatching. |
 | `async_moe_num_ubatches` | `int` | `2` | Number of asynchronous MoE stages. Only `2` is supported. |
 | `async_moe_split` | `str` | `"request"` | `"request"` requires two scheduled requests and preserves their boundaries. `"token"` balances flattened real tokens and requires Attention TP greater than one. Both modes reject context parallelism; FFN may independently use TP1. |
-| `hccl_buffer_size` | `int` | unset | Positive CAM HCCL buffer size in MB. The override applies only to the `afd_async_cam` communication domain. When unset, HCCL uses `HCCL_BUFFSIZE`, then its built-in default. Configure the same value on every Attention and FFN rank in the domain. |
 
 For a DP+SP deployment such as DP3TP2 Attention + DP2TP1/EP2 FFN, set
 `VLLM_ASCEND_ENABLE_FLASHCOMM1=1` only on Attention and explicitly set it to
@@ -276,13 +274,9 @@ the essential setup is:
 export ASCEND_CUSTOM_OPP_PATH=/usr/local/Ascend/cann-9.0.1/opp/vendors/CAM:${ASCEND_CUSTOM_OPP_PATH}
 export LD_LIBRARY_PATH=/usr/local/Ascend/cann-9.0.1/opp/vendors/CAM/op_api/lib:${LD_LIBRARY_PATH}
 export LD_LIBRARY_PATH=/usr/local/Ascend/cann-9.0.1/opp/vendors/CAM/op_api:${LD_LIBRARY_PATH}
+export HCCL_BUFFSIZE=4096
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 ```
-
-Set `connector_extra_config.hccl_buffer_size` when the CAM domain needs a
-larger buffer than unrelated TP, DP, or EP process groups. `HCCL_BUFFSIZE`
-remains a process-wide fallback and should be used only when all HCCL domains
-in the process should share the same size.
 
 For the experimental FlashComm1/SP cases, set
 `VLLM_ASCEND_ENABLE_FLASHCOMM1=1` only on Attention. Set it to `0` for plain TP
