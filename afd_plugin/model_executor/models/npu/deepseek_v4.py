@@ -443,6 +443,7 @@ class AFDDeepseekV4Model(native.DeepseekV4Model):
         intermediate_tensors: IntermediateTensors | None,
         inputs_embeds: torch.Tensor | None = None,
     ) -> torch.Tensor | IntermediateTensors:
+        # ### PATCH START: DSV4 model-owned Async CAM pipeline
         async_moe_metadata = get_async_moe_ubatch_metadata_from_forward_context()
         if async_moe_metadata is not None:
             if input_ids is None or inputs_embeds is not None:
@@ -462,6 +463,7 @@ class AFDDeepseekV4Model(native.DeepseekV4Model):
                 async_moe_metadata,
                 inputs_embeds,
             )
+        # ### PATCH END: DSV4 model-owned Async CAM pipeline
         return super().forward(
             input_ids,
             positions,
