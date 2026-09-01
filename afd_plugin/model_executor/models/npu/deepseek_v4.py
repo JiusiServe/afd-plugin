@@ -427,6 +427,15 @@ class AFDDeepseekV4Model(native.DeepseekV4Model):
     ) -> torch.Tensor:
         return self.layers[layer_idx].compute_ffn_output(hidden_states, **kwargs)
 
+    # Upstream source: vllm-ascend commit 80d8c194f,
+    # DeepseekV4Model.forward.
+    # Patch reason: native DSV4 serializes Attention and FFN within each layer,
+    # while Async CAM needs a model-owned two-stage schedule at the FFN boundary.
+    # Patch functionality: delegate planned Async CAM execution to the isolated
+    # DSV4 pipeline while preserving native forward for unsplit requests.
+    # The native forward is large, so the non-AFD path stays exact through
+    # inheritance rather than copying that implementation into this adapter.
+    # Signature: matches upstream; no added parameters.
     def forward(
         self,
         input_ids: torch.Tensor | None,
