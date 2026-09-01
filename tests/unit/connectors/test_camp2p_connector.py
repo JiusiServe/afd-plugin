@@ -21,7 +21,11 @@ from afd_plugin.connectors.npu.camp2p import (
     CAMP2pAFDConnector,
     CAMP2PExtraInfo,
     CAMP2PTransferState,
+    attention_group_size,
+    attention_peers_for_ffn,
+    attention_token_counts,
     build_camp2p_topology,
+    dst_ffn_for_attention,
 )
 
 
@@ -144,6 +148,46 @@ def test_camp2p_recv_attn_output_uses_original_contiguous_af_grouping(monkeypatc
     assert context0.states.batch_size == 5
     assert context0.states.h == 16
     assert context0.states.k == 2
+
+
+def test_camp2p_a5_attention_to_ffn_mapping_is_contiguous_groups():
+    # attn_size=4, ffn_size=2 -> group_size=2. Attention local ranks 0,1 map
+    # to FFN 0 and 2,3 to FFN 1 - the same grouping as _num_tokens_for_ffn_rank
+    # and the CAMP2P recv test (seq_lens [5] for FFN0, [12] for FFN1).
+    assert attention_group_size(4, 2) == 2
+    assert dst_ffn_for_attention(0, 4, 2) == 0
+    assert dst_ffn_for_attention(1, 4, 2) == 0
+    assert dst_ffn_for_attention(2, 4, 2) == 1
+    assert dst_ffn_for_attention(3, 4, 2) == 1
+    assert attention_peers_for_ffn(0, 4, 2) == [0, 1]
+    assert attention_peers_for_ffn(1, 4, 2) == [2, 3]
+
+
+def test_camp2p_a5_mapping_round_trip_covers_all_attention_ranks():
+    for ffn_size, attn_size in [(1, 1), (1, 2), (2, 4), (2, 6), (4, 4)]:
+        groups = [
+            attention_peers_for_ffn(j, attn_size, ffn_size) for j in range(ffn_size)
+        ]
+        assert sorted(p for group in groups for p in group) == list(
+            range(attn_size),
+        )
+        for i in range(attn_size):
+            assert i in attention_peers_for_ffn(
+                dst_ffn_for_attention(i, attn_size, ffn_size),
+                attn_size,
+                ffn_size,
+            )
+
+
+def test_camp2p_a5_attention_token_counts_expands_dp_to_tp():
+    # dp_size=2, attention_size=4 -> each DP count is replicated 2x.
+    counts = attention_token_counts({0: _FakeDPMetadata([2, 3])}, 0, 4)
+    assert counts == [2, 2, 3, 3]
+
+
+def test_camp2p_a5_attention_token_counts_missing_metadata_returns_none():
+    assert attention_token_counts({}, 0, 4) is None
+    assert attention_token_counts({0: None}, 0, 4) is None
 
 
 def test_camp2p_extra_info_rejects_unknown_mix_placement():
