@@ -606,9 +606,8 @@ def process_input_socket(
                             stats_step != last_stats_step
                         ):
                             logger.warning(
-                                "Received stats for out-of-order "
-                                "step (%d, %d) from engine %d (expected "
-                                "> (%d, %d))",
+                                "Received stats for out-of-order update "
+                                "(wave=%d step=%d) from engine %d (expected > (wave=%d step=%d))",
                                 stats_wave,
                                 stats_step,
                                 eng_index,
