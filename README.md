@@ -238,7 +238,7 @@ python -c 'from datasets import load_dataset; load_dataset("openai/gsm8k", "main
 uv run python tests/e2e/runner.py \
   --model /path/to/DeepSeek-V2-Lite \
   --device-backend gpu \
-  --scenario afd-eager \
+  --scenario afd-eager-2a1f \
   --attention-devices 0,1 \
   --ffn-devices 2 \
   --gsm8k-output-path /tmp/afd-e2e-gsm8k \

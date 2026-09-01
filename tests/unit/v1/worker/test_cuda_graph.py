@@ -6,7 +6,9 @@ import pytest
 
 from afd_plugin.v1.worker.cuda_graph import (
     FULL_DECODE_ONLY,
+    AFDGraphRunMode,
     cudagraph_mode_name,
+    graph_run_mode,
     make_ffn_graph_key,
     validate_cuda_graph_mode,
 )
@@ -199,3 +201,28 @@ def test_make_ffn_graph_key_dp1_tp1_unchanged():
         fallback=32,
     )
     assert key == ((0, (8,)),)
+
+
+@pytest.mark.parametrize(
+    ("is_graph_replaying", "graph_exists", "expected"),
+    [
+        (False, True, AFDGraphRunMode.EAGER),
+        (True, True, AFDGraphRunMode.REPLAY),
+        (True, False, AFDGraphRunMode.EAGER),
+    ],
+)
+def test_graph_run_mode_requires_attention_replaying(
+    is_graph_replaying,
+    graph_exists,
+    expected,
+):
+    assert (
+        graph_run_mode(
+            is_warmup=False,
+            is_graph_capturing=False,
+            is_graph_replaying=is_graph_replaying,
+            graph_enabled=True,
+            graph_exists=graph_exists,
+        )
+        is expected
+    )

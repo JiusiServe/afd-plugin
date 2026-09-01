@@ -123,12 +123,20 @@ class AFDControlPayload:
         is_warmup: Whether the payload belongs to a warmup step. This is
             separate from graph capture because warmup may prepare state without
             representing a real serving step.
+        is_graph_replaying: Whether the Attention side is currently replaying a
+            captured graph for this step. FFN may replay only when this is True
+            and a matching local graph exists.
+        is_profile: Whether the payload belongs to an initial memory-profile
+            forward. NPU FFN workers use this to preserve Ascend's balanced
+            dummy MoE routing in the split-process AFD execution model.
     """
 
     dp_metadata_list: dict[int, AFDDPMetadata]
     is_graph_capturing: bool
     is_warmup: bool
     input_ids_by_stage: dict[int, list[int]] = field(default_factory=dict)
+    is_graph_replaying: bool = False
+    is_profile: bool = False
 
     def __post_init__(self) -> None:
         self.dp_metadata_list = {
@@ -145,7 +153,9 @@ class AFDControlPayload:
                 input_ids,
                 dtype=torch.int64,
                 device="cpu",
-            ).flatten().tolist()
+            )
+            .flatten()
+            .tolist()
             for stage_idx, input_ids in self.input_ids_by_stage.items()
         }
 
@@ -321,10 +331,10 @@ def encode_control_payload(payload: AFDControlPayload) -> bytes:
     """Serialize an ``AFDControlPayload`` to a compact JSON byte string.
 
     Only ``num_tokens_across_dp_cpu`` / ``max_tokens_across_dp_cpu`` per stage
-    and the graph-capturing / warmup flags are carried; these are the fields the
-    FFN-side connectors read back after decode. Serializing to a plugin-owned
-    minimal schema keeps the wire format decoupled from vLLM-internal DP
-    metadata objects.
+    and the graph-capturing, warmup, replay, and profile flags are carried.
+    These are the fields the FFN-side connectors read back after decode. A
+    plugin-owned minimal schema keeps the wire format decoupled from
+    vLLM-internal DP metadata objects.
     """
     metadata_payload: dict[str, dict[str, int | list[int]]] = {}
     for stage_idx, dp_metadata in payload.dp_metadata_list.items():
@@ -341,6 +351,8 @@ def encode_control_payload(payload: AFDControlPayload) -> bytes:
         "dp_metadata_list": metadata_payload,
         "is_graph_capturing": bool(payload.is_graph_capturing),
         "is_warmup": bool(payload.is_warmup),
+        "is_graph_replaying": bool(payload.is_graph_replaying),
+        "is_profile": bool(payload.is_profile),
     }
     return json.dumps(wire_payload, separators=(",", ":"), sort_keys=True).encode(
         "utf-8",
@@ -375,6 +387,8 @@ def decode_control_payload(payload_bytes: bytes) -> AFDControlPayload:
         is_graph_capturing=bool(payload.get("is_graph_capturing", False)),
         is_warmup=bool(payload.get("is_warmup", False)),
         input_ids_by_stage=input_ids_by_stage,
+        is_graph_replaying=bool(payload.get("is_graph_replaying", False)),
+        is_profile=bool(payload.get("is_profile", False)),
     )
 
 

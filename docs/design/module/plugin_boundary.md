@@ -24,6 +24,7 @@ validation_paths:
   - "tests/unit/config/**"
   - "tests/unit/package/test_package.py"
   - "tests/unit/test_envs.py"
+  - "tests/unit/v1/worker/test_model_runner_v2.py"
   - "tests/unit/v1/worker/test_runtime_classpaths.py"
 upstream_refs:
   - "vLLM vllm.general_plugins entry-point group"
@@ -34,7 +35,7 @@ verified_platform_refs:
 related_issues:
   - "#89"
   - "#129"
-last_reviewed: 2026-08-03
+last_reviewed: 2026-08-27
 ---
 
 # Plugin boundary
@@ -93,10 +94,10 @@ order and failure behavior are:
 | 2 | Detect vLLM without importing it. If absent, mark registration complete. | CPU-only use remains available. |
 | 3 | Check the installed vLLM version with `strict=False`. | Warning/check failures are logged at debug level and registration continues. |
 | 4 | Import the four core compatibility patch modules. | Best effort. They share one `try` block, so an early import failure can leave a partial patch set and skip later imports. |
-| 5 | Register the DBO yield custom op. | Best effort; failure is logged at debug level. |
-| 6 | Apply the Ascend config patch and, when vLLM-Ascend is discoverable, load the force-load-balance patch. | Best effort; CUDA-only processes do not require Ascend. |
+| 5 | Register the plugin-owned `afd_balanced` routing-simulator strategy. | Required when vLLM is installed. An error propagates and `_registered` remains false. |
+| 6 | Register the DBO yield custom op. | Best effort; failure is logged at debug level. |
 | 7 | Register the AFD model architecture mappings with vLLM `ModelRegistry`. | Required when vLLM is installed. An error propagates and `_registered` remains false. |
-| 8 | Mark registration complete. | Later calls are no-ops. |
+| 8 | Mark registration complete. | Later calls are no-ops. Ascend compatibility remains deferred to NPU configuration/worker startup. |
 
 ```mermaid
 flowchart TD
@@ -106,9 +107,9 @@ flowchart TD
     FOUND -- No --> CPU["Mark complete; keep CPU-only use available"]
     FOUND -- Yes --> VERSION["Non-strict version check"]
     VERSION --> CORE["Best-effort core compatibility patches"]
-    CORE --> DBO["Best-effort DBO yield op"]
-    DBO --> ASCEND["Best-effort Ascend patches when discoverable"]
-    ASCEND --> MODEL["Required ModelRegistry mappings"]
+    CORE --> ROUTING["Required afd_balanced routing strategy"]
+    ROUTING --> DBO["Best-effort DBO yield op"]
+    DBO --> MODEL["Required ModelRegistry mappings"]
     MODEL -->|Success| COMPLETE["Mark registration complete"]
     MODEL -->|Failure| ERROR["Propagate error; leave _registered false"]
 ```
@@ -168,13 +169,22 @@ Role mismatches, unsupported platforms, non-standard Ascend workers, and
 incorrect explicit worker paths fail before device execution. CAM async always
 uses the NPU worker family.
 
+When upstream selects ModelRunnerV2, role workers apply an additional CPU-safe
+deployment validator before communication resources are created. Both roles
+must use the platform's synchronous connector, FFN-side gate placement,
+PP/PCP/DCP size 1, role ranks equal to DP x TP, static EP, and a registered AFD
+model; DBO, ubatching, elastic EP, EPLB, sequence-parallel MoE, and compile SP
+are rejected. CUDA V2 requires `P2pNcclAFDConnector`; Ascend V2 requires
+`CAMP2pAFDConnector`. Graph-mode details belong to
+[execution platforms](execution_platforms.md).
+
 The following internal paths remain loadable for compatibility with existing
 commands:
 
 | Platform | Attention | FFN | Related runtime path |
 | --- | --- | --- | --- |
-| CUDA | `afd_plugin.v1.worker.AFDAttentionWorker` | `afd_plugin.v1.worker.AFDFFNWorker` | `AFDAttentionModelRunner`, `GPUFFNModelRunner`, `AFDUBatchWrapper` in the same module namespace |
-| NPU | `afd_plugin.v1.worker.npu.AFDNPUAttentionWorker` | `afd_plugin.v1.worker.npu.AFDNPUFFNWorker` | `AFDNPUAttentionModelRunner`, `AFDNPUFFNModelRunner` in the same module namespace |
+| CUDA | `afd_plugin.v1.worker.AFDAttentionWorker` | `afd_plugin.v1.worker.AFDFFNWorker` | `AFDAttentionModelRunner`, `GPUFFNModelRunner`, and `AFDUBatchWrapper` are lazy exports; V2 Attention is constructed internally from `attention_model_runner_v2.py` |
+| NPU | `afd_plugin.v1.worker.npu.AFDNPUAttentionWorker` | `afd_plugin.v1.worker.npu.AFDNPUFFNWorker` | `AFDNPUAttentionModelRunner`, `AFDNPUAttentionModelRunnerV2`, and `AFDNPUFFNModelRunner` in the same module namespace |
 
 New commands should omit `--worker-cls`. These paths may change with the pinned
 runtime integration and are not stable third-party extension interfaces.
@@ -186,6 +196,9 @@ names. `AFD_CAMP2P_STUB_IO` and `AFD_FORCE_BALANCED_TOPK_IDS` have boolean
 helpers; offline scheduler CSV/rank/request-index names are exported for their
 consumers. Environment switches do not replace `additional_config["afd"]` as
 the activation or topology channel.
+
+`VLLM_USE_V2_MODEL_RUNNER` belongs to the upstream runtime and selects the V1
+or V2 construction path; it does not activate AFD or relax AFD validation.
 
 ## Failure and ownership rules
 

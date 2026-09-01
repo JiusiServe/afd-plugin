@@ -12,10 +12,28 @@ steps:
   - group: ":card_index_dividers: E2E Test"
     depends_on: upload-merge-pipeline
     steps:
-      - label: "E2E · DeepSeekV2-Lite"
+      - label: "E2E · DeepSeekV2-Lite · Legacy"
         timeout_in_minutes: 40
         commands:
           - "pip install 'lm_eval[api]==0.4.12'"
           - "export AFD_E2E_BACKEND=gpu"
-          - "pytest -sv tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py"
-        mirror_hardwares: h100_4
+          - >-
+            pytest -sv
+            "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[baseline-graph]"
+            "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-eager-2a2f]"
+            "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-graph-2a2f]"
+            "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-graph-dbo-2a2f]"
+        mirror_hardwares: l4_4
+
+      - label: "E2E · DeepSeekV2-Lite · ModelRunnerV2"
+        timeout_in_minutes: 40
+        commands:
+          - "pip install 'lm_eval[api]==0.4.12'"
+          - "export AFD_E2E_BACKEND=gpu"
+          - >-
+            pytest -sv
+            "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-v2-eager-dp2]"
+            "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-v2-eager-tp2]"
+            "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-v2-graph-dp2]"
+            "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py::test_deepseek_v2_lite[afd-v2-graph-tp2]"
+        mirror_hardwares: l4_4

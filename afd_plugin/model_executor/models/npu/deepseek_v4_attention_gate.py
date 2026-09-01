@@ -57,8 +57,7 @@ def _compute_sqrtsoftplus_topk(
         input_ids = getattr(forward_context, "input_ids", None)
         if input_ids is None:
             raise RuntimeError(
-                "DSV4 Hash routing requires local input_ids in the forward "
-                "context",
+                "DSV4 Hash routing requires local input_ids in the forward context",
             )
         input_ids = input_ids.reshape(-1).to(torch.int64)
         if input_ids.numel() != router_logits.shape[0]:
@@ -102,8 +101,7 @@ def _compute_standard_topk(
         norm_type = norm_type_by_scoring_func[moe.scoring_func]
     except KeyError as exc:
         raise RuntimeError(
-            "Unsupported non-Hash DSV4 routing scoring function: "
-            f"{moe.scoring_func!r}",
+            f"Unsupported non-Hash DSV4 routing scoring function: {moe.scoring_func!r}",
         ) from exc
     correction_bias = moe.gate.e_score_correction_bias
     if correction_bias is not None and correction_bias.dtype != router_logits.dtype:

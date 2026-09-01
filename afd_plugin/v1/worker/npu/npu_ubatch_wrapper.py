@@ -133,7 +133,7 @@ class AscendNPUGraphKey:
 
 
 FullGraphParamsUpdater = Callable[
-    [ForwardContext, int, torch.Tensor | None],
+    [ForwardContext, int],
     None,
 ]
 
@@ -300,7 +300,6 @@ class AscendUBatchWrapper(UBatchWrapper):
                     cudagraph_metadata,
                     forward_context,
                     stage_num_tokens[0],
-                    positions,
                 )
             else:
                 torch.npu.current_stream().synchronize()
@@ -355,7 +354,6 @@ class AscendUBatchWrapper(UBatchWrapper):
         graph_metadata: AscendNPUGraphMetaData,
         forward_context: ForwardContext,
         num_tokens: int,
-        positions: torch.Tensor | None,
     ) -> None:
         if graph_metadata.mla_graph_params is None:
             raise RuntimeError(
@@ -381,7 +379,6 @@ class AscendUBatchWrapper(UBatchWrapper):
                 self.full_graph_params_updater(
                     forward_context,
                     num_tokens,
-                    positions,
                 )
 
         torch.npu.current_stream().synchronize()

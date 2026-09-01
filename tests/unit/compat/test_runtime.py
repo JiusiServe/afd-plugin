@@ -73,6 +73,7 @@ def test_ascend_forward_context_installs_afd_metadata(monkeypatch):
         model_instance,
         num_tokens,
         num_tokens_across_dp,
+        in_profile_run,
     ):
         calls.append(
             {
@@ -83,6 +84,7 @@ def test_ascend_forward_context_installs_afd_metadata(monkeypatch):
                 "model_instance": model_instance,
                 "num_tokens": num_tokens,
                 "num_tokens_across_dp": num_tokens_across_dp,
+                "in_profile_run": in_profile_run,
             },
         )
         yield
@@ -104,7 +106,7 @@ def test_ascend_forward_context_installs_afd_metadata(monkeypatch):
         fake_ascend_forward_context,
     )
 
-    vllm_config = SimpleNamespace()
+    vllm_config = SimpleNamespace(use_v2_model_runner=False)
     afd_metadata = SimpleNamespace()
     model_instance = SimpleNamespace()
     with ascend_runtime.ascend_forward_context(
@@ -112,6 +114,7 @@ def test_ascend_forward_context_installs_afd_metadata(monkeypatch):
         afd_metadata=afd_metadata,
         model_instance=model_instance,
         num_tokens=3,
+        in_profile_run=True,
     ) as current_forward_context:
         assert current_forward_context is forward_context
         assert forward_context.additional_kwargs["afd_metadata"] is afd_metadata
@@ -125,6 +128,106 @@ def test_ascend_forward_context_installs_afd_metadata(monkeypatch):
             "model_instance": model_instance,
             "num_tokens": 3,
             "num_tokens_across_dp": None,
+            "in_profile_run": True,
+        },
+    ]
+
+
+def test_ascend_forward_context_uses_native_mrv2_layout(monkeypatch):
+    fake_vllm = ModuleType("vllm")
+    fake_vllm.__path__ = []
+    fake_config = ModuleType("vllm.config")
+    fake_forward_context_module = ModuleType("vllm.forward_context")
+    fake_vllm_ascend = ModuleType("vllm_ascend")
+    fake_vllm_ascend.__path__ = []
+    fake_ascend_forward_context = ModuleType(
+        "vllm_ascend.ascend_forward_context",
+    )
+    forward_context = SimpleNamespace(
+        additional_kwargs={"in_profile_run": True},
+    )
+    context_calls = []
+    profile_calls = []
+
+    class CUDAGraphMode:
+        NONE = "none"
+
+    @contextmanager
+    def set_forward_context(
+        attn_metadata,
+        vllm_config,
+        *,
+        num_tokens,
+        num_tokens_across_dp,
+        cudagraph_runtime_mode,
+        batch_descriptor,
+    ):
+        context_calls.append(
+            {
+                "attn_metadata": attn_metadata,
+                "vllm_config": vllm_config,
+                "num_tokens": num_tokens,
+                "num_tokens_across_dp": num_tokens_across_dp,
+                "cudagraph_runtime_mode": cudagraph_runtime_mode,
+                "batch_descriptor": batch_descriptor,
+            },
+        )
+        yield
+
+    @contextmanager
+    def override_mrv2_in_profile_run(enabled):
+        profile_calls.append(enabled)
+        yield
+
+    def unexpected_legacy_context(*args, **kwargs):
+        raise AssertionError("MRv2 must not use set_ascend_forward_context")
+
+    fake_config.CUDAGraphMode = CUDAGraphMode
+    fake_forward_context_module.get_forward_context = lambda: forward_context
+    fake_forward_context_module.set_forward_context = set_forward_context
+    fake_ascend_forward_context.override_mrv2_in_profile_run = (
+        override_mrv2_in_profile_run
+    )
+    fake_ascend_forward_context.set_ascend_forward_context = unexpected_legacy_context
+    monkeypatch.setitem(sys.modules, "vllm", fake_vllm)
+    monkeypatch.setitem(sys.modules, "vllm.config", fake_config)
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm.forward_context",
+        fake_forward_context_module,
+    )
+    monkeypatch.setitem(sys.modules, "vllm_ascend", fake_vllm_ascend)
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_ascend.ascend_forward_context",
+        fake_ascend_forward_context,
+    )
+
+    vllm_config = SimpleNamespace(use_v2_model_runner=True)
+    afd_metadata = SimpleNamespace()
+    model_instance = SimpleNamespace()
+    num_tokens_across_dp = SimpleNamespace()
+    with ascend_runtime.ascend_forward_context(
+        vllm_config=vllm_config,
+        afd_metadata=afd_metadata,
+        model_instance=model_instance,
+        num_tokens=7,
+        num_tokens_across_dp=num_tokens_across_dp,
+        in_profile_run=True,
+    ) as current_forward_context:
+        assert current_forward_context is forward_context
+        assert forward_context.additional_kwargs["afd_metadata"] is afd_metadata
+        assert forward_context.additional_kwargs["model_instance"] is model_instance
+
+    assert profile_calls == [True]
+    assert context_calls == [
+        {
+            "attn_metadata": None,
+            "vllm_config": vllm_config,
+            "num_tokens": 7,
+            "num_tokens_across_dp": num_tokens_across_dp,
+            "cudagraph_runtime_mode": CUDAGraphMode.NONE,
+            "batch_descriptor": None,
         },
     ]
 

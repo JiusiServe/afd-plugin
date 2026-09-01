@@ -18,8 +18,8 @@ depends_on:
   - "execution_platforms.md"
 validation_paths:
   - "tests/unit/connectors/**"
-  - "tests/e2e/features/test_tp_gpu.py"
-  - "tests/e2e/features/test_tp_npu.py"
+  - "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py"
+  - "tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py"
   - "tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py"
 upstream_refs:
   - "vLLM vllm.forward_context.DPMetadata"
@@ -34,7 +34,7 @@ related_issues:
   - "#105"
   - "#107"
   - "#129"
-last_reviewed: 2026-08-03
+last_reviewed: 2026-08-27
 ---
 
 # Connector contracts
@@ -57,8 +57,8 @@ depend on role worker implementations.
 | --- | --- | --- |
 | Base surface and lazy factory | [`base.py`](../../../afd_plugin/connectors/base.py), [`factory.py`](../../../afd_plugin/connectors/factory.py) | [`test_base_factory.py`](../../../tests/unit/connectors/test_base_factory.py) |
 | Payloads and control-plane codec | [`metadata.py`](../../../afd_plugin/connectors/metadata.py) | Connector unit tests and [`test_forward_context.py`](../../../tests/unit/model_executor/models/test_forward_context.py) |
-| CUDA P2P | [`gpu/p2p.py`](../../../afd_plugin/connectors/gpu/p2p.py), [`topology.py`](../../../afd_plugin/distributed/topology.py) | [`test_p2p_connector.py`](../../../tests/unit/connectors/test_p2p_connector.py), [`test_tp_gpu.py`](../../../tests/e2e/features/test_tp_gpu.py) |
-| Ascend CAMP2P | [`npu/camp2p.py`](../../../afd_plugin/connectors/npu/camp2p.py) | [`test_camp2p_connector.py`](../../../tests/unit/connectors/test_camp2p_connector.py), [`test_tp_npu.py`](../../../tests/e2e/features/test_tp_npu.py) |
+| CUDA P2P | [`gpu/p2p.py`](../../../afd_plugin/connectors/gpu/p2p.py), [`topology.py`](../../../afd_plugin/distributed/topology.py) | [`test_p2p_connector.py`](../../../tests/unit/connectors/test_p2p_connector.py), [DeepSeek-V2-Lite E2E](../../../tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py) |
+| Ascend CAMP2P | [`npu/camp2p.py`](../../../afd_plugin/connectors/npu/camp2p.py) | [`test_camp2p_connector.py`](../../../tests/unit/connectors/test_camp2p_connector.py), [DeepSeek-V2-Lite E2E](../../../tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py) |
 | Ascend CAM async | [`npu/async_cam.py`](../../../afd_plugin/connectors/npu/async_cam.py) | [`test_async_cam_connector.py`](../../../tests/unit/connectors/test_async_cam_connector.py), [`test_async_cam_npu.py`](../../../tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py) |
 | Process-group construction | [`afd_process_group.py`](../../../afd_plugin/distributed/afd_process_group.py) | Connector initialization tests plus platform E2E paths |
 
@@ -133,7 +133,7 @@ construction, while CAM async leaves it as `None`.
 | `init_afd_connector()` | Owning worker/runner creates backend groups, communicators, operator registrations, and topology-derived state after the device runtime is ready. |
 | `is_initialized` | Reports whether backend communication resources are usable. |
 | `close()` | Owning runtime releases connector-owned resources during shutdown; cleanup is expected to be safe after partial initialization. |
-| `send_attn_output(hidden_states, metadata, **kwargs)` | Attention sends one layer/stage tensor and transfer description. |
+| `send_attn_output(hidden_states, metadata, **kwargs)` | Attention sends one layer/stage tensor and transfer description, plus model-owned optional routing logits or token-aligned input IDs. |
 | `recv_ffn_output(**kwargs)` | Attention receives the matching FFN result. |
 | `recv_attn_output(ubatch_idx=None, **kwargs)` | FFN receives an `AFDA2FTransferPayload`. |
 | `send_ffn_output(ffn_output, metadata, **kwargs)` | FFN returns a result using metadata/state from the matching receive. |
@@ -160,24 +160,34 @@ The current plugin-owned objects are:
 | Object | Current responsibility | Stability |
 | --- | --- | --- |
 | `AFDDPMetadata` | CPU token counts plus DP/SP-compatible sizing helpers. It adapts upstream-like metadata into a plugin-owned representation. | Wire representation is the candidate contract; helper surface is draft. |
-| `AFDControlPayload` | Stage-to-DP-metadata mapping plus graph-capture and warmup flags. | Candidate control envelope. |
+| `AFDControlPayload` | Stage-to-DP-metadata mapping plus graph-capture, warmup, and profile flags. | Candidate control envelope. |
 | `AFDTransferMetadata` | Layer, stage, positive split lengths, total-token validation, and optional backend state. | **Draft** under [#88](https://github.com/JiusiServe/afd-plugin/issues/88). |
 | `AFDTransferState` | Empty base for backend-specific state such as CAMP2P handles or async CAM state. | **Draft** under [#88](https://github.com/JiusiServe/afd-plugin/issues/88). |
-| `AFDA2FTransferPayload` | Attention-to-FFN hidden states, common metadata, and optional routing/quantization/backend fields. | **Draft** and scheduled for state splitting in [#105](https://github.com/JiusiServe/afd-plugin/issues/105). |
+| `AFDA2FTransferPayload` | Attention-to-FFN hidden states, common metadata, and optional router logits or token-aligned input IDs. | **Draft** and scheduled for state splitting in [#105](https://github.com/JiusiServe/afd-plugin/issues/105). |
 | `AFDF2ATransferPayload` | Structured routed/shared FFN outputs where the backend needs both. | **Draft** with the transfer-state work. |
 | `AFDForwardContextMetadata` | Stage/slice information and a live connector reference used by model execution. | **Draft**; model-facing ownership is unresolved. |
 
 The control-plane codec serializes only plugin-owned primitive data: integer
-stage keys, token-count lists, max counts, and boolean flags. It encodes JSON,
+stage keys, token-count lists, max counts, and graph/warmup/profile boolean
+flags. It encodes JSON,
 sends a size followed by a `uint8` tensor, and reconstructs
 `AFDControlPayload`; it does not serialize a vLLM `DPMetadata` object. Tensor
 data-path layout remains connector-specific.
 
 `AFDTransferMetadata` is passed from receive through compute to the matching
-send. The caller must not discard or substitute its `transfer_state` while a
-backend operation still depends on it. The concrete contents and ownership of
+send. The caller must not discard or substitute the matching
+`AFDTransferContext.states` value while a backend operation still depends on
+it. The concrete contents and ownership of
 asynchronous handles are intentionally not declared stable until #88 and #105
 are resolved.
+
+Model-specific tensors remain explicit payload fields rather than transfer
+state. P2P can send optional router logits and one-dimensional, token-aligned
+`torch.int32` input IDs after hidden states. FFN requests only the fields its
+model declares, concatenates them with the same per-peer token order as hidden
+states, and returns them in `AFDA2FTransferPayload`. The input-ID path supports
+DeepSeek V4's native hash router and has graph-stable receive buffers; it does
+not make input IDs mandatory for other models or connectors.
 
 ## Lifecycle and sequencing
 

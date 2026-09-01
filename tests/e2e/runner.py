@@ -23,7 +23,10 @@ from tests.e2e.accuracy.gsm8k import (
     _extract_gsm8k_sample_count,
     _run_lm_eval,
 )
-from tests.e2e.process_utils import terminate_process_groups
+from tests.e2e.process_utils import (
+    kill_processes_matching_environment,
+    terminate_process_groups,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ASYNC_AFD_CONNECTOR = "CAMAsyncAFDConnector"
@@ -37,9 +40,30 @@ ASYNC_UBATCH_FFN_RANKS = 1
 ASYNC_UBATCH_ATTENTION_TP_SIZE = 2
 ASYNC_UBATCH_NUM_STAGES = 2
 ASYNC_UBATCH_BATCH_SIZE = 2
+V2_SYNC_CONNECTOR = "P2pNcclAFDConnector"
+V2_SCENARIOS = (
+    "afd-v2-eager-1a1f",
+    "afd-v2-eager-dp2",
+    "afd-v2-eager-tp2",
+    "afd-v2-graph-1a1f",
+    "afd-v2-graph-dp2",
+    "afd-v2-graph-tp2",
+)
+V2_SINGLE_RANK_SCENARIOS = frozenset(
+    ("afd-v2-eager-1a1f", "afd-v2-graph-1a1f"),
+)
+V2_TENSOR_PARALLEL_SCENARIOS = frozenset(
+    ("afd-v2-eager-tp2", "afd-v2-graph-tp2"),
+)
+E2E_RUN_ID_ENV = "AFD_E2E_RUN_ID"
+E2E_PROCESS_ROLE_ENV = "AFD_E2E_PROCESS_ROLE"
 PROCESS_TERMINATION_TIMEOUT_S = 20
 PROCESS_POLL_INTERVAL_S = 0.2
 PROCESS_REAP_TIMEOUT_S = 5
+# NPU async teardown: workers blocked in uninterruptible driver/HCCL teardown
+# take tens of seconds to disappear after SIGKILL (measured up to ~45s on A3),
+# so the NPU async path waits much longer before reporting survivors.
+NPU_ASYNC_PROCESS_KILL_TIMEOUT_S = 120
 LOG_THREAD_JOIN_TIMEOUT_S = 2
 VLLM_SHUTDOWN_TIMEOUT_S = 10
 DEFAULT_GSM8K_SAMPLE_LIMIT = 7
@@ -82,8 +106,15 @@ def main() -> int:
     attention_devices = parse_csv(args.attention_devices)
     ffn_devices = parse_csv(args.ffn_devices)
     validate_topology(args, attention_devices, ffn_devices)
+    use_npu_async_process_cleanup = uses_npu_async_process_cleanup(args)
+    e2e_run_id = (
+        f"{os.getpid()}-{time.monotonic_ns()}"
+        if use_npu_async_process_cleanup
+        else None
+    )
 
     processes: list[subprocess.Popen[str]] = []
+    processes_by_role: dict[str, subprocess.Popen[str]] = {}
     log_threads: list[threading.Thread] = []
     handled_signals = (signal.SIGTERM, signal.SIGINT)
     previous_handlers = {signum: signal.getsignal(signum) for signum in handled_signals}
@@ -101,6 +132,7 @@ def main() -> int:
     for signum in handled_signals:
         signal.signal(signum, exit_after_cleanup)
 
+    launch_order: tuple[tuple[str, str], ...]
     try:
         if args.baseline:
             role_devices = {"baseline": attention_devices}
@@ -124,7 +156,12 @@ def main() -> int:
                 else build_vllm_command(args, role=role)
             )
             visible_devices = ",".join(role_devices[role])
-            process_env = build_env(visible_devices, args, role=role)
+            process_env = build_env(
+                visible_devices,
+                args,
+                role=role,
+                e2e_run_id=e2e_run_id,
+            )
             print_command(
                 label,
                 command,
@@ -137,6 +174,7 @@ def main() -> int:
                 process_env,
             )
             processes.append(process)
+            processes_by_role[role] = process
             log_threads.append(stream_output(role, process))
             ensure_alive(process, f"{label} process exited during startup")
 
@@ -153,10 +191,27 @@ def main() -> int:
         body_error = sys.exc_info()[1]
         cleanup_error: BaseException | None = None
         cleanup_in_progress = True
+        ffn_process = processes_by_role.get("ffn")
+        deferred_sigkill_pgids = (
+            (ffn_process.pid,)
+            if use_npu_async_process_cleanup and ffn_process is not None
+            else ()
+        )
         try:
             try:
                 try:
-                    terminate_processes(processes)
+                    terminate_processes(
+                        processes,
+                        deferred_sigkill_pgids=deferred_sigkill_pgids,
+                        force_kill_environment=(
+                            {
+                                E2E_RUN_ID_ENV: e2e_run_id,
+                                E2E_PROCESS_ROLE_ENV: "ffn",
+                            }
+                            if e2e_run_id is not None
+                            else None
+                        ),
+                    )
                 finally:
                     try:
                         for thread in log_threads:
@@ -196,12 +251,15 @@ def parse_args() -> argparse.Namespace:
         "--scenario",
         choices=[
             "baseline-graph",
-            "afd-eager",
-            "afd-graph",
-            "afd-graph-dbo",
+            "afd-eager-2a1f",
+            "afd-graph-2a1f",
+            "afd-graph-dbo-2a1f",
+            "afd-eager-2a2f",
+            "afd-graph-2a2f",
             "afd-graph-dbo-2a2f",
             ASYNC_CAM_SCENARIO,
             ASYNC_UBATCH_SCENARIO,
+            *V2_SCENARIOS,
         ],
         required=True,
         help="Fixed E2E scenario to run.",
@@ -306,9 +364,11 @@ def configure_scenario(args: argparse.Namespace) -> None:
     is_async_ubatch = args.scenario == ASYNC_UBATCH_SCENARIO
     scenario_settings = {
         "baseline-graph": (True, True, False, 4, 0),
-        "afd-eager": (False, False, False, 2, 1),
-        "afd-graph": (False, True, False, 2, 1),
-        "afd-graph-dbo": (False, True, True, 2, 1),
+        "afd-eager-2a1f": (False, False, False, 2, 1),
+        "afd-graph-2a1f": (False, True, False, 2, 1),
+        "afd-graph-dbo-2a1f": (False, True, True, 2, 1),
+        "afd-eager-2a2f": (False, False, False, 2, 2),
+        "afd-graph-2a2f": (False, True, False, 2, 2),
         "afd-graph-dbo-2a2f": (False, True, True, 2, 2),
         ASYNC_CAM_SCENARIO: (
             False,
@@ -324,6 +384,12 @@ def configure_scenario(args: argparse.Namespace) -> None:
             ASYNC_UBATCH_ATTENTION_RANKS,
             ASYNC_UBATCH_FFN_RANKS,
         ),
+        "afd-v2-eager-1a1f": (False, False, False, 1, 1),
+        "afd-v2-eager-dp2": (False, False, False, 2, 2),
+        "afd-v2-eager-tp2": (False, False, False, 2, 2),
+        "afd-v2-graph-1a1f": (False, True, False, 1, 1),
+        "afd-v2-graph-dp2": (False, True, False, 2, 2),
+        "afd-v2-graph-tp2": (False, True, False, 2, 2),
     }
     baseline, use_graph, enable_dbo, attention_ranks, ffn_ranks = scenario_settings[
         args.scenario
@@ -338,9 +404,31 @@ def configure_scenario(args: argparse.Namespace) -> None:
         args.attention_tp_size = ASYNC_CAM_ATTENTION_TP_SIZE
     elif is_async_ubatch:
         args.attention_tp_size = ASYNC_UBATCH_ATTENTION_TP_SIZE
+    elif args.scenario in V2_TENSOR_PARALLEL_SCENARIOS:
+        args.attention_tp_size = 2
     else:
         args.attention_tp_size = 1
-    args.ffn_tp_size = 1
+    args.ffn_tp_size = 2 if args.scenario in V2_TENSOR_PARALLEL_SCENARIOS else 1
+    args.use_v2_model_runner = args.scenario in V2_SCENARIOS
+    if args.use_v2_model_runner:
+        if args.afd_async or args.afd_connector == ASYNC_AFD_CONNECTOR:
+            raise ValueError("ModelRunnerV2 E2E scenarios require synchronous AFD")
+        if args.compute_gate_on_attention:
+            raise ValueError(
+                "ModelRunnerV2 E2E scenarios require compute_gate_on_attention=false",
+            )
+        if args.afd_connector not in (None, V2_SYNC_CONNECTOR):
+            raise ValueError(
+                "ModelRunnerV2 E2E scenarios require P2pNcclAFDConnector",
+            )
+        if args.afd_connector_extra_config:
+            raise ValueError(
+                "ModelRunnerV2 E2E scenarios do not support connector extra config",
+            )
+        if args.use_decode_bench_connector:
+            raise ValueError(
+                "ModelRunnerV2 E2E scenarios do not support decode-bench connector",
+            )
     if not is_async_cam and args.gsm8k_output_path is None:
         raise ValueError("--gsm8k-output-path is required for GSM8K scenarios")
     if is_async_cam:
@@ -418,6 +506,8 @@ def validate_topology(
         if role_tp_size(args, "attention") != 1:
             raise ValueError("baseline E2E requires Attention TP=1")
         return
+    if args.use_v2_model_runner and args.device_backend != "gpu":
+        raise ValueError("ModelRunnerV2 E2E scenarios require GPU")
     if (
         args.scenario in (ASYNC_CAM_SCENARIO, ASYNC_UBATCH_SCENARIO)
         and args.device_backend != "npu"
@@ -536,13 +626,19 @@ def build_vllm_command(
         "--additional-config",
         json.dumps(afd_config, separators=(",", ":")),
     ]
+    if args.use_v2_model_runner:
+        cmd.extend(
+            [
+                "--no-enable-prefix-caching",
+                "--no-enable-chunked-prefill",
+                "--no-async-scheduling",
+            ],
+        )
     if args.cuda_graph_full_decode_only:
         capture_size = str(args.cudagraph_capture_size)
         cmd.extend(
             [
                 "--max-num-seqs",
-                capture_size,
-                "--max-num-batched-tokens",
                 capture_size,
                 "--max-cudagraph-capture-size",
                 capture_size,
@@ -610,6 +706,14 @@ def parse_afd_connector_extra_config(values: list[str]) -> dict[str, Any]:
 
 def uses_async_connector(args: argparse.Namespace) -> bool:
     return args.afd_connector == ASYNC_AFD_CONNECTOR
+
+
+def uses_npu_async_process_cleanup(args: argparse.Namespace) -> bool:
+    """Return whether E2E teardown must find and kill every FFN process."""
+    return args.device_backend == "npu" and args.scenario in (
+        ASYNC_CAM_SCENARIO,
+        ASYNC_UBATCH_SCENARIO,
+    )
 
 
 def decode_bench_connector_config() -> str:
@@ -731,17 +835,23 @@ def build_env(
     args: argparse.Namespace,
     *,
     role: str | None = None,
+    e2e_run_id: str | None = None,
 ) -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("VLLM_ENGINE_READY_TIMEOUT_S", "18000")
     env[visible_devices_env_name(args.device_backend)] = visible_devices
     if args.device_backend != "npu":
-        env["VLLM_USE_V2_MODEL_RUNNER"] = "0"
+        env["VLLM_USE_V2_MODEL_RUNNER"] = "1" if args.use_v2_model_runner else "0"
     if args.baseline:
         env["VLLM_PLUGINS"] = "ascend" if args.device_backend == "npu" else ""
     else:
         env["VLLM_PLUGINS"] = "ascend,afd" if args.device_backend == "npu" else "afd"
     env["PYTHONUNBUFFERED"] = "1"
+    if e2e_run_id is not None:
+        if role is None:
+            raise ValueError("role is required when setting an E2E run id")
+        env[E2E_RUN_ID_ENV] = e2e_run_id
+        env[E2E_PROCESS_ROLE_ENV] = role
     if (
         args.device_backend == "npu"
         and role in ("attention", "ffn")
@@ -834,13 +944,28 @@ def ensure_processes_alive(processes: list[subprocess.Popen[str]]) -> None:
             )
 
 
-def terminate_processes(processes: list[subprocess.Popen[str]]) -> None:
+def terminate_processes(
+    processes: list[subprocess.Popen[str]],
+    *,
+    deferred_sigkill_pgids: tuple[int, ...] = (),
+    force_kill_environment: dict[str, str] | None = None,
+) -> None:
     failures = terminate_process_groups(
         processes,
         termination_timeout_s=PROCESS_TERMINATION_TIMEOUT_S,
         poll_interval_s=PROCESS_POLL_INTERVAL_S,
         reap_timeout_s=PROCESS_REAP_TIMEOUT_S,
+        deferred_sigkill_pgids=deferred_sigkill_pgids,
     )
+    if force_kill_environment is not None:
+        failures.extend(
+            kill_processes_matching_environment(
+                force_kill_environment,
+                timeout_s=NPU_ASYNC_PROCESS_KILL_TIMEOUT_S,
+                poll_interval_s=PROCESS_POLL_INTERVAL_S,
+                process_name="FFN",
+            ),
+        )
     if failures:
         raise RuntimeError("; ".join(failures))
 

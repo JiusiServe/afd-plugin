@@ -9,6 +9,7 @@ pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
 from vllm.config import CUDAGraphMode
+from vllm.forward_context import BatchDescriptor, ForwardContext
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
 import afd_plugin.model_executor.models.forward_context as afd_forward_context
@@ -18,13 +19,14 @@ from afd_plugin.distributed import resolve_role_rank
 from afd_plugin.model_executor.models.forward_context import (
     get_afd_metadata_from_forward_context,
 )
+from afd_plugin.v1.worker.attention_metadata import _is_ubatch_child_afd_context
 from afd_plugin.v1.worker.attention_model_runner import (
     AFDAttentionModelRunner,
-    _is_ubatch_child_afd_context,
     fail_if_cuda_graph_enabled,
     fail_if_unsupported_ubatching,
 )
 from afd_plugin.v1.worker.ubatch_wrapper import (
+    AFDUBatchWrapper,
     build_ubatch_additional_kwargs,
     build_ubatch_afd_metadata,
 )
@@ -68,14 +70,22 @@ class _RecordingConnector:
         assert isinstance(payload, AFDControlPayload)
         self.dp_metadata_updates.append(payload.dp_metadata_list)
         self.dp_metadata_update_flags.append(
-            (payload.is_graph_capturing, payload.is_warmup),
+            (
+                payload.is_graph_capturing,
+                payload.is_warmup,
+                payload.is_profile,
+            ),
         )
 
     def send_dp_metadata_list(self, payload):
         assert isinstance(payload, AFDControlPayload)
         self.sent_dp_metadata_lists.append(payload.dp_metadata_list)
         self.sent_dp_metadata_flags.append(
-            (payload.is_graph_capturing, payload.is_warmup),
+            (
+                payload.is_graph_capturing,
+                payload.is_warmup,
+                payload.is_profile,
+            ),
         )
 
     def close(self):
@@ -98,11 +108,15 @@ def _install_fake_vllm_forward_context(monkeypatch):
     forward_context_module = afd_forward_context.forward_context_module
 
     def create_forward_context():
-        return SimpleNamespace(
+        return ForwardContext(
+            no_compile_layers={},
+            attn_metadata={},
+            slot_mapping={},
             additional_kwargs={},
             dp_metadata=SimpleNamespace(num_tokens_across_dp_cpu=[1]),
             ubatch_slices=None,
-            batch_descriptor=SimpleNamespace(num_tokens=1),
+            batch_descriptor=BatchDescriptor(num_tokens=1),
+            cudagraph_runtime_mode=CUDAGraphMode.NONE,
         )
 
     monkeypatch.setattr(
@@ -134,7 +148,7 @@ def test_attention_runner_builds_single_stage_metadata():
     runner.connector = object()
     runner._afd_transaction_counter = 0
 
-    metadata = runner._build_afd_metadata(None, 7)
+    metadata = runner.build_afd_metadata(None, 7)
 
     assert metadata.tokens_start_loc == [0]
     assert metadata.requests_start_loc == [0]
@@ -151,14 +165,19 @@ def test_attention_runner_installs_afd_metadata_on_forward_context():
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
     runner._afd_transaction_counter = 0
-    runner._afd_pending_metadata = runner._build_afd_metadata(None, 5)
-    forward_context = SimpleNamespace(
+    runner._afd_pending_metadata = runner.build_afd_metadata(None, 5)
+    forward_context = ForwardContext(
+        no_compile_layers={},
+        attn_metadata={},
+        slot_mapping={},
         additional_kwargs={"platform_key": "platform_value"},
         dp_metadata=_dp_metadata([5]),
         ubatch_slices=None,
+        batch_descriptor=BatchDescriptor(num_tokens=5),
+        cudagraph_runtime_mode=CUDAGraphMode.NONE,
     )
 
-    runner._install_afd_metadata_on_forward_context(forward_context)
+    runner.install_afd_metadata_on_forward_context(forward_context)
 
     assert forward_context.additional_kwargs["platform_key"] == "platform_value"
     assert forward_context.additional_kwargs["afd_metadata"].tokens_lens == [5]
@@ -166,7 +185,7 @@ def test_attention_runner_installs_afd_metadata_on_forward_context():
     assert _tokens(runner.connector.dp_metadata_updates[0][0]) == [5]
     assert set(runner.connector.sent_dp_metadata_lists[0]) == {0}
     assert _tokens(runner.connector.sent_dp_metadata_lists[0][0]) == [5]
-    assert runner.connector.sent_dp_metadata_flags == [(False, False)]
+    assert runner.connector.sent_dp_metadata_flags == [(False, False, False)]
 
 
 def test_attention_runner_initializes_missing_forward_context_kwargs():
@@ -177,14 +196,19 @@ def test_attention_runner_initializes_missing_forward_context_kwargs():
     runner._afd_is_graph_capturing = False
     runner._afd_transaction_counter = 0
     runner._afd_suppress_metadata_send = True
-    runner._afd_pending_metadata = runner._build_afd_metadata(None, 5)
-    forward_context = SimpleNamespace(
+    runner._afd_pending_metadata = runner.build_afd_metadata(None, 5)
+    forward_context = ForwardContext(
+        no_compile_layers={},
+        attn_metadata={},
+        slot_mapping={},
         additional_kwargs=None,
         dp_metadata=_dp_metadata([5]),
         ubatch_slices=None,
+        batch_descriptor=BatchDescriptor(num_tokens=5),
+        cudagraph_runtime_mode=CUDAGraphMode.NONE,
     )
 
-    runner._install_afd_metadata_on_forward_context(forward_context)
+    runner.install_afd_metadata_on_forward_context(forward_context)
 
     assert forward_context.additional_kwargs["afd_metadata"].tokens_lens == [5]
 
@@ -199,16 +223,19 @@ def test_attention_runner_uses_padded_full_graph_tokens_for_afd_metadata():
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
     runner._afd_transaction_counter = 0
-    runner._afd_pending_metadata = runner._build_afd_metadata(None, 1)
-    forward_context = SimpleNamespace(
+    runner._afd_pending_metadata = runner.build_afd_metadata(None, 1)
+    forward_context = ForwardContext(
+        no_compile_layers={},
+        attn_metadata={},
+        slot_mapping={},
         additional_kwargs={},
         dp_metadata=SimpleNamespace(num_tokens_across_dp_cpu=[1]),
         ubatch_slices=None,
-        batch_descriptor=SimpleNamespace(num_tokens=64),
-        cudagraph_runtime_mode=SimpleNamespace(name="FULL"),
+        batch_descriptor=BatchDescriptor(num_tokens=64),
+        cudagraph_runtime_mode=CUDAGraphMode.FULL,
     )
 
-    runner._install_afd_metadata_on_forward_context(forward_context)
+    runner.install_afd_metadata_on_forward_context(forward_context)
 
     metadata = forward_context.additional_kwargs["afd_metadata"]
     assert metadata.tokens_lens == [1]
@@ -232,7 +259,7 @@ def test_attention_runner_sends_per_ubatch_dp_metadata():
     runner._afd_pending_metadata = None
     ubatch_slices = [_UbatchSlice(0, 3, 0, 1), _UbatchSlice(3, 8, 1, 2)]
 
-    runner._send_dp_metadata(None, ubatch_slices)
+    runner.send_dp_metadata(None, ubatch_slices)
 
     assert set(runner.connector.dp_metadata_updates[0]) == {0, 1}
     assert set(runner.connector.sent_dp_metadata_lists[0]) == {0, 1}
@@ -250,7 +277,7 @@ def test_attention_runner_skips_dp_metadata_send_for_ubatch_child_context():
     runner._afd_transaction_counter = 0
     runner._afd_pending_metadata = None
 
-    parent = runner._build_afd_metadata(
+    parent = runner.build_afd_metadata(
         [_UbatchSlice(0, 3, 0, 1), _UbatchSlice(3, 8, 1, 2)],
         8,
     )
@@ -259,15 +286,20 @@ def test_attention_runner_skips_dp_metadata_send_for_ubatch_child_context():
         [_UbatchSlice(0, 3, 0, 1), _UbatchSlice(3, 8, 1, 2)],
         1,
     )
-    forward_context = SimpleNamespace(
+    forward_context = ForwardContext(
+        no_compile_layers={},
+        attn_metadata={},
+        slot_mapping={},
         additional_kwargs={"afd_metadata": child},
         dp_metadata=_dp_metadata([5]),
         ubatch_slices=None,
+        batch_descriptor=BatchDescriptor(num_tokens=5),
+        cudagraph_runtime_mode=CUDAGraphMode.NONE,
     )
 
     assert _is_ubatch_child_afd_context(forward_context, child)
 
-    runner._install_afd_metadata_on_forward_context(forward_context)
+    runner.install_afd_metadata_on_forward_context(forward_context)
 
     assert forward_context.additional_kwargs["afd_metadata"] is child
     assert runner.connector.dp_metadata_updates == []
@@ -284,11 +316,16 @@ def test_attention_runner_does_not_skip_single_stage_context():
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
     runner._afd_transaction_counter = 0
-    runner._afd_pending_metadata = runner._build_afd_metadata(None, 5)
-    forward_context = SimpleNamespace(
+    runner._afd_pending_metadata = runner.build_afd_metadata(None, 5)
+    forward_context = ForwardContext(
+        no_compile_layers={},
+        attn_metadata={},
+        slot_mapping={},
         additional_kwargs={},
         dp_metadata=_dp_metadata([5]),
         ubatch_slices=None,
+        batch_descriptor=BatchDescriptor(num_tokens=5),
+        cudagraph_runtime_mode=CUDAGraphMode.NONE,
     )
 
     assert not _is_ubatch_child_afd_context(
@@ -296,7 +333,7 @@ def test_attention_runner_does_not_skip_single_stage_context():
         runner._afd_pending_metadata,
     )
 
-    runner._install_afd_metadata_on_forward_context(forward_context)
+    runner.install_afd_metadata_on_forward_context(forward_context)
 
     assert set(runner.connector.sent_dp_metadata_lists[0]) == {0}
     assert _tokens(runner.connector.sent_dp_metadata_lists[0][0]) == [5]
@@ -306,7 +343,7 @@ def test_ubatch_metadata_clones_parent_and_preserves_additional_kwargs():
     runner = object.__new__(AFDAttentionModelRunner)
     runner.connector = object()
     runner._afd_transaction_counter = 0
-    parent = runner._build_afd_metadata(
+    parent = runner.build_afd_metadata(
         [_UbatchSlice(0, 3, 0, 1), _UbatchSlice(3, 8, 1, 2)],
         8,
     )
@@ -335,6 +372,40 @@ def test_ubatch_metadata_clones_parent_and_preserves_additional_kwargs():
     assert second.tokens_unpadded_lens == [4]
     assert child_kwargs["platform_key"] == "platform_value"
     assert child_kwargs["afd_metadata"] is second
+
+
+def test_ubatch_missing_metadata_uses_complete_public_installer():
+    runner = object.__new__(AFDAttentionModelRunner)
+    runner.vllm_config = SimpleNamespace(parallel_config=_parallel_config())
+    runner.connector = _RecordingConnector()
+    runner._is_warmup = False
+    runner._afd_is_graph_capturing = False
+    runner._afd_suppress_metadata_send = False
+    runner._afd_pending_metadata = None
+    runner._afd_transaction_counter = 0
+    ubatch_slices = [_UbatchSlice(0, 3, 0, 1), _UbatchSlice(3, 8, 1, 2)]
+    forward_context = ForwardContext(
+        no_compile_layers={},
+        attn_metadata={},
+        slot_mapping={},
+        additional_kwargs={},
+        dp_metadata=None,
+        ubatch_slices=ubatch_slices,
+        batch_descriptor=BatchDescriptor(num_tokens=8),
+        cudagraph_runtime_mode=CUDAGraphMode.NONE,
+    )
+    wrapper = object.__new__(AFDUBatchWrapper)
+    wrapper.configure_afd_context_provider(
+        runner.install_afd_metadata_on_forward_context,
+    )
+
+    wrapper._install_missing_afd_metadata(forward_context)
+
+    metadata = forward_context.additional_kwargs["afd_metadata"]
+    assert metadata is runner._afd_pending_metadata
+    assert metadata.transaction_id == "afd-0"
+    assert metadata.tokens_lens == [3, 5]
+    assert set(runner.connector.sent_dp_metadata_lists[0]) == {0, 1}
 
 
 def test_phase5_allows_two_way_ubatching_but_rejects_other_counts():
@@ -575,7 +646,7 @@ def test_attention_metadata_disables_cross_ubatch_block_table_cache(
         get_metadata_builder=lambda ubatch_idx: builders[ubatch_idx],
     )
     runner.attn_groups = [[attention_group]]
-    runner._build_afd_metadata = lambda *_args: object()
+    runner.build_afd_metadata = lambda *_args: object()
     observed_cache_flags = []
 
     def build_attention_metadata(_self, *_args, **_kwargs):
@@ -620,7 +691,7 @@ def test_attention_metadata_restores_cache_when_builder_lookup_fails() -> None:
     runner.attn_groups = [
         [SimpleNamespace(get_metadata_builder=get_metadata_builder)],
     ]
-    runner._build_afd_metadata = lambda *_args: object()
+    runner.build_afd_metadata = lambda *_args: object()
     ubatch_slices = [
         _UbatchSlice(0, 4, 0, 1),
         _UbatchSlice(4, 8, 1, 2),
@@ -649,7 +720,7 @@ def test_attention_runner_steps_gpu_profiler(monkeypatch):
         return args, kwargs
 
     monkeypatch.setattr(
-        AFDAttentionModelRunner.__mro__[1],
+        GPUModelRunner,
         "execute_model",
         execute_model,
     )
@@ -685,9 +756,9 @@ def test_attention_warmup_preserves_profile_seq_lens():
     runner._afd_pending_metadata = None
     runner._afd_suppress_metadata_send = False
     runner._afd_is_graph_capturing = False
-    runner._build_afd_metadata = lambda *_args: object()
-    runner._build_capture_dp_metadata = lambda *_args: object()
-    runner._send_dp_metadata = lambda *_args: None
+    runner.build_afd_metadata = lambda *_args: object()
+    runner.build_capture_dp_metadata = lambda *_args: object()
+    runner.send_dp_metadata = lambda *_args: None
     dummy_runs = []
     runner._dummy_run = lambda *args, **kwargs: dummy_runs.append((args, kwargs))
 
@@ -719,7 +790,9 @@ def test_forward_context_provider_installs_metadata_before_model_forward(monkeyp
         use_afd_metadata_provider,
     )
 
-    with use_afd_metadata_provider(runner):
+    with use_afd_metadata_provider(
+        runner.install_afd_metadata_on_forward_context,
+    ):
         forward_context = fake_forward_context.create_forward_context()
         metadata = get_afd_metadata_from_forward_context(forward_context)
 
@@ -741,7 +814,7 @@ def test_forward_context_provider_can_install_without_sending_metadata(monkeypat
     runner._afd_is_graph_capturing = True
     runner._afd_suppress_metadata_send = True
     runner._afd_transaction_counter = 0
-    runner._afd_pending_metadata = runner._build_afd_metadata(None, 1)
+    runner._afd_pending_metadata = runner.build_afd_metadata(None, 1)
     fake_forward_context, original_create = _install_fake_vllm_forward_context(
         monkeypatch,
     )
@@ -750,7 +823,9 @@ def test_forward_context_provider_can_install_without_sending_metadata(monkeypat
         use_afd_metadata_provider,
     )
 
-    with use_afd_metadata_provider(runner):
+    with use_afd_metadata_provider(
+        runner.install_afd_metadata_on_forward_context,
+    ):
         forward_context = fake_forward_context.create_forward_context()
         metadata = get_afd_metadata_from_forward_context(forward_context)
 
@@ -792,10 +867,29 @@ def test_attention_runner_forwards_capture_and_warmup_flags():
     runner._afd_transaction_counter = 0
     runner._afd_pending_metadata = None
 
-    runner._send_dp_metadata(_dp_metadata([1]), None)
+    runner.send_dp_metadata(_dp_metadata([1]), None)
 
-    assert runner.connector.dp_metadata_update_flags == [(True, True)]
-    assert runner.connector.sent_dp_metadata_flags == [(True, True)]
+    assert runner.connector.dp_metadata_update_flags == [(True, True, False)]
+    assert runner.connector.sent_dp_metadata_flags == [(True, True, False)]
+
+
+def test_attention_runner_forwards_profile_flag():
+    runner = object.__new__(AFDAttentionModelRunner)
+    runner.afd_config = AFDConfig(role="attention")
+    runner.vllm_config = SimpleNamespace(
+        parallel_config=_parallel_config(),
+    )
+    runner.connector = _RecordingConnector()
+    runner._is_warmup = False
+    runner._afd_is_graph_capturing = False
+    runner._afd_is_profile = True
+    runner._afd_transaction_counter = 0
+    runner._afd_pending_metadata = None
+
+    runner.send_dp_metadata(_dp_metadata([1]), None)
+
+    assert runner.connector.dp_metadata_update_flags == [(False, False, True)]
+    assert runner.connector.sent_dp_metadata_flags == [(False, False, True)]
 
 
 def test_attention_runner_builds_capture_dp_metadata_for_native_dp():
@@ -804,7 +898,7 @@ def test_attention_runner_builds_capture_dp_metadata_for_native_dp():
         parallel_config=_parallel_config(data_parallel_size=2),
     )
 
-    metadata = runner._build_capture_dp_metadata(64)
+    metadata = runner.build_capture_dp_metadata(64)
 
     tokens = metadata.num_tokens_across_dp_cpu
     if hasattr(tokens, "tolist"):

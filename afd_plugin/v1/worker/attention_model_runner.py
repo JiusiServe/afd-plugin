@@ -5,20 +5,23 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, contextmanager, nullcontext
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 import torch
 import vllm.v1.worker.gpu_model_runner as gpu_model_runner
 from vllm.compilation.cuda_graph import CUDAGraphStat
 from vllm.config import CUDAGraphMode, VllmConfig
-from vllm.distributed.parallel_state import get_world_group
-from vllm.forward_context import BatchDescriptor, DPMetadata, get_forward_context
+from vllm.forward_context import (
+    BatchDescriptor,
+    get_forward_context,
+)
 from vllm.sequence import IntermediateTensors
 from vllm.v1.attention.backend import (
     AttentionMetadataBuilder,
     CommonAttentionMetadata,
 )
+from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.outputs import AsyncModelRunnerOutput, ModelRunnerOutput
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner, PerLayerAttnMetadata
 from vllm.v1.worker.gpu_ubatch_wrapper import UBatchWrapper
@@ -36,22 +39,18 @@ from afd_plugin.compat.profiler import (
 from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
     AFDConnectorFactory,
-    AFDControlPayload,
-    AFDDPMetadata,
     AFDForwardContextMetadata,
 )
 from afd_plugin.model_executor.models.forward_context import use_afd_metadata_provider
-from afd_plugin.v1.worker.cuda_graph import validate_cuda_graph_mode
-from afd_plugin.v1.worker.ubatch_wrapper import (
-    AFDUBatchWrapper,
-    build_ubatch_dp_metadata_list,
+from afd_plugin.v1.worker.attention_metadata import (
+    AFDMetadataProviderMixin,
+    _resolve_world_ranks,
 )
+from afd_plugin.v1.worker.cuda_graph import validate_cuda_graph_mode
+from afd_plugin.v1.worker.ubatch_wrapper import AFDUBatchWrapper
 
-if TYPE_CHECKING:
-    from vllm.v1.core.sched.output import SchedulerOutput
 
-
-class AFDAttentionModelRunner(GPUModelRunner):
+class AFDAttentionModelRunner(AFDMetadataProviderMixin, GPUModelRunner):
     """Attention model runner that injects AFD metadata into forward context."""
 
     afd_expected_role = "attention"
@@ -83,6 +82,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
         )
         self._is_warmup = False
         self._afd_is_graph_capturing = False
+        self._afd_is_graph_replaying = False
         self._afd_pending_metadata: AFDForwardContextMetadata | None = None
         self._afd_suppress_metadata_send = False
         self._afd_transaction_counter = 0
@@ -91,64 +91,6 @@ class AFDAttentionModelRunner(GPUModelRunner):
     @staticmethod
     def parse_config(vllm_config: VllmConfig) -> AFDConfig:
         return parse_afd_config(vllm_config, expected_role="attention")
-
-    def _build_afd_metadata(
-        self,
-        ubatch_slices: Any,
-        num_tokens_unpadded: int,
-    ) -> AFDForwardContextMetadata:
-        if ubatch_slices and len(ubatch_slices) > 1:
-            tokens_start_loc = [ub.token_slice.start for ub in ubatch_slices]
-            requests_start_loc = [ub.request_slice.start for ub in ubatch_slices]
-            tokens_lens = [ub.num_tokens for ub in ubatch_slices]
-            tokens_unpadded_lens = [int(ub.num_tokens) for ub in ubatch_slices]
-            num_stages = len(ubatch_slices)
-        else:
-            tokens_start_loc = [0]
-            requests_start_loc = [0]
-            tokens_lens = [num_tokens_unpadded]
-            tokens_unpadded_lens = [num_tokens_unpadded]
-            num_stages = 1
-
-        return AFDForwardContextMetadata(
-            tokens_start_loc=tokens_start_loc,
-            requests_start_loc=requests_start_loc,
-            stage_idx=0,
-            connector=self.connector,
-            tokens_lens=tokens_lens,
-            num_stages=num_stages,
-            transaction_id=self._next_afd_transaction_id(),
-            tokens_unpadded_lens=tokens_unpadded_lens,
-        )
-
-    def _send_dp_metadata(
-        self,
-        dp_metadata: DPMetadata | AFDDPMetadata | None,
-        ubatch_slices: Any,
-    ) -> None:
-        assert self.connector.control_plane is not None, (
-            "_send_dp_metadata needs control plane driven connectors"
-        )
-
-        if ubatch_slices and len(ubatch_slices) > 1:
-            dp_metadata_list = {
-                idx: metadata
-                for idx, metadata in enumerate(
-                    build_ubatch_dp_metadata_list(self.vllm_config, ubatch_slices),
-                )
-            }
-        else:
-            dp_metadata = self._ensure_dp_metadata(dp_metadata)
-            dp_metadata_list = {0: dp_metadata}
-        is_warmup = self._is_warmup
-        is_graph_capturing = bool(getattr(self, "_afd_is_graph_capturing", False))
-        payload = AFDControlPayload(
-            dp_metadata_list=dp_metadata_list,
-            is_graph_capturing=is_graph_capturing,
-            is_warmup=is_warmup,
-        )
-        self.connector.control_plane.update_state_from_dp_metadata(payload)
-        self.connector.control_plane.send_dp_metadata_list(payload)
 
     # Patch reason: upstream load_model has no AFD connector lifecycle.
     # Patch functionality: after native weight loading and any AFD ubatch
@@ -173,7 +115,9 @@ class AFDAttentionModelRunner(GPUModelRunner):
 
     def _install_afd_ubatch_wrapper(self) -> None:
         if isinstance(self.model, AFDUBatchWrapper):
-            self.model.configure_afd_context_provider(self)
+            self.model.configure_afd_context_provider(
+                self.install_afd_metadata_on_forward_context,
+            )
             return
 
         model = self.model
@@ -185,87 +129,9 @@ class AFDAttentionModelRunner(GPUModelRunner):
             CUDAGraphMode.NONE,
             self.device,
         )
-        self.model.configure_afd_context_provider(self)
-
-    def _ensure_dp_metadata(
-        self,
-        dp_metadata: DPMetadata | AFDDPMetadata | None,
-    ) -> DPMetadata | AFDDPMetadata:
-        if dp_metadata is not None:
-            return dp_metadata
-
-        dp_size = int(self.vllm_config.parallel_config.data_parallel_size)
-        if dp_size != 1:
-            raise RuntimeError("AFD expected vLLM DPMetadata for attention DP > 1")
-
-        if self._afd_pending_metadata is None:
-            raise RuntimeError("AFD metadata is not available for DP metadata fallback")
-        if len(self._afd_pending_metadata.tokens_lens) != 1:
-            raise RuntimeError("AFD DP=1 fallback only supports one stage")
-
-        num_tokens = int(self._afd_pending_metadata.tokens_lens[0])
-        num_tokens_across_dp_cpu = torch.tensor(
-            [num_tokens],
-            dtype=torch.int32,
-            device="cpu",
+        self.model.configure_afd_context_provider(
+            self.install_afd_metadata_on_forward_context,
         )
-        return AFDDPMetadata(
-            num_tokens_across_dp_cpu=num_tokens_across_dp_cpu,
-            max_tokens_across_dp_cpu=torch.max(num_tokens_across_dp_cpu),
-        )
-
-    def _build_capture_dp_metadata(self, num_tokens: int) -> DPMetadata | AFDDPMetadata:
-        dp_size = int(self.vllm_config.parallel_config.data_parallel_size)
-        num_tokens_across_dp_cpu = torch.full(
-            (dp_size,),
-            int(num_tokens),
-            dtype=torch.int32,
-            device="cpu",
-        )
-        if dp_size > 1:
-            return DPMetadata.make(
-                self.vllm_config.parallel_config,
-                int(num_tokens),
-                num_tokens_across_dp_cpu,
-            )
-        max_tokens_across_dp_cpu = torch.max(num_tokens_across_dp_cpu)
-        return AFDDPMetadata(
-            num_tokens_across_dp_cpu=num_tokens_across_dp_cpu,
-            max_tokens_across_dp_cpu=max_tokens_across_dp_cpu,
-        )
-
-    def _install_afd_metadata_on_forward_context(
-        self,
-        forward_context: object,
-    ) -> None:
-        if getattr(forward_context, "additional_kwargs", None) is None:
-            forward_context.additional_kwargs = {}
-        existing_metadata = (
-            getattr(forward_context, "additional_kwargs", {}) or {}
-        ).get("afd_metadata")
-        if existing_metadata is not None and _is_ubatch_child_afd_context(
-            forward_context,
-            existing_metadata,
-        ):
-            return
-
-        if self._afd_pending_metadata is None:
-            self._afd_pending_metadata = self._build_afd_metadata(
-                forward_context.ubatch_slices,
-                _forward_context_num_tokens(forward_context, self.vllm_config),
-            )
-        if self._afd_pending_metadata is not None:
-            forward_context.additional_kwargs["afd_metadata"] = (
-                self._afd_pending_metadata
-            )
-        if bool(getattr(self, "_afd_suppress_metadata_send", False)):
-            return
-        dp_metadata = forward_context.dp_metadata
-        ubatch_slices = forward_context.ubatch_slices
-        padded_graph_tokens = _full_cudagraph_padded_tokens(forward_context)
-        if padded_graph_tokens is not None and not ubatch_slices:
-            dp_metadata = self._build_capture_dp_metadata(padded_graph_tokens)
-        self._send_dp_metadata(dp_metadata, ubatch_slices)
 
     # Patch reason: AFD stages connector metadata before native Attention
     # metadata construction. In addition, vLLM v0.26 caches Attention metadata
@@ -296,7 +162,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
         slot_mappings: dict[int, torch.Tensor] | None = None,
     ) -> tuple[PerLayerAttnMetadata, CommonAttentionMetadata | None]:
         # ### PATCH START: stage AFD metadata and avoid cross-ubatch cache reuse.
-        self._afd_pending_metadata = self._build_afd_metadata(
+        self._afd_pending_metadata = self.build_afd_metadata(
             ubatch_slices,
             int(num_tokens),
         )
@@ -367,6 +233,11 @@ class AFDAttentionModelRunner(GPUModelRunner):
             force_has_lora,
             force_num_active_loras,
             num_encoder_reqs,
+        )
+        self._afd_is_graph_replaying = (
+            not bool(getattr(self, "_is_warmup", False))
+            and not bool(getattr(self, "_afd_is_graph_capturing", False))
+            and cudagraph_mode == CUDAGraphMode.FULL
         )
 
         args = (
@@ -466,7 +337,7 @@ class AFDAttentionModelRunner(GPUModelRunner):
         **model_kwargs: dict[str, Any],
     ) -> Any:
         forward_context = get_forward_context()
-        self._install_afd_metadata_on_forward_context(forward_context)
+        self.install_afd_metadata_on_forward_context(forward_context)
         return super()._model_forward(
             input_ids=input_ids,
             positions=positions,
@@ -481,7 +352,12 @@ class AFDAttentionModelRunner(GPUModelRunner):
         intermediate_tensors: IntermediateTensors | None = None,
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | IntermediateTensors | None:
         step_afd_gpu_profiler(self.prof)
-        return super().execute_model(scheduler_output, intermediate_tensors)
+        previous_is_graph_replaying = getattr(self, "_afd_is_graph_replaying", False)
+        self._afd_is_graph_replaying = False
+        try:
+            return super().execute_model(scheduler_output, intermediate_tensors)
+        finally:
+            self._afd_is_graph_replaying = previous_is_graph_replaying
 
     def _dummy_run(
         self,
@@ -516,7 +392,9 @@ class AFDAttentionModelRunner(GPUModelRunner):
         )
         self._afd_is_graph_capturing = is_graph_capturing
         try:
-            with use_afd_metadata_provider(self):
+            with use_afd_metadata_provider(
+                self.install_afd_metadata_on_forward_context,
+            ):
                 return super()._dummy_run(
                     num_tokens,
                     cudagraph_runtime_mode,
@@ -601,12 +479,12 @@ class AFDAttentionModelRunner(GPUModelRunner):
                 self._afd_pending_metadata = None
                 self._afd_suppress_metadata_send = False
             else:
-                self._afd_pending_metadata = self._build_afd_metadata(
+                self._afd_pending_metadata = self.build_afd_metadata(
                     None,
                     int(desc.num_tokens),
                 )
-                self._send_dp_metadata(
-                    self._build_capture_dp_metadata(int(desc.num_tokens)),
+                self.send_dp_metadata(
+                    self.build_capture_dp_metadata(int(desc.num_tokens)),
                     None,
                 )
                 self._afd_suppress_metadata_send = True
@@ -648,11 +526,6 @@ class AFDAttentionModelRunner(GPUModelRunner):
             self.connector.close()
         # ### PATCH END: extend native shutdown with AFD resource cleanup.
 
-    def _next_afd_transaction_id(self) -> str:
-        counter = self._afd_transaction_counter
-        self._afd_transaction_counter = counter + 1
-        return f"afd-{counter}"
-
 
 def fail_if_unsupported_ubatching(vllm_config: VllmConfig) -> None:
     parallel_config = vllm_config.parallel_config
@@ -669,22 +542,6 @@ fail_if_ubatching_enabled = fail_if_unsupported_ubatching
 
 def fail_if_cuda_graph_enabled(vllm_config: VllmConfig) -> None:
     validate_cuda_graph_mode(vllm_config)
-
-
-def _resolve_world_ranks() -> tuple[int, int]:
-    group = get_world_group()
-    return int(group.rank), int(group.local_rank)
-
-
-def _is_ubatch_child_afd_context(
-    forward_context: object,
-    afd_metadata: object,
-) -> bool:
-    if getattr(forward_context, "ubatch_slices", None) is not None:
-        return False
-    if int(getattr(afd_metadata, "num_stages", 1) or 1) <= 1:
-        return False
-    return len(getattr(afd_metadata, "tokens_lens", []) or []) == 1
 
 
 def _batch_execution_values(
@@ -707,32 +564,6 @@ def _batch_execution_values(
     values = dict(zip(names, args, strict=False))
     values.update(kwargs)
     return values
-
-
-def _forward_context_num_tokens(
-    forward_context: object,
-    vllm_config: VllmConfig,
-) -> int:
-    dp_metadata = forward_context.dp_metadata
-    dp_rank = int(vllm_config.parallel_config.data_parallel_rank)
-    if dp_metadata is not None:
-        return max(1, int(dp_metadata.num_tokens_across_dp_cpu[dp_rank]))
-
-    return max(1, int(forward_context.batch_descriptor.num_tokens))
-
-
-def _full_cudagraph_padded_tokens(forward_context: object) -> int | None:
-    mode = getattr(forward_context, "cudagraph_runtime_mode", None)
-    name = getattr(mode, "name", None)
-    if isinstance(name, str):
-        is_full = name == "FULL"
-    else:
-        is_full = str(mode).rsplit(".", 1)[-1] == "FULL"
-    if not is_full:
-        return None
-    batch_descriptor = getattr(forward_context, "batch_descriptor", None)
-    num_tokens = getattr(batch_descriptor, "num_tokens", None)
-    return None if num_tokens is None else max(1, int(num_tokens))
 
 
 @contextmanager

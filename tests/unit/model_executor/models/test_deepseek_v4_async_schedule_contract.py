@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 
-
 native = pytest.importorskip("vllm_ascend.models.deepseek_v4")
 
 from afd_plugin.model_executor.models.npu import deepseek_v4 as adapter  # noqa: E402

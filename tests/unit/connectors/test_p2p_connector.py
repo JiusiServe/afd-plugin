@@ -15,6 +15,8 @@ from afd_plugin.connectors import (  # noqa: E402
     AFDConnectorFactory,
     AFDControlPayload,
     AFDDPMetadata,
+    AFDTransferContext,
+    AFDTransferMetadata,
 )
 from afd_plugin.distributed import build_rank_mapping  # noqa: E402
 
@@ -24,6 +26,7 @@ def _fake_vllm_config(
     data_parallel_size=1,
     data_parallel_rank=0,
     enforce_eager=True,
+    tensor_parallel_size=1,
 ):
     text_config = SimpleNamespace(hidden_size=16, num_hidden_layers=2)
     return SimpleNamespace(
@@ -38,7 +41,7 @@ def _fake_vllm_config(
             data_parallel_size=data_parallel_size,
             data_parallel_rank=data_parallel_rank,
             prefill_context_parallel_size=1,
-            tensor_parallel_size=1,
+            tensor_parallel_size=tensor_parallel_size,
         ),
     )
 
@@ -181,6 +184,142 @@ def test_p2p_topology_supports_equal_and_integer_multiple_attention_counts(
     assert mapping.dp_metadata_destinations == dsts
 
 
+def test_p2p_tp2_maps_shared_dp_payload_one_to_one(monkeypatch):
+    p2p_module = importlib.import_module("afd_plugin.connectors.gpu.p2p")
+    parallel_state = importlib.import_module("vllm.distributed.parallel_state")
+    payload = AFDControlPayload(
+        dp_metadata_list={0: AFDDPMetadata([7])},
+        is_graph_capturing=False,
+        is_warmup=False,
+    )
+
+    attention_connectors = []
+    ffn_connectors = []
+    for role, connectors in (
+        ("attention", attention_connectors),
+        ("ffn", ffn_connectors),
+    ):
+        for role_rank in range(2):
+            monkeypatch.setattr(
+                parallel_state,
+                "get_tensor_model_parallel_rank",
+                lambda role_rank=role_rank: role_rank,
+            )
+            connector = AFDConnectorFactory.create_connector(
+                role_rank,
+                0,
+                _fake_vllm_config(tensor_parallel_size=2),
+                AFDConfig(
+                    role=role,
+                    connector="P2pNcclAFDConnector",
+                    num_attention_ranks=2,
+                    num_ffn_ranks=2,
+                ),
+            )
+            connector.control_plane.update_state_from_dp_metadata(payload)
+            connectors.append(connector)
+
+    assert [
+        (
+            connector.mapping.role_rank,
+            connector.mapping.subgroup_ranks,
+            tuple(connector.dst_list),
+        )
+        for connector in attention_connectors
+    ] == [
+        (0, (0, 2), (0,)),
+        (1, (1, 3), (1,)),
+    ]
+    assert [
+        (connector.mapping.role_rank, connector.mapping.subgroup_ranks)
+        for connector in ffn_connectors
+    ] == [
+        (0, (0, 2)),
+        (1, (1, 3)),
+    ]
+
+    sent_destinations = []
+    monkeypatch.setattr(
+        p2p_module,
+        "send_control_payload",
+        lambda _payload, **kwargs: sent_destinations.append(tuple(kwargs["dst"])),
+    )
+    for connector in attention_connectors:
+        connector.p2p_pg = object()
+        connector.control_plane.send_dp_metadata_list(payload)
+
+    received_sources = []
+    monkeypatch.setattr(
+        p2p_module,
+        "recv_control_payload",
+        lambda **kwargs: received_sources.append(kwargs["src"]) or payload,
+    )
+    for connector in ffn_connectors:
+        connector.p2p_pg = object()
+        connector.control_plane.recv_dp_metadata_list()
+
+    assert sent_destinations == [(0,), (1,)]
+    assert received_sources == [2, 3]
+
+    attention_routes = []
+    attention_context = AFDTransferContext(
+        metadata=AFDTransferMetadata.create_attention_metadata(
+            layer_idx=0,
+            stage_idx=0,
+            seq_len=7,
+        ),
+    )
+    attention_hidden_states = torch.zeros((7, 16), dtype=torch.bfloat16)
+    for connector in attention_connectors:
+
+        def record_attention_send(
+            hidden_states,
+            dst,
+            process_group,
+            comm_id,
+            *,
+            connector=connector,
+        ):
+            assert dst == 0
+            attention_routes.append(
+                (connector.world_rank, connector.mapping.subgroup_ranks[dst]),
+            )
+
+        monkeypatch.setattr(connector, "_send_hidden_states", record_attention_send)
+        connector.send_attn_output(attention_hidden_states, attention_context)
+
+    assert attention_routes == [(2, 0), (3, 1)]
+
+    ffn_routes = []
+    ffn_context = AFDTransferContext(
+        metadata=AFDTransferMetadata.create_ffn_metadata(
+            layer_idx=0,
+            stage_idx=0,
+            seq_lens=[7],
+        ),
+    )
+    ffn_output = torch.zeros((7, 16), dtype=torch.bfloat16)
+    for connector in ffn_connectors:
+
+        def record_ffn_send(
+            hidden_states,
+            dst,
+            process_group,
+            comm_id,
+            *,
+            connector=connector,
+        ):
+            assert dst == 1
+            ffn_routes.append(
+                (connector.world_rank, connector.mapping.subgroup_ranks[dst]),
+            )
+
+        monkeypatch.setattr(connector, "_send_hidden_states", record_ffn_send)
+        connector.send_ffn_output(ffn_output, ffn_context)
+
+    assert ffn_routes == [(0, 2), (1, 3)]
+
+
 @pytest.mark.parametrize(
     (
         "attention_size",
@@ -321,6 +460,8 @@ def test_p2p_dp_metadata_serialization_uses_json_payload():
             dp_metadata_list={7: metadata},
             is_graph_capturing=True,
             is_warmup=False,
+            is_graph_replaying=True,
+            is_profile=True,
         ),
     )
     decoded_payload = module.decode_control_payload(payload)
@@ -335,6 +476,8 @@ def test_p2p_dp_metadata_serialization_uses_json_payload():
     assert _tolist(decoded[7].cu_tokens_across_sp(1)) == [3, 8]
     assert decoded_payload.is_graph_capturing is True
     assert decoded_payload.is_warmup is False
+    assert decoded_payload.is_graph_replaying is True
+    assert decoded_payload.is_profile is True
 
 
 def test_graph_state_adds_input_ids_buffer_when_hidden_buffer_exists(monkeypatch):

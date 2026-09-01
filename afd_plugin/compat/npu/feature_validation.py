@@ -185,14 +185,11 @@ def _validate_cam_world_topology(
                 "CAMAsyncAFDConnector Attention tensor_parallel_size must equal "
                 "attn_ranks_per_dp",
             )
-        local_world_size = (
-            int(parallel_config.data_parallel_size) * attn_ranks_per_dp
-        )
+        local_world_size = int(parallel_config.data_parallel_size) * attn_ranks_per_dp
         expected_world_size = afd_config.num_attention_ranks
     else:
-        local_world_size = (
-            int(parallel_config.data_parallel_size)
-            * int(parallel_config.tensor_parallel_size)
+        local_world_size = int(parallel_config.data_parallel_size) * int(
+            parallel_config.tensor_parallel_size
         )
         expected_world_size = afd_config.num_ffn_ranks
     if local_world_size != expected_world_size:

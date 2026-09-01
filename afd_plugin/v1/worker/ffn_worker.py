@@ -10,13 +10,17 @@ from typing import TYPE_CHECKING
 
 import torch
 from vllm.config import VllmConfig
+from vllm.v1.worker.gpu import model_runner as gpu_model_runner_v2
 from vllm.v1.worker.gpu_worker import Worker
 from vllm.v1.worker.worker_base import CompilationTimes
 
 from afd_plugin.model_executor.models.model_utils import get_afd_model_config
 from afd_plugin.v1.worker.attention_model_runner import fail_if_unsupported_ubatching
 from afd_plugin.v1.worker.ffn_model_runner import GPUFFNModelRunner
-from afd_plugin.validation import assert_compatible_afd_stack
+from afd_plugin.validation import (
+    assert_compatible_afd_stack,
+    validate_gpu_model_runner_v2_config,
+)
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
@@ -55,6 +59,16 @@ class AFDFFNWorker(Worker):
         self._ffn_shutdown_event: threading.Event | None = None
         self._ffn_loop_error: BaseException | None = None
 
+    # Patch reason: vLLM 0.26.0 selects its V2 runner from a module-level symbol
+    # inside Worker.init_device and exposes no injectable runner factory.
+    # Patch functionality: replace only the V2 construction seam with the
+    # existing connector-driven GPUFFNModelRunner; keep the V1 path unchanged.
+    # Signature: matches vLLM v0.26.0 Worker.init_device exactly: (self).
+    # Upstream source: vllm/v1/worker/gpu_worker.py, Worker.init_device;
+    # 568afb3a13806beb53bb2e6bd518269357b237c0.
+    # Delegation exception: native device and distributed setup remain in
+    # super().init_device(). Remove this branch when vLLM exposes runner injection.
+    # Worker initialization is synchronous within each worker process.
     def init_device(self):
         """Initialize the native GPU worker and swap in the FFN runner."""
 
@@ -64,10 +78,28 @@ class AFDFFNWorker(Worker):
             expected_role="ffn",
         )
         if self.use_v2_model_runner:
-            raise RuntimeError(
-                "AFD FFN runtime currently supports only the vLLM v1 "
-                "GPUModelRunner interface; set VLLM_USE_V2_MODEL_RUNNER=0",
+            # ### PATCH START: construct the FFN runner through the V2 seam.
+            validate_gpu_model_runner_v2_config(
+                self.vllm_config,
+                expected_role="ffn",
+                device_type=self.device_config.device_type,
             )
+            afd_model_config = get_afd_model_config(
+                self.vllm_config.model_config,
+                device_type="cuda",
+            )
+            self.vllm_config.model_config = afd_model_config
+            self.model_config = afd_model_config
+
+            native_runner_cls = gpu_model_runner_v2.GPUModelRunner
+            gpu_model_runner_v2.GPUModelRunner = GPUFFNModelRunner
+            try:
+                super().init_device()
+            finally:
+                gpu_model_runner_v2.GPUModelRunner = native_runner_cls
+            torch.accelerator.empty_cache()
+            return
+        # ### PATCH END: construct the FFN runner through the V2 seam.
 
         fail_if_unsupported_ubatching(self.vllm_config)
 
@@ -158,6 +190,7 @@ class AFDFFNWorker(Worker):
             dp_metadata_list = payload.dp_metadata_list
             is_attn_graph_capturing = payload.is_graph_capturing
             is_warmup = payload.is_warmup
+            is_graph_replaying = payload.is_graph_replaying
 
             if self.model_runner.use_cuda_graph and (
                 is_warmup or is_attn_graph_capturing
@@ -172,6 +205,7 @@ class AFDFFNWorker(Worker):
                     dp_metadata_list=dp_metadata_list,
                     is_graph_capturing=is_attn_graph_capturing,
                     is_warmup=is_warmup,
+                    is_graph_replaying=is_graph_replaying,
                 )
 
             if self.device.type == "cuda":

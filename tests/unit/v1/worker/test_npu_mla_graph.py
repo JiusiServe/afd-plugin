@@ -781,10 +781,9 @@ def test_mla_graph_replay_updates_child_params_each_time_in_runtime_order(monkey
         ),
     )
 
-    def update_params(active_context, num_tokens, positions):
+    def update_params(active_context, num_tokens):
         calls.append("update")
         assert num_tokens == 4
-        assert positions is position_tensor
         assert list(active_context.attn_metadata) == [
             ("layer0", 0),
             ("layer0", 1),
@@ -956,7 +955,7 @@ def test_mla_graph_replay_rejects_missing_capture_registry(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="no capture registry"):
-        wrapper._replay_mla_graph(graph_metadata, context, 4, object())
+        wrapper._replay_mla_graph(graph_metadata, context, 4)
 
     assert replay_calls == []
 
@@ -984,6 +983,6 @@ def test_mla_graph_replay_rejects_missing_updater_before_replay(monkeypatch):
     replay_calls = []
 
     with pytest.raises(RuntimeError, match="no parameter updater"):
-        wrapper._replay_mla_graph(graph_metadata, context, 4, object())
+        wrapper._replay_mla_graph(graph_metadata, context, 4)
 
     assert replay_calls == []

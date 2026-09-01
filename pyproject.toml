@@ -111,7 +111,46 @@ quote-style = "double"
 indent-style = "space"
 docstring-code-format = true
 
+[tool.mypy]
+python_version = "3.10"
+# Silent follow for library code; missing third-party stubs are ignored
+# everywhere (including tests). tests/ still get --follow-imports skip from
+# tools/pre_commit/mypy.py.
+ignore_missing_imports = true
+check_untyped_defs = true
+follow_imports = "silent"
+
 [tool.ty]
 
 [tool.ty.analysis]
 allowed-unresolved-imports = ["torch.**", "vllm.**"]
+
+[tool.typos.default]
+extend-ignore-words-re = [
+    # Ascend domain terms checked as plain words in docs/comments.
+    "(?i)^cann$",
+    "(?i)^tbe$",
+]
+extend-ignore-identifiers-re = [
+    ".*_thw",
+    ".*thw",
+    "ein",
+    ".*arange",
+    ".*MoBA",
+    ".*temperal_downsample",
+    ".*nd",
+    ".*[Nn][Dd]$",
+    ".*EmbedND$",
+    ".*nothink.*",
+    ".*NOTHINK.*",
+    ".*nin.*",
+    ".*[Oo]no.*[Aa]nna.*",
+    ".*cann.*",
+    ".*[Nn][Dd]3.*",
+    ".*updator.*",
+    "byt5.*",
+    # NemotronVoiceChat vendored triton kernel: dout/DOUT abbreviate d_out
+    # (output feature dim), not "doubt".
+    ".*dout.*",
+    ".*DOUT.*",
+]

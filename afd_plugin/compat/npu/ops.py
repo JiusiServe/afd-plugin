@@ -91,6 +91,7 @@ def _preload_cam_cust_opapi() -> None:
         )
     ctypes.CDLL(str(library), mode=ctypes.RTLD_GLOBAL)
 
+
 @lru_cache(maxsize=1)
 def ensure_cam_p2p_ops_available() -> None:
     """Import the custom operators used by ``CAMP2pAFDConnector``.

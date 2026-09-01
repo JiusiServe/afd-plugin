@@ -37,7 +37,7 @@ from afd_plugin.connectors.npu.async_cam import (
     CAMAsyncAFDConnector,
 )
 from afd_plugin.connectors.npu.camp2p import CAMP2pAFDConnector
-from afd_plugin.v1.worker.attention_model_runner import (
+from afd_plugin.v1.worker.attention_metadata import (
     _resolve_world_ranks,
 )
 from afd_plugin.v1.worker.cuda_graph import (
@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     from afd_plugin.connectors import AFDConnectorBase
 
 logger = init_logger(__name__)
+
 
 class AFDNPUFFNModelRunner(NPUModelRunner):
     """Connector-driven NPU FFN runner for AFD execution."""
@@ -110,6 +111,8 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
+        is_profile: bool = False,
+        is_graph_replaying: bool = False,
     ) -> None:
         if dp_metadata_list is None:
             raise RuntimeError("AFD NPU FFN requires dp_metadata_list")
@@ -127,7 +130,11 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 is_attn_graph_capturing=is_graph_capturing,
             )
             return None
-        self.execute_model(dp_metadata_list=dp_metadata_list)
+        self.execute_model(
+            dp_metadata_list=dp_metadata_list,
+            is_profile=is_profile,
+            is_graph_replaying=is_graph_replaying,
+        )
         return None
 
     def execute_connector_driven_step(self) -> None:
@@ -148,6 +155,8 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata] | None = None,
         is_graph_capturing: bool = False,
         is_warmup: bool = False,
+        is_profile: bool = False,
+        is_graph_replaying: bool = False,
     ) -> None:
         step_afd_npu_profiler(self.prof)
         if dp_metadata_list is None:
@@ -159,6 +168,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         run_mode = graph_run_mode(
             is_warmup=is_warmup and graph_enabled,
             is_graph_capturing=is_graph_capturing and graph_enabled,
+            is_graph_replaying=is_graph_replaying,
             graph_enabled=graph_enabled,
             graph_exists=graph_info is not None,
         )
@@ -177,7 +187,10 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 is_warmup=is_warmup,
             )
 
-        self._ffn_forward(dp_metadata_list=dp_metadata_list)
+        self._ffn_forward(
+            dp_metadata_list=dp_metadata_list,
+            is_profile=is_profile,
+        )
         return None
 
     def _make_graph_key(
@@ -198,6 +211,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
         aclgraph_runtime_mode: CUDAGraphMode | None = None,
         is_graph_capturing: bool = False,
         update_connector_state: bool = True,
+        is_profile: bool = False,
     ) -> torch.Tensor | None:
         if update_connector_state:
             assert self.connector.control_plane, (
@@ -248,6 +262,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     model_instance=self.model,
                     num_tokens=num_tokens,
                     num_tokens_across_dp=dp_num_tokens_across_dp,
+                    in_profile_run=is_profile,
                     aclgraph_runtime_mode=aclgraph_runtime_mode,
                 ) as forward_context:
                     payload = self.connector.recv_attn_output(

@@ -22,13 +22,15 @@ depends_on:
   - "compatibility_and_patches.md"
 validation_paths:
   - "tests/unit/v1/worker/test_ffn_model_runner.py"
+  - "tests/unit/v1/worker/test_model_runner_v2.py"
+  - "tests/unit/v1/worker/test_npu_device_contract.py"
   - "tests/unit/v1/worker/test_npu_runtime.py"
   - "tests/unit/compat/patches/test_engine_core.py"
-  - "tests/e2e/features/test_serving_gpu.py"
-  - "tests/e2e/features/test_serving_npu.py"
+  - "tests/e2e/models/deepseek_v2_lite/test_deepseek_v2_lite.py"
   - "tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py"
 upstream_refs:
   - "vLLM vllm.v1.worker.gpu_worker.Worker"
+  - "vLLM vllm.v1.worker.gpu.model_runner.GPUModelRunner construction seam"
   - "vLLM vllm.v1.engine.core.EngineCore"
   - "vLLM-Ascend vllm_ascend.worker.worker.NPUWorker (tested environment evidence only)"
   - "vLLM-Ascend vllm_ascend.worker.model_runner_v1.NPUModelRunner (tested environment evidence only)"
@@ -41,7 +43,7 @@ related_issues:
   - "#105"
   - "#107"
   - "#129"
-last_reviewed: 2026-07-23
+last_reviewed: 2026-08-27
 ---
 
 # FFN runtime
@@ -100,7 +102,7 @@ The common FFN initialization sequence is:
 ```text
 vLLM worker construction
   -> validate AFD config, role, connector, and selected worker class
-  -> reject model runner v2 and unsupported feature combinations
+  -> validate the paired V1 or V2 deployment contract
   -> initialize the matching upstream device worker
   -> construct the AFD FFN model runner
   -> derive the role-local AFD rank from DP/TP ranks when needed
@@ -121,6 +123,27 @@ The worker owns the daemon thread, shutdown event, and captured loop error.
 The model runner owns the model, connector, profiler, and graph cache. The
 connector owns transport/process-group resources.
 
+## ModelRunnerV2 pairing
+
+FFN remains connector-driven when the upstream configuration selects
+ModelRunnerV2. It does not adopt native V2 request state or scheduler-driven
+execution:
+
+- CUDA temporarily substitutes `GPUFFNModelRunner` at the native V2
+  construction seam inside `Worker.init_device()`; the existing AFD runner is
+  still the runtime object.
+- Ascend always constructs `AFDNPUFFNModelRunner`. When V2 is selected, its
+  connector-driven forward enters the upstream MRV2 forward-context shape so
+  Ascend-specific state is installed in `additional_kwargs`.
+- Both workers run the same V2 topology and feature validator as the paired
+  Attention role before constructing communication resources.
+
+The V2 pair therefore requires the synchronous platform connector,
+`compute_gate_on_attention=false`, PP/PCP/DCP size 1, configured role ranks
+equal to DP x TP, static EP, a registered AFD model, and no DBO or ubatching.
+CUDA uses `P2pNcclAFDConnector`; Ascend uses `CAMP2pAFDConnector`. These limits
+describe the pair even though only Attention inherits a native V2 runner.
+
 ## Daemon step selection
 
 The worker selects one of two FFN step paths from the optional
@@ -128,7 +151,7 @@ The worker selects one of two FFN step paths from the optional
 
 | Selection state | Connectors | Worker behavior |
 | --- | --- | --- |
-| `control_plane is not None` | `P2pNcclAFDConnector`, `CAMP2pAFDConnector` | Call `control_plane.recv_dp_metadata_list()`, then warm, capture, replay, or execute its stage map. |
+| `control_plane is not None` | `P2pNcclAFDConnector`, `CAMP2pAFDConnector` | Call `control_plane.recv_dp_metadata_list()`, then profile, warm, capture, replay, or execute its stage map. |
 | `control_plane is None` | `CAMAsyncAFDConnector` (NPU only) | Block directly on a connector work item; no separate DP-metadata control plane. |
 
 The connector-driven path exists only on Ascend. GPU FFN supports
@@ -141,7 +164,7 @@ installed.
 flowchart TD
     START["FFN daemon loop"] --> CONTROL_PLANE{"connector.control_plane"}
     CONTROL_PLANE -->|is not None| CONTROL["Receive AFDControlPayload"]
-    CONTROL --> FLAGS{"Warmup, capture, replay, or eager?"}
+    CONTROL --> FLAGS{"Profile, warmup, capture, replay, or eager?"}
     FLAGS --> GRAPH["Prepare graph state or eager context"]
     GRAPH --> RECEIVE["Receive Attention payload"]
     CONTROL_PLANE -->|is None| WORK["Block on AFDAsyncFFNWorkItem"]
@@ -162,7 +185,7 @@ FFN initialize_from_config(...)
 
 daemon thread:
   -> connector.control_plane.recv_dp_metadata_list()
-  -> inspect stage metadata plus warmup/capture flags
+  -> inspect stage metadata plus profile/warmup/capture flags
   -> capture/warm matching graph, or execute FFN forward
   -> synchronize the current accelerator
   -> repeat
@@ -209,6 +232,11 @@ The current runner contract for one control payload is:
 7. Compute FFN output and send it to Attention with the same layer/stage
    identity, passing the same `AFDTransferContext` back into
    `send_ffn_output()` so the connector can reuse its receive-time state.
+
+On Ascend, `is_profile` is also forwarded into the minimal forward context so
+vLLM-Ascend preserves its balanced dummy-MoE and communication state during
+the split memory-profile run. CUDA carries the field in the common envelope
+but does not need a separate FFN profile-context branch.
 
 On CUDA, `GPUFFNModelRunner` is a plugin-owned minimal runner. It invokes
 `model.compute_ffn_output(hidden_states, layer_idx)` when provided and
@@ -300,11 +328,12 @@ async model E2E coverage.
 
 ## Limitations and open issues
 
-Current shared limits are the supported vLLM release, model runner v1,
-connector-driven FFN only, and role-aware DeepSeek model integration. Native
-DBO accepts exactly two ubatches. CAM async instead uses eager connector work
-items and may enable its distinct two-stage MoE pipeline. Platform-specific
-limits are centralized in
+Current shared limits are the supported vLLM release, connector-driven FFN,
+and registered role-aware model integrations. V1 native DBO accepts exactly
+two ubatches. A V2-paired FFN rejects DBO/ubatching and uses the same AFD FFN
+runner with a V2-compatible construction and forward-context seam. CAM async
+instead uses eager connector work items and may enable its distinct two-stage
+MoE pipeline. Platform-specific limits are centralized in
 [execution platforms](execution_platforms.md#tested-runtime-matrix).
 
 Issue [#107](https://github.com/JiusiServe/afd-plugin/issues/107) completed the

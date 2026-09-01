@@ -13,6 +13,15 @@ if TYPE_CHECKING:
     from vllm.config import ModelConfig
 
 
+def has_afd_model_registration(model_config: ModelConfig) -> bool:
+    """Return whether the model resolves to a registered AFD implementation."""
+
+    return any(
+        model_arch.removeprefix("AFD") in _MODEL_REGISTRATIONS
+        for model_arch in model_config.hf_config.architectures
+    )
+
+
 def get_afd_model_config(
     model_config: ModelConfig,
     *,
