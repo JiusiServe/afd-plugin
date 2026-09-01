@@ -1,0 +1,124 @@
+# CUDA test/serving image for Kubernetes and OpenShift clusters.
+#
+# This is docker/Dockerfile.ci -- same base image, same locked dev
+# dependencies, so the in-cluster environment matches what Buildkite tests
+# against -- plus the two things a cluster run needs and CI does not:
+#
+#   1. nixl. NixlConnector (vLLM's KV transport) is what moves KV from the
+#      prefill instances (kv_producer) to the attention instance
+#      (kv_consumer). nixl is deliberately absent from uv.lock because it is
+#      CUDA-host-only and would break macOS/CPU development installs, so it is
+#      installed explicitly here. Without it the prefill/decode-disaggregation
+#      recipes cannot serve.
+#   2. Remote-build and restricted-SCC compatibility (see the two sections
+#      below).
+#
+# Relation to the other images in this directory:
+#   docker/Dockerfile.ci         Buildkite only. BuildKit syntax, no nixl.
+#   docker/Dockerfile.k8s-bench  Lean serving image: nixl, no dev/test tools.
+#   docker/Dockerfile.k8s-cuda   This file. CI parity + nixl, so the test
+#                                suite (pytest, ruff, datasets) can run
+#                                in-cluster on real GPUs.
+#
+# Build remotely -- see .agents/skills/remote-build. On Apple Silicon a local
+# cross-build fails, because uv segfaults under qemu-user. On OpenShift:
+#
+#   oc start-build <buildconfig> --from-dir=. --follow
+#
+# with dockerfilePath: docker/Dockerfile.k8s-cuda. On non-OpenShift k8s with a
+# privileged SCC, the buildx kubernetes driver works:
+#
+#   docker buildx build --builder <remote> --platform linux/amd64 --push \
+#       -f docker/Dockerfile.k8s-cuda -t <ref> .
+#
+# Either way, build from the repo root: the COPY below expects it as context.
+#
+# Keep VLLM_BASE_TAG aligned with [project.optional-dependencies].vllm in
+# pyproject.toml, and with docker/Dockerfile.ci.
+ARG VLLM_BASE_IMAGE=vllm/vllm-openai
+ARG VLLM_BASE_TAG=v0.26.0
+
+# deps stage: everything except the real project sources, so source-only
+# changes don't invalidate the heavy dependency layer.
+FROM ${VLLM_BASE_IMAGE}:${VLLM_BASE_TAG} AS deps
+
+ARG APP_DIR=/opt/afd-plugin
+WORKDIR ${APP_DIR}
+
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+# Placeholder package tree so the editable install can register APP_DIR.
+# The final stage's COPY fills this directory with the real sources.
+RUN mkdir -p afd_plugin && touch afd_plugin/__init__.py
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git jq && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml setup.py uv.lock README.md LICENSE ./
+
+# The build context has no .git (see .dockerignore), so setuptools-scm cannot
+# infer a version; pretend one for this image's install.
+#
+# PYTHONDONTWRITEBYTECODE matters at runtime here, not just at build time:
+# under OpenShift's restricted SCC the container runs as a random non-root UID
+# that cannot write __pycache__ into APP_DIR.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    AFD_BUILD_ASCEND_OPS=0 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_LINK_MODE=copy \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VLLM_AFD_PLUGIN=0.0.0+k8s \
+    SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0+k8s
+
+# Install locked deps into the base image's system Python, then nixl, then
+# editable-install the project. `uv sync` has no --system; export + uv pip
+# matches the omni system-Python layout while still honoring uv.lock.
+#
+# nixl goes after the locked install so the pinned set wins any shared
+# transitive dependency. The project install keeps Dockerfile.ci's plain
+# `-e .` (no --no-deps): afd-plugin declares no runtime dependencies today,
+# and matching CI means a dependency added later is actually installed here
+# rather than silently skipped.
+#
+# Do NOT reinstall after the final COPY, or every source-only change would
+# invalidate this layer and re-pull the multi-GB base image.
+RUN uv export --locked --group dev --no-emit-project -o /tmp/requirements-dev.txt \
+    && uv pip install --system -r /tmp/requirements-dev.txt \
+    && uv pip install --system nixl \
+    && uv pip install --system -e .
+
+# Final stage: overlay the workspace sources onto the cached deps image.
+FROM deps
+ARG APP_DIR=/opt/afd-plugin
+WORKDIR ${APP_DIR}
+
+# Plain COPY, not COPY --link: OpenShift Builds run buildah/imagebuilder, not
+# BuildKit, and it rejects --link (as it does RUN --mount). The resulting
+# layer is identical; only BuildKit's layer-reuse is slightly weaker. Keep
+# this file free of BuildKit-only syntax so the same Dockerfile builds under
+# both drivers.
+COPY . .
+
+# OpenShift's restricted SCC assigns a random non-root UID that is always a
+# member of group 0. Making the tree group-writable lets that UID write the
+# things a test run produces in APP_DIR -- pytest's .pytest_cache, ruff's
+# cache, benchmark output -- which a root-owned 0755 tree would refuse.
+RUN chgrp -R 0 ${APP_DIR} && chmod -R g=u ${APP_DIR}
+
+# Same reason: with no /etc/passwd entry for the random UID, HOME defaults to
+# `/`, which is not writable, and anything expanding `~` fails. Point it at
+# the group-writable APP_DIR. A pod that mounts its own scratch volume should
+# override this (the recipe serve-pod sets HOME=/work/home).
+ENV HOME=${APP_DIR}
+
+# The recipe scripts call `uv run vllm` / `uv run python`, which is right for
+# a local uv checkout but wrong here (system Python, no uv project). The
+# serving pod shadows `uv` with a shim that drops the `run` verb, which keeps
+# the recipe scripts byte-identical to what a local user runs -- so nothing is
+# rewritten at build time.
+
+# Renders as `ENTRYPOINT null` under buildah. Harmless: the consuming pod sets
+# an explicit `command:`, which overrides the image entrypoint either way.
+ENTRYPOINT []

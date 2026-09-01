@@ -1,0 +1,19 @@
+# Hugging Face cache volume for the 2P1A1F prefill/decode-disaggregation
+# benchmark. The pod points HF_HOME here, so vLLM downloads the model on the
+# first cold run and every later run reuses it -- there is no separate
+# download step.
+#
+# The claim name is deliberately the shared `deepseek-v2-lite-pvc`: a namespace
+# where a previous run (or another recipe) already populated it starts warm.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deepseek-v2-lite-pvc
+  labels:
+    app: afd-recipe
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
