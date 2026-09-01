@@ -78,6 +78,14 @@ namespace optiling {
         std::string algConfigAllToAllStr = "AlltoAll=level0:fullmesh;level1:pairwise";
 
         AscendC::Mc2CcTilingConfig mc2CcTilingConfig(groupEp, opType1, algConfigAllToAllStr);
+#ifdef AFD_TILING_HAS_COMM_ENGINE
+        // On A5 (Ascend 950) HCCL allocates MC2 resources via comm engine 3;
+        // without this HcclAllocComResourceByTiling fails with HCCL_E_NOT_SUPPORT.
+        auto ascendcPlatform = platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
+        if (ascendcPlatform.GetSocVersion() == platform_ascendc::SocVersion::ASCEND950) {
+            mc2CcTilingConfig.SetCommEngine(3);
+        }
+#endif
         mc2CcTilingConfig.GetTiling(tiling->mc2InitTiling);
         mc2CcTilingConfig.GetTiling(tiling->mc2CcTiling1);
 

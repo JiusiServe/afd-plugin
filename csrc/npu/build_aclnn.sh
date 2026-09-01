@@ -11,8 +11,11 @@ case "$SOC_VERSION" in
   910c|ascend910_93*|ascend910_9392)
     SOC_ARG="ascend910_93"
     ;;
+  950|ascend950*|Ascend950*)
+    SOC_ARG="ascend950"
+    ;;
   *)
-    echo "AFD A2E/E2A custom ACLNN ops are currently built only for Ascend 910C; got ${SOC_VERSION}."
+    echo "AFD A2E/E2A custom ACLNN ops are currently built only for Ascend 910C/950; got ${SOC_VERSION}."
     exit 0
     ;;
 esac
