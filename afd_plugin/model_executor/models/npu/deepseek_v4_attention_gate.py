@@ -57,10 +57,32 @@ def _compute_sqrtsoftplus_topk(
         input_ids = getattr(forward_context, "input_ids", None)
         if input_ids is None:
             raise RuntimeError(
-                "DSV4 Hash routing requires local input_ids in the forward "
-                "context",
+                "DSV4 Hash routing requires local input_ids in the forward context",
             )
         input_ids = input_ids.reshape(-1).to(torch.int64)
+        # FlashComm v1 shards router logits across TP ranks, but the forward
+        # context still carries global input IDs. Apply the same padding and
+        # contiguous TP split so Hash routing receives rank-local token IDs.
+        if (
+            forward_context.flash_comm_v1_enabled
+            and input_ids.numel() != router_logits.shape[0]
+        ):
+            from vllm.distributed import get_tp_group
+            from vllm_ascend.distributed.utils import (
+                split_tensor_along_first_dim,
+            )
+
+            if forward_context.pad_size > 0:
+                input_ids = torch.nn.functional.pad(
+                    input_ids,
+                    (0, forward_context.pad_size),
+                )
+            tp_group = get_tp_group()
+            input_ids = split_tensor_along_first_dim(
+                input_ids,
+                num_partitions=tp_group.world_size,
+                contiguous_split_chunks=True,
+            )[tp_group.rank_in_group]
         if input_ids.numel() != router_logits.shape[0]:
             raise RuntimeError(
                 "DSV4 Hash routing input_ids/token count mismatch on Attention: "
@@ -102,8 +124,7 @@ def _compute_standard_topk(
         norm_type = norm_type_by_scoring_func[moe.scoring_func]
     except KeyError as exc:
         raise RuntimeError(
-            "Unsupported non-Hash DSV4 routing scoring function: "
-            f"{moe.scoring_func!r}",
+            f"Unsupported non-Hash DSV4 routing scoring function: {moe.scoring_func!r}",
         ) from exc
     correction_bias = moe.gate.e_score_correction_bias
     if correction_bias is not None and correction_bias.dtype != router_logits.dtype:
