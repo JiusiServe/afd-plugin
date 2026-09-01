@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+
 from __future__ import annotations
 
 import pytest
@@ -17,7 +20,11 @@ def test_dsv4_async_metadata_lazily_delegates_to_async_cam_forward(monkeypatch):
     positions = object()
     intermediate_tensors = object()
     sentinel = object()
-    calls = []
+    calls: list[tuple[object, ...]] = []
+
+    def run_async(*args):
+        calls.append(args)
+        return sentinel
 
     monkeypatch.setattr(
         adapter,
@@ -27,7 +34,7 @@ def test_dsv4_async_metadata_lazily_delegates_to_async_cam_forward(monkeypatch):
     monkeypatch.setattr(
         async_forward,
         "run_async_moe_ubatch_forward",
-        lambda *args: calls.append(args) or sentinel,
+        run_async,
     )
 
     result = model.forward(input_ids, positions, intermediate_tensors)
@@ -41,7 +48,12 @@ def test_dsv4_async_metadata_lazily_delegates_to_async_cam_forward(monkeypatch):
 def test_dsv4_without_async_metadata_uses_native_forward(monkeypatch):
     model = object.__new__(adapter.AFDDeepseekV4Model)
     sentinel = object()
-    calls = []
+    calls: list[tuple[object, ...]] = []
+
+    def native_forward(*args):
+        calls.append(args)
+        return sentinel
+
     monkeypatch.setattr(
         adapter,
         "get_async_moe_ubatch_metadata_from_forward_context",
@@ -50,7 +62,7 @@ def test_dsv4_without_async_metadata_uses_native_forward(monkeypatch):
     monkeypatch.setattr(
         native.DeepseekV4Model,
         "forward",
-        lambda *args: calls.append(args) or sentinel,
+        native_forward,
     )
 
     result = model.forward(None, object(), None, object())

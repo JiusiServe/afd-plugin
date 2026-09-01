@@ -9,7 +9,7 @@ implementation plugin-owned.
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import cast
+from typing import TypeAlias, cast
 
 import torch
 import torch_npu  # noqa: F401
@@ -49,8 +49,8 @@ from afd_plugin.v1.worker.npu.ubatching import (
 
 AFD_NPU_NUM_UBATCHES = 2
 _READY_BARRIER_PARTIES = AFD_NPU_NUM_UBATCHES + 1
-AscendLastRankOutput = torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]
-AscendModelOutput = AscendLastRankOutput | IntermediateTensors
+AscendLastRankOutput: TypeAlias = torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]
+AscendModelOutput: TypeAlias = AscendLastRankOutput | IntermediateTensors
 
 
 def _cat_ubatch_outputs(
@@ -376,6 +376,7 @@ class AscendUBatchWrapper(UBatchWrapper):
                 merged_metadata,
                 merged_params,
             ):
+                assert self.full_graph_params_updater is not None
                 self.full_graph_params_updater(
                     forward_context,
                     num_tokens,

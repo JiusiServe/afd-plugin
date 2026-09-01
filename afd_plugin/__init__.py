@@ -11,6 +11,7 @@ import os
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any, cast
 
 from afd_plugin.config import AFDConfig, parse_afd_config, parse_optional_afd_config
 
@@ -67,14 +68,15 @@ def _force_spawn_multiprocessing_if_requested() -> None:
     # child it starts exits before running user code.  Keep this narrowly
     # opt-in with the recipe environment variable above: callers requesting a
     # forkserver receive the equivalent spawn context instead.
-    contexts = multiprocessing.context._concrete_contexts
+    contexts = cast(Any, multiprocessing.context)._concrete_contexts
     contexts["forkserver"] = contexts["spawn"]
 
     # TE Fusion keeps a module reference to ``multiprocessing`` and calls its
     # public ``get_context("forkserver")`` API directly inside each model
     # worker.  Replacing the registry alone is not sufficient for all Python
     # 3.12 context instances, so redirect that explicit request as well.
-    if not getattr(multiprocessing, "_afd_spawn_context_redirect", False):
+    multiprocessing_module = cast(Any, multiprocessing)
+    if not getattr(multiprocessing_module, "_afd_spawn_context_redirect", False):
         original_get_context = multiprocessing.get_context
 
         def get_spawn_context(method: str | None = None):
@@ -83,7 +85,7 @@ def _force_spawn_multiprocessing_if_requested() -> None:
             return original_get_context(method)
 
         multiprocessing.get_context = get_spawn_context
-        multiprocessing._afd_spawn_context_redirect = True
+        multiprocessing_module._afd_spawn_context_redirect = True
 
 
 # vLLM model workers import the configured worker class directly in spawned

@@ -1,5 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+
 from __future__ import annotations
 
+# Fake dependency modules in this file intentionally receive attributes at
+# runtime before the plugin module under test imports them.
+# mypy: disable-error-code="attr-defined"
 import importlib
 import sys
 from contextlib import contextmanager
@@ -968,6 +974,7 @@ def test_mla_graph_replay_rejects_missing_updater_before_replay(monkeypatch):
     )
     wrapper.full_graph_params_updater = None
     workspace = object()
+    replay_calls: list[str] = []
     graph_metadata = wrapper_module.AscendNPUGraphMetaData(
         aclgraph=SimpleNamespace(replay=lambda: replay_calls.append("replay")),
         ubatch_metadata=[],
@@ -980,8 +987,6 @@ def test_mla_graph_replay_rejects_missing_updater_before_replay(monkeypatch):
         attn_metadata=[{"layer0": "m0"}, {"layer0": "m1"}],
         additional_kwargs={},
     )
-    replay_calls = []
-
     with pytest.raises(RuntimeError, match="no parameter updater"):
         wrapper._replay_mla_graph(graph_metadata, context, 4)
 

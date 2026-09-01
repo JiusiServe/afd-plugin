@@ -9,7 +9,7 @@ import json
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import torch
 from vllm.forward_context import DPMetadata
@@ -45,7 +45,7 @@ class AFDDPMetadata:
 
     @contextmanager
     def sp_local_sizes(self, sequence_parallel_size: int) -> Generator[list[int]]:
-        self.local_sizes = (
+        local_sizes: list[int] = (
             (
                 (self.num_tokens_across_dp_cpu + sequence_parallel_size - 1)
                 // sequence_parallel_size
@@ -53,8 +53,9 @@ class AFDDPMetadata:
             .repeat_interleave(sequence_parallel_size)
             .tolist()
         )
+        self.local_sizes = local_sizes
         try:
-            yield self.local_sizes
+            yield local_sizes
         finally:
             self.local_sizes = None
 
@@ -324,7 +325,7 @@ class AFDForwardContextMetadata:
 
 def _to_int(value: object) -> int:
     item = getattr(value, "item", None)
-    return int(item() if callable(item) else value)
+    return int(cast(Any, item() if callable(item) else value))
 
 
 def encode_control_payload(payload: AFDControlPayload) -> bytes:

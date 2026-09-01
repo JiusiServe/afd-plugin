@@ -8,6 +8,7 @@ import ctypes
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Any, cast
 
 AFD_ASCEND_OPS_NAMESPACE = "afd_ascend"
 AFD_ASCEND_VENDOR_NAME = "afd-plugin"
@@ -60,16 +61,18 @@ def _ensure_afd_custom_opp_env() -> None:
 
 
 def _assert_afd_namespace_registered(torch: object) -> None:
-    _ = torch.ops.afd_ascend.a2e
-    _ = torch.ops.afd_ascend.e2a
+    torch_module = cast(Any, torch)
+    _ = torch_module.ops.afd_ascend.a2e
+    _ = torch_module.ops.afd_ascend.e2a
 
 
 def _assert_cam_namespace_registered(torch: object) -> None:
+    torch_module = cast(Any, torch)
     _ = (
-        torch.ops.umdk_cam_op_lib.async_dispatch_send,
-        torch.ops.umdk_cam_op_lib.async_dispatch_recv,
-        torch.ops.umdk_cam_op_lib.async_combine_send,
-        torch.ops.umdk_cam_op_lib.async_combine_recv,
+        torch_module.ops.umdk_cam_op_lib.async_dispatch_send,
+        torch_module.ops.umdk_cam_op_lib.async_dispatch_recv,
+        torch_module.ops.umdk_cam_op_lib.async_combine_send,
+        torch_module.ops.umdk_cam_op_lib.async_combine_recv,
     )
 
 

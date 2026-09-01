@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+
 set -euo pipefail
 
 # Two A3-task DSV4 async CAM deployment.
@@ -73,6 +76,7 @@ PLUGIN_ROOT=${PLUGIN_ROOT:-$(cd -- "$SCRIPT_DIR/../.." && pwd)}
 : "${NODE1_IP:?NODE1_IP must be the validated node1 Pod IP}"
 : "${NODE2_IP:?NODE2_IP must be the validated node2 Pod IP}"
 
+# shellcheck source=/dev/null
 source /usr/local/Ascend/cann-9.0.1/set_env.sh
 export ASCEND_RT_VISIBLE_DEVICES="$VISIBLE_DEVICES"
 export PYTHONPATH="/vllm-workspace/vllm-ascend:/vllm-workspace/vllm:${PYTHONPATH:-}"

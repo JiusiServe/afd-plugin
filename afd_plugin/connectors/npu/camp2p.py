@@ -742,8 +742,9 @@ def _aggregate_camp2p_control_payloads(
                 "CAMP2P Attention peers must either all provide input_ids or "
                 f"all omit them for stage {stage_idx}"
             )
+        complete_input_ids = cast(tuple[list[int], ...], stage_input_ids)
         input_ids_by_stage[stage_idx] = [
-            token_id for input_ids in stage_input_ids for token_id in input_ids
+            token_id for input_ids in complete_input_ids for token_id in input_ids
         ]
 
     return AFDControlPayload(

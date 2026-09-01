@@ -1,8 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -93,7 +97,7 @@ def test_async_model_forward_preserves_pp_boundaries(
         lambda context: None,
     )
 
-    schedule_calls = []
+    schedule_calls: list[tuple[Any, ...]] = []
 
     def run_schedule(
         model,
@@ -369,7 +373,7 @@ def test_deepseek_compute_gate_on_attention_selects_backend_boundary():
 def test_async_moe_pipeline_preserves_stage_order(monkeypatch):
     from afd_plugin.model_executor.models.npu import deepseek_v2_async_cam_forward
 
-    events = []
+    events: list[tuple[Any, ...]] = []
     forward_context = SimpleNamespace(
         attn_metadata={"layer": "full"},
         additional_kwargs={},
@@ -596,18 +600,18 @@ def test_deepseek_afd_ffn_skips_empty_rank_local_moe_work(
             None,
         )
 
-    fake_moe_mlp = ModuleType("vllm_ascend.ops.fused_moe.moe_mlp")
+    fake_moe_mlp: Any = ModuleType("vllm_ascend.ops.fused_moe.moe_mlp")
     fake_moe_mlp.unified_apply_mlp = fake_unified_apply_mlp
-    fake_stage_contracts = ModuleType(
+    fake_stage_contracts: Any = ModuleType(
         "vllm_ascend.ops.fused_moe.moe_stage_contracts",
     )
     fake_stage_contracts.MoEMlpComputeInput = KeywordArguments
     fake_stage_contracts.MoEWeights = KeywordArguments
-    fake_stage_params = ModuleType(
+    fake_stage_params: Any = ModuleType(
         "vllm_ascend.ops.fused_moe.moe_stage_params",
     )
     fake_stage_params.MoEQuantParams = KeywordArguments
-    fake_quant_type = ModuleType("vllm_ascend.quantization.quant_type")
+    fake_quant_type: Any = ModuleType("vllm_ascend.quantization.quant_type")
     fake_quant_type.QuantType = FakeQuantType
     monkeypatch.setitem(
         sys.modules,

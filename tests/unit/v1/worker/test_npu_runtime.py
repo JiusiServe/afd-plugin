@@ -1010,6 +1010,7 @@ def test_npu_attention_runner_builds_stage_metadata(monkeypatch):
     ]
     assert materialized_full_metadata == [(full_attn_metadata, runner.positions)]
     assert runner.ubatch_slices is None
+    assert runner._afd_pending_metadata is not None
     assert runner._afd_pending_metadata.num_stages == 1
     assert runner._afd_pending_metadata.tokens_start_loc == [0]
     assert runner._afd_pending_metadata.tokens_lens == [1099]
@@ -2589,7 +2590,7 @@ def test_npu_attention_runner_afd_ubatching_does_not_install_native_wrapper(
     _require_npu_runtime()
     from afd_plugin.v1.worker.npu import attention_model_runner
 
-    events = []
+    events: list[object] = []
     connector = _LifecycleConnector(events)
     runner = object.__new__(attention_model_runner.AFDNPUAttentionModelRunner)
     runner.connector = connector

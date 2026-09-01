@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -10,7 +13,7 @@ from afd_plugin.model_executor.models.npu import deepseek_v4 as adapter  # noqa:
 
 
 def test_dsv4_afd_schedule_executes_two_layers_and_two_stages():
-    events = []
+    events: list[tuple] = []
     pending = {}
     stage_context = {
         0: SimpleNamespace(
@@ -80,7 +83,7 @@ def test_dsv4_afd_schedule_executes_two_layers_and_two_stages():
 
 
 def test_dsv4_afd_schedule_propagates_post_send_failure():
-    events = []
+    events: list[tuple] = []
     layer = SimpleNamespace(layer_idx=0)
 
     def compute(_layer, stage_idx):
