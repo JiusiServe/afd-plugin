@@ -8,6 +8,7 @@ import asyncio
 import copy
 import importlib
 import logging
+import multiprocessing
 import sys
 import time
 import types
@@ -55,6 +56,7 @@ def _config(
 
 def _install_fake_vllm_engine(monkeypatch: pytest.MonkeyPatch):
     vllm_module = types.ModuleType("vllm")
+    vllm_module.__version__ = "0.26.0"
     vllm_v1_module = types.ModuleType("vllm.v1")
     engine_module = types.ModuleType("vllm.v1.engine")
     coordinator_module = types.ModuleType("vllm.v1.engine.coordinator")
@@ -278,6 +280,44 @@ def _load_patch_module(monkeypatch: pytest.MonkeyPatch):
     return importlib.import_module(module_name)
 
 
+def _inspect_spawned_coordinator_binding(result_queue):
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        _install_fake_vllm_engine(monkeypatch)
+        module_name = "afd_plugin.compat.patches.async_dp_engine"
+        sys.modules.pop(module_name, None)
+        patch_module = importlib.import_module(module_name)
+        coordinator = sys.modules["vllm.v1.engine.coordinator"].DPCoordinatorProc
+        result_queue.put(
+            (
+                coordinator.run_coordinator is patch_module.run_coordinator,
+                coordinator.process_input_socket is patch_module.process_input_socket,
+                coordinator.run_coordinator.__module__,
+            )
+        )
+    finally:
+        monkeypatch.undo()
+
+
+def test_spawn_import_installs_plugin_owned_coordinator_target():
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue()
+    process = context.Process(
+        target=_inspect_spawned_coordinator_binding,
+        args=(result_queue,),
+    )
+    process.start()
+    process.join(timeout=30)
+
+    assert process.exitcode == 0
+    assert result_queue.get(timeout=5) == (
+        True,
+        True,
+        "afd_plugin.compat.patches.async_dp_engine",
+    )
+    result_queue.close()
+
+
 def test_async_dp_attention_uses_regular_engine_core(monkeypatch):
     _load_patch_module(monkeypatch)
     core_module = sys.modules["vllm.v1.engine.core"]
@@ -366,6 +406,42 @@ def test_async_dp_coordinator_disables_wave_coordination(monkeypatch):
     assert (
         coordinator_module.DPCoordinatorProc.process_input_socket
         is patch_module.process_input_socket
+    )
+    assert (
+        coordinator_module.DPCoordinatorProc.run_coordinator
+        is patch_module.run_coordinator
+    )
+    assert patch_module.run_coordinator.__module__ == (
+        "afd_plugin.compat.patches.async_dp_engine"
+    )
+
+
+def test_newer_dev_vllm_keeps_native_coordinator(monkeypatch):
+    patch_module = _load_patch_module(monkeypatch)
+    vllm_module = sys.modules["vllm"]
+    coordinator_module = sys.modules["vllm.v1.engine.coordinator"]
+
+    def native_run_coordinator(*_args, **_kwargs):
+        return None
+
+    def native_process_input_socket(*_args, **_kwargs):
+        return None
+
+    coordinator_module.DPCoordinatorProc.run_coordinator = staticmethod(
+        native_run_coordinator
+    )
+    coordinator_module.DPCoordinatorProc.process_input_socket = (
+        native_process_input_socket
+    )
+    vllm_module.__version__ = "0.27.0.dev1"
+
+    assert patch_module.apply_async_dp_engine_patch() is True
+    assert (
+        coordinator_module.DPCoordinatorProc.run_coordinator is native_run_coordinator
+    )
+    assert (
+        coordinator_module.DPCoordinatorProc.process_input_socket
+        is native_process_input_socket
     )
 
 
