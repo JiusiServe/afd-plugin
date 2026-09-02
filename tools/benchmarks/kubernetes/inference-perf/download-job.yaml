@@ -19,7 +19,7 @@ spec:
       volumes:
         - name: model-storage
           persistentVolumeClaim:
-            claimName: afd-model-pvc
+            claimName: model-pvc
       containers:
         - name: model-downloader
           image: vllm/vllm-openai-cpu:v0.23.0
