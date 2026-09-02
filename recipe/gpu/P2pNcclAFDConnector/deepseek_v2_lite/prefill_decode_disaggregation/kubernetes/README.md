@@ -12,9 +12,12 @@ one 4-GPU node, all on `127.0.0.1`:
 | 3 | Decode — FFN | *(none)* | no KV cache; AFD p2p on 6269 |
 | — | Proxy | **18305** | send all traffic here |
 
+Two manifests, applied with `kubectl`: [`pvc.yaml`](pvc.yaml) (the model cache)
+and [`serve-pod.yaml`](serve-pod.yaml) (the stack).
+
 ## 0. Prerequisites
 
-- `kubectl`/`oc` authenticated to the namespace; `envsubst` locally.
+- `kubectl`/`oc` authenticated to the namespace; `envsubst` (gettext) locally.
 - A node with 4 free GPUs.
 - Two Secrets:
 
@@ -26,6 +29,10 @@ kubectl create secret docker-registry ghcr-push \
   --docker-username=<github_user> \
   --docker-password=<pat_with_write:packages>
 ```
+
+`ghcr-push` is only needed to **push** the image the cluster builds. The image
+is published public, so the serving pod pulls it with no credentials and
+carries no `imagePullSecrets`.
 
 ## 1. Build the image on the cluster
 
@@ -77,29 +84,85 @@ kubectl patch bc afd-plugin-k8s-bench --type=merge \
   -p '{"spec":{"output":{"to":{"kind":"DockerImage","name":"'"$IMAGE"'"}}}}'
 ```
 
+**Make the package public after the first push.** GHCR creates new packages
+private, and the serving pod supplies no pull credentials: on
+github.com/users/<user>/packages/container/afd-plugin-k8s-bench/settings set
+visibility to Public. Verify from a machine with no registry login:
+
+```bash
+docker manifest inspect $IMAGE >/dev/null && echo public
+```
+
+A private image surfaces later as `ImagePullBackOff` on the serving pod, not as
+a build failure.
+
 ## 2. Deploy
 
-```bash
-export AFD_PLUGIN_IMAGE=$IMAGE
-./run.sh up --recipe 2p1a1f_eager_dbo.sh
-```
+### 2a. Model cache PVC
 
-Returns when all four instances are up and the proxy answers `/healthcheck`.
-Eager takes a few minutes; `2p1a1f_graph_dbo.sh` ~20 (cudagraph capture).
-
-Weights come from the PVC (`HF_HOME=/models/.hf_home`); a cold volume downloads
-~30 GB inline while holding the GPUs. If already staged, skip it:
+`HF_HOME` points at this volume, so a cold claim downloads ~30 GB inline on
+first use (holding the GPUs while it does) and every later run starts warm.
+Create it only when absent — a bound PVC's spec is immutable, so re-applying
+`pvc.yaml` over an existing claim is rejected:
 
 ```bash
-./run.sh up --recipe 2p1a1f_eager_dbo.sh --model /models/DeepSeek-V2-Lite
+kubectl get pvc deepseek-v2-lite-pvc || kubectl apply -f pvc.yaml
 ```
+
+### 2b. Serving pod
+
+`serve-pod.yaml` carries three placeholders. Render it with `envsubst`, naming
+the variables **explicitly** — a bare `envsubst` would also eat the `$VAR`
+references in the pod's inline shell script and break bring-up:
+
+```bash
+export TEMPLATE_IMAGE=$IMAGE
+export TEMPLATE_MODEL=deepseek-ai/DeepSeek-V2-Lite   # or /models/<dir> if pre-staged
+export TEMPLATE_RECIPE_SCRIPT=2p1a1f_eager_dbo.sh    # or 2p1a1f_graph_dbo.sh
+
+envsubst '${TEMPLATE_IMAGE} ${TEMPLATE_MODEL} ${TEMPLATE_RECIPE_SCRIPT}' \
+  < serve-pod.yaml | kubectl apply -f -
+```
+
+Replacing a previous run: `kubectl delete pod afd-dsv2lite-pd-1a1f --wait=true`
+first — the pod is `restartPolicy: Never` and is not managed by a controller.
+
+Weights already staged on the PVC skip the download:
+
+```bash
+export TEMPLATE_MODEL=/models/DeepSeek-V2-Lite
+```
+
+### 2c. Wait for readiness
+
+The pod launches the recipe, waits for all four instances plus the proxy, then
+writes a marker into `/work`. Watch it come up:
+
+```bash
+kubectl wait --for=jsonpath='{.status.phase}'=Running pod/afd-dsv2lite-pd-1a1f --timeout=10m
+kubectl logs -f pod/afd-dsv2lite-pd-1a1f
+```
+
+Bring-up is a few minutes for `2p1a1f_eager_dbo.sh` and ~20 for
+`2p1a1f_graph_dbo.sh` (cudagraph capture), plus the one-time download on a cold
+PVC. Poll for the outcome:
+
+```bash
+# READY when this exits 0
+kubectl exec afd-dsv2lite-pd-1a1f -- test -f /work/SERVER_READY
+
+# FAILED when this exits 0; per-worker log tails are already in `kubectl logs`
+kubectl exec afd-dsv2lite-pd-1a1f -- test -f /work/SERVER_FAILED
+```
+
+A pod stuck `Pending`/`ContainerCreating` is holding its 4-GPU reservation —
+check `kubectl describe pod afd-dsv2lite-pd-1a1f` and tear it down (step 4)
+rather than waiting it out.
 
 ## 3. Verify
 
 ```bash
-./run.sh status     # expect: state: READY (proxy on :18305)
-
-MODEL=/models/DeepSeek-V2-Lite   # must match ./run.sh status
+MODEL=deepseek-ai/DeepSeek-V2-Lite   # must match TEMPLATE_MODEL exactly
 kubectl exec afd-dsv2lite-pd-1a1f -- curl -s \
   http://127.0.0.1:18305/v1/completions \
   -H 'Content-Type: application/json' \
@@ -110,31 +173,14 @@ Traffic must go to **18305** — only the proxy performs the remote-prefill
 handshake that makes disaggregation happen. To drive it locally instead:
 `kubectl port-forward pod/afd-dsv2lite-pd-1a1f 18305:18305`.
 
-## 4. Benchmark (optional)
+## 4. Tear down
 
-One bring-up serves several runs. Results land in `./results/<tag>/` as
-`rate_<R>.json` (throughput, TTFT/TPOT/ITL/E2EL) plus the per-worker logs.
-
-```bash
-./run.sh bench --isl 1024 --tag isl1024
-./run.sh all --recipe 2p1a1f_eager_dbo.sh --rates 5 --num-prompts 64  # smoke
-```
-
-## 5. Tear down
-
-The pod holds 4 GPUs until freed:
+The pod holds 4 GPUs until deleted:
 
 ```bash
-./run.sh down                 # keeps the model cache PVC
-./run.sh down --delete-pvc    # also drops the cache
+kubectl delete pod afd-dsv2lite-pd-1a1f          # keeps the model cache PVC
+kubectl delete pvc deepseek-v2-lite-pvc          # also drops the cache
 ```
-
-## Reference
-
-Commands: `up`, `bench`, `down`, `all`, `status`, `logs`. Run `./run.sh --help`
-for all options. Most-used: `--image`, `--model`, `--recipe`, `--pull-secret`
-(default `ghcr-push`), `--timeout` (default 90 min), `--isl`/`--osl`,
-`--rates`, `--num-prompts`, `--tag`.
 
 ## Notes
 
@@ -143,8 +189,6 @@ for all options. Most-used: `--image`, `--model`, `--recipe`, `--pull-secret`
   `Application startup complete`. Do not probe 18304.
 - **Prefill is chunked at 64 tokens**, so TTFT is dominated by chunking, not by
   the NIXL transfer. `max-model-len` is 8192, so `ISL + OSL` must stay under it.
-- **Benchmarks use `--ignore-eos`** — output text is meaningless; it measures
-  serving performance, not quality.
 - **`uv run` is shimmed in-pod** so the recipe script stays byte-identical to
   what a local user runs.
 - **CSI-restricted volumes need a `nodeSelector`.** A GPU request alone does not

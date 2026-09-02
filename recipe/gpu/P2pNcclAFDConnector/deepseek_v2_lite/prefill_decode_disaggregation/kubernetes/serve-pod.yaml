@@ -1,8 +1,8 @@
 # 2P1A1F prefill/decode-disaggregation serving pod.
 #
-# This pod only brings the stack UP and holds it there; it runs no benchmark.
-# `run.sh bench` drives load into it with `kubectl exec`, so one bring-up can
-# serve many workloads.
+# This pod brings the stack UP and holds it there, serving on 127.0.0.1:18305
+# until it is deleted. Drive traffic into it with `kubectl exec` or
+# `kubectl port-forward` (see README.md).
 #
 # All five processes of the recipe run inside this one Pod on 127.0.0.1, which
 # is what 2p1a1f_graph_dbo.sh already assumes:
@@ -11,12 +11,15 @@
 #   GPU1  prefill #1  :18302   NixlConnector kv_producer, side channel 5602
 #   GPU2  attention   :18303   NixlConnector kv_consumer, side channel 5603
 #   GPU3  ffn         :18304   AFD p2p to attention on 6269
-#    --   proxy       :18305   client-facing endpoint, benchmarked
+#    --   proxy       :18305   client-facing endpoint, send traffic here
 #
-# Rendered by `run.sh up` through `envsubst` (only the ${TEMPLATE_*} vars are
-# substituted; every other $VAR is left for the in-pod shell).
+# Not applied directly: render it with `envsubst` first, naming the three
+# variables explicitly so every other $VAR survives for the in-pod shell:
 #
-# Readiness contract with run.sh:
+#   envsubst '${TEMPLATE_IMAGE} ${TEMPLATE_MODEL} ${TEMPLATE_RECIPE_SCRIPT}' \
+#     < serve-pod.yaml | kubectl apply -f -
+#
+# Readiness markers written into the pod:
 #   /work/SERVER_READY   all four servers up and the proxy answering
 #   /work/SERVER_FAILED  bring-up failed; per-worker logs already dumped
 apiVersion: v1
@@ -40,13 +43,10 @@ spec:
   # never selects a node that cannot mount the volume.
   nodeSelector:
     scale: "true"
-  # The benchmark image lives in a private registry (ghcr.io packages are
-  # private by default), and the namespace's default ServiceAccount carries no
-  # pull secret -- without this the pod sits in ImagePullBackOff holding its
-  # GPU reservation. The same dockerconfigjson Secret used to push the image
-  # works to pull it.
-  imagePullSecrets:
-    - name: ${TEMPLATE_PULL_SECRET}
+  # No imagePullSecrets: the image is published public. GHCR creates packages
+  # private, so if the visibility flip was missed the pod sits in
+  # ImagePullBackOff holding its 4-GPU reservation -- add an imagePullSecrets
+  # entry here (or make the package public) if that happens.
   volumes:
     # Hugging Face cache: cold on first run, warm on every run after.
     - name: model-storage
@@ -105,8 +105,8 @@ spec:
           bash "$RECIPE_SCRIPT" &
           RECIPE_PID=$!
 
-          # Dump diagnostics and park rather than hanging silently; run.sh polls
-          # for SERVER_FAILED and reports.
+          # Dump diagnostics and park rather than hanging silently: the pod
+          # stays inspectable and /work/SERVER_FAILED marks the outcome.
           fail() {
             echo "ERROR: $*"
             for log in afd_prefill0.log afd_prefill1.log attn.log ffn.log proxy.log; do
@@ -164,10 +164,10 @@ spec:
           [ "$proxy_ready" = "1" ] || fail "proxy did not answer /healthcheck"
 
           touch "$READY"
-          echo "=== stack READY; drive load at 127.0.0.1:18305 (run.sh bench) ==="
+          echo "=== stack READY; drive load at 127.0.0.1:18305 ==="
           sleep infinity
       env:
-        # Set by `run.sh up`.
+        # Substituted by envsubst before apply (see the header).
         - name: AFD_MODEL
           value: "${TEMPLATE_MODEL}"
         - name: AFD_RECIPE_SCRIPT
