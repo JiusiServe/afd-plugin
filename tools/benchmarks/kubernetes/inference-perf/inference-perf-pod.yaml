@@ -26,9 +26,6 @@ spec:
           readOnly: true
         - name: reports-volume
           mountPath: /reports
-        - name: dataset-volume
-          mountPath: /datasets
-          readOnly: true
   restartPolicy: Never
   volumes:
     - name: config-volume
@@ -37,9 +34,6 @@ spec:
     - name: reports-volume
       persistentVolumeClaim:
         claimName: inference-perf-reports
-    - name: dataset-volume
-      persistentVolumeClaim:
-        claimName: inference-perf-dataset
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

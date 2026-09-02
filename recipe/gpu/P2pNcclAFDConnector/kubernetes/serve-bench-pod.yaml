@@ -74,39 +74,24 @@ spec:
             sleep infinity
           }
 
-          echo "=== wait for all four vLLM instances to report startup ==="
-          # Graph capture on four instances is slow, and a cold HF cache adds a
-          # one-time model download; allow 40 minutes per instance.
-          #
-          # The FFN worker needs a DIFFERENT marker from the other three. It is
-          # driven purely through the AFD attention<->FFN p2p connector and
-          # never serves HTTP (nothing ever listens on its --port 18304), so it
-          # does not run the API-server startup path and never logs
-          # "Application startup complete". Waiting for that string here would
-          # hang until the timeout even though the stack is fully working.
-          ready_marker() {
-            case "$1" in
-              ffn.log) echo "AFD FFN EngineCore started" ;;
-              *)       echo "Application startup complete" ;;
-            esac
-          }
-          for log in attn.log ffn.log; do
-            marker="$(ready_marker "$log")"
-            echo "--- waiting on $log (marker: $marker) ---"
-            ready=0
-            for i in $(seq 1 240); do
-              if [ -f "/work/$log" ] && grep -q "$marker" "/work/$log"; then
-                echo "$log: ready"
-                ready=1
-                break
-              fi
-              if ! kill -0 "$RECIPE_PID" 2>/dev/null; then
-                fail "recipe process exited before $log came up"
-              fi
-              sleep 10
-            done
-            [ "$ready" = "1" ] || fail "timed out waiting for $log"
+          echo "=== wait for attn.log to report startup ==="
+          # Graph capture is slow, and a cold HF cache adds a one-time model
+          # download; allow 40 minutes.
+          marker="Application startup complete"
+          echo "--- waiting on attn.log (marker: $marker) ---"
+          ready=0
+          for i in $(seq 1 240); do
+            if [ -f "/work/attn.log" ] && grep -q "$marker" "/work/attn.log"; then
+              echo "attn.log: ready"
+              ready=1
+              break
+            fi
+            if ! kill -0 "$RECIPE_PID" 2>/dev/null; then
+              fail "recipe process exited before attn.log came up"
+            fi
+            sleep 10
           done
+          [ "$ready" = "1" ] || fail "timed out waiting for attn.log"
 
           echo "--- waiting on proxy /healthcheck (127.0.0.1:18305) ---"
           proxy_ready=0

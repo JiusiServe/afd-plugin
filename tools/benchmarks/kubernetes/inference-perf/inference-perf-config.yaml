@@ -17,20 +17,6 @@ data:
     # downloaded directly by this pod. inference-perf's Config schema
     # forbids extra top-level fields, so these can't be top-level YAML
     # anchors -- the values are inlined below instead.
-    #
-    # data/api: prompts come from
-    # tools/datasets/cp8sp50k_custom_dataset_text_matched_token_ids.jsonl
-    # (a real-workload prompt-length distribution), staged onto
-    # /datasets/sharegpt.json by prepare-dataset.sh. inference-perf has no
-    # dataset type that reads a bare prompt-only JSONL, so
-    # prepare-dataset.sh reshapes it into ShareGPT's `conversations` schema,
-    # adding a synthetic ~256-token "gpt" filler turn per record (this
-    # dataset only has prompts, no replies, and hf_sharegpt_datagen.py
-    # requires >=2 turns). api.type is `completion` rather than `chat`
-    # specifically because inference-perf's completion path turns that 2nd
-    # turn's token count into the request's max_tokens
-    # (inference_perf/datagen/hf_sharegpt_datagen.py:get_completion_data),
-    # which is what keeps this a decode-focused (not prefill-only) load.
     load:
       type: poisson
       interval: 60.0
@@ -66,8 +52,14 @@ data:
       pretrained_model_name_or_path: ${MODEL_ID}
 
     data:
-      type: shareGPT
-      path: /datasets/sharegpt.json
+      type: shared_prefix
+      shared_prefix:
+        num_groups: 250
+        num_prompts_per_group: 5
+        system_prompt_len: 16000
+        question_len: 256
+        output_len: 256
+        enable_multi_turn_chat: false
 
     report:
       request_lifecycle:
