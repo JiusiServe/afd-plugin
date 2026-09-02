@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: deepseek-v2-lite-downloader
+  name: afd-model-downloader
   labels:
     app: afd-recipe
     role: model-downloader
@@ -19,7 +19,7 @@ spec:
       volumes:
         - name: model-storage
           persistentVolumeClaim:
-            claimName: deepseek-v2-lite-pvc
+            claimName: afd-model-pvc
       containers:
         - name: model-downloader
           image: vllm/vllm-openai-cpu:v0.23.0
@@ -45,9 +45,15 @@ spec:
                   print("Download complete", flush=True)
           env:
             - name: MODEL_ID
-              value: "deepseek-ai/DeepSeek-V2-Lite"
+              valueFrom:
+                configMapKeyRef:
+                  name: afd-model-config
+                  key: MODEL_ID
             - name: SAVE_DIR
-              value: "/models/DeepSeek-V2-Lite"
+              valueFrom:
+                configMapKeyRef:
+                  name: afd-model-config
+                  key: MODEL_PATH
             - name: HF_HOME
               value: "/models/.hf_home"
             - name: HF_XET_CACHE

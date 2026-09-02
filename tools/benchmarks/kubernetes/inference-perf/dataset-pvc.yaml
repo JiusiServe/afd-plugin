@@ -1,12 +1,12 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: deepseek-v2-lite-pvc
+  name: inference-perf-dataset
   labels:
-    app: afd-recipe
+    app: inference-perf
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 100Gi
+      storage: 2Gi

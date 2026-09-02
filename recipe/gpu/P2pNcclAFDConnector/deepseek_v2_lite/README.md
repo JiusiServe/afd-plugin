@@ -26,7 +26,8 @@ End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
 .
 ├── prefill_decode_disaggregation/        # prefill_decode_disaggregation, 2P1A1F topology
 │   ├── 2p1a1f_eager_dbo.sh
-│   └── 2p1a1f_graph_dbo.sh
+│   ├── 2p1a1f_graph_dbo.sh
+│   └── baseline.sh                       # 2P + 1 non-disaggregated decode (DP=2), no AFD/DBO
 └── prefill_decode_colocation/             # prefill_decode_colocation, 2A2F topology
     ├── 2a2f_eager_dbo_dp1tp2.sh
     ├── 2a2f_eager_dbo_dp2tp1.sh
@@ -45,6 +46,17 @@ End-to-end launch scripts for running DeepSeek-V2-Lite with the AFD
 | 3    | Decode (FFN)        | 18304 |
 | /    | Proxy Server        | 18305 |
 
+`baseline.sh` is the non-AFD comparison point for this topology: the same 2
+prefill producers (GPUs 0, 1), but a single, non-disaggregated decode
+instance spanning GPUs 2+3 via `--data-parallel-size 2` (no AFD role split,
+no DBO) instead of separate attention/FFN workers:
+
+| GPUs | Role          | Port  |
+|------|---------------|-------|
+| 0    | Prefill       | 18301 |
+| 1    | Prefill       | 18302 |
+| 2, 3 | Decode (DP=2) | 18303 |
+| /    | Proxy Server  | 18305 |
 
 ### 2. Prefill/Decode Colocation — `2a2f`
 
@@ -83,6 +95,14 @@ bash recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite/prefill_decode_colocation/2
 export MODEL_PATH=/path/model_weights/DeepSeek-V2-Lite
 export VLLM_USE_V2_MODEL_RUNNER=0
 bash recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite/prefill_decode_disaggregation/2p1a1f_graph_dbo.sh
+```
+
+Or, for the non-AFD baseline comparison:
+
+```bash
+export MODEL_PATH=/path/model_weights/DeepSeek-V2-Lite
+export VLLM_USE_V2_MODEL_RUNNER=0
+bash recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite/prefill_decode_disaggregation/baseline.sh
 ```
 
 ### Running the benchmark

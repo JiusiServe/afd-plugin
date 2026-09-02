@@ -1,0 +1,169 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vllm-pod
+  labels:
+    app: afd-recipe
+    role: serve
+spec:
+  restartPolicy: Never
+  securityContext:
+    fsGroup: 1003810000
+  volumes:
+    - name: model-storage
+      persistentVolumeClaim:
+        claimName: model-pvc
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 16Gi
+    - name: work
+      emptyDir: {}
+  containers:
+    - name: afd
+      image: ${TEMPLATE_IMAGE}
+      imagePullPolicy: Always
+      command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+          REPO=/opt/afd-plugin
+          RECIPE_SCRIPT="$REPO/${RECIPE_SCRIPT_PATH}"
+          REAL_UV="$(command -v uv)"
+          mkdir -p /work/bin
+          printf '#!/bin/bash\nif [ "$1" = "run" ]; then\n  shift\n  exec "$@"\nfi\nexec "%s" "$@"\n' "$REAL_UV" > /work/bin/uv
+          chmod +x /work/bin/uv
+          export PATH="/work/bin:$PATH"
+
+          echo "=== launching $(basename "$RECIPE_SCRIPT") recipe ==="
+          export VLLM_USE_V2_MODEL_RUNNER=0
+
+          # The proxy is the only client-facing part of this recipe; rebind it
+          # (only it, not the internal prefill/attn/ffn workers) from
+          # loopback-only to 0.0.0.0 so the Service/Route below can reach it.
+          # The prefill/attn/ffn `vllm serve` instances stay on 127.0.0.1 --
+          # they're only ever talked to by the proxy inside this same pod.
+          # $REPO is read-only here (this pod runs as a non-root UID that
+          # doesn't own it), so the patched copy can't be written next to the
+          # original. Mirror just enough of the repo under /work (which IS
+          # writable) to keep the recipe's own SCRIPT_DIR-relative
+          # "../../../../../tools/proxy_server.py" lookup resolving: a
+          # symlink for tools/, plus the recipe's own subdirectory, at the
+          # same relative depth.
+          RECIPE_BASENAME="$(basename "$RECIPE_SCRIPT" .sh)"
+          RECIPE_REL="${RECIPE_SCRIPT#$REPO/}"
+          MIRROR=/work/repo-mirror
+          mkdir -p "$MIRROR/$(dirname "$RECIPE_REL")"
+          ln -sfn "$REPO/tools" "$MIRROR/tools"
+          PATCHED_SCRIPT="$MIRROR/$(dirname "$RECIPE_REL")/${RECIPE_BASENAME}.patched.sh"
+          sed '/proxy_server\.py/,/--host 127\.0\.0\.1/ s/--host 127\.0\.0\.1/--host 0.0.0.0/' \
+            "$RECIPE_SCRIPT" > "$PATCHED_SCRIPT"
+
+          cd /work
+          bash "$PATCHED_SCRIPT" &
+          RECIPE_PID=$!
+          # Dump diagnostics
+
+          fail() {
+            echo "ERROR: $*"
+            for log in afd_prefill0.log afd_prefill1.log attn.log ffn.log proxy.log; do
+              echo "----- tail $log -----"
+              tail -n 100 "/work/$log" 2>/dev/null || echo "(missing)"
+            done
+            sleep infinity
+          }
+
+          echo "=== wait for all four vLLM instances to report startup ==="
+          # Graph capture on four instances is slow, and a cold HF cache adds a
+          # one-time model download; allow 40 minutes per instance.
+          #
+          # The FFN worker needs a DIFFERENT marker from the other three. It is
+          # driven purely through the AFD attention<->FFN p2p connector and
+          # never serves HTTP (nothing ever listens on its --port 18304), so it
+          # does not run the API-server startup path and never logs
+          # "Application startup complete". Waiting for that string here would
+          # hang until the timeout even though the stack is fully working.
+          ready_marker() {
+            case "$1" in
+              ffn.log) echo "AFD FFN EngineCore started" ;;
+              *)       echo "Application startup complete" ;;
+            esac
+          }
+          for log in attn.log ffn.log; do
+            marker="$(ready_marker "$log")"
+            echo "--- waiting on $log (marker: $marker) ---"
+            ready=0
+            for i in $(seq 1 240); do
+              if [ -f "/work/$log" ] && grep -q "$marker" "/work/$log"; then
+                echo "$log: ready"
+                ready=1
+                break
+              fi
+              if ! kill -0 "$RECIPE_PID" 2>/dev/null; then
+                fail "recipe process exited before $log came up"
+              fi
+              sleep 10
+            done
+            [ "$ready" = "1" ] || fail "timed out waiting for $log"
+          done
+
+          echo "--- waiting on proxy /healthcheck (127.0.0.1:18305) ---"
+          proxy_ready=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:18305/healthcheck >/dev/null 2>&1; then
+              echo "proxy: ready"
+              proxy_ready=1
+              break
+            fi
+            sleep 5
+          done
+          [ "$proxy_ready" = "1" ] || fail "proxy did not answer /healthcheck"
+
+          echo "=== stack READY; drive load at 127.0.0.1:18305 ==="
+          sleep infinity
+      env:
+        - name: USER
+          value: "vllm"
+        - name: HOME
+          value: "/work/home"
+        - name: MODEL_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: afd-model-config
+              key: MODEL_PATH
+        - name: HF_HOME
+          value: "/models/.hf_home"
+        - name: XDG_CACHE_HOME
+          value: "/work/xdg"
+        - name: TORCHINDUCTOR_CACHE_DIR
+          value: "/work/inductor"
+        - name: TRITON_CACHE_DIR
+          value: "/work/triton"
+        - name: VLLM_CACHE_ROOT
+          value: "/work/vllm"
+        - name: UV_CACHE_DIR
+          value: "/work/uv"
+        - name: VLLM_LOGGING_LEVEL
+          value: "INFO"
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: token
+      resources:
+        requests:
+          nvidia.com/gpu: "${GPU_COUNT}"
+          cpu: "16"
+          memory: 128Gi
+        limits:
+          nvidia.com/gpu: "${GPU_COUNT}"
+          cpu: "32"
+          memory: 200Gi
+      volumeMounts:
+        - name: model-storage
+          mountPath: /models
+        - name: dshm
+          mountPath: /dev/shm
+        - name: work
+          mountPath: /work

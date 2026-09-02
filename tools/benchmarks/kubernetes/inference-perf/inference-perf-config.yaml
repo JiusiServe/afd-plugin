@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inference-perf-config
+data:
+  config.yml: |
+    # inference-perf configuration for the AFD DeepSeek-V2-Lite
+    # prefill/decode-disaggregation recipe (see
+    # ../../../../recipe/gpu/P2pNcclAFDConnector/kubernetes/serve-bench-pod.yaml),
+    # reached through the vllm-service Service (see
+    # ../../../../recipe/gpu/P2pNcclAFDConnector/kubernetes/service-route.yaml).
+    # server.model_name and tokenizer.pretrained_model_name_or_path are
+    # templated from the afd-model-config ConfigMap's MODEL_PATH/MODEL_ID
+    # (see deepseek-v2-lite-model-config.yaml) by run.sh at apply time --
+    # MODEL_PATH is the string vLLM serves the model as (not the HF hub id),
+    # while MODEL_ID is the HF hub id, used here so the tokenizer can be
+    # downloaded directly by this pod. inference-perf's Config schema
+    # forbids extra top-level fields, so these can't be top-level YAML
+    # anchors -- the values are inlined below instead.
+    #
+    # data/api: prompts come from
+    # tools/datasets/cp8sp50k_custom_dataset_text_matched_token_ids.jsonl
+    # (a real-workload prompt-length distribution), staged onto
+    # /datasets/sharegpt.json by prepare-dataset.sh. inference-perf has no
+    # dataset type that reads a bare prompt-only JSONL, so
+    # prepare-dataset.sh reshapes it into ShareGPT's `conversations` schema,
+    # adding a synthetic ~256-token "gpt" filler turn per record (this
+    # dataset only has prompts, no replies, and hf_sharegpt_datagen.py
+    # requires >=2 turns). api.type is `completion` rather than `chat`
+    # specifically because inference-perf's completion path turns that 2nd
+    # turn's token count into the request's max_tokens
+    # (inference_perf/datagen/hf_sharegpt_datagen.py:get_completion_data),
+    # which is what keeps this a decode-focused (not prefill-only) load.
+    load:
+      type: poisson
+      interval: 60.0
+      stages:
+        - rate: 5
+          duration: 60
+        - rate: 10
+          duration: 60
+        - rate: 15
+          duration: 60
+        - rate: 20
+          duration: 60
+        - rate: 25
+          duration: 60
+        - rate: 30
+          duration: 60
+        - rate: 35
+          duration: 60
+        - rate: 40
+          duration: 60
+
+    api:
+      type: completion
+      streaming: true
+
+    server:
+      type: vllm
+      model_name: ${MODEL_PATH}
+      base_url: http://vllm-service:18305
+      ignore_eos: true
+
+    tokenizer:
+      pretrained_model_name_or_path: ${MODEL_ID}
+
+    data:
+      type: shareGPT
+      path: /datasets/sharegpt.json
+
+    report:
+      request_lifecycle:
+        summary: true
+        per_stage: true
+        per_request: false
+
+    storage:
+      local_storage:
+        path: /reports
