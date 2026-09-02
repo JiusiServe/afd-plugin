@@ -36,7 +36,6 @@ from afd_plugin.connectors.npu.async_cam import (
     AFDAsyncTransferState,
     CAMAsyncAFDConnector,
 )
-from afd_plugin.connectors.npu.camp2p import CAMP2pAFDConnector
 from afd_plugin.v1.worker.attention_metadata import (
     _resolve_world_ranks,
 )
@@ -223,7 +222,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 _make_dp_metadata_payload(
                     dp_metadata_list,
                     is_graph_capturing=is_graph_capturing,
-                    input_ids_by_stage=_camp2p_input_ids_by_stage(self.connector),
                 ),
             )
         num_stages = max(len(dp_metadata_list), 1)
@@ -280,12 +278,6 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                     forward_context.dp_metadata = dp_metadata_list.get(stage_idx)
                     forward_context.additional_kwargs["afd_metadata"] = metadata
                     assert states, "Context.states must not be None"
-                    _install_ffn_input_ids(
-                        forward_context,
-                        _camp2p_input_ids_by_stage(self.connector).get(stage_idx),
-                        num_tokens=int(hidden_states.shape[0]),
-                        device=hidden_states.device,
-                    )
                     _set_moe_layer_index(forward_context, layer_idx)
 
                     rank_ffn_output = self.model.compute_ffn_output(
@@ -516,42 +508,12 @@ def _make_dp_metadata_payload(
     *,
     is_graph_capturing: bool = False,
     is_warmup: bool = False,
-    input_ids_by_stage: dict[int, list[int]] | None = None,
 ) -> AFDControlPayload:
     return AFDControlPayload(
         dp_metadata_list=dp_metadata_list,
         is_graph_capturing=is_graph_capturing,
         is_warmup=is_warmup,
-        input_ids_by_stage={} if input_ids_by_stage is None else input_ids_by_stage,
     )
-
-
-def _camp2p_input_ids_by_stage(
-    connector: AFDConnectorBase,
-) -> dict[int, list[int]]:
-    if isinstance(connector, CAMP2pAFDConnector):
-        return connector.input_ids_by_stage
-    return {}
-
-
-def _install_ffn_input_ids(
-    forward_context: Any,
-    input_ids: list[int] | None,
-    *,
-    num_tokens: int,
-    device: torch.device,
-) -> None:
-    """Install token ids required by native DSV4 hash routing on FFN."""
-    if input_ids is None:
-        forward_context.input_ids = None
-        return
-    ids = torch.as_tensor(input_ids, dtype=torch.int64, device=device).flatten()
-    if ids.numel() != num_tokens:
-        raise RuntimeError(
-            "CAMP2P input_ids must align with received hidden states: "
-            f"got {ids.numel()} token IDs for {num_tokens} hidden-state rows"
-        )
-    forward_context.input_ids = ids
 
 
 def _ffn_token_counts_across_ranks(

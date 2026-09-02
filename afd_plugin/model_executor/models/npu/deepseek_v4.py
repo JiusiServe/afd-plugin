@@ -300,18 +300,6 @@ class AFDDeepseekV4DecoderLayer(native.DeepseekV2DecoderLayer):
                 topk_scales=topk_scales,
                 group_list_type=group_list_type,
             )
-        if self.mlp.hash:
-            input_ids = get_forward_context().input_ids
-            num_tokens = hidden_states.reshape(-1, hidden_states.shape[-1]).shape[0]
-            if input_ids is None:
-                raise RuntimeError(
-                    "DSV4 hash routing requires input_ids from the CAMP2P control plane"
-                )
-            if input_ids.numel() != num_tokens:
-                raise RuntimeError(
-                    "DSV4 hash routing input_ids do not align with FFN hidden "
-                    f"states: got {input_ids.numel()} IDs for {num_tokens} rows"
-                )
         return self.mlp(hidden_states)
 
 

@@ -1438,11 +1438,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         padded_graph_tokens = _full_cudagraph_padded_tokens(forward_context)
         if padded_graph_tokens is not None and not ubatch_slices:
             dp_metadata = self._build_capture_dp_metadata(padded_graph_tokens)
-        self._send_dp_metadata(
-            dp_metadata,
-            ubatch_slices,
-            input_ids=getattr(forward_context, "input_ids", None),
-        )
+        self._send_dp_metadata(dp_metadata, ubatch_slices)
 
     def _install_async_moe_ubatch_metadata_on_forward_context(
         self,
@@ -1483,8 +1479,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         self,
         dp_metadata: DPMetadata | AFDDPMetadata | None,
         ubatch_slices: UBatchSlices | None,
-        *,
-        input_ids: torch.Tensor | None = None,
     ) -> None:
         assert self.connector.control_plane is not None, (
             "_send_dp_metadata needs control plane driven connectors"
@@ -1500,24 +1494,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         else:
             dp_metadata = self._ensure_dp_metadata(dp_metadata)
             dp_metadata_list = {0: dp_metadata}
-        input_ids_by_stage: dict[int, list[int]] = {}
-        if input_ids is not None:
-            if ubatch_slices and len(ubatch_slices) > 1:
-                for idx, ubatch in enumerate(ubatch_slices):
-                    input_ids_by_stage[idx] = (
-                        input_ids[ubatch.token_slice]
-                        .detach()
-                        .to(device="cpu", dtype=torch.int64)
-                        .flatten()
-                        .tolist()
-                    )
-            else:
-                input_ids_by_stage[0] = (
-                    input_ids.detach()
-                    .to(device="cpu", dtype=torch.int64)
-                    .flatten()
-                    .tolist()
-                )
         is_warmup = bool(self._is_warmup)
         is_graph_capturing = bool(self._afd_is_graph_capturing)
         is_graph_replaying = bool(getattr(self, "_afd_is_graph_replaying", False))
@@ -1525,7 +1501,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             dp_metadata_list=dp_metadata_list,
             is_graph_capturing=is_graph_capturing,
             is_warmup=is_warmup,
-            input_ids_by_stage=input_ids_by_stage,
             is_graph_replaying=is_graph_replaying,
         )
         self.connector.control_plane.update_state_from_dp_metadata(payload)

@@ -8,12 +8,30 @@ import pytest
 
 from afd_plugin.compat.npu.feature_validation import (
     _fail_if_unsupported_dsv4_async_features,
+    _fail_if_unsupported_dsv4_connector,
 )
 from afd_plugin.connectors.npu.async_cam import AFDAsyncExtraInfo
 
 
-def _afd_config(*, compute_gate_on_attention: bool) -> SimpleNamespace:
-    return SimpleNamespace(compute_gate_on_attention=compute_gate_on_attention)
+def _afd_config(
+    *,
+    compute_gate_on_attention: bool,
+    connector: str = "CAMAsyncAFDConnector",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        compute_gate_on_attention=compute_gate_on_attention,
+        connector=connector,
+    )
+
+
+def test_dsv4_rejects_camp2p_connector() -> None:
+    with pytest.raises(RuntimeError, match="only CAMAsyncAFDConnector"):
+        _fail_if_unsupported_dsv4_connector(
+            _afd_config(
+                compute_gate_on_attention=False,
+                connector="CAMP2pAFDConnector",
+            ),
+        )
 
 
 def test_dsv4_async_requires_attention_side_gate() -> None:

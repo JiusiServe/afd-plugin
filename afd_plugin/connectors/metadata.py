@@ -135,7 +135,6 @@ class AFDControlPayload:
     dp_metadata_list: dict[int, AFDDPMetadata]
     is_graph_capturing: bool
     is_warmup: bool
-    input_ids_by_stage: dict[int, list[int]] = field(default_factory=dict)
     is_graph_replaying: bool = False
     is_profile: bool = False
 
@@ -148,16 +147,6 @@ class AFDControlPayload:
             if isinstance(dp_metadata, DPMetadata)
             else dp_metadata
             for stage_idx, dp_metadata in self.dp_metadata_list.items()
-        }
-        self.input_ids_by_stage = {
-            int(stage_idx): torch.as_tensor(
-                input_ids,
-                dtype=torch.int64,
-                device="cpu",
-            )
-            .flatten()
-            .tolist()
-            for stage_idx, input_ids in self.input_ids_by_stage.items()
         }
 
 
@@ -343,9 +332,6 @@ def encode_control_payload(payload: AFDControlPayload) -> bytes:
             "num_tokens_across_dp_cpu": dp_metadata.num_tokens_across_dp_cpu.tolist(),
             "max_tokens_across_dp_cpu": _to_int(dp_metadata.max_tokens_across_dp_cpu),
         }
-        input_ids = payload.input_ids_by_stage.get(int(stage_idx))
-        if input_ids is not None:
-            stage_payload["input_ids"] = list(input_ids)
         metadata_payload[str(int(stage_idx))] = stage_payload
 
     wire_payload = {
@@ -378,16 +364,10 @@ def decode_control_payload(payload_bytes: bytes) -> AFDControlPayload:
         )
         for stage_idx, metadata in payload["dp_metadata_list"].items()
     }
-    input_ids_by_stage = {
-        int(stage_idx): [int(value) for value in metadata["input_ids"]]
-        for stage_idx, metadata in payload["dp_metadata_list"].items()
-        if "input_ids" in metadata
-    }
     return AFDControlPayload(
         dp_metadata_list=dp_metadata_list,
         is_graph_capturing=bool(payload.get("is_graph_capturing", False)),
         is_warmup=bool(payload.get("is_warmup", False)),
-        input_ids_by_stage=input_ids_by_stage,
         is_graph_replaying=bool(payload.get("is_graph_replaying", False)),
         is_profile=bool(payload.get("is_profile", False)),
     )

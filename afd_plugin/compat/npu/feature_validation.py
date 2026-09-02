@@ -34,13 +34,17 @@ def fail_if_unsupported_npu_afd_features(
         vllm_config,
     )
 
+    is_dsv4 = _is_dsv4_target(vllm_config)
+    if is_dsv4:
+        _fail_if_unsupported_dsv4_connector(afd_config)
+
     if afd_config.connector == AFD_ASYNC_CONNECTOR:
         _fail_if_unsupported_npu_afd_async_features(
             vllm_config,
             afd_config,
             extra_info,
         )
-        if _is_dsv4_target(vllm_config):
+        if is_dsv4:
             _fail_if_unsupported_dsv4_async_features(afd_config, extra_info)
         return
 
@@ -123,6 +127,11 @@ def _fail_if_unsupported_dsv4_async_features(
     # async_moe_ubatching is validated by
     # _fail_if_unsupported_npu_async_moe_ubatching_features for all async CAM
     # targets, so DSV4 no longer needs a bespoke rejection here.
+
+
+def _fail_if_unsupported_dsv4_connector(afd_config: AFDConfig) -> None:
+    if afd_config.connector != AFD_ASYNC_CONNECTOR:
+        raise RuntimeError("DSV4 NPU AFD supports only CAMAsyncAFDConnector")
 
 
 def _fail_if_unsupported_npu_afd_async_features(

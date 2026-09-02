@@ -676,11 +676,9 @@ def test_npu_attention_runner_sends_per_ubatch_dp_metadata():
         ),
     ]
 
-    torch = pytest.importorskip("torch")
     runner._send_dp_metadata(
         None,
         ubatch_slices,
-        input_ids=torch.tensor([10, 11, 12, 13, 20, 21, 22]),
     )
 
     dp_metadata_list = runner.connector.dp_metadata_updates[0][0]
@@ -691,10 +689,6 @@ def test_npu_attention_runner_sends_per_ubatch_dp_metadata():
     assert sorted(sent_dp_metadata_list) == [0, 1]
     assert _tokens(sent_dp_metadata_list[0]) == [4]
     assert _tokens(sent_dp_metadata_list[1]) == [3]
-    assert runner.connector.sent_dp_metadata_payloads[0].input_ids_by_stage == {
-        0: [10, 11, 12, 13],
-        1: [20, 21, 22],
-    }
 
 
 def test_npu_attention_capture_microbatch_also_captures_single_stage():
@@ -1403,37 +1397,6 @@ def test_npu_ffn_runner_executes_eager_ffn_step(monkeypatch):
     assert runner.connector.ffn_outputs == [
         ("npu-ffn(hidden, layer=0)", metadata, {"ubatch_idx": 0}),
     ]
-
-
-def test_npu_ffn_input_ids_require_exact_hidden_state_alignment():
-    _require_npu_runtime()
-    from afd_plugin.v1.worker.npu.ffn_model_runner import _install_ffn_input_ids
-
-    torch = pytest.importorskip("torch")
-    forward_context = SimpleNamespace()
-    _install_ffn_input_ids(
-        forward_context,
-        [10, 11],
-        num_tokens=2,
-        device=torch.device("cpu"),
-    )
-    assert forward_context.input_ids.tolist() == [10, 11]
-
-    with pytest.raises(RuntimeError, match="must align"):
-        _install_ffn_input_ids(
-            forward_context,
-            [12],
-            num_tokens=2,
-            device=torch.device("cpu"),
-        )
-
-    _install_ffn_input_ids(
-        forward_context,
-        None,
-        num_tokens=2,
-        device=torch.device("cpu"),
-    )
-    assert forward_context.input_ids is None
 
 
 def test_npu_ffn_runner_builds_forward_context_for_each_dbo_stage(monkeypatch):

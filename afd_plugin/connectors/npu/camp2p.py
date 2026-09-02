@@ -284,7 +284,6 @@ class CAMP2pAFDConnector(AFDConnectorBase):
         self.ratio = self.attn_size // self.ffn_size
         self.dst_list = list(self.topology.dp_metadata_destinations)
         self.dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata] = {}
-        self.input_ids_by_stage: dict[int, list[int]] = {}
         self.is_graph_capturing = False
         self.is_warmup = False
         self.scheduler_config = vllm_config.scheduler_config
@@ -411,7 +410,6 @@ class CAMP2pAFDConnector(AFDConnectorBase):
                 dist.destroy_process_group(group)
         self.p2p_pg = None
         self.ffn_pg = None
-        self.input_ids_by_stage = {}
         self.afd_pg = None
         self.afd_pg_list = []
         self.hccl_comm_name = ""
@@ -665,7 +663,6 @@ class CAMP2pAFDControlPlane(AFDControlPlane):
     ) -> None:
         connector = self.connector
         connector.dp_metadata_list = payload.dp_metadata_list
-        connector.input_ids_by_stage = payload.input_ids_by_stage
         connector.is_graph_capturing = payload.is_graph_capturing
         connector.is_warmup = payload.is_warmup
 
@@ -706,12 +703,7 @@ class CAMP2pAFDControlPlane(AFDControlPlane):
 def _aggregate_camp2p_control_payloads(
     payloads: tuple[AFDControlPayload, ...],
 ) -> AFDControlPayload:
-    """Concatenate peer token IDs in CAMP2P hidden-state receive order.
-
-    CAMP2P aggregates consecutive Attention role ranks on each FFN rank. The
-    control payload follows the same order, so DSV4 hash routing sees one
-    token ID per received hidden-state row, including every DBO ubatch stage.
-    """
+    """Validate and combine control state from CAMP2P Attention peers."""
     if not payloads:
         raise RuntimeError("CAMP2P FFN control plane received no Attention payloads")
 
@@ -730,28 +722,10 @@ def _aggregate_camp2p_control_payloads(
                 "CAMP2P Attention peers sent inconsistent control-plane flags"
             )
 
-    input_ids_by_stage: dict[int, list[int]] = {}
-    for stage_idx in stage_ids:
-        stage_input_ids = tuple(
-            payload.input_ids_by_stage.get(stage_idx) for payload in payloads
-        )
-        if all(input_ids is None for input_ids in stage_input_ids):
-            continue
-        if any(input_ids is None for input_ids in stage_input_ids):
-            raise RuntimeError(
-                "CAMP2P Attention peers must either all provide input_ids or "
-                f"all omit them for stage {stage_idx}"
-            )
-        complete_input_ids = cast(tuple[list[int], ...], stage_input_ids)
-        input_ids_by_stage[stage_idx] = [
-            token_id for input_ids in complete_input_ids for token_id in input_ids
-        ]
-
     return AFDControlPayload(
         dp_metadata_list=reference.dp_metadata_list,
         is_graph_capturing=reference.is_graph_capturing,
         is_warmup=reference.is_warmup,
-        input_ids_by_stage=input_ids_by_stage,
     )
 
 
