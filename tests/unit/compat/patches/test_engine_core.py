@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+# mypy: disable-error-code="attr-defined"
+
 from __future__ import annotations
 
 import importlib
@@ -21,6 +25,12 @@ def _install_fake_vllm_core(monkeypatch: pytest.MonkeyPatch):
     vllm_engine_module = types.ModuleType("vllm.v1.engine")
     core_module = types.ModuleType("vllm.v1.engine.core")
     plugins_module = types.ModuleType("vllm.plugins")
+    vllm_ascend_module = types.ModuleType("vllm_ascend")
+    vllm_ascend_patch_module = types.ModuleType("vllm_ascend.patch")
+    vllm_ascend_platform_module = types.ModuleType("vllm_ascend.patch.platform")
+    vllm_ascend_kv_module = types.ModuleType(
+        "vllm_ascend.patch.platform.patch_kv_cache_utils"
+    )
 
     def load_general_plugins():
         return None
@@ -70,6 +80,11 @@ def _install_fake_vllm_core(monkeypatch: pytest.MonkeyPatch):
         def engine_receiver_cache_from_config(self, vllm_config):
             return ("mm-cache", vllm_config)
 
+    class _SchedulerStats:
+        def __init__(self, num_running_reqs=0, num_waiting_reqs=0):
+            self.num_running_reqs = num_running_reqs
+            self.num_waiting_reqs = num_waiting_reqs
+
     def get_kv_cache_configs(vllm_config, kv_cache_specs, available_gpu_memory):
         del vllm_config, available_gpu_memory
         return kv_cache_specs
@@ -103,6 +118,7 @@ def _install_fake_vllm_core(monkeypatch: pytest.MonkeyPatch):
     core_module.envs = SimpleNamespace(VLLM_ELASTIC_EP_SCALE_UP_LAUNCH=False)
     core_module.StructuredOutputManager = _StructuredOutputManager
     core_module.MULTIMODAL_REGISTRY = _MMRegistry()
+    core_module.SchedulerStats = _SchedulerStats
     core_module.get_kv_cache_configs = get_kv_cache_configs
     core_module.generate_scheduler_kv_cache_config = generate_scheduler_kv_cache_config
     core_module.get_hash_fn_by_name = get_hash_fn_by_name
@@ -120,6 +136,18 @@ def _install_fake_vllm_core(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(sys.modules, "vllm.v1.engine", vllm_engine_module)
     monkeypatch.setitem(sys.modules, "vllm.v1.engine.core", core_module)
     monkeypatch.setitem(sys.modules, "vllm.plugins", plugins_module)
+    monkeypatch.setitem(sys.modules, "vllm_ascend", vllm_ascend_module)
+    monkeypatch.setitem(sys.modules, "vllm_ascend.patch", vllm_ascend_patch_module)
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_ascend.patch.platform",
+        vllm_ascend_platform_module,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_ascend.patch.platform.patch_kv_cache_utils",
+        vllm_ascend_kv_module,
+    )
     return core_module
 
 
@@ -130,15 +158,19 @@ def _load_patch_module() -> types.ModuleType:
     return importlib.import_module(module_name)
 
 
-def _config(role: str):
+def _config(role: str, *, async_dp: bool = False):
     class Scheduler:
         connector = None
 
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            self.request_counts = (0, 0)
 
         def get_kv_connector(self):
             return None
+
+        def get_request_counts(self):
+            return self.request_counts
 
         def shutdown(self):
             self.shutdown_called = True
@@ -168,8 +200,17 @@ def _config(role: str):
     def validate_block_size():
         cache_config.validated = True
 
+    afd_config: dict[str, object] = {"role": role}
+    if async_dp:
+        afd_config.update(
+            {
+                "async": True,
+                "connector": "CAMAsyncAFDConnector",
+            }
+        )
+
     return SimpleNamespace(
-        additional_config={"afd": {"role": role}},
+        additional_config={"afd": afd_config},
         parallel_config=parallel_config,
         scheduler_config=scheduler_config,
         cache_config=cache_config,
@@ -238,6 +279,78 @@ def test_engine_core_patch_leaves_non_ffn_path_untouched(monkeypatch):
     assert isinstance(engine.model_executor, Executor)
     assert engine.scheduler is not None
     assert engine.available_gpu_memory_for_kv_cache == -1
+
+
+def test_async_attention_publishes_request_count_lifecycle_without_dp_waves(
+    monkeypatch,
+    caplog,
+):
+    core_module = _install_fake_vllm_core(monkeypatch)
+    _load_patch_module()
+
+    class Executor:
+        max_concurrent_batches = 1
+
+        def __init__(self, vllm_config):
+            self.vllm_config = vllm_config
+
+        def get_kv_cache_specs(self):
+            return []
+
+        def initialize_from_config(self, kv_cache_configs):
+            self.kv_cache_configs = kv_cache_configs
+
+        def shutdown(self):
+            return None
+
+    engine = core_module.EngineCoreProc(
+        _config("attention", async_dp=True),
+        Executor,
+        log_stats=False,
+    )
+    engine.engine_index = 2
+    engine.publish_dp_lb_stats = True
+    published = []
+    engine.output_queue = SimpleNamespace(
+        put_nowait=lambda output: published.append(output)
+    )
+
+    loop_states = iter((True, True, False))
+    count_states = iter(((0, 1), (1, 0), (1, 0), (0, 0)))
+    engine._handle_shutdown = lambda: next(loop_states)
+    engine._process_input_queue = lambda: setattr(
+        engine.scheduler,
+        "request_counts",
+        next(count_states),
+    )
+    engine._process_engine_step = lambda: setattr(
+        engine.scheduler,
+        "request_counts",
+        next(count_states),
+    )
+
+    def forbidden_sync_path(*_args, **_kwargs):
+        pytest.fail("async Attention must not enter DP-wave synchronization")
+
+    engine._has_global_unfinished_reqs = forbidden_sync_path
+    engine.execute_dummy_batch = forbidden_sync_path
+
+    with (
+        caplog.at_level(logging.DEBUG, logger="fake-vllm-core"),
+        pytest.raises(SystemExit),
+    ):
+        engine.run_busy_loop()
+
+    published_counts = [
+        (
+            output.scheduler_stats.num_waiting_reqs,
+            output.scheduler_stats.num_running_reqs,
+        )
+        for destination, output in published
+        if destination == -1
+    ]
+    assert published_counts == [(1, 0), (0, 1), (0, 0)]
+    assert "AFD async-DP engine 2 published request counts" in caplog.text
 
 
 def test_engine_core_patch_runs_and_stops_ffn_loop(monkeypatch):
