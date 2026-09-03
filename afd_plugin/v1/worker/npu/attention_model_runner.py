@@ -284,7 +284,8 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
             num_reqs_padded,
         )
         if self.afd_async_extra_info.async_moe_ubatching:
-            result = self._build_attention_metadata_with_async_moe_ubatches(
+            self.ubatch_slices = None
+            return self._build_attention_metadata_with_async_moe_ubatches(
                 num_tokens=num_tokens,
                 num_reqs=num_reqs,
                 max_query_len=max_query_len,
@@ -298,8 +299,6 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 num_scheduled_tokens_np=num_scheduled_tokens_np,
                 cascade_attn_prefix_lens=cascade_attn_prefix_lens,
             )
-            self.ubatch_slices = None
-            return result
         self._afd_pending_metadata = self._build_afd_metadata(
             ubatch_slices,
             num_tokens,
@@ -399,6 +398,22 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
         stage_slices = [
             UBatchSlice(stage.request_slice, stage.token_slice) for stage in stages
         ]
+
+        logger.debug(
+            "AFD NPU async MoE ubatch split; num_reqs=%s num_tokens=%s "
+            "num_scheduled_tokens=%s split=%s sequence_parallel=%s "
+            "request_slices=%s token_slices=%s stage_input_tokens=%s "
+            "stage_actual_tokens=%s",
+            len(num_scheduled_tokens_np),
+            num_tokens,
+            num_scheduled_tokens_np.tolist(),
+            self.afd_async_extra_info.async_moe_split,
+            use_sequence_parallel,
+            [(stage.request_slice.start, stage.request_slice.stop) for stage in stages],
+            [(stage.token_slice.start, stage.token_slice.stop) for stage in stages],
+            [int(stage.input_tokens) for stage in stages],
+            [stage.actual_tokens for stage in stages],
+        )
 
         stage_attn_metadata, _ = self._build_attention_metadata_with_ubatches(
             num_tokens=num_tokens,

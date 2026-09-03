@@ -28,6 +28,7 @@ def get_afd_model_config(
     device_type: Literal["cuda", "npu"],
 ) -> ModelConfig:
     """Return a model config that resolves to an AFD model implementation."""
+
     for model_arch in model_config.hf_config.architectures:
         if model_arch in _MODEL_REGISTRATIONS:
             if model_arch in _QWEN3_5_MODEL_REGISTRATIONS and device_type != "cuda":

@@ -194,9 +194,9 @@ class _CAMP2PTopology:
     """Describe where one connector process sits in the communication groups.
 
     ``world_rank`` is the process number in the complete AFD group.
-    ``p2p_rank`` is its number in the Gloo group used to exchange metadata.
-    Every Attention rank participates in that group so an FFN rank can receive
-    the token IDs for every Attention hidden-state slice it aggregates.
+    ``p2p_rank`` is its number in the smaller Gloo group used to exchange metadata.
+    For an Attention rank, ``dp_metadata_destinations`` lists the FFN ranks
+    that should receive its metadata.
     """
 
     role: str
@@ -207,27 +207,21 @@ class _CAMP2PTopology:
     ffn_size: int
     min_size: int
     dp_metadata_destinations: tuple[int, ...]
-    dp_metadata_sources: tuple[int, ...]
 
     @property
     def p2p_world_size(self) -> int:
-        """Return the number of FFN and Attention metadata ranks."""
-        return self.ffn_size + self.attention_size
+        """Return the number of FFN and participating Attention metadata ranks."""
+        return self.ffn_size + self.min_size
 
     @property
     def participates_in_p2p_group(self) -> bool:
         """Return whether this process joins the Gloo DP-metadata group."""
-        return True
+        return self.world_rank < self.ffn_size or self.is_attn_top_min_size_rank
 
     @property
     def is_attn_top_min_size_rank(self) -> bool:
-        """Return whether this is an Attention metadata-sender rank.
-
-        The property name is retained for connector compatibility. Every
-        Attention rank sends one payload to the FFN rank that receives its
-        hidden-state slice.
-        """
-        return self.role == "attention"
+        """Return whether this is an Attention metadata-sender rank."""
+        return self.ffn_size <= self.world_rank < self.ffn_size + self.min_size
 
 
 class CAMP2pAFDConnector(AFDConnectorBase):
@@ -689,44 +683,12 @@ class CAMP2pAFDControlPlane(AFDControlPlane):
         connector = self.connector
         if connector.p2p_pg is None:
             raise RuntimeError("CAMP2P metadata process group is not initialized")
-        payloads = tuple(
-            recv_control_payload(
-                src=src,
-                group=connector.p2p_pg,
-                device=torch.device("cpu"),
-            )
-            for src in connector.topology.dp_metadata_sources
+        src = connector.p2p_rank % connector.min_size + connector.ffn_size
+        return recv_control_payload(
+            src=src,
+            group=connector.p2p_pg,
+            device=torch.device("cpu"),
         )
-        return _aggregate_camp2p_control_payloads(payloads)
-
-
-def _aggregate_camp2p_control_payloads(
-    payloads: tuple[AFDControlPayload, ...],
-) -> AFDControlPayload:
-    """Validate and combine control state from CAMP2P Attention peers."""
-    if not payloads:
-        raise RuntimeError("CAMP2P FFN control plane received no Attention payloads")
-
-    reference = payloads[0]
-    stage_ids = tuple(sorted(reference.dp_metadata_list))
-    for payload in payloads[1:]:
-        if tuple(sorted(payload.dp_metadata_list)) != stage_ids:
-            raise RuntimeError(
-                "CAMP2P Attention peers sent different control-plane stages"
-            )
-        if (
-            payload.is_graph_capturing != reference.is_graph_capturing
-            or payload.is_warmup != reference.is_warmup
-        ):
-            raise RuntimeError(
-                "CAMP2P Attention peers sent inconsistent control-plane flags"
-            )
-
-    return AFDControlPayload(
-        dp_metadata_list=reference.dp_metadata_list,
-        is_graph_capturing=reference.is_graph_capturing,
-        is_warmup=reference.is_warmup,
-    )
 
 
 def build_camp2p_topology(
@@ -736,9 +698,8 @@ def build_camp2p_topology(
     """Calculate the communication rank numbers for one process.
 
     FFN processes come first in the main AFD group, followed by Attention
-    processes. The Gloo control group contains every process: an FFN rank
-    receives one payload from each Attention rank whose hidden states CAMP2P
-    aggregates on that FFN rank.
+    processes. All FFN ranks and the first ``min(A, F)`` Attention ranks also
+    join the smaller Gloo group that exchanges token counts and batch details.
 
     Args:
         afd_config: Process role and total Attention/FFN rank counts.
@@ -758,11 +719,6 @@ def build_camp2p_topology(
             "CAMP2P requires attention_size >= ffn_size, got "
             f"{attention_size} < {ffn_size}",
         )
-    if attention_size % ffn_size != 0:
-        raise ValueError(
-            "CAMP2P requires attention_size to be an integer multiple of "
-            f"ffn_size, got attention_size={attention_size}, ffn_size={ffn_size}",
-        )
     if role_rank < 0:
         raise ValueError(f"CAMP2P role rank must be non-negative, got {role_rank}")
 
@@ -773,7 +729,7 @@ def build_camp2p_topology(
                 f"(rank={role_rank}, size={attention_size})",
             )
         world_rank = ffn_size + role_rank
-        p2p_rank = world_rank
+        p2p_rank = role_rank + min(ffn_size, attention_size)
     elif afd_config.role == "ffn":
         if role_rank >= ffn_size:
             raise ValueError(
@@ -786,20 +742,13 @@ def build_camp2p_topology(
         raise ValueError(f"unknown AFD role {afd_config.role!r}")
 
     min_size = min(attention_size, ffn_size)
-    attention_ranks_per_ffn = attention_size // ffn_size
-    destinations: tuple[int, ...] = ()
-    sources: tuple[int, ...] = ()
-    if afd_config.role == "attention":
-        destinations = (role_rank // attention_ranks_per_ffn,)
-    else:
-        attention_rank_start = role_rank * attention_ranks_per_ffn
-        sources = tuple(
-            ffn_size + attention_rank
-            for attention_rank in range(
-                attention_rank_start,
-                attention_rank_start + attention_ranks_per_ffn,
-            )
-        )
+    destinations: list[int] = []
+    if ffn_size <= world_rank < ffn_size + min_size:
+        local_attention_rank = world_rank - ffn_size
+        dst = local_attention_rank
+        while dst < ffn_size:
+            destinations.append(dst)
+            dst += min_size
 
     return _CAMP2PTopology(
         role=afd_config.role,
@@ -809,8 +758,7 @@ def build_camp2p_topology(
         attention_size=attention_size,
         ffn_size=ffn_size,
         min_size=min_size,
-        dp_metadata_destinations=destinations,
-        dp_metadata_sources=sources,
+        dp_metadata_destinations=tuple(destinations),
     )
 
 

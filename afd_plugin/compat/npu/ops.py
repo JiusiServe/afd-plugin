@@ -4,11 +4,9 @@
 
 from __future__ import annotations
 
-import ctypes
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, cast
 
 AFD_ASCEND_OPS_NAMESPACE = "afd_ascend"
 AFD_ASCEND_VENDOR_NAME = "afd-plugin"
@@ -18,10 +16,6 @@ CAM_DISPATCH_SEND = "async_dispatch_send"
 CAM_DISPATCH_RECV = "async_dispatch_recv"
 CAM_COMBINE_SEND = "async_combine_send"
 CAM_COMBINE_RECV = "async_combine_recv"
-CAM_CUST_OPAPI_ENV = "CAM_CUST_OPAPI_LIB_PATH"
-CAM_CUST_OPAPI_DEFAULT = Path(
-    "/usr/local/Ascend/cann-9.0.1/opp/vendors/CAM/op_api/lib/libopapi.so",
-)
 
 
 def get_afd_cann_vendor_path() -> Path:
@@ -61,38 +55,19 @@ def _ensure_afd_custom_opp_env() -> None:
 
 
 def _assert_afd_namespace_registered(torch: object) -> None:
-    torch_module = cast(Any, torch)
-    _ = torch_module.ops.afd_ascend.a2e
-    _ = torch_module.ops.afd_ascend.e2a
+    ops = vars(torch)["ops"]
+    _ = ops.afd_ascend.a2e
+    _ = ops.afd_ascend.e2a
 
 
 def _assert_cam_namespace_registered(torch: object) -> None:
-    torch_module = cast(Any, torch)
+    ops = vars(torch)["ops"]
     _ = (
-        torch_module.ops.umdk_cam_op_lib.async_dispatch_send,
-        torch_module.ops.umdk_cam_op_lib.async_dispatch_recv,
-        torch_module.ops.umdk_cam_op_lib.async_combine_send,
-        torch_module.ops.umdk_cam_op_lib.async_combine_recv,
+        ops.umdk_cam_op_lib.async_dispatch_send,
+        ops.umdk_cam_op_lib.async_dispatch_recv,
+        ops.umdk_cam_op_lib.async_combine_send,
+        ops.umdk_cam_op_lib.async_combine_recv,
     )
-
-
-def _preload_cam_cust_opapi() -> None:
-    """Make CAM's custom op-api symbols visible to the Python extension.
-
-    ``umdk_cam_op_lib`` resolves the aclnn CAM entry points by name while its
-    operators are first invoked.  CANN's stock ``libopapi.so`` does not export
-    those symbols; they live in CAM's ``libopapi.so``.  Load that library
-    globally before importing the extension so the real CAM operators bind to
-    the vendor implementation instead of the stock op-api library.
-    """
-
-    library = Path(os.environ.get(CAM_CUST_OPAPI_ENV, CAM_CUST_OPAPI_DEFAULT))
-    if not library.is_file():
-        raise RuntimeError(
-            "CAMAsyncAFDConnector requires CAM libopapi.so; expected "
-            f"{library}. Install the CAM operator package first.",
-        )
-    ctypes.CDLL(str(library), mode=ctypes.RTLD_GLOBAL)
 
 
 @lru_cache(maxsize=1)
@@ -134,7 +109,6 @@ def ensure_cam_async_ops_available() -> None:
     """Ensure the runtime exposes the real CAM async operator namespace."""
 
     try:
-        _preload_cam_cust_opapi()
         import torch
         import torch_npu  # noqa: F401
         import umdk_cam_op_lib  # noqa: F401
