@@ -68,7 +68,7 @@ data:
       shared_prefix:
         num_groups: 250
         num_prompts_per_group: 5
-        system_prompt_len: 16000
+        system_prompt_len: 7000
         question_len: 256
         output_len: 256
         enable_multi_turn_chat: false
