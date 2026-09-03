@@ -1,0 +1,67 @@
+# docker/Dockerfile.ci for Kubernetes/OpenShift. Same base, same locked dev
+# deps, so in-cluster runs match Buildkite. Deltas vs Dockerfile.ci, all
+# marked [k8s] below:
+#   - nixl: vLLM's KV transport between prefill (kv_producer) and attention
+#     (kv_consumer). Kept out of uv.lock because it is CUDA-host-only.
+#   - no BuildKit-only syntax: OpenShift Builds run buildah/imagebuilder.
+#   - writable as the restricted SCC's random non-root UID.
+#
+# Build from the repo root, remotely -- uv segfaults under qemu-user, so a
+# local cross-build on Apple Silicon fails. See .agents/skills/remote-build.
+#
+# Keep VLLM_BASE_TAG aligned with pyproject.toml and Dockerfile.ci.
+ARG VLLM_BASE_IMAGE=vllm/vllm-openai
+ARG VLLM_BASE_TAG=v0.26.0
+
+FROM ${VLLM_BASE_IMAGE}:${VLLM_BASE_TAG} AS deps
+
+ARG APP_DIR=/opt/afd-plugin
+WORKDIR ${APP_DIR}
+
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+# Placeholder package tree so the editable install can register APP_DIR.
+RUN mkdir -p afd_plugin && touch afd_plugin/__init__.py
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git jq && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml setup.py uv.lock README.md LICENSE ./
+
+# [k8s] PYTHONDONTWRITEBYTECODE also matters at runtime: the restricted-SCC
+# UID cannot write __pycache__ into APP_DIR.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    AFD_BUILD_ASCEND_OPS=0 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_LINK_MODE=copy \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_VLLM_AFD_PLUGIN=0.0.0+k8s \
+    SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0+k8s
+
+# [k8s] nixl after the locked set, so the pinned versions win any shared
+# transitive dep. `-e .` (not --no-deps) keeps CI parity.
+# Do NOT reinstall after the final COPY, or source-only changes would
+# re-pull the multi-GB base image.
+RUN uv export --locked --group dev --no-emit-project -o /tmp/requirements-dev.txt \
+    && uv pip install --system -r /tmp/requirements-dev.txt \
+    && uv pip install --system nixl \
+    && uv pip install --system -e .
+
+FROM deps
+ARG APP_DIR=/opt/afd-plugin
+WORKDIR ${APP_DIR}
+
+# [k8s] Plain COPY: buildah rejects --link (and RUN --mount). Same layer.
+COPY . .
+
+# [k8s] The restricted-SCC UID is random but always in group 0. Group-writable
+# lets it write .pytest_cache, ruff caches, benchmark output; HOME would
+# otherwise be `/`, so anything expanding `~` fails. Pods with a scratch
+# volume override HOME (the recipe serve-pod sets /work/home).
+RUN chgrp -R 0 ${APP_DIR} && chmod -R g=u ${APP_DIR}
+ENV HOME=${APP_DIR}
+
+# Renders as `ENTRYPOINT null` under buildah; the pod's `command:` overrides.
+ENTRYPOINT []

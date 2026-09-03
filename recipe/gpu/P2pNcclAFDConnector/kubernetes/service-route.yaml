@@ -13,17 +13,3 @@ spec:
     - name: http
       port: 18305
       targetPort: 18305
----
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: vllm-route
-  labels:
-    app: afd-recipe
-    role: serve
-spec:
-  to:
-    kind: Service
-    name: vllm-service
-  port:
-    targetPort: http
