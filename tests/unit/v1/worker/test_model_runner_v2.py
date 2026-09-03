@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 """Unit tests for AFD CUDA GPU ModelRunnerV2 support."""
 
 from __future__ import annotations
@@ -85,7 +87,7 @@ class _StepProfiler:
 
 
 class _RunnerRecorder:
-    instances = []
+    instances: list[tuple[object, object]] = []
 
     def __init__(self, vllm_config, device):
         type(self).instances.append((vllm_config, device))
@@ -109,6 +111,7 @@ def _v2_config(
     tensor_parallel_size: int = 1,
     prefill_context_parallel_size: int = 1,
     enforce_eager: bool = True,
+    use_mla: bool = True,
     cudagraph_mode: CUDAGraphMode = CUDAGraphMode.NONE,
     cudagraph_capture_sizes: list[int] | None = None,
     max_cudagraph_capture_size: int = 0,
@@ -125,6 +128,7 @@ def _v2_config(
         is_encoder_decoder=False,
         is_multimodal_model=False,
         enforce_eager=enforce_eager,
+        use_mla=use_mla,
         enable_prompt_embeds=False,
         enable_return_routed_experts=False,
         quantization=None,
@@ -383,6 +387,14 @@ def test_v2_fullgraph_replay_hook_rejects_same_manager_reentry():
     assert runner.cudagraph_manager.__dict__["run_fullgraph"] is original
 
 
+def _set_single_dp_rank(config):
+    config.parallel_config.data_parallel_size = 1
+    config.additional_config["afd"].update(
+        num_attention_ranks=1,
+        num_ffn_ranks=1,
+    )
+
+
 @pytest.mark.parametrize(
     (
         "role",
@@ -523,6 +535,107 @@ def test_npu_v2_validator_rejects_non_full_acl_graph(cudagraph_mode):
     config.additional_config["afd"]["connector"] = "CAMP2pAFDConnector"
 
     with pytest.raises(RuntimeError, match="ACL graph modes FULL"):
+        validate_npu_model_runner_v2_config(
+            config,
+            expected_role="attention",
+            device_type="npu",
+        )
+
+
+def test_npu_v2_validator_allows_eager_dbo_dp2():
+    config = _v2_config(
+        num_attention_ranks=2,
+        num_ffn_ranks=2,
+        data_parallel_size=2,
+        use_mla=False,
+    )
+    config.additional_config["afd"]["connector"] = "CAMP2pAFDConnector"
+    config.parallel_config.enable_dbo = True
+    config.parallel_config.use_ubatching = True
+    config.parallel_config.num_ubatches = 2
+
+    validate_npu_model_runner_v2_config(
+        config,
+        expected_role="attention",
+        device_type="npu",
+    )
+
+
+def test_npu_v2_validator_allows_full_decode_only_dbo_dp2():
+    config = _v2_config(
+        num_attention_ranks=2,
+        num_ffn_ranks=2,
+        data_parallel_size=2,
+        enforce_eager=False,
+        cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY,
+        cudagraph_capture_sizes=[TEST_CUDAGRAPH_CAPTURE_SIZE],
+        max_cudagraph_capture_size=TEST_CUDAGRAPH_CAPTURE_SIZE,
+    )
+    config.additional_config["afd"]["connector"] = "CAMP2pAFDConnector"
+    config.parallel_config.enable_dbo = True
+    config.parallel_config.use_ubatching = True
+    config.parallel_config.num_ubatches = 2
+
+    validate_npu_model_runner_v2_config(
+        config,
+        expected_role="attention",
+        device_type="npu",
+    )
+
+
+def test_npu_v2_validator_rejects_non_mla_dbo_acl_graph():
+    config = _v2_config(
+        architecture="Qwen3MoeForCausalLM",
+        num_attention_ranks=2,
+        num_ffn_ranks=2,
+        data_parallel_size=2,
+        enforce_eager=False,
+        use_mla=False,
+        cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY,
+        cudagraph_capture_sizes=[TEST_CUDAGRAPH_CAPTURE_SIZE],
+        max_cudagraph_capture_size=TEST_CUDAGRAPH_CAPTURE_SIZE,
+    )
+    config.additional_config["afd"]["connector"] = "CAMP2pAFDConnector"
+    config.parallel_config.enable_dbo = True
+    config.parallel_config.use_ubatching = True
+    config.parallel_config.num_ubatches = 2
+
+    with pytest.raises(RuntimeError, match="requires MLA"):
+        validate_npu_model_runner_v2_config(
+            config,
+            expected_role="attention",
+            device_type="npu",
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (_set_single_dp_rank, "DP > 1"),
+        (lambda c: setattr(c.parallel_config, "num_ubatches", 4), "two ubatches"),
+        (
+            lambda c: setattr(c.model_config, "enforce_eager", False),
+            "FULL_DECODE_ONLY",
+        ),
+        (
+            lambda c: setattr(c, "speculative_config", SimpleNamespace()),
+            "speculative decode",
+        ),
+    ],
+)
+def test_npu_v2_validator_rejects_unsupported_dbo(mutation, message):
+    config = _v2_config(
+        num_attention_ranks=2,
+        num_ffn_ranks=2,
+        data_parallel_size=2,
+    )
+    config.additional_config["afd"]["connector"] = "CAMP2pAFDConnector"
+    config.parallel_config.enable_dbo = True
+    config.parallel_config.use_ubatching = True
+    config.parallel_config.num_ubatches = 2
+    mutation(config)
+
+    with pytest.raises(RuntimeError, match=message):
         validate_npu_model_runner_v2_config(
             config,
             expected_role="attention",
@@ -926,7 +1039,7 @@ def test_v2_dp2_repeated_fullgraph_replay_sends_local_real_and_padded_tokens(
     descriptor = SimpleNamespace(num_tokens=8)
     payloads = []
     metadata_seen = []
-    replay_returns = []
+    replay_returns: list[str] = []
 
     class ReplayConnector(_RecordingConnector):
         def send_dp_metadata_list(self, payload):
@@ -1059,7 +1172,7 @@ def test_v2_graph_miss_uses_provider_once_without_replay_control(monkeypatch):
     runner.vllm_config.compilation_config.cudagraph_mode = (
         CUDAGraphMode.FULL_DECODE_ONLY
     )
-    replay_calls = []
+    replay_calls: list[object] = []
     context = ForwardContext(
         no_compile_layers={},
         attn_metadata={},
@@ -1547,7 +1660,7 @@ def test_v2_shutdown_runs_all_cleanup_layers_when_each_layer_fails(
         if failure == "connector":
             raise RuntimeError("connector failed")
 
-    runner.connector.close = close_connector
+    monkeypatch.setattr(runner.connector, "close", close_connector)
     monkeypatch.setattr(
         "afd_plugin.v1.worker.attention_model_runner_v2.stop_afd_gpu_profiler",
         stop_profiler,

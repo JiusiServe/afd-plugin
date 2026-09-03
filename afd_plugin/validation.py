@@ -147,8 +147,33 @@ def validate_npu_model_runner_v2_config(
         or vllm_config.compilation_config.pass_config.enable_sp
     ):
         raise RuntimeError("AFD ModelRunnerV2 requires static expert parallelism")
-    if parallel.enable_dbo or parallel.use_ubatching:
-        raise RuntimeError("AFD NPU ModelRunnerV2 does not support DBO or ubatching")
+    # ### PATCH START: AFD NPU MRV2 DBO validation
+    dbo_enabled = bool(parallel.enable_dbo or parallel.use_ubatching)
+    if dbo_enabled:
+        if parallel.data_parallel_size <= 1 or int(parallel.num_ubatches) != 2:
+            raise RuntimeError(
+                "AFD NPU ModelRunnerV2 DBO requires DP > 1 and exactly two ubatches",
+            )
+        if not vllm_config.model_config.enforce_eager:
+            if cudagraph_mode_name(vllm_config) != "FULL_DECODE_ONLY":
+                raise RuntimeError(
+                    "AFD NPU ModelRunnerV2 DBO ACL graph requires FULL_DECODE_ONLY",
+                )
+            if not vllm_config.model_config.use_mla:
+                raise RuntimeError(
+                    "AFD NPU ModelRunnerV2 DBO ACL graph requires MLA",
+                )
+        if (
+            vllm_config.speculative_config is not None
+            or vllm_config.lora_config is not None
+            or vllm_config.model_config.is_multimodal_model
+            or vllm_config.model_config.is_encoder_decoder
+        ):
+            raise RuntimeError(
+                "AFD NPU ModelRunnerV2 DBO does not support speculative decode, "
+                "LoRA, multimodal, or encoder models",
+            )
+    # ### PATCH END: AFD NPU MRV2 DBO validation
 
     from afd_plugin.model_executor.models.model_utils import (
         has_afd_model_registration,

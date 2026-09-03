@@ -11,6 +11,7 @@ from vllm.forward_context import DPMetadata, ForwardContext
 from vllm.v1.worker.ubatch_utils import UBatchSlices
 
 from afd_plugin.connectors import (
+    AFDConnectorBase,
     AFDControlPayload,
     AFDDPMetadata,
     AFDForwardContextMetadata,
@@ -28,6 +29,11 @@ class AFDMetadataProviderMixin:
     """
 
     _afd_is_profile: bool = False
+    _afd_pending_metadata: AFDForwardContextMetadata | None
+    _afd_transaction_counter: int
+    _is_warmup: bool
+    connector: AFDConnectorBase
+    vllm_config: VllmConfig
 
     def build_afd_metadata(
         self,

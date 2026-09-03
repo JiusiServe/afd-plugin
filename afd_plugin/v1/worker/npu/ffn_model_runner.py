@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import torch
 from vllm.compilation.monitor import set_cudagraph_capturing_enabled
@@ -55,6 +55,14 @@ if TYPE_CHECKING:
     from afd_plugin.connectors import AFDConnectorBase
 
 logger = init_logger(__name__)
+
+
+class _MoEConfig(Protocol):
+    """DeepSeek-family fields required by the FFN layer splitter."""
+
+    n_routed_experts: int | None
+    first_k_dense_replace: int
+    moe_layer_freq: int
 
 
 class AFDNPUFFNModelRunner(NPUModelRunner):
@@ -177,6 +185,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
                 graph_key,
                 len(acl_graphs),
             )
+            assert graph_info is not None
             graph_info["graph"].replay()
             return None
         if run_mode in (AFDGraphRunMode.WARMUP, AFDGraphRunMode.CAPTURE):
@@ -402,12 +411,21 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             "Only DP metadata control plane supports graph capturing."
         )
         graph_key = self._make_graph_key(dp_metadata_list)
+        # ### PATCH START: AFD MRV2 repeated capture replay
         if graph_key in self._acl_graphs:
             logger.debug(
-                "AFD NPU FFN ACL graph capture skipped for existing key=%s",
+                "AFD NPU FFN replaying existing ACL graph for capture key=%s",
                 graph_key,
             )
+            self.connector.control_plane.update_state_from_dp_metadata(
+                _make_dp_metadata_payload(
+                    dp_metadata_list,
+                    is_graph_capturing=is_attn_graph_capturing,
+                ),
+            )
+            self._acl_graphs[graph_key]["graph"].replay()
             return
+        # ### PATCH END: AFD MRV2 repeated capture replay
 
         logger.debug("AFD NPU FFN capturing ACL graph for key=%s", graph_key)
         graph = torch.npu.NPUGraph()
@@ -486,16 +504,15 @@ def _ffn_layer_indices(runner: AFDNPUFFNModelRunner) -> range | list[int]:
     return [
         layer_idx
         for layer_idx in range(num_layers)
-        if _is_moe_layer(hf_config, layer_idx)
+        if _is_moe_layer(cast(_MoEConfig, hf_config), layer_idx)
     ]
 
 
-def _is_moe_layer(hf_config: object, layer_idx: int) -> bool:
-    moe_layer_freq = getattr(hf_config, "moe_layer_freq", 1)
+def _is_moe_layer(hf_config: _MoEConfig, layer_idx: int) -> bool:
     return (
         hf_config.n_routed_experts is not None
         and layer_idx >= hf_config.first_k_dense_replace
-        and layer_idx % moe_layer_freq == 0
+        and layer_idx % hf_config.moe_layer_freq == 0
     )
 
 
@@ -557,13 +574,15 @@ def _ffn_token_count_for_rank(
     num_tokens_across_dp: torch.Tensor,
 ) -> int:
     values = _to_int_list(num_tokens_across_dp)
-    role_rank = int(connector.topology.role_rank)
+    role_rank = int(connector.role_rank)
     if role_rank >= len(values):
         return max(1, values[0] if values else 1)
     return max(1, int(values[role_rank]))
 
 
-def _to_int_list(value: object) -> list[int]:
+def _to_int_list(
+    value: torch.Tensor | list[int] | tuple[int, ...] | int | float | None,
+) -> list[int]:
     if value is None:
         return []
     if isinstance(value, (int, float)):
@@ -596,7 +615,7 @@ def _to_dp_level_token_counts(
     return num_tokens_across_dp[indices].contiguous()
 
 
-def _use_npu_aclgraph(vllm_config: VllmConfig, runner: object) -> bool:
+def _use_npu_aclgraph(vllm_config: VllmConfig, runner: NPUModelRunner) -> bool:
     inherited = bool(runner.use_aclgraph)
     if bool(vllm_config.model_config.enforce_eager):
         return False

@@ -120,18 +120,29 @@ def __post_init__(self):
     """Verify configs are valid & consistent with each other."""
 
     assert _original_vllm_config_post_init is not None
-    if not _should_relax_vllm_config_backend(self):
+    # ### PATCH START: AFD repeated ubatching and MRV2 DBO validation
+    relax_backend = _should_relax_vllm_config_backend(self)
+    relax_v2_dbo = _should_relax_npu_v2_dbo_validation(self)
+    if not relax_backend and not relax_v2_dbo:
         return _original_vllm_config_post_init(self)
 
-    # ### PATCH START: AFD repeated ubatching backend validation
     parallel_config = self.parallel_config
     original_backend = parallel_config.all2all_backend
-    parallel_config.all2all_backend = _AFD_TEMP_BACKEND
+    if relax_backend:
+        parallel_config.all2all_backend = _AFD_TEMP_BACKEND
+    if relax_v2_dbo:
+        original_enable_dbo = parallel_config.enable_dbo
+        original_ubatch_size = parallel_config.ubatch_size
+        parallel_config.enable_dbo = False
+        parallel_config.ubatch_size = 0
     try:
         result = _original_vllm_config_post_init(self)
     finally:
         parallel_config.all2all_backend = original_backend
-    # ### PATCH END: AFD repeated ubatching backend validation
+        if relax_v2_dbo:
+            parallel_config.enable_dbo = original_enable_dbo
+            parallel_config.ubatch_size = original_ubatch_size
+    # ### PATCH END: AFD repeated ubatching and MRV2 DBO validation
     return result
 
 
@@ -193,6 +204,22 @@ def _should_relax_vllm_config_backend(vllm_config: VllmConfig) -> bool:
         "deepep_high_throughput",
         "nixl_ep",
     }
+
+
+def _should_relax_npu_v2_dbo_validation(vllm_config: VllmConfig) -> bool:
+    if not _is_target_vllm_compatible():
+        return False
+    afd_config = parse_optional_afd_config(vllm_config)
+    if afd_config is None or afd_config.connector != "CAMP2pAFDConnector":
+        return False
+
+    from vllm.platforms import current_platform
+
+    return bool(
+        current_platform.device_type == "npu"
+        and vllm_config.use_v2_model_runner
+        and vllm_config.parallel_config.use_ubatching
+    )
 
 
 def _is_target_vllm_compatible() -> bool:

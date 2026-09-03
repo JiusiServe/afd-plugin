@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from types import MethodType
+from typing import Any, cast
 
 import torch
 from vllm.config import CUDAGraphMode, VllmConfig
@@ -22,11 +23,21 @@ from vllm.v1.worker.gpu.input_batch import InputBuffers
 from vllm.v1.worker.gpu.model_states.interface import ModelState
 from vllm_ascend.worker.v2.model_runner import NPUModelRunner as NPUModelRunnerV2
 
+from afd_plugin.compat.backports.vllm_v026_mrv2_dbo import (
+    AFDBatchExecutionDescriptor,
+    use_two_metadata_builders,
+)
+from afd_plugin.compat.backports.vllm_v026_mrv2_dbo.execute import (
+    execute_model_v026_eager_dbo,
+)
 from afd_plugin.compat.npu import fail_if_unsupported_npu_afd_features
 from afd_plugin.compat.npu.profiler import (
     create_afd_npu_profiler,
     step_afd_npu_profiler,
     stop_afd_npu_profiler,
+)
+from afd_plugin.compat.patches.npu.model_runner_v2_dbo import (
+    use_afd_mrv2_dbo_graph_manager,
 )
 from afd_plugin.config import AFDConfig, parse_afd_config
 from afd_plugin.connectors import (
@@ -38,6 +49,9 @@ from afd_plugin.model_executor.models.forward_context import use_afd_metadata_pr
 from afd_plugin.v1.worker.attention_metadata import (
     AFDMetadataProviderMixin,
     _resolve_world_ranks,
+)
+from afd_plugin.v1.worker.npu.aclgraph_manager_v2 import (
+    AFDModelAclGraphManagerV2,
 )
 from afd_plugin.validation import validate_npu_model_runner_v2_config
 
@@ -56,7 +70,7 @@ def _use_afd_fullgraph_replay_hook(
         raise RuntimeError(
             "AFD ACL graph replay hook requires an initialized graph manager",
         )
-    manager_state = vars(manager)
+    manager_state = cast(dict[str, Any], vars(manager))
     if _AFD_FULLGRAPH_HOOK_MARKER in manager_state:
         raise RuntimeError("AFD ACL graph replay hook is already active")
 
@@ -81,13 +95,17 @@ def _use_afd_fullgraph_replay_hook(
         self: v2_cudagraph_utils.ModelCudaGraphManager,
         desc: v2_cudagraph_utils.BatchExecutionDescriptor,
     ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]] | IntermediateTensors:
-        # ### PATCH START: publish one AFD pre-replay payload.
+        # ### PATCH START: publish AFD replay control metadata.
         previous_is_graph_replaying = getattr(
             runner,
             "_afd_is_graph_replaying",
             False,
         )
         try:
+            runner._afd_is_graph_replaying = True
+            if isinstance(desc, AFDBatchExecutionDescriptor):
+                return original_run_fullgraph(desc)
+
             padded_tokens = int(desc.num_tokens)
             metadata = runner.build_afd_metadata(None, real_tokens)
             metadata.tokens_lens = [padded_tokens]
@@ -95,7 +113,6 @@ def _use_afd_fullgraph_replay_hook(
             runner._afd_suppress_metadata_send = True
             runner._is_warmup = False
             runner._afd_is_graph_capturing = False
-            runner._afd_is_graph_replaying = True
             runner.send_dp_metadata(
                 runner.build_capture_dp_metadata(padded_tokens),
                 None,
@@ -103,7 +120,7 @@ def _use_afd_fullgraph_replay_hook(
             result = original_run_fullgraph(desc)
         finally:
             runner._afd_is_graph_replaying = previous_is_graph_replaying
-        # ### PATCH END: publish one AFD pre-replay payload.
+        # ### PATCH END: publish AFD replay control metadata.
         return result
 
     try:
@@ -169,6 +186,9 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
             self._afd_pending_metadata: AFDForwardContextMetadata | None = None
             self._afd_suppress_metadata_send = False
             self._afd_transaction_counter = 0
+            # ### PATCH START: AFD MRV2 DBO runner state
+            self.ubatch_runner = None
+            # ### PATCH END: AFD MRV2 DBO runner state
             self.prof = create_afd_npu_profiler("attention")
         except BaseException:
             try:
@@ -210,6 +230,30 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
         super().load_model(load_dummy_weights, *args, **kwargs)
         if not self.connector.is_initialized:
             self.connector.init_afd_connector()
+
+    # Upstream source: vLLM v0.26.0 commit 568afb3a1,
+    # GPUModelRunner.initialize_kv_cache, with vLLM-Ascend's scoped graph
+    # manager wrapper from commit d543ccee0.
+    # Patch reason: neither pinned upstream initializes MRV2 metadata builders,
+    # an Ascend ubatch runner, or DBO graph descriptors.
+    # Patch functionality: retain native initialization when DBO is disabled;
+    # otherwise scope the temporary two-builder and graph-manager replacements.
+    # Signature: matches NPUModelRunnerV2.initialize_kv_cache exactly.
+    # Removal/upstream plan: remove the DBO branch with the v0.26 backport.
+    def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
+        """Initialize native state and the temporary v0.26 eager DBO runner."""
+
+        if not self.vllm_config.parallel_config.use_ubatching:
+            super().initialize_kv_cache(kv_cache_config)
+            return
+
+        # ### PATCH START: AFD MRV2 DBO initialization
+        with (
+            use_two_metadata_builders(),
+            use_afd_mrv2_dbo_graph_manager(self),
+        ):
+            super().initialize_kv_cache(kv_cache_config)
+        # ### PATCH END: AFD MRV2 DBO initialization
 
     # Patch reason: vLLM v0.26.0 prepares FULL graph inputs before each warmup
     # and formal capture forward, outside torch.cuda.graph, but does not expose
@@ -381,6 +425,17 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
                     self.install_afd_metadata_on_forward_context,
                 ),
             ):
+                # ### PATCH START: AFD MRV2 DBO execute backport
+                if self.vllm_config.parallel_config.use_ubatching:
+                    return execute_model_v026_eager_dbo(
+                        self,
+                        scheduler_output,
+                        intermediate_tensors,
+                        dummy_run=dummy_run,
+                        skip_attn_for_dummy_run=skip_attn_for_dummy_run,
+                        is_profile=is_profile,
+                    )
+                # ### PATCH END: AFD MRV2 DBO execute backport
                 return super().execute_model(
                     scheduler_output,
                     intermediate_tensors,
@@ -415,10 +470,21 @@ class AFDNPUAttentionModelRunnerV2(AFDMetadataProviderMixin, NPUModelRunnerV2):
             stop_afd_npu_profiler(self.prof)
         finally:
             try:
-                super().shutdown()
+                # ### PATCH START: AFD MRV2 DBO graph cleanup
+                manager = self.cudagraph_manager
+                if isinstance(manager, AFDModelAclGraphManagerV2):
+                    try:
+                        manager.clear_afd_graphs()
+                    finally:
+                        del manager.ubatch_runner
+                        del self.ubatch_runner
+                # ### PATCH END: AFD MRV2 DBO graph cleanup
             finally:
-                self._afd_pending_metadata = None
-                self.connector.close()
+                try:
+                    super().shutdown()
+                finally:
+                    self._afd_pending_metadata = None
+                    self.connector.close()
         # ### PATCH END: guarantee profiler/native/connector cleanup.
 
 
