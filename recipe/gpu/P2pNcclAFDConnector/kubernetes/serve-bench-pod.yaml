@@ -39,11 +39,14 @@ spec:
           echo "=== launching $(basename "$RECIPE_SCRIPT") recipe ==="
           export VLLM_USE_V2_MODEL_RUNNER=0
 
-          # The proxy is the only client-facing part of this recipe; rebind it
-          # (only it, not the internal prefill/attn/ffn workers) from
-          # loopback-only to 0.0.0.0 so the Service/Route below can reach it.
-          # The prefill/attn/ffn `vllm serve` instances stay on 127.0.0.1 --
-          # they're only ever talked to by the proxy inside this same pod.
+          # :18305 is the client-facing port in every recipe, but who binds it
+          # varies -- the proxy in disaggregation, the attention server itself
+          # in colocation (which has no proxy at all) -- while every internal
+          # worker (prefill/attn/ffn-to-ffn, or attn/ffn in colocation) listens
+          # on a different port or, for the FFN role, never starts an HTTP
+          # server at all. Rebind whichever `--host 127.0.0.1` line precedes a
+          # `--port 18305` line, so both recipe families get exposed off-pod
+          # without special-casing either one.
           # $REPO is read-only here (this pod runs as a non-root UID that
           # doesn't own it), so the patched copy can't be written next to the
           # original. Mirror just enough of the repo under /work (which IS
@@ -57,53 +60,98 @@ spec:
           mkdir -p "$MIRROR/$(dirname "$RECIPE_REL")"
           ln -sfn "$REPO/tools" "$MIRROR/tools"
           PATCHED_SCRIPT="$MIRROR/$(dirname "$RECIPE_REL")/${RECIPE_BASENAME}.patched.sh"
-          sed '/proxy_server\.py/,/--host 127\.0\.0\.1/ s/--host 127\.0\.0\.1/--host 0.0.0.0/' \
-            "$RECIPE_SCRIPT" > "$PATCHED_SCRIPT"
+          awk '
+            { line[NR] = $0 }
+            END {
+              for (i = 1; i <= NR; i++) {
+                l = line[i]
+                if (l ~ /--host 127\.0\.0\.1/ && i < NR && line[i+1] ~ /--port 18305/) {
+                  gsub(/127\.0\.0\.1/, "0.0.0.0", l)
+                }
+                print l
+              }
+            }' "$RECIPE_SCRIPT" > "$PATCHED_SCRIPT"
 
           cd /work
           bash "$PATCHED_SCRIPT" &
           RECIPE_PID=$!
-          # Dump diagnostics
+
+          # Each worker in every recipe redirects to its own log ('> attn.log'),
+          # so the redirects ARE the process list: colocation yields
+          # "attn.log ffn.log", disaggregation adds the two prefillers and the
+          # proxy. Read from the original (unpatched) script since the --host
+          # rewrite above doesn't touch the redirects.
+          LOGS="$(grep -oE '>[[:space:]]*[A-Za-z0-9_]+\.log' "$RECIPE_SCRIPT" \
+                  | grep -oE '[A-Za-z0-9_]+\.log' | sort -u | tr '\n' ' ')"
 
           fail() {
             echo "ERROR: $*"
-            for log in afd_prefill0.log afd_prefill1.log attn.log ffn.log proxy.log; do
+            for log in $LOGS; do
               echo "----- tail $log -----"
               tail -n 100 "/work/$log" 2>/dev/null || echo "(missing)"
             done
             sleep infinity
           }
 
-          echo "=== wait for attn.log to report startup ==="
-          # Graph capture is slow, and a cold HF cache adds a one-time model
-          # download; allow 40 minutes.
-          marker="Application startup complete"
-          echo "--- waiting on attn.log (marker: $marker) ---"
-          ready=0
-          for i in $(seq 1 240); do
-            if [ -f "/work/attn.log" ] && grep -q "$marker" "/work/attn.log"; then
-              echo "attn.log: ready"
-              ready=1
-              break
-            fi
-            if ! kill -0 "$RECIPE_PID" 2>/dev/null; then
-              fail "recipe process exited before attn.log came up"
-            fi
-            sleep 10
-          done
-          [ "$ready" = "1" ] || fail "timed out waiting for attn.log"
+          if [ -z "$LOGS" ]; then
+            fail "no '> <name>.log' redirects in $RECIPE_SCRIPT; cannot tell which processes to wait for"
+          fi
 
-          echo "--- waiting on proxy /healthcheck (127.0.0.1:18305) ---"
+          echo "=== wait for every worker to report startup ==="
+          # Graph capture is slow, and a cold HF cache adds a one-time model
+          # download; allow 40 minutes per worker.
+          #
+          # The FFN worker needs a DIFFERENT marker in every recipe, colocated
+          # or disaggregated: it runs purely through the AFD attention<->FFN
+          # p2p connector and never serves HTTP, so it never logs "Application
+          # startup complete". proxy.log is skipped here -- the proxy prints no
+          # startup banner, and the HTTP probe below is its readiness check.
+          ready_marker() {
+            case "$1" in
+              ffn.log) echo "AFD FFN EngineCore started" ;;
+              *)       echo "Application startup complete" ;;
+            esac
+          }
+          for log in $LOGS; do
+            [ "$log" = "proxy.log" ] && continue
+            marker="$(ready_marker "$log")"
+            echo "--- waiting on $log (marker: $marker) ---"
+            ready=0
+            for i in $(seq 1 240); do
+              if [ -f "/work/$log" ] && grep -q "$marker" "/work/$log"; then
+                echo "$log: ready"
+                ready=1
+                break
+              fi
+              if ! kill -0 "$RECIPE_PID" 2>/dev/null; then
+                fail "recipe process exited before $log came up"
+              fi
+              sleep 10
+            done
+            [ "$ready" = "1" ] || fail "timed out waiting for $log"
+          done
+
+          # :18305 is the client endpoint in every recipe, but what answers
+          # there differs, and the two do not share a path: the
+          # disaggregation proxy serves /healthcheck (not /health), while a
+          # colocation attention server serves vLLM's /health (not
+          # /healthcheck).
+          case " $LOGS " in
+            *" proxy.log "*) HEALTH_PATH=/healthcheck; ENDPOINT="proxy" ;;
+            *)               HEALTH_PATH=/health;      ENDPOINT="attention server" ;;
+          esac
+
+          echo "--- waiting on $ENDPOINT $HEALTH_PATH (127.0.0.1:18305) ---"
           proxy_ready=0
           for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:18305/healthcheck >/dev/null 2>&1; then
-              echo "proxy: ready"
+            if curl -fsS "http://127.0.0.1:18305$HEALTH_PATH" >/dev/null 2>&1; then
+              echo "$ENDPOINT: ready"
               proxy_ready=1
               break
             fi
             sleep 5
           done
-          [ "$proxy_ready" = "1" ] || fail "proxy did not answer /healthcheck"
+          [ "$proxy_ready" = "1" ] || fail "$ENDPOINT did not answer $HEALTH_PATH"
 
           echo "=== stack READY; drive load at 127.0.0.1:18305 ==="
           sleep infinity
