@@ -5,11 +5,8 @@ metadata:
   labels:
     app: afd-recipe
 data:
-  # HF hub id, used to download the model and (as the tokenizer's
-  # pretrained_model_name_or_path) to fetch a matching tokenizer.
+  # HF hub id. run.sh always serves this directly (`vllm serve` defaults the
+  # served model name to whatever id it's given, so this also doubles as the
+  # model_name clients must request), and it's what vLLM downloads into the
+  # PVC's HF_HOME cache on a cold volume.
   MODEL_ID: "deepseek-ai/DeepSeek-V2-Lite"
-  # On-disk path the model is downloaded to and served from -- also the
-  # string vLLM serves the model as (`vllm serve` defaults the served model
-  # name to whatever path/id it's given), so it doubles as the model_name
-  # clients must request.
-  MODEL_PATH: "/models/DeepSeek-V2-Lite"

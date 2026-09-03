@@ -16,7 +16,7 @@ numbers are real, not fabricated.
 ## Prerequisites
 
 - An authenticated `kubectl` (or `oc`) session pointed at the target
-  namespace, with permission to create Pods, Jobs, and PersistentVolumeClaims.
+  namespace, with permission to create Pods and PersistentVolumeClaims.
 - `envsubst` (part of `gettext`) installed locally -- used to render
   [serve-bench-pod.yaml](serve-bench-pod.yaml) before `kubectl apply`.
 - `git` with the `git-lfs` extension installed locally -- used by
@@ -39,8 +39,7 @@ numbers are real, not fabricated.
   Use a registry your cluster's nodes can pull from (and `docker login` to it
   first if it requires auth).
 - A `hf-token-secret` Secret in the namespace with a `token` key holding a
-  Hugging Face access token (used both by the model-download Job and the
-  serve pod):
+  Hugging Face access token (used by the serve pod to download the model):
 
   ```bash
   kubectl create secret generic hf-token-secret --from-literal=token=<hf_token>
@@ -69,15 +68,13 @@ AFD_PLUGIN_IMAGE=<image> ./run.sh recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lit
 This:
 
 1. Applies [model-config.yaml](../model-config.yaml) -- a ConfigMap holding
-   `MODEL_ID` (the HF hub id) and `MODEL_PATH` (the on-disk path, which also
-   doubles as the string vLLM serves the model as), read by every step
-   below -- then applies [pvc.yaml](../pvc.yaml) and, if the PVC
-   doesn't already exist, runs [download-job.yaml](../download-job.yaml) to
-   fetch `MODEL_ID` onto it (skipped on subsequent runs once the PVC is
-   populated). Shared with [decode_only](../decode_only) -- if you've already
-   run that, this step is a no-op.
+   `MODEL_ID` (the HF hub id, always what's served) -- and creates
+   `model-pvc` if it doesn't already exist. The serve pod always serves
+   `MODEL_ID`; vLLM downloads the weights into the PVC's `HF_HOME` cache on
+   a cold volume and reuses them warm on every later run.
 2. Renders [serve-bench-pod.yaml](serve-bench-pod.yaml) with
-   `AFD_PLUGIN_IMAGE`, `recipe-script-path`, and `GPU_COUNT` and applies it.
+   `AFD_PLUGIN_IMAGE`, `MODEL_ID`, `recipe-script-path`, and `GPU_COUNT`, and
+   applies it.
 3. Applies [service-route.yaml](service-route.yaml) -- a Service in front of
    the proxy, named `vllm-service`.
 4. Waits for the pod to reach `Running`, then streams pod logs until the
@@ -94,8 +91,8 @@ This:
    runs once that PVC is populated.
 6. Renders [inference-perf-config.yaml](inference-perf-config.yaml) -- the
    load generator's config, preconfigured to hit the Service from step 3
-   and read prompts from the PVC step 5 populated -- with
-   `MODEL_ID`/`MODEL_PATH` read back from `model-config.yaml`, applies it,
+   and read prompts from the PVC step 5 populated -- with `MODEL_ID` read
+   back from `model-config.yaml`, applies it,
    then applies [inference-perf-pod.yaml](inference-perf-pod.yaml) (the
    load-generator Pod and its reports/dataset PVCs) and streams its logs
    until the run completes.
@@ -124,12 +121,6 @@ Once you're done, delete the serve pod (frees the GPUs) and the Service:
 ```bash
 kubectl delete pod vllm-pod
 kubectl delete -f service-route.yaml
-```
-
-Delete the downloader Job when you no longer need it:
-
-```bash
-kubectl delete job afd-model-downloader
 ```
 
 ## Copying inference-perf reports out

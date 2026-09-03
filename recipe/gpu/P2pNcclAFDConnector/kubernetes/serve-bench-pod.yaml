@@ -161,10 +161,7 @@ spec:
         - name: HOME
           value: "/work/home"
         - name: MODEL_PATH
-          valueFrom:
-            configMapKeyRef:
-              name: afd-model-config
-              key: MODEL_PATH
+          value: "${TEMPLATE_MODEL}"
         - name: HF_HOME
           value: "/models/.hf_home"
         - name: XDG_CACHE_HOME

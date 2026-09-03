@@ -5,7 +5,10 @@
 # Deploy a DeepSeek-V2-Lite AFD serve pod so an external load generator
 # (e.g. inference-perf) can benchmark it:
 #   1. apply the afd-model-config ConfigMap (model id/path, shared by every
-#      step below) and download the model to model-pvc (Job)
+#      step below); create model-pvc if it doesn't exist yet. The serve pod
+#      always serves MODEL_ID (the HF repo id) -- vLLM downloads the weights
+#      into the PVC's HF_HOME cache on a cold volume and reuses them warm on
+#      every later run.
 #   2. launch the serve pod, which runs the selected AFD recipe script (see
 #      recipe-script-path below; default is
 #      recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite/prefill_decode_disaggregation/2p1a1f_graph_dbo.sh)
@@ -43,34 +46,29 @@ IMAGE="${AFD_PLUGIN_IMAGE}"
 RECIPE_SCRIPT_PATH="${1:-${RECIPE_SCRIPT_PATH:-recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite/prefill_decode_disaggregation/2p1a1f_graph_dbo.sh}}"
 GPU_COUNT="${GPU_COUNT:-4}"
 PVC=model-pvc
-JOB=afd-model-downloader
 POD=vllm-pod
 SVC=vllm-service
 INF_POD=inference-perf
 
 command -v envsubst >/dev/null || { echo "envsubst (gettext) is required" >&2; exit 1; }
 
-echo "=== [1/6] apply model config + PVC + downloader job ==="
+echo "=== [1/6] apply model config + PVC ==="
 kubectl apply -f "${SCRIPT_DIR}/deepseek-v2-lite-model-config.yaml"
-if kubectl get pvc "${PVC}" >/dev/null 2>&1; then
-  echo "PVC ${PVC} already exists; skipping download job"
-else
-  kubectl apply -f "${RECIPE_K8S_DIR}/pvc.yaml"
-  kubectl delete job "${JOB}" --ignore-not-found
-  kubectl apply -f "${SCRIPT_DIR}/download-job.yaml"
-
-  echo "=== waiting for download job to complete (timeout 30m) ==="
-  kubectl wait --for=condition=complete "job/${JOB}" --timeout=30m
-fi
 
 MODEL_ID="$(kubectl get configmap afd-model-config -o jsonpath='{.data.MODEL_ID}')"
-MODEL_PATH="$(kubectl get configmap afd-model-config -o jsonpath='{.data.MODEL_PATH}')"
+
+if kubectl get pvc "${PVC}" >/dev/null 2>&1; then
+  echo "PVC ${PVC} already exists; serving ${MODEL_ID} from its warm HF_HOME cache"
+else
+  echo "PVC ${PVC} does not exist; creating it empty -- vLLM will download ${MODEL_ID} into it on first use"
+  kubectl apply -f "${RECIPE_K8S_DIR}/pvc.yaml"
+fi
 
 echo "=== [2/6] apply serve pod (recipe: ${RECIPE_SCRIPT_PATH}) ==="
 kubectl delete pod "${POD}" --ignore-not-found
 # shellcheck disable=SC2016
-TEMPLATE_IMAGE="${IMAGE}" RECIPE_SCRIPT_PATH="${RECIPE_SCRIPT_PATH}" GPU_COUNT="${GPU_COUNT}" \
-  envsubst '${TEMPLATE_IMAGE} ${RECIPE_SCRIPT_PATH} ${GPU_COUNT}' \
+TEMPLATE_IMAGE="${IMAGE}" TEMPLATE_MODEL="${MODEL_ID}" RECIPE_SCRIPT_PATH="${RECIPE_SCRIPT_PATH}" GPU_COUNT="${GPU_COUNT}" \
+  envsubst '${TEMPLATE_IMAGE} ${TEMPLATE_MODEL} ${RECIPE_SCRIPT_PATH} ${GPU_COUNT}' \
   < "${RECIPE_K8S_DIR}/serve-bench-pod.yaml" | kubectl apply -f -
 
 echo "=== [3/6] apply Service in front of the proxy ==="
@@ -112,8 +110,8 @@ echo
 echo "=== [5/6] apply inference-perf load-generator pod (service is ready) ==="
 kubectl delete pod "${INF_POD}" --ignore-not-found
 # shellcheck disable=SC2016
-MODEL_ID="${MODEL_ID}" MODEL_PATH="${MODEL_PATH}" \
-  envsubst '${MODEL_ID} ${MODEL_PATH}' \
+MODEL_ID="${MODEL_ID}" \
+  envsubst '${MODEL_ID}' \
   < "${SCRIPT_DIR}/inference-perf-config.yaml" | kubectl apply -f -
 kubectl apply -f "${SCRIPT_DIR}/inference-perf-pod.yaml"
 

@@ -9,14 +9,15 @@ data:
     # ../../../../recipe/gpu/P2pNcclAFDConnector/kubernetes/serve-bench-pod.yaml),
     # reached through the vllm-service Service (see
     # ../../../../recipe/gpu/P2pNcclAFDConnector/kubernetes/service-route.yaml).
-    # server.model_name and tokenizer.pretrained_model_name_or_path are
-    # templated from the afd-model-config ConfigMap's MODEL_PATH/MODEL_ID
-    # (see deepseek-v2-lite-model-config.yaml) by run.sh at apply time --
-    # MODEL_PATH is the string vLLM serves the model as (not the HF hub id),
-    # while MODEL_ID is the HF hub id, used here so the tokenizer can be
-    # downloaded directly by this pod. inference-perf's Config schema
-    # forbids extra top-level fields, so these can't be top-level YAML
-    # anchors -- the values are inlined below instead.
+    # server.model_name and tokenizer.pretrained_model_name_or_path are both
+    # templated from the afd-model-config ConfigMap's MODEL_ID (see
+    # deepseek-v2-lite-model-config.yaml) by run.sh at apply time -- the
+    # serve pod always serves MODEL_ID (`vllm serve` defaults the served
+    # model name to whatever string it's given), so this is the name clients
+    # must request, and doubles as the tokenizer's
+    # pretrained_model_name_or_path. inference-perf's Config schema forbids
+    # extra top-level fields, so this can't be a top-level YAML anchor -- the
+    # value is inlined below instead.
     load:
       type: poisson
       interval: 60.0
@@ -55,7 +56,7 @@ data:
 
     server:
       type: vllm
-      model_name: ${MODEL_PATH}
+      model_name: ${MODEL_ID}
       base_url: http://vllm-service:18305
       ignore_eos: true
 
