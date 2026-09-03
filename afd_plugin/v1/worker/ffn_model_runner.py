@@ -29,6 +29,7 @@ from afd_plugin.connectors import (
     AFDConnectorFactory,
     AFDControlPayload,
     AFDDPMetadata,
+    AFDForwardContextMetadata,
 )
 from afd_plugin.v1.worker.attention_model_runner import (
     fail_if_unsupported_ubatching,
@@ -93,6 +94,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         )
         self._cuda_graphs: dict[tuple, dict[str, Any]] = {}
         self._graph_memory_pool: Any | None = None
+        self._layer_graphs: dict[tuple[int, int], dict[str, Any]] = {}
         self.prof = create_afd_gpu_profiler("ffn")
 
     @staticmethod
@@ -239,11 +241,16 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                             router_logits,
                         )
                     else:
-                        rank_ffn_output = self._execute_eager_mode(
-                            hidden_states,
-                            layer_idx,
-                            input_ids=payload.input_ids,
-                        )
+                        if (stage_idx, layer_idx) in self._layer_graphs:
+                            rank_ffn_output = self._layer_graph_forward(
+                                hidden_states, layer_idx, stage_idx,
+                            )
+                        else:
+                            rank_ffn_output = self._execute_eager_mode(
+                                hidden_states,
+                                layer_idx,
+                                input_ids=payload.input_ids,
+                            )
                     self.connector.send_ffn_output(rank_ffn_output, context)
         return rank_ffn_output
 
@@ -292,6 +299,94 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         if self.model is None:
             raise RuntimeError("Cannot reload weights before model is loaded")
         self.load_model()
+
+    def _capture_layer_graphs(
+        self,
+        dp_metadata_list: dict[int, DPMetadata | AFDDPMetadata],
+    ) -> None:
+        """Capture one compute-only CUDA graph per (stage, layer).
+
+        Multi-peer FFN cannot use a monolithic graph because NCCL P2P
+        operations baked into it reference communicator state that changes
+        between capture and replay. Each per-layer graph below contains
+        only MoE compute reading from ``input_buf`` and writing to
+        ``output_buf``; NCCL recv/send stay eager between layers.
+        """
+        assert self.connector.control_plane is not None
+        self.connector.control_plane.update_state_from_dp_metadata(
+            _make_dp_metadata_payload(dp_metadata_list, is_graph_capturing=True),
+        )
+
+        layer_indices = tuple(range(max(int(self.num_layers or 0), 1)))
+        stage_ids = sorted(int(k) for k in dp_metadata_list) or [0]
+        hidden_size = self.model_config.hf_text_config.hidden_size
+        dtype = self.vllm_config.model_config.dtype
+        max_tokens = max(
+            sum(int(c) for c in dp.num_tokens_across_dp_cpu)
+            for dp in dp_metadata_list.values()
+        )
+
+        self._layer_graphs = {}
+        set_cudagraph_capturing_enabled(True)
+        try:
+            with graph_capture(device=self.device):
+                for stage_idx in stage_ids:
+                    input_buf = torch.zeros(
+                        max_tokens, hidden_size, dtype=dtype,
+                        device=self.device,
+                    )
+                    output_buf = torch.zeros_like(input_buf)
+                    metadata = AFDForwardContextMetadata(
+                        tokens_start_loc=[0],
+                        requests_start_loc=[0],
+                        stage_idx=stage_idx,
+                        connector=self.connector,
+                        tokens_lens=[max_tokens],
+                        num_stages=len(stage_ids),
+                        transaction_id=f"layer-graph-{stage_idx}",
+                        tokens_unpadded_lens=[max_tokens],
+                    )
+                    with _ffn_forward_context(self.vllm_config) as fwd_ctx:
+                        fwd_ctx.dp_metadata = self._make_ffn_dp_metadata(
+                            dp_metadata_list[stage_idx],
+                        )
+                        fwd_ctx.additional_kwargs["afd_metadata"] = metadata
+                        # Warmup pass (eager), then capture pass per layer.
+                        for layer_idx in layer_indices:
+                            _set_moe_layer_index(fwd_ctx, layer_idx)
+                            self.model.compute_ffn_output(input_buf, layer_idx)
+                        for layer_idx in layer_indices:
+                            _set_moe_layer_index(fwd_ctx, layer_idx)
+                            graph = torch.cuda.CUDAGraph()
+                            pool = torch.cuda.graph_pool_handle()
+                            with torch.cuda.graph(graph, pool=pool):
+                                output_buf.copy_(
+                                    self.model.compute_ffn_output(
+                                        input_buf, layer_idx,
+                                    ),
+                                )
+                            self._layer_graphs[(stage_idx, layer_idx)] = {
+                                "graph": graph,
+                                "input": input_buf,
+                                "output": output_buf,
+                            }
+        finally:
+            set_cudagraph_capturing_enabled(False)
+
+    def _layer_graph_forward(
+        self,
+        hidden_states: torch.Tensor,
+        layer_idx: int,
+        stage_idx: int,
+    ) -> torch.Tensor:
+        """Run one layer's compute via its graph, or eagerly as fallback."""
+        info = self._layer_graphs.get((stage_idx, layer_idx))
+        num_tokens = hidden_states.shape[0]
+        if info is None or num_tokens > info["input"].shape[0]:
+            return self.model.compute_ffn_output(hidden_states, layer_idx)
+        info["input"][:num_tokens].copy_(hidden_states)
+        info["graph"].replay()
+        return info["output"][:num_tokens]
 
     def _dummy_run(
         self,
@@ -344,6 +439,16 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             return 0
         if dp_metadata_list is None:
             raise RuntimeError("GPUFFNModelRunner.capture_model requires metadata")
+
+        if getattr(self.connector, "group_size", 2) > 2:
+            if is_warmup:
+                self._ffn_forward(
+                    dp_metadata_list=dp_metadata_list,
+                    is_warmup=True,
+                )
+            else:
+                self._capture_layer_graphs(dp_metadata_list)
+            return 0
 
         start_free_gpu_memory = torch.cuda.mem_get_info()[0]
         if self._graph_memory_pool is None:
@@ -421,6 +526,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                 graph_info["graph"].reset()
             self._cuda_graphs.clear()
             self._graph_memory_pool = None
+            self._layer_graphs = {}
             self.vllm_config.compilation_config.static_forward_context.clear()
             self.model = None
             _ROPE_DICT.clear()
