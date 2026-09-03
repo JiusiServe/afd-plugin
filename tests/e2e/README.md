@@ -6,17 +6,19 @@ adapter family on real CUDA hardware.
 Each default gate runs four scenarios:
 
 - `baseline-graph`
-- `afd-eager-2a2f`
-- `afd-graph-2a2f`
-- `afd-graph-dbo-2a2f`
+- `afd-eager-2a2f` (DeepSeek-V2-Lite gate only; Qwen3 MoE/Qwen3.6 use `afd-eager-2a1f`)
+- `afd-graph-2a2f` (DeepSeek-V2-Lite gate only; Qwen3 MoE/Qwen3.6 use `afd-graph-2a1f`)
+- `afd-graph-dbo-2a2f` (DeepSeek-V2-Lite gate only; Qwen3 MoE/Qwen3.6 use `afd-graph-dbo-2a1f`)
 
 Each scenario evaluates the first 7 GSM8K samples. If `AFD_E2E_DEVICES` is set,
 that value is used as-is; otherwise the defaults are:
 
-- `0,1,2,3` for the gate scenarios. The 2A2F AFD cases use the first two for
-  Attention DP2/TP1 and the last two for FFN DP2/TP1/EP2; `baseline-graph`
-  uses all four for DP4/TP1/EP4.
-- The 2A1F local cases use the first two for Attention and the third for FFN.
+- `0,1,2,3` for the gate scenarios. The 2A2F AFD cases (DeepSeek-V2-Lite gate
+  only) use the first two for Attention DP2/TP1 and the last two for FFN
+  DP2/TP1/EP2; `baseline-graph` uses all four for DP4/TP1/EP4.
+- The 2A1F cases use the first two for Attention and the third for FFN,
+  leaving the fourth device idle. For DeepSeek-V2-Lite these are local-only
+  cases; for Qwen3 MoE and Qwen3.6 MoE they are the suite's gate scenarios.
 
 Tests run sequentially and must not skip. Every GSM8K evaluation uses 8
 few-shot examples and a 4096-token maximum model length.
