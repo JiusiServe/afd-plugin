@@ -13,12 +13,9 @@
 #      off-pod
 #   3. apply a Service + Route in front of the proxy
 #   4. wait for the disaggregation proxy to report ready
-#   5. prepare the load generator's dataset via prepare-dataset.sh (fetches
-#      and reshapes tools/datasets/cp8sp50k_..._token_ids.jsonl; skipped
-#      once the inference-perf-dataset PVC is populated)
-#   6. apply inference-perf-config.yaml + inference-perf-pod.yaml (the load
+#   5. apply inference-perf-config.yaml + inference-perf-pod.yaml (the load
 #      generator) and stream its logs until the run completes
-#   7. copy inference-perf's reports out via copy-reports.sh
+#   6. copy inference-perf's reports out via copy-reports.sh
 #
 # The serve pod is left running afterwards (this script does NOT delete it).
 #
@@ -53,7 +50,7 @@ INF_POD=inference-perf
 
 command -v envsubst >/dev/null || { echo "envsubst (gettext) is required" >&2; exit 1; }
 
-echo "=== [1/7] apply model config + PVC + downloader job ==="
+echo "=== [1/6] apply model config + PVC + downloader job ==="
 kubectl apply -f "${SCRIPT_DIR}/deepseek-v2-lite-model-config.yaml"
 if kubectl get pvc "${PVC}" >/dev/null 2>&1; then
   echo "PVC ${PVC} already exists; skipping download job"
@@ -69,14 +66,14 @@ fi
 MODEL_ID="$(kubectl get configmap afd-model-config -o jsonpath='{.data.MODEL_ID}')"
 MODEL_PATH="$(kubectl get configmap afd-model-config -o jsonpath='{.data.MODEL_PATH}')"
 
-echo "=== [2/7] apply serve pod (recipe: ${RECIPE_SCRIPT_PATH}) ==="
+echo "=== [2/6] apply serve pod (recipe: ${RECIPE_SCRIPT_PATH}) ==="
 kubectl delete pod "${POD}" --ignore-not-found
 # shellcheck disable=SC2016
 TEMPLATE_IMAGE="${IMAGE}" RECIPE_SCRIPT_PATH="${RECIPE_SCRIPT_PATH}" GPU_COUNT="${GPU_COUNT}" \
   envsubst '${TEMPLATE_IMAGE} ${RECIPE_SCRIPT_PATH} ${GPU_COUNT}' \
   < "${RECIPE_K8S_DIR}/serve-bench-pod.yaml" | kubectl apply -f -
 
-echo "=== [3/7] apply Service + Route in front of the proxy ==="
+echo "=== [3/6] apply Service + Route in front of the proxy ==="
 kubectl apply -f "${RECIPE_K8S_DIR}/service-route.yaml"
 
 echo "=== waiting for pod to reach Running ==="
@@ -86,7 +83,7 @@ until [ "$(kubectl get pod "${POD}" -o jsonpath='{.status.phase}' 2>/dev/null)" 
   sleep 10
 done
 
-echo "=== [4/7] waiting for the disaggregation stack to report ready ==="
+echo "=== [4/6] waiting for the disaggregation stack to report ready ==="
 kubectl logs -f "pod/${POD}" &
 log_pid=$!
 while true; do
@@ -118,11 +115,7 @@ if [ -n "$ROUTE_HOST" ]; then
 fi
 
 echo
-echo "=== [5/7] preparing inference-perf's dataset ==="
-"${SCRIPT_DIR}/prepare-dataset.sh"
-
-echo
-echo "=== [6/7] apply inference-perf load-generator pod (service is ready) ==="
+echo "=== [5/6] apply inference-perf load-generator pod (service is ready) ==="
 kubectl delete pod "${INF_POD}" --ignore-not-found
 # shellcheck disable=SC2016
 MODEL_ID="${MODEL_ID}" MODEL_PATH="${MODEL_PATH}" \
@@ -150,7 +143,7 @@ done
 echo
 echo "=== ${INF_POD} pod phase: ${INF_PHASE} ==="
 
-echo "=== [7/7] copying inference-perf reports out ==="
+echo "=== [6/6] copying inference-perf reports out ==="
 "${SCRIPT_DIR}/copy-reports.sh"
 
 echo
