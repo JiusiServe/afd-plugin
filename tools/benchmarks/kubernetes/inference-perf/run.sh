@@ -11,7 +11,7 @@
 #      recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite/prefill_decode_disaggregation/2p1a1f_graph_dbo.sh)
 #      with the client-facing proxy rebound to 0.0.0.0 so it's reachable
 #      off-pod
-#   3. apply a Service + Route in front of the proxy
+#   3. apply a Service in front of the proxy
 #   4. wait for the disaggregation proxy to report ready
 #   5. apply inference-perf-config.yaml + inference-perf-pod.yaml (the load
 #      generator) and stream its logs until the run completes
@@ -73,7 +73,7 @@ TEMPLATE_IMAGE="${IMAGE}" RECIPE_SCRIPT_PATH="${RECIPE_SCRIPT_PATH}" GPU_COUNT="
   envsubst '${TEMPLATE_IMAGE} ${RECIPE_SCRIPT_PATH} ${GPU_COUNT}' \
   < "${RECIPE_K8S_DIR}/serve-bench-pod.yaml" | kubectl apply -f -
 
-echo "=== [3/6] apply Service + Route in front of the proxy ==="
+echo "=== [3/6] apply Service in front of the proxy ==="
 kubectl apply -f "${RECIPE_K8S_DIR}/service-route.yaml"
 
 echo "=== waiting for pod to reach Running ==="
@@ -103,16 +103,10 @@ while true; do
 done
 kill "${log_pid}" 2>/dev/null || true
 
-ROUTE_HOST="$(kubectl get route "${SVC}" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
-
 echo
-echo "=== ${POD} is up; proxy is exposed via Service/Route ${SVC} ==="
+echo "=== ${POD} is up; proxy is exposed via Service ${SVC} ==="
 echo "From another pod in this namespace (e.g. inference-perf), reach it at:"
 echo "  http://${SVC}:18305"
-if [ -n "$ROUTE_HOST" ]; then
-  echo "From outside the cluster, reach it at:"
-  echo "  http://${ROUTE_HOST}"
-fi
 
 echo
 echo "=== [5/6] apply inference-perf load-generator pod (service is ready) ==="
@@ -149,6 +143,6 @@ echo "=== [6/6] copying inference-perf reports out ==="
 echo
 echo "Tail the serve pod's logs any time with:"
 echo "  kubectl logs -f pod/${POD}"
-echo "Delete the serve pod when done (frees the GPUs) and the Service/Route:"
+echo "Delete the serve pod when done (frees the GPUs) and the Service:"
 echo "  kubectl delete pod ${POD}"
 echo "  kubectl delete -f ${RECIPE_K8S_DIR}/service-route.yaml"

@@ -78,11 +78,11 @@ This:
    run that, this step is a no-op.
 2. Renders [serve-bench-pod.yaml](serve-bench-pod.yaml) with
    `AFD_PLUGIN_IMAGE`, `recipe-script-path`, and `GPU_COUNT` and applies it.
-3. Applies [service-route.yaml](service-route.yaml) -- a Service + (OpenShift)
-   Route in front of the proxy, named `vllm-service`.
+3. Applies [service-route.yaml](service-route.yaml) -- a Service in front of
+   the proxy, named `vllm-service`.
 4. Waits for the pod to reach `Running`, then streams pod logs until the
    disaggregation proxy reports `Application startup complete` in
-   `/work/proxy.log`, and prints the Service/Route endpoints.
+   `/work/proxy.log`, and prints the Service endpoint.
 5. Runs [prepare-dataset.sh](prepare-dataset.sh) to fetch
    `tools/datasets/cp8sp50k_custom_dataset_text_matched_token_ids.jsonl`
    (a real-workload prompt-length distribution) via `git lfs pull`, reshape
@@ -104,7 +104,7 @@ This:
    [Copying inference-perf reports out](#copying-inference-perf-reports-out)
    below for how that works even after the `inference-perf` pod exits).
 
-The serve pod (and its Service/Route) are left running afterwards; `run.sh`
+The serve pod (and its Service) are left running afterwards; `run.sh`
 does **not** delete them, so you can re-run steps 5-7
 (`prepare-dataset.sh`, `inference-perf-config.yaml`,
 `inference-perf-pod.yaml`, and `copy-reports.sh`) again without
@@ -119,7 +119,7 @@ internal prefill/attention/FFN `vllm serve` instances are left on
 `127.0.0.1`, since only the proxy talks to them and only the proxy is
 client-facing.
 
-Once you're done, delete the serve pod (frees the GPUs) and the Service/Route:
+Once you're done, delete the serve pod (frees the GPUs) and the Service:
 
 ```bash
 kubectl delete pod vllm-pod
