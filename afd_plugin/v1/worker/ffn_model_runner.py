@@ -243,7 +243,9 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                     else:
                         if (stage_idx, layer_idx) in self._layer_graphs:
                             rank_ffn_output = self._layer_graph_forward(
-                                hidden_states, layer_idx, stage_idx,
+                                hidden_states,
+                                layer_idx,
+                                stage_idx,
                             )
                         else:
                             rank_ffn_output = self._execute_eager_mode(
@@ -332,7 +334,9 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             with graph_capture(device=self.device):
                 for stage_idx in stage_ids:
                     input_buf = torch.zeros(
-                        max_tokens, hidden_size, dtype=dtype,
+                        max_tokens,
+                        hidden_size,
+                        dtype=dtype,
                         device=self.device,
                     )
                     output_buf = torch.zeros_like(input_buf)
@@ -362,7 +366,8 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                             with torch.cuda.graph(graph, pool=pool):
                                 output_buf.copy_(
                                     self.model.compute_ffn_output(
-                                        input_buf, layer_idx,
+                                        input_buf,
+                                        layer_idx,
                                     ),
                                 )
                             self._layer_graphs[(stage_idx, layer_idx)] = {
