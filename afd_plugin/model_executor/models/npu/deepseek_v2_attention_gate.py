@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import torch
 
@@ -20,6 +20,7 @@ except ImportError:
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
 
+    from afd_plugin.connectors.npu.async_cam import CAMAsyncAFDConnector
     from afd_plugin.model_executor.models.deepseek_v2 import (
         AFDDeepseekV2DecoderLayer,
         _DeepseekAdapterConfig,
@@ -58,7 +59,7 @@ def compute_gate_topk(
             "AFD connector required for compute_gate_on_attention "
             "but not found in forward context",
         )
-    afd_connector = afd_metadata.connector
+    afd_connector = cast("CAMAsyncAFDConnector", afd_metadata.connector)
     mix_placement = bool(
         getattr(vllm_config, "additional_config", {}).get(
             "mix_placement",
