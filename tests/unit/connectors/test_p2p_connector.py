@@ -1,9 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+
 from __future__ import annotations
 
 import importlib
 import sys
 import types
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -193,8 +197,8 @@ def test_p2p_tp2_maps_shared_dp_payload_one_to_one(monkeypatch):
         is_warmup=False,
     )
 
-    attention_connectors = []
-    ffn_connectors = []
+    attention_connectors: list[Any] = []
+    ffn_connectors: list[Any] = []
     for role, connectors in (
         ("attention", attention_connectors),
         ("ffn", ffn_connectors),
@@ -249,10 +253,15 @@ def test_p2p_tp2_maps_shared_dp_payload_one_to_one(monkeypatch):
         connector.control_plane.send_dp_metadata_list(payload)
 
     received_sources = []
+
+    def _recorded_recv(**kwargs):
+        received_sources.append(kwargs["src"])
+        return payload
+
     monkeypatch.setattr(
         p2p_module,
         "recv_control_payload",
-        lambda **kwargs: received_sources.append(kwargs["src"]) or payload,
+        _recorded_recv,
     )
     for connector in ffn_connectors:
         connector.p2p_pg = object()
@@ -513,15 +522,15 @@ def test_p2p_custom_ops_register_send_recv_with_fake_impls(monkeypatch):
     module = importlib.import_module("afd_plugin.connectors.gpu.p2p")
     calls = []
 
-    torch_module = types.ModuleType("torch")
+    torch_module: Any = types.ModuleType("torch")
     torch_module.Tensor = object
     # Empty ops namespace: the registration helper skips ops that already
     # exist on torch.ops.vllm, so the fake must report none registered.
     torch_module.ops = SimpleNamespace(vllm=SimpleNamespace())
 
-    vllm_module = types.ModuleType("vllm")
-    utils_module = types.ModuleType("vllm.utils")
-    torch_utils_module = types.ModuleType("vllm.utils.torch_utils")
+    vllm_module: Any = types.ModuleType("vllm")
+    utils_module: Any = types.ModuleType("vllm.utils")
+    torch_utils_module: Any = types.ModuleType("vllm.utils.torch_utils")
 
     def direct_register_custom_op(**kwargs):
         calls.append(kwargs)
@@ -565,11 +574,11 @@ def test_p2p_hidden_state_send_uses_registered_custom_op(monkeypatch):
     connector.a2e_comm_id = 17
 
     calls = []
-    torch_module = types.ModuleType("torch")
+    torch_module: Any = types.ModuleType("torch")
     torch_module.ops = SimpleNamespace(
         vllm=SimpleNamespace(
-            afd_p2p_send=lambda tensor, dst, comm_id: (
-                calls.append((tensor, dst, comm_id)) or None
+            afd_p2p_send=lambda tensor, dst, comm_id: calls.append(
+                (tensor, dst, comm_id)
             ),
         ),
     )
@@ -608,11 +617,11 @@ def test_p2p_recv_preserves_dynamic_ref_tensor_first_dim(monkeypatch):
     connector.e2a_comm_id = 23
 
     calls = []
-    torch_module = types.ModuleType("torch")
+    torch_module: Any = types.ModuleType("torch")
     torch_module.ops = SimpleNamespace(
         vllm=SimpleNamespace(
-            afd_p2p_recv=lambda tensor, src, comm_id: (
-                calls.append((tensor, src, comm_id)) or None
+            afd_p2p_recv=lambda tensor, src, comm_id: calls.append(
+                (tensor, src, comm_id)
             ),
         ),
     )

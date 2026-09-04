@@ -152,7 +152,7 @@ unverified.
 | Samples | first 7 | first 7 |
 | Metric | GSM8K exact match | GSM8K exact match |
 | Minimum accuracy | 0.27 | 0.27 |
-| Cases | four legacy cases plus four CUDA ModelRunnerV2 cases | six Qwen3 MoE / Qwen3.6 MoE cases plus DeepSeek-V2-Lite `afd-graph-dbo-2a1f` |
+| Cases | four legacy cases plus four CUDA ModelRunnerV2 cases | eight Qwen3 MoE / Qwen3.6 MoE cases plus DeepSeek-V2-Lite `afd-graph-dbo-2a1f` |
 
 An accuracy of `0.27` requires at least 2 correct answers out of 7.
 

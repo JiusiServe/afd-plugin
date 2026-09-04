@@ -55,6 +55,10 @@ class AFDAttentionModelRunner(AFDMetadataProviderMixin, GPUModelRunner):
 
     afd_expected_role = "attention"
 
+    # ``GPUModelRunner.model`` is untyped in the pinned vLLM and is swapped
+    # for the AFD ubatch wrapper at runtime.
+    model: Any
+
     def __init__(
         self,
         vllm_config: VllmConfig,
@@ -255,7 +259,7 @@ class AFDAttentionModelRunner(AFDMetadataProviderMixin, GPUModelRunner):
         )
         kwargs: dict[str, Any] = {}
 
-        # determin if ubatch should be activated.
+        # determine if ubatch should be activated.
         # 1. For dp = 1, vLLM hardcodes `should_ubatch=False`.
         # This is the extra support for dp = 1
         if self.vllm_config.parallel_config.data_parallel_size == 1:

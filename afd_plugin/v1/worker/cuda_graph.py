@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -107,27 +107,29 @@ def make_ffn_graph_key(
     attention_size: int | None = None,
     ffn_size: int | None = None,
     fallback: int = 1,
-) -> tuple[tuple[int, tuple]]:
+) -> tuple[tuple[int, tuple[Any, ...]], ...]:
     """Extract the AFD FFN graph hashable key from DP metadata."""
 
-    key_parts: list[tuple[int, tuple]] = []
+    aggregated_sizes = _aggregated_key_sizes(attention_size, ffn_size)
+    key_parts: list[tuple[int, tuple[Any, ...]]] = []
     for stage_idx, metadata in sorted(dp_metadata_list.items()):
         values = getattr(metadata, "num_tokens_across_dp_cpu", None)
+        values_tuple: tuple[Any, ...]
         if values is None:
-            if _use_ffn_aggregated_key(attention_size, ffn_size):
+            if aggregated_sizes is not None:
                 values_tuple = tuple(
-                    max(1, int(fallback)) for _ in range(int(ffn_size))
+                    max(1, fallback) for _ in range(aggregated_sizes[1])
                 )
             else:
                 values_tuple = (repr(metadata),)
         else:
             values_tuple = _metadata_values_tuple(values)
-            if _use_ffn_aggregated_key(attention_size, ffn_size):
+            if aggregated_sizes is not None:
                 values_tuple = _aggregate_ffn_values_tuple(
                     values_tuple,
-                    attention_size=int(attention_size),
-                    ffn_size=int(ffn_size),
-                    fallback=int(fallback),
+                    attention_size=aggregated_sizes[0],
+                    ffn_size=aggregated_sizes[1],
+                    fallback=fallback,
                 )
         key_parts.append((int(stage_idx), values_tuple))
     return tuple(key_parts)
@@ -150,7 +152,7 @@ def graph_run_mode(
     return AFDGraphRunMode.EAGER
 
 
-def _metadata_values_tuple(values: object) -> tuple[int, ...]:
+def _metadata_values_tuple(values: Any) -> tuple[int, ...]:
     tolist = getattr(values, "tolist", None)
     if callable(tolist):
         values = tolist()
@@ -162,16 +164,18 @@ def _metadata_values_tuple(values: object) -> tuple[int, ...]:
         return (int(values),)
 
 
-def _use_ffn_aggregated_key(
+def _aggregated_key_sizes(
     attention_size: int | None,
     ffn_size: int | None,
-) -> bool:
-    return (
-        attention_size is not None
-        and ffn_size is not None
-        and int(attention_size) >= int(ffn_size)
-        and int(attention_size) % int(ffn_size) == 0
-    )
+) -> tuple[int, int] | None:
+    if (
+        attention_size is None
+        or ffn_size is None
+        or attention_size < ffn_size
+        or attention_size % ffn_size != 0
+    ):
+        return None
+    return attention_size, ffn_size
 
 
 def _aggregate_ffn_values_tuple(
