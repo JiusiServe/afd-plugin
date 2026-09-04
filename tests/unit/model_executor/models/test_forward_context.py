@@ -563,6 +563,9 @@ def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():
     assert "_compute_w8a8_shared_experts_from_int8(" in compute_moe
     assert "shared_input.dtype == torch.int8" in compute_moe
     assert "fusion=False" not in compute_moe
+    assert "output_dtype=torch.int32" in gate_source
+    assert "npu_dequant_swiglu_quant(" in gate_source
+    assert "activation_scale=pertoken_scale" in gate_source
 
 
 @pytest.mark.parametrize(
@@ -637,9 +640,12 @@ def test_deepseek_afd_ffn_skips_empty_rank_local_moe_work(
         hidden_states,
         dynamic_scales,
         *,
+        swiglu_limit,
         output_dtype,
     ):
-        shared_calls.append((shared_experts, hidden_states, dynamic_scales))
+        shared_calls.append(
+            (shared_experts, hidden_states, dynamic_scales, swiglu_limit),
+        )
         return torch.zeros_like(hidden_states, dtype=output_dtype)
 
     monkeypatch.setattr(
@@ -665,6 +671,7 @@ def test_deepseek_afd_ffn_skips_empty_rank_local_moe_work(
         mlp=SimpleNamespace(
             experts=experts,
             routed_scaling_factor=1.0,
+            swiglu_limit=7.0,
         ),
     )
     hidden_states = torch.zeros((num_routed_tokens, 4), dtype=torch.int8)
@@ -688,6 +695,7 @@ def test_deepseek_afd_ffn_skips_empty_rank_local_moe_work(
     if num_shared_tokens > 0:
         assert output.shared_output is not None
         assert output.shared_output.shape == expand_x_shared.shape
+        assert shared_calls[0][3] == 7.0
     else:
         assert output.shared_output is None
 
