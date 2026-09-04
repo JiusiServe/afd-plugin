@@ -180,10 +180,14 @@ def compute_attention_gate_moe_ffn(
         shared_scales = dynamic_scales_shared
         if shared_input.shape[0] > 0:
             if shared_input.dtype == torch.int8 and quant_type == QuantType.W8A8:
+                # DSV4 exposes a SwiGLU clamp limit, while the shared MLP used
+                # by DSV2/V3.2 does not. None preserves the native unclamped
+                # SiluAndMul behavior for those models.
                 shared_output = _compute_w8a8_shared_experts_from_int8(
                     experts._shared_experts,
                     shared_input,
                     shared_scales,
+                    swiglu_limit=getattr(layer.mlp, "swiglu_limit", None),
                     output_dtype=torch.bfloat16,
                 )
             else:
@@ -241,11 +245,17 @@ def _dequantize_int8_activation(
     return (hidden_states.to(torch.float32) * scales).to(dtype=output_dtype)
 
 
+# CAM dispatch provides already-quantized shared-expert activations and their
+# per-token scales. Keep W13's accumulator in INT32 so the Ascend fused
+# dequant-SwiGLU-quant operator can consume that scale and produce the INT8
+# input plus scale required by W2. This matches the native W8A8 shared-expert
+# arithmetic while retaining the CAM-specific input contract.
 def _compute_w8a8_shared_experts_from_int8(
     shared_experts: torch.nn.Module,
     hidden_states: torch.Tensor,
     dynamic_scales: torch.Tensor | None,
     *,
+    swiglu_limit: float | None,
     output_dtype: torch.dtype,
 ) -> torch.Tensor:
     if dynamic_scales is None:
@@ -269,19 +279,46 @@ def _compute_w8a8_shared_experts_from_int8(
     quantized_input = quantized_input.clone()
     pertoken_scale = pertoken_scale.clone()
 
+    # ### PATCH START: Preserve CAM INT8 input through fused SwiGLU quantization.
     gate_up = torch_npu.npu_quant_matmul(
         quantized_input,
         shared_experts.gate_up_proj.weight,
         shared_experts.gate_up_proj.weight_scale,
-        pertoken_scale=pertoken_scale,
+        pertoken_scale=None,
+        bias=None,
+        output_dtype=torch.int32,
+    )
+    quantized_activation, activation_scale = (
+        torch.ops._C_ascend.npu_dequant_swiglu_quant(
+            x=gate_up,
+            weight_scale=shared_experts.gate_up_proj.weight_scale_fp32,
+            activation_scale=pertoken_scale,
+            bias=None,
+            quant_scale=None,
+            quant_offset=None,
+            group_index=None,
+            activate_left=True,
+            quant_mode=1,
+            swiglu_mode=1,
+            clamp_limit=0.0 if swiglu_limit is None else swiglu_limit,
+            # CAM Async currently targets hardware that supports these fused
+            # SwiGLU tuning arguments. Revisit this contract before enabling
+            # the path on a profile with narrower operator support.
+            glu_alpha=1.0,
+            glu_bias=0.0,
+        )
+    )
+    shared_output = torch_npu.npu_quant_matmul(
+        quantized_activation,
+        shared_experts.down_proj.weight,
+        shared_experts.down_proj.weight_scale,
+        pertoken_scale=activation_scale,
         bias=None,
         output_dtype=output_dtype,
     )
+    # ### PATCH END: Preserve CAM INT8 input through fused SwiGLU quantization.
     if unsqueeze_output:
-        gate_up = gate_up.unsqueeze(dim=1)
-
-    shared_act = shared_experts.act_fn(gate_up)
-    shared_output, _ = shared_experts.down_proj(shared_act)
+        shared_output = shared_output.unsqueeze(dim=1)
     return shared_output
 
 
