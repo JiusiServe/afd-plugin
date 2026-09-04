@@ -180,11 +180,14 @@ def compute_attention_gate_moe_ffn(
         shared_scales = dynamic_scales_shared
         if shared_input.shape[0] > 0:
             if shared_input.dtype == torch.int8 and quant_type == QuantType.W8A8:
+                # DSV4 exposes a SwiGLU clamp limit, while the shared MLP used
+                # by DSV2/V3.2 does not. None preserves the native unclamped
+                # SiluAndMul behavior for those models.
                 shared_output = _compute_w8a8_shared_experts_from_int8(
                     experts._shared_experts,
                     shared_input,
                     shared_scales,
-                    swiglu_limit=layer.mlp.swiglu_limit,
+                    swiglu_limit=getattr(layer.mlp, "swiglu_limit", None),
                     output_dtype=torch.bfloat16,
                 )
             else:
@@ -298,6 +301,9 @@ def _compute_w8a8_shared_experts_from_int8(
             quant_mode=1,
             swiglu_mode=1,
             clamp_limit=0.0 if swiglu_limit is None else swiglu_limit,
+            # CAM Async currently targets hardware that supports these fused
+            # SwiGLU tuning arguments. Revisit this contract before enabling
+            # the path on a profile with narrower operator support.
             glu_alpha=1.0,
             glu_bias=0.0,
         )
