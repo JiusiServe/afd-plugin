@@ -33,3 +33,8 @@ def test_dsv4_async_gate_validates_local_hash_token_alignment() -> None:
 
     assert "DSV4 Hash routing input_ids/token count mismatch on Attention" in source
     assert "input_ids = input_ids.reshape(-1).to(torch.int64)" in source
+    assert "forward_context.flash_comm_v1_enabled" in source
+    assert "and input_ids.numel() != router_logits.shape[0]" in source
+    assert "split_tensor_along_first_dim(" in source
+    assert "num_partitions=tp_group.world_size" in source
+    assert ")[tp_group.rank_in_group]" in source

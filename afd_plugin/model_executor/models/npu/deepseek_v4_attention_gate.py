@@ -60,6 +60,29 @@ def _compute_sqrtsoftplus_topk(
                 "DSV4 Hash routing requires local input_ids in the forward context",
             )
         input_ids = input_ids.reshape(-1).to(torch.int64)
+        # FlashComm v1 shards router logits across TP ranks, but the forward
+        # context still carries global input IDs. Apply the same padding and
+        # contiguous TP split so Hash routing receives rank-local token IDs.
+        if (
+            forward_context.flash_comm_v1_enabled
+            and input_ids.numel() != router_logits.shape[0]
+        ):
+            from vllm.distributed import get_tp_group
+            from vllm_ascend.distributed.utils import (
+                split_tensor_along_first_dim,
+            )
+
+            if forward_context.pad_size > 0:
+                input_ids = torch.nn.functional.pad(
+                    input_ids,
+                    (0, forward_context.pad_size),
+                )
+            tp_group = get_tp_group()
+            input_ids = split_tensor_along_first_dim(
+                input_ids,
+                num_partitions=tp_group.world_size,
+                contiguous_split_chunks=True,
+            )[tp_group.rank_in_group]
         if input_ids.numel() != router_logits.shape[0]:
             raise RuntimeError(
                 "DSV4 Hash routing input_ids/token count mismatch on Attention: "
