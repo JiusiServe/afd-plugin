@@ -25,12 +25,6 @@ def _install_fake_vllm_core(monkeypatch: pytest.MonkeyPatch):
     vllm_engine_module = types.ModuleType("vllm.v1.engine")
     core_module = types.ModuleType("vllm.v1.engine.core")
     plugins_module = types.ModuleType("vllm.plugins")
-    vllm_ascend_module = types.ModuleType("vllm_ascend")
-    vllm_ascend_patch_module = types.ModuleType("vllm_ascend.patch")
-    vllm_ascend_platform_module = types.ModuleType("vllm_ascend.patch.platform")
-    vllm_ascend_kv_module = types.ModuleType(
-        "vllm_ascend.patch.platform.patch_kv_cache_utils"
-    )
 
     def load_general_plugins():
         return None
@@ -136,18 +130,6 @@ def _install_fake_vllm_core(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(sys.modules, "vllm.v1.engine", vllm_engine_module)
     monkeypatch.setitem(sys.modules, "vllm.v1.engine.core", core_module)
     monkeypatch.setitem(sys.modules, "vllm.plugins", plugins_module)
-    monkeypatch.setitem(sys.modules, "vllm_ascend", vllm_ascend_module)
-    monkeypatch.setitem(sys.modules, "vllm_ascend.patch", vllm_ascend_patch_module)
-    monkeypatch.setitem(
-        sys.modules,
-        "vllm_ascend.patch.platform",
-        vllm_ascend_platform_module,
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "vllm_ascend.patch.platform.patch_kv_cache_utils",
-        vllm_ascend_kv_module,
-    )
     return core_module
 
 
@@ -212,6 +194,7 @@ def _config(role: str, *, async_dp: bool = False):
     return SimpleNamespace(
         additional_config={"afd": afd_config},
         parallel_config=parallel_config,
+        device_config=SimpleNamespace(device_type="cuda"),
         scheduler_config=scheduler_config,
         cache_config=cache_config,
         model_config=model_config,
@@ -254,9 +237,10 @@ def test_engine_core_patch_skips_kv_scheduler_init_for_ffn(monkeypatch):
     assert isinstance(engine.model_executor, Executor)
 
 
-def test_engine_core_patch_leaves_non_ffn_path_untouched(monkeypatch):
+def test_engine_core_patch_leaves_cuda_non_ffn_path_untouched(monkeypatch):
     core_module = _install_fake_vllm_core(monkeypatch)
     _load_patch_module()
+    monkeypatch.setitem(sys.modules, "vllm_ascend", None)
 
     class Executor:
         max_concurrent_batches = 1
@@ -273,12 +257,51 @@ def test_engine_core_patch_leaves_non_ffn_path_untouched(monkeypatch):
         def shutdown(self):
             self.shutdown_called = True
 
-    engine = core_module.EngineCore(_config("attention"), Executor, log_stats=False)
+    config = _config("attention")
+    config.device_config = SimpleNamespace(device_type="cuda")
+    engine = core_module.EngineCore(config, Executor, log_stats=False)
 
     assert not hasattr(engine, "original_init_called")
     assert isinstance(engine.model_executor, Executor)
     assert engine.scheduler is not None
     assert engine.available_gpu_memory_for_kv_cache == -1
+
+
+def test_engine_core_patch_imports_ascend_kv_cache_patch_on_npu(monkeypatch):
+    core_module = _install_fake_vllm_core(monkeypatch)
+    _load_patch_module()
+    imported = []
+    real_import = __import__
+
+    def tracking_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "vllm_ascend.patch.platform.patch_kv_cache_utils":
+            imported.append(name)
+            return types.ModuleType(name)
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", tracking_import)
+
+    class Executor:
+        max_concurrent_batches = 1
+
+        def __init__(self, vllm_config):
+            self.vllm_config = vllm_config
+
+        def get_kv_cache_specs(self):
+            return []
+
+        def initialize_from_config(self, kv_cache_configs):
+            self.kv_cache_configs = kv_cache_configs
+
+        def shutdown(self):
+            self.shutdown_called = True
+
+    config = _config("attention")
+    config.device_config = SimpleNamespace(device_type="npu")
+    engine = core_module.EngineCore(config, Executor, log_stats=False)
+
+    assert imported == ["vllm_ascend.patch.platform.patch_kv_cache_utils"]
+    assert engine.scheduler is not None
 
 
 def test_async_attention_publishes_request_count_lifecycle_without_dp_waves(

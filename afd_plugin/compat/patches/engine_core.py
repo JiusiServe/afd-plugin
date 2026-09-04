@@ -243,9 +243,10 @@ def _initialize_kv_caches(self, vllm_config: VllmConfig) -> KVCacheConfig:
     if _is_afd_ffn_config(vllm_config):
         _prepare_late_loaded_ffn_engine_core(self, vllm_config)
         return _AFDFFNKVCacheConfig()
-    # ### PATCH END: AFD FFN late-loaded KV cache bypass
 
-    import vllm_ascend.patch.platform.patch_kv_cache_utils  # noqa: F401
+    if vllm_config.device_config.device_type == "npu":
+        import vllm_ascend.patch.platform.patch_kv_cache_utils  # noqa: F401
+    # ### PATCH END: AFD FFN late-loaded KV cache bypass
 
     start = time.time()
 
