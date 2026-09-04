@@ -419,30 +419,33 @@ def test_p2p_tensor_metadata_clamps_idle_attention_rank_to_dummy_token():
     assert attention_connector.tensor_metadata_list[0].size == torch.Size([1, 16])
 
 
+# The A >= F and divisibility constraints were removed with the unified
+# subgroup partition; the shapes this test used to reject now parse cleanly,
+# and only non-positive rank counts remain invalid.
 @pytest.mark.parametrize(
-    ("raw", "message"),
-    [
-        (
-            {
-                "connector": "P2pNcclAFDConnector",
-                "num_attention_ranks": 1,
-                "num_ffn_ranks": 2,
-            },
-            "num_attention_ranks >= num_ffn_ranks",
-        ),
-        (
-            {
-                "connector": "P2pNcclAFDConnector",
-                "num_attention_ranks": 3,
-                "num_ffn_ranks": 2,
-            },
-            "multiple of num_ffn_ranks",
-        ),
-    ],
+    ("attention", "ffn"),
+    [(1, 2), (3, 2)],
 )
-def test_p2p_topology_validation_errors_are_clear(raw, message):
-    with pytest.raises(ValueError, match=message):
-        afd_config_from_mapping(raw)
+def test_p2p_topology_accepts_previously_constrained_shapes(attention, ffn):
+    config = afd_config_from_mapping(
+        {
+            "connector": "P2pNcclAFDConnector",
+            "num_attention_ranks": attention,
+            "num_ffn_ranks": ffn,
+        },
+    )
+    assert (config.num_attention_ranks, config.num_ffn_ranks) == (attention, ffn)
+
+
+def test_p2p_topology_rejects_non_positive_rank_counts():
+    with pytest.raises(ValueError, match="positive"):
+        afd_config_from_mapping(
+            {
+                "connector": "P2pNcclAFDConnector",
+                "num_attention_ranks": 0,
+                "num_ffn_ranks": 2,
+            },
+        )
 
 
 def test_p2p_module_exports_connector_class():
@@ -542,11 +545,16 @@ def test_p2p_custom_ops_register_send_recv_with_fake_impls(monkeypatch):
     assert [call["op_name"] for call in calls] == [
         "afd_p2p_send",
         "afd_p2p_recv",
+        "afd_p2p_send_slice",
+        "afd_p2p_recv_slice",
     ]
-    assert calls[0]["mutates_args"] == ["tensor"]
-    assert calls[1]["mutates_args"] == ["out"]
-    assert callable(calls[0]["fake_impl"])
-    assert callable(calls[1]["fake_impl"])
+    assert [call["mutates_args"] for call in calls] == [
+        ["tensor"],
+        ["out"],
+        ["base"],
+        ["out"],
+    ]
+    assert all(callable(call["fake_impl"]) for call in calls)
 
 
 def test_p2p_hidden_state_send_uses_registered_custom_op(monkeypatch):

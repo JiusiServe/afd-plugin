@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from afd_plugin.distributed import split_send_sizes
+
 
 def aggregate_ffn_token_counts(
     attention_counts: tuple[int, ...],
@@ -12,17 +14,20 @@ def aggregate_ffn_token_counts(
     ffn_size: int,
     fallback: int = 1,
 ) -> tuple[int, ...]:
-    """Aggregate consecutive Attention-rank counts for each FFN rank.
+    """Token count each FFN rank receives for a stage, from Attention counts.
 
-    For example, ``4A2F`` counts ``(0, 4, 5, 6)`` become ``(5, 11)`` because
-    every zero-token Attention peer contributes one placeholder row. Missing
-    peers use the same per-peer fallback, so empty counts become ``(2, 2)``.
+    An FFN rank sums the shares its subgroup's Attention members send it,
+    splitting with ``split_send_sizes`` as the connector does. For example,
+    ``4A2F`` counts ``(0, 4, 5, 6)`` become ``(5, 11)`` because every
+    zero-token Attention peer contributes one placeholder row, and ``1A2F``
+    count ``(5,)`` becomes ``(3, 2)``. No count is below one, since an FFN
+    rank that receives nothing runs a one-token dummy batch. Missing peers
+    use the same per-peer fallback.
     """
 
     fallback_count = max(1, int(fallback))
-    fallback_counts = tuple(fallback_count for _ in range(max(0, ffn_size)))
-    if ffn_size <= 0 or attention_size < ffn_size or attention_size % ffn_size != 0:
-        return fallback_counts
+    if ffn_size <= 0 or attention_size <= 0:
+        return tuple(fallback_count for _ in range(max(0, ffn_size)))
 
     expanded_counts = attention_counts
     if (
@@ -36,19 +41,28 @@ def aggregate_ffn_token_counts(
             for rank in range(attention_size)
         )
 
-    group_size = attention_size // ffn_size
-    return tuple(
-        sum(
-            max(1, int(expanded_counts[attention_rank]))
-            if attention_rank < len(expanded_counts)
-            else fallback_count
-            for attention_rank in range(
-                ffn_rank * group_size,
-                (ffn_rank + 1) * group_size,
-            )
+    def peer_count(attention_rank: int) -> int:
+        if attention_rank < len(expanded_counts):
+            return max(1, int(expanded_counts[attention_rank]))
+        return fallback_count
+
+    group_count = min(attention_size, ffn_size)
+    ffn_counts = []
+    for ffn_rank in range(ffn_size):
+        group = ffn_rank * group_count // ffn_size
+        ffn_members = [
+            member
+            for member in range(ffn_size)
+            if member * group_count // ffn_size == group
+        ]
+        position = ffn_members.index(ffn_rank)
+        total = sum(
+            split_send_sizes(peer_count(attention_rank), len(ffn_members))[position]
+            for attention_rank in range(attention_size)
+            if attention_rank * group_count // attention_size == group
         )
-        for ffn_rank in range(ffn_size)
-    )
+        ffn_counts.append(max(1, total))
+    return tuple(ffn_counts)
 
 
 def project_ffn_token_counts_to_dp(
