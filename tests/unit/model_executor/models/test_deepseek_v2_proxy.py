@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -6,7 +9,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("vllm")
-nn = torch.nn
+from torch import nn  # noqa: E402
 
 from afd_plugin.config import AFD_ASYNC_CONNECTOR, AFDConfig  # noqa: E402
 from afd_plugin.model_executor.models import deepseek_v2 as adapter  # noqa: E402
@@ -63,7 +66,7 @@ def test_native_decoder_forward_calls_remote_proxy_once(
     monkeypatch,
     layer_idx,
 ):
-    events = []
+    events: list[tuple] = []
     afd_metadata = _install_fake_forward_context(monkeypatch, events)
     monkeypatch.setattr(adapter.native, "DeepseekAttention", _FakeAttention)
 
@@ -130,7 +133,7 @@ def test_ffn_compute_applies_dense_fp16_scaling_once(
 def test_gate_proxy_sends_routing_payload(monkeypatch):
     from afd_plugin.model_executor.models.npu import deepseek_v2_attention_gate
 
-    events = []
+    events: list[tuple] = []
     _install_fake_forward_context(monkeypatch, events, stage_idx=1)
     topk_weights = torch.tensor([[0.75, 0.25]])
     topk_ids = torch.tensor([[1, 3]])
@@ -167,7 +170,7 @@ def test_gate_proxy_sends_routing_payload(monkeypatch):
 
 
 def test_remote_experts_proxy_sends_router_logits(monkeypatch):
-    events = []
+    events: list[tuple] = []
     _install_fake_forward_context(monkeypatch, events, stage_idx=1)
     proxy = adapter.AFDAttentionFusedMoE(
         layer_idx=3,
@@ -196,6 +199,22 @@ def test_remote_proxy_requires_forward_metadata(monkeypatch):
 
     with pytest.raises(RuntimeError, match="requires AFD forward metadata"):
         adapter.RemoteFFNProxy(layer_idx=0)(torch.ones(1, 4))
+
+
+def test_remote_proxy_exchanges_cam_during_profile(monkeypatch):
+    events: list[tuple] = []
+    _install_fake_forward_context(monkeypatch, events)
+    monkeypatch.setattr(
+        adapter,
+        "get_forward_context",
+        lambda: SimpleNamespace(in_profile_run=True, ubatch_idx=0),
+    )
+    hidden_states = torch.ones(2, 4)
+
+    output = adapter.RemoteFFNProxy(layer_idx=0)(hidden_states)
+
+    assert torch.equal(output, hidden_states * 0.25)
+    assert [event[0] for event in events] == ["send", "yield", "recv"]
 
 
 def test_synchronous_model_forward_delegates_to_native(monkeypatch):

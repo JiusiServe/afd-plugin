@@ -109,7 +109,12 @@ def create_ascend_forward_context(
         cur_forward_context.max_tokens_across_pcp
     )
     new_forward_context.sinks = cur_forward_context.sinks
-    new_forward_context.input_ids = cur_forward_context.input_ids
+    if cur_forward_context.input_ids is not None:
+        new_forward_context.input_ids = cur_forward_context.input_ids[
+            ubatch_slice.token_slice
+        ]
+    else:
+        new_forward_context.input_ids = None
     new_forward_context.eplb_heat_collection_status = (
         cur_forward_context.eplb_heat_collection_status
     )

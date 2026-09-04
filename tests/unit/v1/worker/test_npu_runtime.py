@@ -93,12 +93,15 @@ class _RecordingConnector:
     def __init__(self):
         self.dp_metadata_updates = []
         self.sent_dp_metadata_lists = []
+        self.dp_metadata_payloads = []
+        self.sent_dp_metadata_payloads = []
         # The runners reach the control plane through connector.control_plane;
         # the fake serves as both.
         self.control_plane: _RecordingConnector | None = self
 
     def update_state_from_dp_metadata(self, payload):
         assert isinstance(payload, AFDControlPayload)
+        self.dp_metadata_payloads.append(payload)
         self.dp_metadata_updates.append(
             (
                 payload.dp_metadata_list,
@@ -109,6 +112,7 @@ class _RecordingConnector:
 
     def send_dp_metadata_list(self, payload):
         assert isinstance(payload, AFDControlPayload)
+        self.sent_dp_metadata_payloads.append(payload)
         self.sent_dp_metadata_lists.append(
             (
                 payload.dp_metadata_list,
@@ -501,9 +505,10 @@ def test_npu_attention_runner_skips_outer_update_only_for_owned_graph(
     updates = []
     runner._update_full_graph_params_if_needed = lambda *args: updates.append(args)
 
+    input_ids = object()
     result = runner._model_forward(
         8,
-        input_ids=None,
+        input_ids=input_ids,
         positions=object(),
         intermediate_tensors=None,
         inputs_embeds=None,
@@ -511,6 +516,7 @@ def test_npu_attention_runner_skips_outer_update_only_for_owned_graph(
 
     assert result == "hidden_states"
     assert len(updates) == expected_updates
+    assert forward_context.input_ids is input_ids
 
 
 def test_npu_attention_runner_installs_mla_graph_wrapper(monkeypatch):
@@ -564,6 +570,7 @@ def test_npu_attention_runner_builds_and_sets_metadata():
     runner._afd_is_graph_capturing = False
     runner._afd_pending_metadata = None
     runner._afd_transaction_counter = 0
+    runner.ubatch_slices = None
     runner._afd_suppress_metadata_send = False
     forward_context = SimpleNamespace(
         additional_kwargs={},
@@ -592,6 +599,7 @@ def test_npu_attention_async_connector_skips_dp_metadata_control_plane():
     runner._is_warmup = False
     runner._afd_is_graph_capturing = False
     runner._afd_pending_metadata = None
+    runner._afd_async_moe_ubatch_metadata = object()
     runner._afd_transaction_counter = 0
     forward_context = SimpleNamespace(
         additional_kwargs={},
@@ -668,7 +676,10 @@ def test_npu_attention_runner_sends_per_ubatch_dp_metadata():
         ),
     ]
 
-    runner._send_dp_metadata(None, ubatch_slices)
+    runner._send_dp_metadata(
+        None,
+        ubatch_slices,
+    )
 
     dp_metadata_list = runner.connector.dp_metadata_updates[0][0]
     assert sorted(dp_metadata_list) == [0, 1]
@@ -992,6 +1003,12 @@ def test_npu_attention_runner_builds_stage_metadata(monkeypatch):
         slice(550, 1099),
     ]
     assert materialized_full_metadata == [(full_attn_metadata, runner.positions)]
+    assert runner.ubatch_slices is None
+    assert runner._afd_pending_metadata is not None
+    assert runner._afd_pending_metadata.num_stages == 1
+    assert runner._afd_pending_metadata.tokens_start_loc == [0]
+    assert runner._afd_pending_metadata.tokens_lens == [1099]
+    assert runner._afd_transaction_counter == 1
 
 
 def test_npu_attention_runner_isolates_dsa_caches_per_stage(monkeypatch):
@@ -2528,3 +2545,35 @@ def test_npu_attention_runner_load_model_initializes_connector_after_weights(
     expected.append("connector_init")
     assert events == expected
     assert connector.is_initialized is True
+
+
+def test_npu_attention_runner_afd_ubatching_does_not_install_native_wrapper(
+    monkeypatch,
+):
+    _require_npu_runtime()
+    from afd_plugin.v1.worker.npu import attention_model_runner
+
+    events: list[object] = []
+    connector = _LifecycleConnector(events)
+    runner = object.__new__(attention_model_runner.AFDNPUAttentionModelRunner)
+    runner.connector = connector
+    runner.vllm_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            use_ubatching=False,
+            num_ubatches=0,
+        ),
+    )
+    monkeypatch.setattr(
+        attention_model_runner.NPUModelRunner,
+        "load_model",
+        lambda self: events.append("model_load"),
+    )
+    monkeypatch.setattr(
+        attention_model_runner.AFDNPUAttentionModelRunner,
+        "_install_ascend_ubatch_wrapper",
+        lambda self: events.append("wrapper_install"),
+    )
+
+    runner.load_model()
+
+    assert events == ["model_load", "connector_init"]
