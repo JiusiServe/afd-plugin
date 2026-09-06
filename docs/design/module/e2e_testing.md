@@ -27,6 +27,7 @@ validation_paths:
   - "tests/e2e/models/deepseek_v2_lite/test_async_cam_npu.py"
   - "tests/e2e/models/qwen3_moe/test_qwen3_moe.py"
   - "tests/e2e/models/qwen3_6/test_qwen3_6.py"
+  - "tests/e2e/models/qwen3_5/test_qwen3_5_122b.py"
 upstream_refs:
   - "vLLM 0.26.0 serving and shutdown interfaces"
   - "lm-evaluation-harness GSM8K task and local-completions API"
@@ -36,6 +37,7 @@ verified_platform_refs:
   - "Ascend NPU DeepSeek-V2-Lite"
   - "CUDA Qwen3 MoE"
   - "CUDA Qwen3.6 MoE"
+  - "CUDA Qwen3.5-122B-A10B"
 related_issues: []
 last_reviewed: 2026-08-27
 ---
@@ -68,9 +70,11 @@ cleanup. Production code does not depend on the E2E harness.
 
 - `E2E-INV-001` — A case **MUST** have a stable lower-kebab-case ID and cover
   behavior not already covered by an existing case.
-- `E2E-INV-002` — A PR case **MUST NOT** use more than four unique devices.
-  Gate AFD cases **MUST** use 2 Attention ranks and 2 FFN ranks; 2A1F cases
-  are local-only.
+- `E2E-INV-002` — A default PR-gate case **MUST NOT** use more than four
+  unique devices. Gate AFD cases **MUST** use 2 Attention ranks and 2 FFN
+  ranks; 2A1F cases are local-only. Larger hardware profiles **MUST** be
+  explicit opt-ins selected by exact pytest node ID, require an explicit model
+  path, and **MUST NOT** enter a gate without matching hardware.
 - `E2E-INV-003` — Cases sharing devices or ports **MUST** run sequentially,
   remain order-independent, and release owned process groups before the next
   case.
@@ -141,6 +145,14 @@ synchronous AFD 2A1F for `afd-eager`, `afd-graph`, and `afd-graph-dbo`.
 Multimodal, NPU, `compute_gate_on_attention=true`, pipeline-parallel,
 asynchronous, and multi-node execution are outside this case; quantization is
 unverified.
+
+The opt-in Qwen3.5-122B-A10B profile covers a checkpoint size and 256-expert
+configuration that the default family case does not. It adds two eager-only
+cases: native DP4/TP1/EP4 and synchronous AFD 4A4F, with Attention DP4/TP1 and
+FFN DP4/TP1/EP4. The profile requires eight explicit devices,
+`AFD_E2E_LARGE_MODEL=1`, and an existing `AFD_GPU_E2E_MODEL`; it never
+downloads the checkpoint. It is manual hardware coverage, not a default PR or
+merge gate. Graph and DBO are outside this profile.
 
 ## Accuracy gate
 

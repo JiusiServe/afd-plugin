@@ -41,6 +41,8 @@ ASYNC_UBATCH_ATTENTION_TP_SIZE = 2
 ASYNC_UBATCH_NUM_STAGES = 2
 ASYNC_UBATCH_BATCH_SIZE = 2
 V2_SYNC_CONNECTOR = "P2pNcclAFDConnector"
+BASELINE_EAGER_SCENARIO = "baseline-eager"
+AFD_EAGER_4A4F_SCENARIO = "afd-eager-4a4f"
 V2_SCENARIOS = (
     "afd-v2-eager-1a1f",
     "afd-v2-eager-dp2",
@@ -250,6 +252,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--scenario",
         choices=[
+            BASELINE_EAGER_SCENARIO,
             "baseline-graph",
             "afd-eager-2a1f",
             "afd-graph-2a1f",
@@ -259,6 +262,7 @@ def parse_args() -> argparse.Namespace:
             "afd-graph-dbo-2a2f",
             ASYNC_CAM_SCENARIO,
             ASYNC_UBATCH_SCENARIO,
+            AFD_EAGER_4A4F_SCENARIO,
             *V2_SCENARIOS,
         ],
         required=True,
@@ -363,6 +367,7 @@ def configure_scenario(args: argparse.Namespace) -> None:
     is_async_cam = args.scenario == ASYNC_CAM_SCENARIO
     is_async_ubatch = args.scenario == ASYNC_UBATCH_SCENARIO
     scenario_settings = {
+        BASELINE_EAGER_SCENARIO: (True, False, False, 4, 0),
         "baseline-graph": (True, True, False, 4, 0),
         "afd-eager-2a1f": (False, False, False, 2, 1),
         "afd-graph-2a1f": (False, True, False, 2, 1),
@@ -384,6 +389,7 @@ def configure_scenario(args: argparse.Namespace) -> None:
             ASYNC_UBATCH_ATTENTION_RANKS,
             ASYNC_UBATCH_FFN_RANKS,
         ),
+        AFD_EAGER_4A4F_SCENARIO: (False, False, False, 4, 4),
         "afd-v2-eager-1a1f": (False, False, False, 1, 1),
         "afd-v2-eager-dp2": (False, False, False, 2, 2),
         "afd-v2-eager-tp2": (False, False, False, 2, 2),
