@@ -24,8 +24,8 @@ Each suite contains four gate scenarios:
 Each gate scenario evaluates the first 7 GSM8K samples. The 2A2F AFD gate
 scenarios (DeepSeek-V2-Lite only) use 2 Attention ranks and 2 FFN ranks.
 `baseline-graph` uses native DP4/TP1/EP4. The 2A1F cases (`afd-eager-2a1f`,
-`afd-graph-2a1f`, `afd-graph-dbo-2a1f`) use 2 Attention ranks and 1 FFN rank;
-for DeepSeek-V2-Lite they are local-only scenarios, while for Qwen3 MoE and
+`afd-graph-2a1f`, `afd-graph-dbo-2a1f`) use 2 Attention ranks and 1 FFN rank.
+Note that for DeepSeek-V2-Lite 2A1F are local-only scenarios, while for Qwen3 MoE and
 Qwen3.6 MoE they are the suite's gate scenarios.
 
 ## Workflow
@@ -86,8 +86,10 @@ export AFD_E2E_DEVICES=0,1,2,3
 
 Device order defines roles: the 2A2F AFD scenarios use the first two devices
 for Attention DP2/TP1 and the last two for FFN DP2/TP1/EP2. `baseline-graph`
-uses the first four for native DP4/TP1/EP4. The local 2A1F scenarios use the
-first two for Attention and the third for FFN.
+uses the first four for native DP4/TP1/EP4.
+The 2A1F scenarios use the first
+two for Attention and the third for FFN (used local-only for DeepSeek-V2-Lite; and
+gate topology for Qwen3 MoE and Qwen3.6 MoE).
 
 ### 4. Run
 

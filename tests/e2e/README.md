@@ -91,11 +91,11 @@ by AFD scenarios. The suite uses the same GSM8K-7, eight-shot, 4096-token,
 `compute_gate_on_attention=true`, pipeline-parallel, asynchronous, and
 multi-node execution are not covered; quantization is unverified.
 
-### Local 2A1F cases
+### DeepSeek-V2-Lite local 2A1F cases
 
-The 2 Attention + 1 FFN scenarios are local-only cases; CI gates do not run
-them. They use the first two devices for Attention DP2/TP1 and the third for
-FFN DP1/TP1/EP1, and run GSM8K-7.
+The DeepSeek-V2-Lite 2A1F scenarios are local-only; its CI gate selects the
+2A2F scenarios. They use the first two devices for Attention DP2/TP1 and the
+third for FFN DP1/TP1/EP1, and run GSM8K-7.
 
 ```bash
 python -m pytest -q -s \
