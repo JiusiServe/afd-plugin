@@ -2,20 +2,19 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
 #
-# Deploy a DeepSeek-V2-Lite AFD serve pod so an external load generator
+# Deploy a serve pod so an external load generator
 # (e.g. inference-perf) can benchmark it:
-#   1. apply the afd-model-config ConfigMap (model id/path, shared by every
-#      step below); create model-pvc if it doesn't exist yet. The serve pod
-#      always serves MODEL_ID (the HF repo id) -- vLLM downloads the weights
-#      into the PVC's HF_HOME cache on a cold volume and reuses them warm on
-#      every later run.
-#   2. launch the serve pod, which runs the selected AFD recipe script (see
-#      recipe-script-path below; default is
-#      recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite/prefill_decode_disaggregation/2p1a1f_graph_dbo.sh)
+#   1. resolve MODEL_ID (the HF repo id, defaults to deepseek-ai/DeepSeek-V2-Lite,
+#      overridable via the MODEL_ID env var); create the model PVC (name
+#      defaults to deepseek-v2-lite-pvc, overridable via the PVC_NAME env
+#      var) if it doesn't exist yet. The serve pod always serves MODEL_ID --
+#      vLLM downloads the weights into the PVC's HF_HOME cache on a cold
+#      volume and reuses them warm on every later run.
+#   2. launch the serve pod, which runs the selected AFD recipe script
 #      with the client-facing proxy rebound to 0.0.0.0 so it's reachable
 #      off-pod
 #   3. apply a Service in front of the proxy
-#   4. wait for the disaggregation proxy to report ready
+#   4. wait for the serve pod to report ready
 #   5. apply inference-perf-config.yaml + inference-perf-pod.yaml (the load
 #      generator) and stream its logs until the run completes
 #   6. copy inference-perf's reports out via copy-reports.sh
@@ -36,6 +35,12 @@
 # GPU_COUNT sets the pod's nvidia.com/gpu request/limit (default 4, matching
 # the 2 prefill + 1 attention + 1 FFN workers the default recipe launches).
 #
+# MODEL_ID sets the HF repo id served by the pod (default
+# deepseek-ai/DeepSeek-V2-Lite).
+#
+# PVC_NAME sets the name of the PersistentVolumeClaim used to cache the
+# model weights (default deepseek-v2-lite-pvc).
+#
 # Requires an authenticated `kubectl`/`oc` session in the target namespace.
 set -euo pipefail
 
@@ -43,36 +48,34 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RECIPE_K8S_DIR="$(cd "${SCRIPT_DIR}/../../../../recipe/gpu/P2pNcclAFDConnector/kubernetes" && pwd)"
 
 IMAGE="${AFD_PLUGIN_IMAGE}"
-RECIPE_SCRIPT_PATH="${1:-${RECIPE_SCRIPT_PATH:-recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite/prefill_decode_disaggregation/2p1a1f_graph_dbo.sh}}"
+RECIPE_SCRIPT_PATH="${1:-${RECIPE_SCRIPT_PATH:-recipe/gpu/P2pNcclAFDConnector/deepseek_v2_lite/prefill_decode_colocation/2a2f_graph_dbo_dp2tp1.sh}}"
 GPU_COUNT="${GPU_COUNT:-4}"
-PVC=model-pvc
+MODEL_ID="${MODEL_ID:-deepseek-ai/DeepSeek-V2-Lite}"
+PVC="${PVC_NAME:-deepseek-v2-lite-pvc}"
 POD=vllm-pod
 SVC=vllm-service
 INF_POD=inference-perf
 
 command -v envsubst >/dev/null || { echo "envsubst (gettext) is required" >&2; exit 1; }
 
-echo "=== [1/6] apply model config + PVC ==="
-kubectl apply -f "${SCRIPT_DIR}/deepseek-v2-lite-model-config.yaml"
-
-MODEL_ID="$(kubectl get configmap afd-model-config -o jsonpath='{.data.MODEL_ID}')"
-
+echo "=== [1/6] apply PVC ==="
 if kubectl get pvc "${PVC}" >/dev/null 2>&1; then
   echo "PVC ${PVC} already exists; serving ${MODEL_ID} from its warm HF_HOME cache"
 else
   echo "PVC ${PVC} does not exist; creating it empty -- vLLM will download ${MODEL_ID} into it on first use"
-  kubectl apply -f "${RECIPE_K8S_DIR}/pvc.yaml"
+  # shellcheck disable=SC2016
+  PVC_NAME="${PVC}" envsubst '${PVC_NAME}' < "${RECIPE_K8S_DIR}/pvc.yaml" | kubectl apply -f -
 fi
 
 echo "=== [2/6] apply serve pod (recipe: ${RECIPE_SCRIPT_PATH}) ==="
 kubectl delete pod "${POD}" --ignore-not-found
 # shellcheck disable=SC2016
-TEMPLATE_IMAGE="${IMAGE}" TEMPLATE_MODEL="${MODEL_ID}" RECIPE_SCRIPT_PATH="${RECIPE_SCRIPT_PATH}" GPU_COUNT="${GPU_COUNT}" \
-  envsubst '${TEMPLATE_IMAGE} ${TEMPLATE_MODEL} ${RECIPE_SCRIPT_PATH} ${GPU_COUNT}' \
+TEMPLATE_IMAGE="${IMAGE}" TEMPLATE_MODEL="${MODEL_ID}" RECIPE_SCRIPT_PATH="${RECIPE_SCRIPT_PATH}" GPU_COUNT="${GPU_COUNT}" PVC_NAME="${PVC}" \
+  envsubst '${TEMPLATE_IMAGE} ${TEMPLATE_MODEL} ${RECIPE_SCRIPT_PATH} ${GPU_COUNT} ${PVC_NAME}' \
   < "${RECIPE_K8S_DIR}/serve-bench-pod.yaml" | kubectl apply -f -
 
 echo "=== [3/6] apply Service in front of the proxy ==="
-kubectl apply -f "${RECIPE_K8S_DIR}/service-route.yaml"
+kubectl apply -f "${RECIPE_K8S_DIR}/service.yaml"
 
 echo "=== waiting for pod to reach Running ==="
 until [ "$(kubectl get pod "${POD}" -o jsonpath='{.status.phase}' 2>/dev/null)" = "Running" ]; do
@@ -143,4 +146,4 @@ echo "Tail the serve pod's logs any time with:"
 echo "  kubectl logs -f pod/${POD}"
 echo "Delete the serve pod when done (frees the GPUs) and the Service:"
 echo "  kubectl delete pod ${POD}"
-echo "  kubectl delete -f ${RECIPE_K8S_DIR}/service-route.yaml"
+echo "  kubectl delete -f ${RECIPE_K8S_DIR}/service.yaml"

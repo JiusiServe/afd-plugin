@@ -12,7 +12,7 @@ spec:
   volumes:
     - name: model-storage
       persistentVolumeClaim:
-        claimName: model-pvc
+        claimName: ${PVC_NAME}
     - name: dshm
       emptyDir:
         medium: Memory

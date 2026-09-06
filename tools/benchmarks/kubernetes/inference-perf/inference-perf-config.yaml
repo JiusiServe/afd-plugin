@@ -21,16 +21,6 @@ data:
     load:
       type: poisson
       interval: 60.0
-      # num_workers defaults to multiprocessing.cpu_count(), which on a
-      # shared node reflects the *host's* full core count (this pod sets no
-      # CPU request/limit), not anything scaled to the load below. On a
-      # high-core-count node that spawns far more worker processes than
-      # needed, and each worker's mp.Value/mp.Event allocates musl-libc
-      # POSIX named semaphores -- capped at ~256 concurrently open per
-      # process in this Alpine-based image, regardless of the real fd
-      # ulimit. Exceeding that cap crashes with a misleading "OSError:
-      # [Errno 24] No file descriptors available" during worker startup.
-      # Pin it explicitly, sized for the max rate below.
       num_workers: 16
       stages:
         - rate: 5
