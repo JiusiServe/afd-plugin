@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import torch
 from vllm.compilation.monitor import set_cudagraph_capturing_enabled
@@ -172,6 +172,7 @@ class AFDNPUFFNModelRunner(NPUModelRunner):
             graph_exists=graph_info is not None,
         )
         if run_mode is AFDGraphRunMode.REPLAY:
+            assert graph_info is not None
             logger.debug(
                 "AFD NPU FFN replaying ACL graph; key=%s cached_graphs=%d",
                 graph_key,
@@ -492,9 +493,12 @@ def _ffn_layer_indices(runner: AFDNPUFFNModelRunner) -> range | list[int]:
 
 def _is_moe_layer(hf_config: object, layer_idx: int) -> bool:
     moe_layer_freq = getattr(hf_config, "moe_layer_freq", 1)
+    # DeepSeek V4 has routed experts in every decoder layer and does not expose
+    # the V2/V3 ``first_k_dense_replace`` compatibility field.
+    first_moe_layer = getattr(hf_config, "first_k_dense_replace", 0)
     return (
-        hf_config.n_routed_experts is not None
-        and layer_idx >= hf_config.first_k_dense_replace
+        getattr(hf_config, "n_routed_experts", None) is not None
+        and layer_idx >= first_moe_layer
         and layer_idx % moe_layer_freq == 0
     )
 
@@ -557,7 +561,10 @@ def _ffn_token_count_for_rank(
     num_tokens_across_dp: torch.Tensor,
 ) -> int:
     values = _to_int_list(num_tokens_across_dp)
-    role_rank = int(connector.topology.role_rank)
+    topology = getattr(connector, "topology", None)
+    if topology is None:
+        raise RuntimeError("AFD connector has no initialized topology")
+    role_rank = int(topology.role_rank)
     if role_rank >= len(values):
         return max(1, values[0] if values else 1)
     return max(1, int(values[role_rank]))
@@ -570,7 +577,7 @@ def _to_int_list(value: object) -> list[int]:
         return [int(value)]
     if isinstance(value, (list, tuple)):
         return [int(item) for item in value]
-    return [int(item) for item in value.tolist()]
+    return [int(item) for item in torch.as_tensor(value).flatten().tolist()]
 
 
 def _to_dp_level_token_counts(
@@ -596,7 +603,11 @@ def _to_dp_level_token_counts(
     return num_tokens_across_dp[indices].contiguous()
 
 
-def _use_npu_aclgraph(vllm_config: VllmConfig, runner: object) -> bool:
+class _ACLGraphRunner(Protocol):
+    use_aclgraph: bool
+
+
+def _use_npu_aclgraph(vllm_config: VllmConfig, runner: _ACLGraphRunner) -> bool:
     inherited = bool(runner.use_aclgraph)
     if bool(vllm_config.model_config.enforce_eager):
         return False

@@ -212,6 +212,7 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
     ):
         forward_context = get_forward_context()
         # ### PATCH START: AFD forward-context metadata
+        forward_context.input_ids = input_ids
         if self.ubatch_slices is not None:
             forward_context.ubatch_slices = self.ubatch_slices
         forward_context.dbo_enabled = False
@@ -244,14 +245,14 @@ class AFDNPUAttentionModelRunner(NPUModelRunner):
                 num_tokens_padded,
             )
 
-        # ### PATCH START: AFD defers FlashComm gather to the ubatch wrapper
+        # ### PATCH START: AFD defers FlashComm gather to model execution
         if (
             forward_context.flash_comm_v1_enabled
             and not forward_context.dbo_enabled
             and not isinstance(hidden_states, IntermediateTensors)
         ):
             hidden_states = self._all_gather_hidden_states_and_aux(hidden_states)
-        # ### PATCH END: AFD defers FlashComm gather to the ubatch wrapper
+        # ### PATCH END: AFD defers FlashComm gather to model execution
         return hidden_states
 
     # Upstream source: vllm-ascend commit 80d8c194f,

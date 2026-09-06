@@ -34,12 +34,18 @@ def fail_if_unsupported_npu_afd_features(
         vllm_config,
     )
 
+    is_dsv4 = _is_dsv4_target(vllm_config)
+    if is_dsv4:
+        _fail_if_unsupported_dsv4_connector(afd_config)
+
     if afd_config.connector == AFD_ASYNC_CONNECTOR:
         _fail_if_unsupported_npu_afd_async_features(
             vllm_config,
             afd_config,
             extra_info,
         )
+        if is_dsv4:
+            _fail_if_unsupported_dsv4_async_features(afd_config, extra_info)
         return
 
     if afd_config.compute_gate_on_attention:
@@ -84,6 +90,50 @@ def fail_if_unsupported_npu_afd_features(
         )
 
 
+def _is_dsv4_target(vllm_config: VllmConfig) -> bool:
+    """Return whether the target model is DeepSeek V4."""
+    model_config = vllm_config.model_config
+    hf_config = getattr(model_config, "hf_config", None)
+    if hf_config is None:
+        hf_config = getattr(model_config, "hf_text_config", None)
+    if hf_config is None:
+        return False
+    if getattr(hf_config, "model_type", None) == "deepseek_v4":
+        return True
+    architectures = getattr(hf_config, "architectures", ()) or ()
+    return any("DeepseekV4" in str(architecture) for architecture in architectures)
+
+
+def _fail_if_unsupported_dsv4_async_features(
+    afd_config: AFDConfig,
+    extra_info: ConnectorExtraInfo,
+) -> None:
+    """Keep the initial DSV4 Async CAM target path deliberately narrow."""
+    from afd_plugin.connectors.npu.async_cam import AFDAsyncExtraInfo
+
+    if not afd_config.compute_gate_on_attention:
+        raise RuntimeError(
+            "DSV4 CAMAsyncAFDConnector requires compute_gate_on_attention=true",
+        )
+    if not isinstance(extra_info, AFDAsyncExtraInfo):
+        raise TypeError(
+            "DSV4 CAMAsyncAFDConnector requires AFDAsyncExtraInfo, got "
+            f"{type(extra_info).__name__}",
+        )
+    if extra_info.dynamic_quant != 1:
+        raise RuntimeError(
+            "DSV4 Flash-INT8 CAMAsyncAFDConnector requires dynamicQuant=1",
+        )
+    # async_moe_ubatching is validated by
+    # _fail_if_unsupported_npu_async_moe_ubatching_features for all async CAM
+    # targets, so DSV4 no longer needs a bespoke rejection here.
+
+
+def _fail_if_unsupported_dsv4_connector(afd_config: AFDConfig) -> None:
+    if afd_config.connector != AFD_ASYNC_CONNECTOR:
+        raise RuntimeError("DSV4 NPU AFD supports only CAMAsyncAFDConnector")
+
+
 def _fail_if_unsupported_npu_afd_async_features(
     vllm_config: VllmConfig,
     afd_config: AFDConfig,
@@ -122,6 +172,40 @@ def _fail_if_unsupported_npu_afd_async_features(
     if extra_info.dynamic_quant not in (0, 1):
         raise RuntimeError(
             "CAMAsyncAFDConnector currently supports only dynamicQuant 0 or 1",
+        )
+    _validate_cam_world_topology(vllm_config, afd_config, extra_info)
+
+
+def _validate_cam_world_topology(
+    vllm_config: VllmConfig,
+    afd_config: AFDConfig,
+    extra_info: ConnectorExtraInfo,
+) -> None:
+    """Require each role's local layout to fill the one CAM world."""
+    from afd_plugin.connectors.npu.async_cam import AFDAsyncExtraInfo
+
+    if not isinstance(extra_info, AFDAsyncExtraInfo):
+        return
+    parallel_config = vllm_config.parallel_config
+    attn_ranks_per_dp = int(extra_info.attn_ranks_per_dp)
+    if afd_config.role == "attention":
+        if int(parallel_config.tensor_parallel_size) != attn_ranks_per_dp:
+            raise RuntimeError(
+                "CAMAsyncAFDConnector Attention tensor_parallel_size must equal "
+                "attn_ranks_per_dp",
+            )
+        local_world_size = int(parallel_config.data_parallel_size) * attn_ranks_per_dp
+        expected_world_size = afd_config.num_attention_ranks
+    else:
+        local_world_size = int(parallel_config.data_parallel_size) * int(
+            parallel_config.tensor_parallel_size
+        )
+        expected_world_size = afd_config.num_ffn_ranks
+    if local_world_size != expected_world_size:
+        raise RuntimeError(
+            "CAMAsyncAFDConnector "
+            f"{afd_config.role} DPxTP world size must equal its configured "
+            f"role size, got {local_world_size} and {expected_world_size}",
         )
 
 

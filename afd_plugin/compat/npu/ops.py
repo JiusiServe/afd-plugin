@@ -55,16 +55,18 @@ def _ensure_afd_custom_opp_env() -> None:
 
 
 def _assert_afd_namespace_registered(torch: object) -> None:
-    _ = torch.ops.afd_ascend.a2e
-    _ = torch.ops.afd_ascend.e2a
+    ops = vars(torch)["ops"]
+    _ = ops.afd_ascend.a2e
+    _ = ops.afd_ascend.e2a
 
 
 def _assert_cam_namespace_registered(torch: object) -> None:
+    ops = vars(torch)["ops"]
     _ = (
-        torch.ops.umdk_cam_op_lib.async_dispatch_send,
-        torch.ops.umdk_cam_op_lib.async_dispatch_recv,
-        torch.ops.umdk_cam_op_lib.async_combine_send,
-        torch.ops.umdk_cam_op_lib.async_combine_recv,
+        ops.umdk_cam_op_lib.async_dispatch_send,
+        ops.umdk_cam_op_lib.async_dispatch_recv,
+        ops.umdk_cam_op_lib.async_combine_send,
+        ops.umdk_cam_op_lib.async_combine_recv,
     )
 
 

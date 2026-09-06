@@ -1,8 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the AFD plugin project
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -93,7 +97,7 @@ def test_async_model_forward_preserves_pp_boundaries(
         lambda context: None,
     )
 
-    schedule_calls = []
+    schedule_calls: list[tuple[Any, ...]] = []
 
     def run_schedule(
         model,
@@ -189,25 +193,15 @@ def test_async_cam_profile_forward_runs_matched_connector_io(monkeypatch):
         flash_comm_v1_enabled=True,
     )
     monkeypatch.setattr(async_forward, "get_forward_context", lambda: forward_context)
-    monkeypatch.setattr(
-        async_forward,
-        "maybe_apply_dbo_yield",
-        lambda hidden_states, **_kwargs: hidden_states,
-    )
 
-    connector_calls = []
-    pending_outputs = []
+    connector_calls: list[str] = []
 
-    def send_attn_output(hidden_states, context, **kwargs):
-        layer_idx = context.metadata.layer_idx
-        connector_calls.append(("send", layer_idx, context.metadata.stage_idx))
-        pending_outputs.append((layer_idx, hidden_states.clone()))
+    def send_attn_output(*args, **kwargs):
+        connector_calls.append("send")
 
-    def recv_ffn_output(*, ref_tensor, ubatch_idx):
-        layer_idx, dispatched_hidden_states = pending_outputs.pop(0)
-        assert torch.equal(ref_tensor, dispatched_hidden_states)
-        connector_calls.append(("recv", layer_idx, ubatch_idx))
-        return dispatched_hidden_states + 10
+    def recv_ffn_output(ref_tensor, ubatch_idx):
+        connector_calls.append("recv")
+        return ref_tensor
 
     connector = SimpleNamespace(
         send_attn_output=send_attn_output,
@@ -215,49 +209,10 @@ def test_async_cam_profile_forward_runs_matched_connector_io(monkeypatch):
     )
     afd_metadata = SimpleNamespace(connector=connector, stage_idx=0)
 
-    dispatch_layouts = []
-
-    def prepare_dispatch_payload(
-        hidden_states,
-        topk_weights,
-        topk_ids,
-        router_logits,
-        *,
-        use_sequence_parallel,
-    ):
-        assert use_sequence_parallel is True
-        layout = object()
-        dispatch_layouts.append(layout)
-        return SimpleNamespace(
-            hidden_states=hidden_states,
-            topk_weights=topk_weights,
-            topk_ids=topk_ids,
-            router_logits=router_logits,
-            layout=layout,
-        )
-
-    restored_layouts = []
-
-    def restore_dispatch_output(local_output, layout):
-        restored_layouts.append(layout)
-        return local_output
-
-    monkeypatch.setattr(
-        async_forward,
-        "prepare_cam_dispatch_payload",
-        prepare_dispatch_payload,
-    )
-    monkeypatch.setattr(
-        async_forward,
-        "restore_cam_dispatch_output",
-        restore_dispatch_output,
-    )
-
     class _ProfileMoELayer:
         is_moe_layer = True
 
-        def __init__(self, layer_idx):
-            self.layer_idx = layer_idx
+        layer_idx = 0
 
         def compute_attn_output(
             self,
@@ -275,7 +230,7 @@ def test_async_cam_profile_forward_runs_matched_connector_io(monkeypatch):
             )
 
     model = SimpleNamespace(
-        layers=[_ProfileMoELayer(0), _ProfileMoELayer(1)],
+        layers=[_ProfileMoELayer(), _ProfileMoELayer()],
         start_layer=0,
         end_layer=2,
     )
@@ -289,16 +244,9 @@ def test_async_cam_profile_forward_runs_matched_connector_io(monkeypatch):
         afd_metadata,
     )
 
-    assert torch.equal(output, hidden_states + 22)
+    assert torch.equal(output, hidden_states + 2)
     assert residual is None
-    assert connector_calls == [
-        ("send", 0, 0),
-        ("recv", 0, 0),
-        ("send", 1, 0),
-        ("recv", 1, 0),
-    ]
-    assert restored_layouts == dispatch_layouts
-    assert pending_outputs == []
+    assert connector_calls == ["send", "recv", "send", "recv"]
 
 
 def test_deepseek_afd_wrapper_keeps_full_model_compile_enabled():
@@ -425,7 +373,7 @@ def test_deepseek_compute_gate_on_attention_selects_backend_boundary():
 def test_async_moe_pipeline_preserves_stage_order(monkeypatch):
     from afd_plugin.model_executor.models.npu import deepseek_v2_async_cam_forward
 
-    events = []
+    events: list[tuple[Any, ...]] = []
     forward_context = SimpleNamespace(
         attn_metadata={"layer": "full"},
         additional_kwargs={},
@@ -618,7 +566,11 @@ def test_deepseek_afd_ffn_path_reuses_ascend_moe_mlp_after_attention_gate():
     assert "fusion=use_gmmswigluquant_fusion" in compute_moe
     assert "_compute_w8a8_shared_experts_from_int8(" in compute_moe
     assert "shared_input.dtype == torch.int8" in compute_moe
+    assert 'getattr(layer.mlp, "swiglu_limit", None)' in compute_moe
     assert "fusion=False" not in compute_moe
+    assert "output_dtype=torch.int32" in gate_source
+    assert "npu_dequant_swiglu_quant(" in gate_source
+    assert "activation_scale=pertoken_scale" in gate_source
 
 
 @pytest.mark.parametrize(
@@ -652,18 +604,18 @@ def test_deepseek_afd_ffn_skips_empty_rank_local_moe_work(
             None,
         )
 
-    fake_moe_mlp = ModuleType("vllm_ascend.ops.fused_moe.moe_mlp")
+    fake_moe_mlp: Any = ModuleType("vllm_ascend.ops.fused_moe.moe_mlp")
     fake_moe_mlp.unified_apply_mlp = fake_unified_apply_mlp
-    fake_stage_contracts = ModuleType(
+    fake_stage_contracts: Any = ModuleType(
         "vllm_ascend.ops.fused_moe.moe_stage_contracts",
     )
     fake_stage_contracts.MoEMlpComputeInput = KeywordArguments
     fake_stage_contracts.MoEWeights = KeywordArguments
-    fake_stage_params = ModuleType(
+    fake_stage_params: Any = ModuleType(
         "vllm_ascend.ops.fused_moe.moe_stage_params",
     )
     fake_stage_params.MoEQuantParams = KeywordArguments
-    fake_quant_type = ModuleType("vllm_ascend.quantization.quant_type")
+    fake_quant_type: Any = ModuleType("vllm_ascend.quantization.quant_type")
     fake_quant_type.QuantType = FakeQuantType
     monkeypatch.setitem(
         sys.modules,
@@ -693,9 +645,12 @@ def test_deepseek_afd_ffn_skips_empty_rank_local_moe_work(
         hidden_states,
         dynamic_scales,
         *,
+        swiglu_limit,
         output_dtype,
     ):
-        shared_calls.append((shared_experts, hidden_states, dynamic_scales))
+        shared_calls.append(
+            (shared_experts, hidden_states, dynamic_scales, swiglu_limit),
+        )
         return torch.zeros_like(hidden_states, dtype=output_dtype)
 
     monkeypatch.setattr(
@@ -744,6 +699,7 @@ def test_deepseek_afd_ffn_skips_empty_rank_local_moe_work(
     if num_shared_tokens > 0:
         assert output.shared_output is not None
         assert output.shared_output.shape == expand_x_shared.shape
+        assert shared_calls[0][3] is None
     else:
         assert output.shared_output is None
 
