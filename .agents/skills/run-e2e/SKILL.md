@@ -17,14 +17,16 @@ Run one of the model suites:
 Each suite contains four gate scenarios:
 
 - baseline-graph
-- afd-eager-2a2f
-- afd-graph-2a2f
-- afd-graph-dbo-2a2f
+- afd-eager-2a2f (DeepSeek-V2-Lite gate only; Qwen3 MoE/Qwen3.6 use afd-eager-2a1f)
+- afd-graph-2a2f (DeepSeek-V2-Lite gate only; Qwen3 MoE/Qwen3.6 use afd-graph-2a1f)
+- afd-graph-dbo-2a2f (DeepSeek-V2-Lite gate only; Qwen3 MoE/Qwen3.6 use afd-graph-dbo-2a1f)
 
-Each gate scenario evaluates the first 7 GSM8K samples. The AFD gate scenarios
-use 2 Attention ranks and 2 FFN ranks. `baseline-graph` uses native
-DP4/TP1/EP4. The 2A1F cases (`afd-eager-2a1f`, `afd-graph-2a1f`,
-`afd-graph-dbo-2a1f`) are local-only scenarios.
+Each gate scenario evaluates the first 7 GSM8K samples. The 2A2F AFD gate
+scenarios (DeepSeek-V2-Lite only) use 2 Attention ranks and 2 FFN ranks.
+`baseline-graph` uses native DP4/TP1/EP4. The 2A1F cases (`afd-eager-2a1f`,
+`afd-graph-2a1f`, `afd-graph-dbo-2a1f`) use 2 Attention ranks and 1 FFN rank.
+Note that for DeepSeek-V2-Lite 2A1F are local-only scenarios, while for Qwen3 MoE and
+Qwen3.6 MoE they are the suite's gate scenarios.
 
 ## Workflow
 
@@ -43,6 +45,10 @@ Before starting pytest, confirm:
 - The selected vllm command runs.
 - pytest, afd_plugin, lm_eval, datasets, and huggingface_hub are importable.
 - HF_HOME points to the Hugging Face cache used for GSM8K and model weights.
+- HF_ENDPOINT is reachable: `gsm8k.py` defaults the lm-eval child to
+  `https://hf-mirror.com`, so an unreachable mirror stalls or fails at GSM8K
+  dataset resolution only after the servers are already up and devices
+  reserved. Confirm the default mirror is reachable or override it.
 - GPU: the selected devices are visible to CUDA.
 - NPU: torch_npu and the Ascend runtime work.
 
@@ -80,8 +86,10 @@ export AFD_E2E_DEVICES=0,1,2,3
 
 Device order defines roles: the 2A2F AFD scenarios use the first two devices
 for Attention DP2/TP1 and the last two for FFN DP2/TP1/EP2. `baseline-graph`
-uses the first four for native DP4/TP1/EP4. The local 2A1F scenarios use the
-first two for Attention and the third for FFN.
+uses the first four for native DP4/TP1/EP4.
+The 2A1F scenarios use the first
+two for Attention and the third for FFN (used local-only for DeepSeek-V2-Lite; and
+gate topology for Qwen3 MoE and Qwen3.6 MoE).
 
 ### 4. Run
 
@@ -144,3 +152,4 @@ gate failure.
 | AFD_NPU_E2E_MODEL | NPU | no; downloads the selected suite's model when unset |
 | AFD_NPU_E2E_VLLM_BIN | NPU | no; defaults to vllm |
 | HF_HOME | both | recommended; HF dataset/model cache |
+| HF_ENDPOINT | both | recommended; `gsm8k.py` defaults the lm-eval child to https://hf-mirror.com, confirm reachable or override |
