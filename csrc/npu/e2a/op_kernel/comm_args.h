@@ -5,8 +5,33 @@
 #define FORCE_INLINE_AICORE __attribute__((always_inline)) inline __aicore__
 #include "kernel_operator.h"
 
+// A5 (Ascend 950, __NPU_ARCH__ == 3510 / __DAV_C310__) exposes a flat per-rank
+// window array (HcclCombinOpParam) instead of the A3 HcclOpResParam + remoteRes tree.
+#if (defined(__NPU_ARCH__) && (__NPU_ARCH__ == 3510)) || defined(__DAV_C310__)
+#define AFD_ARCH_A5 1
+#endif
+
 namespace Moe {
 constexpr int CAM_MAX_RANK_SIZE = 384; // Maximum number of NPU cards supported by the communication library
+
+#ifdef AFD_ARCH_A5
+constexpr uint32_t HCCL_MTE_MAX_RANK_NUM = 64;
+
+struct HcclCombinOpParam {
+    uint64_t workSpace;          // client和server之间通信的地址
+    uint64_t workSpaceSize;      // client和server之间通信的空间大小
+    uint32_t rankId;             // 当前卡rankId
+    uint32_t rankDim;            // 总卡数
+    uint64_t winSize;            // ccu不使用
+    uint64_t windowsIn[HCCL_MTE_MAX_RANK_NUM];  // ccu不使用, MTE 数据区
+    uint64_t windowsOut[HCCL_MTE_MAX_RANK_NUM]; // ccu不使用, MTE 状态区
+    // for ccu
+    uint64_t xnAddr;
+    uint64_t ckeAddr;
+    uint64_t msAddr;
+    uint64_t msSize;
+};
+#endif // AFD_ARCH_A5
 
 constexpr int64_t IPC_BUFF_MAX_SIZE = 100 * 1024 * 1024;
 constexpr int64_t IPC_DATA_OFFSET = 2 * 1024 * 1024; // First 2MB as flag, then 100MB as data storage
