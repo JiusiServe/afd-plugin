@@ -18,8 +18,11 @@ class AFDRankMapping:
     """Rank mapping for the P2P connector.
 
     The P2P world always places FFN ranks first, followed by Attention ranks:
-    ``[F0, F1, ..., A0, A1, ...]``. Each FFN rank owns one subgroup containing
-    itself at subgroup rank 0 and one or more consecutive Attention ranks.
+    ``[F0, F1, ..., A0, A1, ...]``. The world is partitioned into
+    ``min(A, F)`` subgroups, each holding at least one rank of both roles;
+    ``subgroup_ranks`` lists a subgroup's FFN members first, then its
+    Attention members, in world order. ``ratio`` is the number of Attention
+    members in this rank's subgroup.
     """
 
     role: str
@@ -52,16 +55,10 @@ def topology_from_config(config: AFDConfig) -> tuple[int, int]:
 
 def validate_p2p_topology(config: AFDConfig) -> None:
     attention_size, ffn_size = topology_from_config(config)
-    if attention_size < ffn_size:
+    if attention_size <= 0 or ffn_size <= 0:
         raise ValueError(
-            "P2pNcclAFDConnector currently requires num_attention_ranks >= "
-            f"num_ffn_ranks, got {attention_size} < {ffn_size}",
-        )
-    if attention_size % ffn_size != 0:
-        raise ValueError(
-            "P2pNcclAFDConnector currently requires num_attention_ranks to be a "
-            "multiple of num_ffn_ranks, got "
-            f"{attention_size} and {ffn_size}",
+            "P2P topology requires positive rank counts, got "
+            f"A={attention_size}, F={ffn_size}",
         )
 
 
@@ -112,6 +109,30 @@ def resolve_role_rank(vllm_config: VllmConfig, config: AFDConfig) -> int:
     return role_rank
 
 
+def split_send_sizes(token_count: int, parts: int) -> tuple[int, ...]:
+    """Split one rank's token count into the sizes it sends to each peer.
+
+    The sender slices its tensor with the whole tuple and each receiver
+    reads the element at its own position, so both sides reach identical
+    sizes without extra communication. The rule matches
+    ``torch.tensor_split``: sizes differ by at most one and the
+    ``token_count % parts`` leading shares carry the extra token. A share is
+    zero when ``token_count < parts``.
+
+    Share ``i`` is the closed form ``(token_count - i + parts - 1) // parts``
+    rather than a branch on the remainder, so that ``token_count`` may also
+    be a ``SymInt``: under ``torch.compile`` a Python branch would freeze at
+    its trace-time outcome and split every other token count wrongly.
+    """
+    if parts <= 0:
+        raise ValueError(f"parts must be positive, got {parts}")
+    if token_count < 0:
+        raise ValueError(f"token_count must be >= 0, got {token_count}")
+    return tuple(
+        (token_count - position + parts - 1) // parts for position in range(parts)
+    )
+
+
 def build_rank_mapping(
     config: AFDConfig,
     role_rank: int,
@@ -130,7 +151,6 @@ def build_rank_mapping(
                 f"(rank={role_rank}, size={attention_size})",
             )
         world_rank = ffn_size + role_rank
-        subgroup_index = role_rank // (attention_size // ffn_size)
     elif config.role == "ffn":
         if role_rank >= ffn_size:
             raise ValueError(
@@ -138,20 +158,33 @@ def build_rank_mapping(
                 f"(rank={role_rank}, size={ffn_size})",
             )
         world_rank = role_rank
-        subgroup_index = role_rank
     else:
         raise ValueError(f"unknown AFD role {config.role!r}")
 
-    ratio = attention_size // ffn_size
+    # Balanced block distribution: i * G // N maps N ranks onto G contiguous
+    # blocks differing in size by at most one, and is onto for both roles.
     min_size = min(ffn_size, attention_size)
-    ffn_ranks = list(range(ffn_size))
-    attention_ranks = list(range(ffn_size, ffn_size + attention_size))
-    subgroup_ranks = tuple(
-        [ffn_ranks[subgroup_index]]
-        + [attention_ranks[subgroup_index * ratio + offset] for offset in range(ratio)],
-    )
+    if config.role == "attention":
+        subgroup_index = role_rank * min_size // attention_size
+    else:
+        subgroup_index = role_rank * min_size // ffn_size
+    subgroup_ffn_ranks = [
+        ffn_rank
+        for ffn_rank in range(ffn_size)
+        if ffn_rank * min_size // ffn_size == subgroup_index
+    ]
+    subgroup_attention_ranks = [
+        ffn_size + attention_rank
+        for attention_rank in range(attention_size)
+        if attention_rank * min_size // attention_size == subgroup_index
+    ]
+    subgroup_ranks = tuple(subgroup_ffn_ranks + subgroup_attention_ranks)
     rank_in_subgroup = subgroup_ranks.index(world_rank)
-    p2p_rank = role_rank + min_size if config.role == "attention" else role_rank
+    ratio = len(subgroup_attention_ranks)
+
+    # FFN ranks take p2p_rank 0..F-1, so Attention starts at ffn_size, the
+    # offset the receiver side assumes.
+    p2p_rank = role_rank + ffn_size if config.role == "attention" else role_rank
 
     destinations: list[int] = []
     if ffn_size <= world_rank < ffn_size + min_size:
@@ -181,6 +214,7 @@ __all__ = [
     "AFDRankMapping",
     "build_rank_mapping",
     "resolve_role_rank",
+    "split_send_sizes",
     "topology_from_config",
     "validate_p2p_topology",
 ]

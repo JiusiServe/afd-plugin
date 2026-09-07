@@ -11,16 +11,21 @@ currently limited to ``FULL_DECODE_ONLY``.
 Topology:
     The connector creates one AFD NCCL world ordered as
     ``[F0, F1, ..., A0, A1, ...]``: FFN ranks first, followed by Attention
-    ranks. Each FFN rank owns one subgroup containing itself and one or more
-    consecutive Attention ranks, which requires::
+    ranks. The world is partitioned into ``G = min(A, F)`` subgroups by a
+    balanced block distribution: Attention ``a`` joins subgroup ``a*G//A``
+    and FFN ``f`` joins subgroup ``f*G//F``. Every positive ``(A, F)`` pair
+    is valid, and the role with fewer ranks contributes exactly one member
+    per subgroup:
 
-        num_attention_ranks >= num_ffn_ranks
-        num_attention_ranks % num_ffn_ranks == 0
-
-    Attention sends hidden states to its mapped FFN rank; the FFN rank
-    concatenates inputs from its Attention peers, runs FFN work, splits the
-    output by the recorded sequence lengths, and sends each slice back to the
-    originating Attention rank.
+    - ``A >= F``: one FFN rank and one or more Attention ranks. Attention
+      sends its hidden states whole; the FFN rank concatenates the inputs
+      from its Attention peers, runs FFN work, splits the output by the
+      recorded sequence lengths, and sends each slice back to its origin.
+    - ``A < F``: one Attention rank and several FFN ranks. Attention splits
+      its tokens across the FFN members with ``split_send_sizes``; each FFN
+      returns its share, and Attention reassembles them in member order. An
+      FFN that receives no tokens runs its forward on a one-token dummy
+      batch and returns a zero-size tensor.
 
 Control and data planes:
     DP metadata handling is a pluggable control plane, not part of the
@@ -61,6 +66,7 @@ deployments.
 
 from __future__ import annotations
 
+import socket
 from collections.abc import Callable, Mapping
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -92,6 +98,7 @@ from afd_plugin.distributed import (
     DefaultProcessGroupSwitcher,
     build_rank_mapping,
     init_afd_process_group,
+    split_send_sizes,
 )
 
 if TYPE_CHECKING:
@@ -115,9 +122,11 @@ class P2pNcclAFDConnector(AFDConnectorBase):
     """NCCL-backed Attention <-> FFN connector for CUDA deployments.
 
     The P2P topology places FFN ranks before Attention ranks in the AFD world
-    (``[F0, F1, ..., A0, A1, ...]``), and each FFN rank owns a subgroup with
-    one or more consecutive Attention ranks. Within a subgroup, the FFN rank
-    is subgroup rank ``0`` and its Attention peers occupy ranks ``1..ratio``.
+    (``[F0, F1, ..., A0, A1, ...]``) and partitions it into ``min(A, F)``
+    subgroups (see the module docstring). Within a subgroup the FFN members
+    occupy ranks ``0..subgroup_ffn_count-1`` and the Attention members
+    follow; historically that is FFN rank ``0`` plus Attention ranks
+    ``1..ratio``.
 
     Hidden states move through per-subgroup ``PyNcclCommunicator`` instances
     on the current CUDA stream; a separate NCCL process group distributes the
@@ -181,6 +190,9 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         self.min_size = self.mapping.min_size
         self.ratio = self.mapping.ratio
         self.group_size = len(self.mapping.subgroup_ranks)
+        self.subgroup_ffn_count = sum(
+            1 for rank in self.mapping.subgroup_ranks if rank < self.ffn_size
+        )
         self.dst_list = list(self.mapping.dp_metadata_destinations)
         text_config = vllm_config.model_config.hf_text_config
         self.num_hidden_layers = (text_config.num_hidden_layers,)
@@ -193,6 +205,8 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             tuple[int, int],
             _TensorMetadata,
         ] = {}
+        # Stages of this step whose incoming shares are all zero.
+        self._dummy_stages: set[int] = set()
         self._recv_attn_buffers: dict[
             tuple[int, int, tuple[int, ...]],
             torch.Tensor,
@@ -242,9 +256,10 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         1. Joins the AFD world process group (FFN ranks first, then Attention
            ranks) rendezvoused at ``tcp://host:port``.
         2. Creates this rank's subgroup ``StatelessProcessGroup`` on
-           ``port + subgroup_index + 1`` and two ``PyNcclCommunicator``
-           instances over it (Attention-to-FFN and FFN-to-Attention), each
-           registered for use by the P2P custom ops.
+           ``port + subgroup_index + 1``, at the address of the subgroup's
+           first member, and two ``PyNcclCommunicator`` instances over it
+           (Attention-to-FFN and FFN-to-Attention), each registered for use
+           by the P2P custom ops.
         3. On ranks that participate in the DP metadata control plane, joins
            the ``p2p`` process group that ``control_plane`` uses to
            distribute per-stage token counts.
@@ -265,10 +280,20 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             timeout=timedelta(minutes=2),
         )
 
+        # A subgroup's group is served by its first member, which can only
+        # bind its own node's address.
+        addresses = _gather_rank_addresses(
+            afd_pg,
+            host=self.afd_config.host,
+            port=self.afd_config.port,
+            world_size=self.ffn_size + self.attn_size,
+        )
+        subgroup_host = addresses[self.mapping.subgroup_ranks[0]]
+
         with DefaultProcessGroupSwitcher(_get_default_group(), afd_pg):
             base_port = self.afd_config.port
             self.a2e_group = StatelessProcessGroup.create(
-                host=self.afd_config.host,
+                host=subgroup_host,
                 port=base_port + self.mapping.subgroup_index + 1,
                 rank=self.mapping.rank_in_subgroup,
                 world_size=len(self.mapping.subgroup_ranks),
@@ -308,7 +333,11 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         context: AFDTransferContext,
         **kwargs: Any,
     ) -> None:
-        """Send Attention hidden states to this rank's mapped FFN rank.
+        """Send Attention hidden states to this rank's subgroup FFN member(s).
+
+        Each subgroup FFN member receives one contiguous share of this
+        rank's tokens, sized by ``split_send_sizes``. A single FFN member
+        receives the whole tensor.
 
         Args:
             hidden_states: CUDA tensor of shape ``(num_tokens, hidden_size)``
@@ -350,26 +379,27 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                 )
             if input_ids.dtype != _INPUT_IDS_DTYPE:
                 raise ValueError("P2P AFD input_ids must use torch.int32")
-        self._send_hidden_states(
-            hidden_states,
-            0,
-            self.a2e_group,
-            self.a2e_comm_id,
-        )
-        if router_logits is not None:
-            self._send_hidden_states(
-                router_logits,
-                0,
-                self.a2e_group,
-                self.a2e_comm_id,
-            )
-        if input_ids is not None:
-            self._send_hidden_states(
-                input_ids,
-                0,
-                self.a2e_group,
-                self.a2e_comm_id,
-            )
+        if self.subgroup_ffn_count == 1:
+            self._send_hidden_states(hidden_states, 0, self.a2e_group, self.a2e_comm_id)
+            if router_logits is not None:
+                self._send_hidden_states(
+                    router_logits, 0, self.a2e_group, self.a2e_comm_id
+                )
+            if input_ids is not None:
+                self._send_hidden_states(input_ids, 0, self.a2e_group, self.a2e_comm_id)
+            return
+        # Traced by torch.compile: pass the bounds to the op rather than
+        # slicing here, and send every share (see _register_p2p_custom_ops).
+        sizes = split_send_sizes(hidden_states.shape[0], self.subgroup_ffn_count)
+        start = 0
+        for dst, size in enumerate(sizes):
+            # Wire order per destination, matching recv_attn_output.
+            self._send_slice(hidden_states, start, size, dst)
+            if router_logits is not None:
+                self._send_slice(router_logits, start, size, dst)
+            if input_ids is not None:
+                self._send_slice(input_ids, start, size, dst)
+            start = start + size
 
     def recv_ffn_output(
         self,
@@ -377,13 +407,17 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         ubatch_idx: int = 0,
         **kwargs: Any,
     ) -> torch.Tensor:
-        """Receive this rank's FFN output slice on the Attention side.
+        """Receive this rank's FFN output on the Attention side.
+
+        Receives one share per subgroup FFN member, in the sizes and member
+        order ``send_attn_output`` used, and assembles them into an output
+        shaped like ``ref_tensor``, restoring the original token order.
 
         Args:
-            ref_tensor: Preallocated CUDA tensor to receive into. Used as a
-                stable buffer for CUDA graph capture and returned directly
-                when the subgroup has a single rank and no wire transfer
-                occurs.
+            ref_tensor: Preallocated CUDA tensor of shape
+                ``(num_tokens, hidden_size)``. A single FFN member receives
+                into it directly, keeping the allocation stable for CUDA
+                graph capture; several members use its shape and device.
             ubatch_idx: Stage/microbatch index. Defaults to ``0``.
             **kwargs: Unused; accepted for interface compatibility.
 
@@ -394,17 +428,26 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             RuntimeError: If the connector is not initialized, or no receive
                 is performed for a single-rank subgroup.
         """
-        output = self._recv_hidden_states(
-            0,
-            self.e2a_group,
-            self.e2a_comm_id,
-            self.tensor_metadata_list[ubatch_idx],
-            ref_tensor=ref_tensor,
-        )
-        if output is None:
-            raise RuntimeError(
-                "P2P recv_ffn_output requires ref_tensor when no receive is performed",
+        if self.subgroup_ffn_count == 1:
+            output = self._recv_hidden_states(
+                0,
+                self.e2a_group,
+                self.e2a_comm_id,
+                self.tensor_metadata_list[ubatch_idx],
+                ref_tensor=ref_tensor,
             )
+            if output is None:
+                raise RuntimeError(
+                    "P2P recv_ffn_output requires ref_tensor when no receive "
+                    "is performed",
+                )
+            return output
+        sizes = split_send_sizes(ref_tensor.shape[0], self.subgroup_ffn_count)
+        output = torch.empty_like(ref_tensor)
+        start = 0
+        for src, size in enumerate(sizes):
+            self._recv_slice(ref_tensor, output, start, size, src)
+            start = start + size
         return output
 
     def recv_attn_output(
@@ -414,12 +457,14 @@ class P2pNcclAFDConnector(AFDConnectorBase):
     ) -> AFDA2FTransferPayload:
         """Receive and concatenate Attention hidden states on the FFN rank.
 
-        Receives one tensor from every Attention peer in this rank's
-        subgroup (subgroup ranks ``1..ratio``), concatenates them along the
-        token dimension, and records each peer's sequence length in the
-        returned metadata so ``send_ffn_output`` can split the FFN output
-        back per peer. When CUDA graphs are enabled, receives reuse the
-        buffers preallocated by ``control_plane.update_state_from_dp_metadata``.
+        Receives one tensor from every Attention member of this rank's
+        subgroup, concatenates them along the token dimension, and records
+        each peer's sequence length in the returned metadata so
+        ``send_ffn_output`` can split the FFN output back per peer.
+        Zero-size shares add no rows; when every share is zero a one-token
+        dummy batch is returned instead. When CUDA graphs are enabled,
+        receives reuse the buffers preallocated by
+        ``control_plane.update_state_from_dp_metadata``.
 
         Args:
             ubatch_idx: Stage/microbatch index to receive. Defaults to ``0``.
@@ -432,8 +477,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             lengths.
 
         Raises:
-            RuntimeError: If the connector is not initialized or the subgroup
-                has no Attention peers.
+            RuntimeError: If the connector is not initialized.
         """
         routing_spec: AFDExpertRoutingSpec | None = kwargs.get("routing_spec")
         recv_input_ids: bool = kwargs.get("recv_input_ids", False)
@@ -441,25 +485,27 @@ class P2pNcclAFDConnector(AFDConnectorBase):
         router_logits_list: list[torch.Tensor] = []
         input_ids_list: list[torch.Tensor] = []
 
-        for src in range(1, self.group_size):
+        for src in range(self.subgroup_ffn_count, self.group_size):
             tensor_metadata = self._recv_attn_tensor_metadata_list.get(
                 (ubatch_idx, src),
                 self.tensor_metadata_list[ubatch_idx],
             )
+            # The sender posts every share; a zero-size one adds no rows.
+            share_is_empty = tensor_metadata.size[0] == 0
             ref_tensor = None
             if not self.vllm_config.model_config.enforce_eager:
                 ref_tensor = self._recv_attn_buffers.get(
                     (ubatch_idx, src, tuple(tensor_metadata.size)),
                 )
-            hidden_states_list.append(
-                self._recv_hidden_states(
-                    src,
-                    self.a2e_group,
-                    self.a2e_comm_id,
-                    tensor_metadata,
-                    ref_tensor=ref_tensor,
-                ),
+            received = self._recv_hidden_states(
+                src,
+                self.a2e_group,
+                self.a2e_comm_id,
+                tensor_metadata,
+                ref_tensor=ref_tensor,
             )
+            if not share_is_empty:
+                hidden_states_list.append(received)
             if routing_spec is not None:
                 router_metadata = _TensorMetadata(
                     device=tensor_metadata.device,
@@ -471,14 +517,14 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                         ],
                     ),
                 )
-                router_logits_list.append(
-                    self._recv_hidden_states(
-                        src,
-                        self.a2e_group,
-                        self.a2e_comm_id,
-                        router_metadata,
-                    ),
+                received = self._recv_hidden_states(
+                    src,
+                    self.a2e_group,
+                    self.a2e_comm_id,
+                    router_metadata,
                 )
+                if not share_is_empty:
+                    router_logits_list.append(received)
             if recv_input_ids:
                 input_ids_metadata = _TensorMetadata(
                     device=tensor_metadata.device,
@@ -490,18 +536,52 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                     input_ids_ref = self._recv_attn_input_ids_buffers.get(
                         (ubatch_idx, src, tuple(input_ids_metadata.size)),
                     )
-                input_ids_list.append(
-                    self._recv_hidden_states(
-                        src,
-                        self.a2e_group,
-                        self.a2e_comm_id,
-                        input_ids_metadata,
-                        ref_tensor=input_ids_ref,
-                    ),
+                received = self._recv_hidden_states(
+                    src,
+                    self.a2e_group,
+                    self.a2e_comm_id,
+                    input_ids_metadata,
+                    ref_tensor=input_ids_ref,
                 )
+                if not share_is_empty:
+                    input_ids_list.append(received)
 
         if not hidden_states_list:
-            raise RuntimeError("P2P FFN rank has no Attention peers")
+            # Nothing arrived: run the forward on a dummy batch, as vLLM does
+            # for an idle DP rank. AFDTransferMetadata rejects zero lengths.
+            stage_metadata = self.tensor_metadata_list[ubatch_idx]
+            return AFDA2FTransferPayload(
+                hidden_states=torch.zeros(
+                    (1, self.hidden_size),
+                    dtype=stage_metadata.dtype,
+                    device=stage_metadata.device,
+                ),
+                context=AFDTransferContext(
+                    metadata=AFDTransferMetadata.create_ffn_metadata(
+                        layer_idx=0,
+                        stage_idx=ubatch_idx,
+                        seq_lens=[1],
+                    ),
+                ),
+                router_logits=(
+                    None
+                    if routing_spec is None
+                    else torch.zeros(
+                        (1, routing_spec.router_logits_width),
+                        dtype=routing_spec.router_logits_dtype,
+                        device=stage_metadata.device,
+                    )
+                ),
+                input_ids=(
+                    None
+                    if not recv_input_ids
+                    else torch.zeros(
+                        (1,),
+                        dtype=_INPUT_IDS_DTYPE,
+                        device=stage_metadata.device,
+                    )
+                ),
+            )
         hidden_states = (
             torch.cat(hidden_states_list, dim=0)
             if len(hidden_states_list) > 1
@@ -544,11 +624,11 @@ class P2pNcclAFDConnector(AFDConnectorBase):
     ) -> None:
         """Split the FFN output and send each slice back to its Attention peer.
 
-        With a one-to-one mapping (``ratio == 1``) the whole tensor is sent to
-        the single Attention peer. Otherwise the output is split along the
-        token dimension by ``metadata.seq_lens`` — falling back to an even
-        split when the recorded lengths do not cover every peer — and each
-        slice is sent to the Attention rank that originally produced it.
+        With a single Attention member the whole tensor is sent to it, or a
+        zero-size tensor when nothing arrived this step. Otherwise the output
+        is split along the token dimension by ``metadata.seq_lens``, falling
+        back to an even split when the recorded lengths do not cover every
+        peer, and each slice is sent to the Attention rank that produced it.
 
         Args:
             ffn_output: CUDA tensor of shape ``(num_tokens, hidden_size)``
@@ -566,6 +646,14 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             RuntimeError: If the connector is not initialized.
         """
         metadata = context.metadata
+        if metadata.stage_idx in self._dummy_stages:
+            self._send_hidden_states(
+                ffn_output.narrow(0, 0, 0),
+                self.subgroup_ffn_count,
+                self.e2a_group,
+                self.e2a_comm_id,
+            )
+            return
         if not torch.compiler.is_compiling() and not metadata.validate_tensor_shape(
             tuple(ffn_output.shape),
         ):
@@ -573,7 +661,12 @@ class P2pNcclAFDConnector(AFDConnectorBase):
                 f"ffn_output shape {ffn_output.shape!r} does not match metadata",
             )
         if self.ratio == 1:
-            self._send_hidden_states(ffn_output, 1, self.e2a_group, self.e2a_comm_id)
+            self._send_hidden_states(
+                ffn_output,
+                self.subgroup_ffn_count,
+                self.e2a_group,
+                self.e2a_comm_id,
+            )
             return
 
         split_sizes = metadata.seq_lens
@@ -589,7 +682,7 @@ class P2pNcclAFDConnector(AFDConnectorBase):
 
         start = 0
         for dst, token_count in zip(
-            range(1, self.group_size),
+            range(self.subgroup_ffn_count, self.group_size),
             split_sizes,
             strict=False,
         ):
@@ -630,6 +723,40 @@ class P2pNcclAFDConnector(AFDConnectorBase):
             comm_id,
         )
         return
+
+    def _send_slice(
+        self,
+        base: torch.Tensor,
+        start: int,
+        size: int,
+        dst: int,
+    ) -> None:
+        """Send rows ``[start, start + size)`` of ``base`` to subgroup rank ``dst``."""
+        if self.a2e_group is None or self.a2e_comm_id is None:
+            raise RuntimeError("P2P connector is not initialized")
+        if dst >= self.a2e_group.world_size:
+            raise ValueError(f"invalid P2P destination rank {dst}")
+        torch.ops.vllm.afd_p2p_send_slice(base, start, size, dst, self.a2e_comm_id)
+
+    def _recv_slice(
+        self,
+        base: torch.Tensor,
+        out: torch.Tensor,
+        start: int,
+        size: int,
+        src: int,
+    ) -> None:
+        """Receive ``size`` rows from subgroup rank ``src`` into ``out``.
+
+        ``base`` is only read, to order this receive after the sends that
+        declare it mutated; without that dependency the compiler hoisted the
+        receives above the sends and deadlocked.
+        """
+        if self.e2a_group is None or self.e2a_comm_id is None:
+            raise RuntimeError("P2P connector is not initialized")
+        if src >= self.e2a_group.world_size:
+            raise ValueError(f"invalid P2P source rank {src}")
+        torch.ops.vllm.afd_p2p_recv_slice(base, out, start, size, src, self.e2a_comm_id)
 
     def _recv_hidden_states(
         self,
@@ -729,34 +856,30 @@ class P2pNcclAFDControlPlane(AFDControlPlane):
         connector.is_warmup = payload.is_warmup
         connector.tensor_metadata_list = {}
         connector._recv_attn_tensor_metadata_list = {}
+        connector._dummy_stages = set()
         device = torch.device(f"cuda:{connector.local_rank}")
         dtype = connector.vllm_config.model_config.dtype
         for stage_idx, dp_metadata in payload.dp_metadata_list.items():
             stage_idx = stage_idx
             if connector.afd_config.role == "ffn":
                 peer_metadata: list[_TensorMetadata] = []
-                for src_rank in range(1, connector.group_size):
-                    if src_rank <= 0 or src_rank >= connector.group_size:
-                        raise ValueError(f"invalid Attention subgroup rank {src_rank}")
+                ffn_member_count = connector.subgroup_ffn_count
+                for src_rank in range(ffn_member_count, connector.group_size):
                     attention_rank = (
-                        connector.mapping.subgroup_index * connector.ratio
-                        + src_rank
-                        - 1
+                        connector.mapping.subgroup_ranks[src_rank] - connector.ffn_size
                     )
-
+                    token_count = _num_tokens_for_attention_rank(
+                        dp_metadata,
+                        attention_rank=attention_rank,
+                        attention_size=connector.attn_size,
+                    )
+                    share = split_send_sizes(token_count, ffn_member_count)[
+                        connector.mapping.rank_in_subgroup
+                    ]
                     tensor_metadata = _TensorMetadata(
                         device,
                         dtype,
-                        torch.Size(
-                            [
-                                _num_tokens_for_attention_rank(
-                                    dp_metadata,
-                                    attention_rank=attention_rank,
-                                    attention_size=connector.attn_size,
-                                ),
-                                connector.hidden_size,
-                            ],
-                        ),
+                        torch.Size([share, connector.hidden_size]),
                     )
                     connector._recv_attn_tensor_metadata_list[(stage_idx, src_rank)] = (
                         tensor_metadata
@@ -765,6 +888,8 @@ class P2pNcclAFDControlPlane(AFDControlPlane):
                 num_tokens = sum(
                     tensor_metadata.size[0] for tensor_metadata in peer_metadata
                 )
+                if num_tokens == 0:
+                    connector._dummy_stages.add(stage_idx)
             else:
                 num_tokens = _num_tokens_for_attention_rank(
                     dp_metadata,
@@ -902,6 +1027,58 @@ def _register_comm(communicator: PyNcclCommunicator) -> int:
     return comm_id
 
 
+def _local_address_toward(host: str, port: int) -> str:
+    """Address of the local interface that routes to ``host:port``.
+
+    Connecting a UDP socket sends nothing; it only makes the kernel pick the
+    outgoing interface, whose address is then read back. On a single host
+    this is ``host`` itself (for example ``127.0.0.1``).
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.connect((host, port))
+        return probe.getsockname()[0]
+
+
+def _gather_rank_addresses(
+    group: ProcessGroup,
+    *,
+    host: str,
+    port: int,
+    world_size: int,
+) -> list[str]:
+    """Every rank's routable address, indexed by AFD world rank."""
+    gathered: list[str | None] = [None] * world_size
+    torch.distributed.all_gather_object(
+        gathered,
+        _local_address_toward(host, port),
+        group=group,
+    )
+    return [address or host for address in gathered]
+
+
+def _register_op_once(
+    op_name: str,
+    op_func: Callable[..., None],
+    mutates_args: list[str],
+    fake_impl: Callable[..., None],
+) -> None:
+    """Register ``op_name`` under ``torch.ops.vllm`` unless it already exists.
+
+    A prior import of this module (for example after an importlib reload) can
+    leave the op defined in torch's process-global registry while
+    ``_AFD_CUSTOM_OPS_REGISTERED`` is back to ``False``. Reuse the existing op
+    instead of re-defining it, which torch rejects.
+    """
+    if hasattr(torch.ops.vllm, op_name):
+        return
+    direct_register_custom_op(
+        op_name=op_name,
+        op_func=op_func,
+        mutates_args=mutates_args,
+        fake_impl=fake_impl,
+    )
+
+
 def _register_p2p_custom_ops() -> None:
     """Register the AFD P2P send and receive custom ops.
 
@@ -909,6 +1086,11 @@ def _register_p2p_custom_ops() -> None:
     fake implementations keeps the transfers traceable by ``torch.compile``
     and capturable by CUDA graphs. Registration happens once per process;
     ops already registered by another connector instance are reused.
+
+    The ``_slice`` variants take a whole tensor plus ``(start, size)`` and
+    slice inside the op, because a view at a non-zero offset passed to a
+    mutating custom op reached the op with offset 0 under ``torch.compile``.
+    Only subgroups with several FFN members call them.
     """
     global _AFD_CUSTOM_OPS_REGISTERED
 
@@ -958,36 +1140,82 @@ def _register_p2p_custom_ops() -> None:
     ) -> None:
         pass
 
-    def register_one(
-        op_name: str,
-        op_func: Callable[..., None],
-        mutates_args: list[str],
-        fake_impl: Callable[..., None],
+    def afd_p2p_send_slice_impl(
+        base: torch.Tensor,
+        start: int,
+        size: int,
+        dst: int,
+        comm_id: int,
     ) -> None:
-        # A prior import of this module (for example after an importlib reload)
-        # can leave the op defined in torch's process-global registry while
-        # this module's _AFD_CUSTOM_OPS_REGISTERED flag is back to False. Reuse
-        # the existing op instead of re-defining it, which torch rejects.
-        if hasattr(torch.ops.vllm, op_name):
-            return
-        direct_register_custom_op(
-            op_name=op_name,
-            op_func=op_func,
-            mutates_args=mutates_args,
-            fake_impl=fake_impl,
+        communicator = _AFD_COMMUNICATORS.get(comm_id)
+        if communicator is None:
+            raise RuntimeError(f"AFD communicator id {comm_id} is not registered")
+        communicator.send(
+            base.narrow(0, start, size).contiguous(),
+            dst,
+            stream=torch.cuda.current_stream(base.device),
+        )
+        return None
+
+    def afd_p2p_send_slice_fake(
+        base: torch.Tensor,
+        start: int,
+        size: int,
+        dst: int,
+        comm_id: int,
+    ) -> None:
+        pass
+
+    def afd_p2p_recv_slice_impl(
+        base: torch.Tensor,
+        out: torch.Tensor,
+        start: int,
+        size: int,
+        src: int,
+        comm_id: int,
+    ) -> None:
+        communicator = _AFD_COMMUNICATORS.get(comm_id)
+        if communicator is None:
+            raise RuntimeError(f"AFD communicator id {comm_id} is not registered")
+        communicator.recv(
+            out.narrow(0, start, size),
+            src,
+            stream=torch.cuda.current_stream(out.device),
         )
 
-    register_one(
+    def afd_p2p_recv_slice_fake(
+        base: torch.Tensor,
+        out: torch.Tensor,
+        start: int,
+        size: int,
+        src: int,
+        comm_id: int,
+    ) -> None:
+        pass
+
+    _register_op_once(
         op_name="afd_p2p_send",
         op_func=afd_p2p_send_impl,
         mutates_args=["tensor"],
         fake_impl=afd_p2p_send_fake,
     )
-    register_one(
+    _register_op_once(
         op_name="afd_p2p_recv",
         op_func=afd_p2p_recv_impl,
         mutates_args=["out"],
         fake_impl=afd_p2p_recv_fake,
+    )
+    _register_op_once(
+        op_name="afd_p2p_send_slice",
+        op_func=afd_p2p_send_slice_impl,
+        mutates_args=["base"],
+        fake_impl=afd_p2p_send_slice_fake,
+    )
+    _register_op_once(
+        op_name="afd_p2p_recv_slice",
+        op_func=afd_p2p_recv_slice_impl,
+        mutates_args=["out"],
+        fake_impl=afd_p2p_recv_slice_fake,
     )
     _AFD_CUSTOM_OPS_REGISTERED = True
 
